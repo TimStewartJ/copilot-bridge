@@ -35,7 +35,7 @@ describe("ComputerUseSection", () => {
     return { container: harness.dom.container, setDraft, harness };
   }
 
-  it("shows the installed plugin version and toggles the shared draft", async () => {
+  it("toggles the installed plugin on and clears its setting when switched back off", async () => {
     apiMocks.fetchComputerUseStatus.mockResolvedValue({ enabled: false, available: true, version: "0.1.88" });
     const draft: AppSettings = { mcpServers: {} };
     const { container, setDraft, harness: rendered } = await renderSection(draft);
@@ -49,19 +49,13 @@ describe("ComputerUseSection", () => {
       getReactProps(checkbox)?.onChange?.({ target: { checked: true } });
     });
     expect(setDraft).toHaveBeenCalledWith({ ...draft, computerUse: { enabled: true } });
-  });
 
-  it("clears the setting when turned off", async () => {
-    apiMocks.fetchComputerUseStatus.mockResolvedValue({ enabled: true, available: true, version: "0.1.88" });
-    const draft: AppSettings = { mcpServers: {}, computerUse: { enabled: true } };
-    const { container, setDraft, harness: rendered } = await renderSection(draft);
-
-    const [checkbox] = findAllByTag(container, "INPUT");
+    await rendered.render(createElement(ComputerUseSection, { draft: setDraft.mock.calls[0]![0], setDraft }));
     expect(getReactProps(checkbox)?.checked).toBe(true);
     await rendered.act(async () => {
       getReactProps(checkbox)?.onChange?.({ target: { checked: false } });
     });
-    expect(setDraft).toHaveBeenCalledWith({ ...draft, computerUse: undefined });
+    expect(setDraft).toHaveBeenLastCalledWith({ ...draft, computerUse: undefined });
   });
 
   it("explains why it cannot be turned on when the SDK ships no plugin", async () => {

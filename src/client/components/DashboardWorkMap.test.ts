@@ -189,9 +189,11 @@ describe("DashboardWorkMap", () => {
     });
   }
 
-  it("draws the hierarchy with its warnings and figures, and opens Bridge tasks", async () => {
+  it("keeps the loaded hierarchy, warnings, figures and task navigation available during refresh", async () => {
     const onSelectTask = vi.fn();
-    await render({ onSelectTask });
+    await render({ onSelectTask, map: { isFetching: true, progress: { label: "Following parent links", step: 3, steps: 4, done: 0, total: 0 } } });
+    expect(getReactProps(button("Refreshing..."))?.disabled).toBe(true);
+    expect(text()).not.toContain("Following parent links");
 
     expect(rowOrder()).toEqual(["500", "30000016", "30000015", "600"]);
     expect(text()).toContain("Parent feature");
@@ -374,14 +376,6 @@ describe("DashboardWorkMap", () => {
     expect(text()).toContain("Following parent links");
     expect(text()).toContain("Step 3 of 4");
     expect(text()).not.toContain(" · 0 of 0");
-  });
-
-  it("keeps the map on screen while it is refreshed", async () => {
-    await render({ map: { isFetching: true, progress: { label: "Following parent links", step: 3, steps: 4, done: 0, total: 0 } } });
-
-    expect(getReactProps(button("Refreshing..."))?.disabled).toBe(true);
-    expect(rowOrder()).toEqual(["500", "30000016", "30000015", "600"]);
-    expect(text()).not.toContain("Following parent links");
   });
 
   it("offers a retry when the map cannot be loaded, and keeps the last map when a refresh fails", async () => {

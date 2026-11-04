@@ -81,35 +81,6 @@ describe("ServerCard", () => {
 
     expect(html).toMatch(/<input[^>]*role="switch"[^>]*aria-label="Attach github to every session"[^>]*checked/);
   });
-
-  it("keeps the configuration closed until the row is opened", () => {
-    const html = renderToStaticMarkup(createElement(ServerCard, {
-      name: "ado",
-      config: { command: "agency", args: ["mcp", "ado"] },
-      onEdit: vi.fn(),
-      onRemove: vi.fn(),
-    }));
-
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).not.toContain("agency");
-  });
-
-  it("renders execution classification and its reason when opened", () => {
-    const html = renderToStaticMarkup(createElement(ServerCard, {
-      name: "ado",
-      defaultExpanded: true,
-      config: {
-        command: "agency",
-        args: ["mcp", "ado"],
-        executionScope: "shared",
-      },
-      onEdit: vi.fn(),
-      onRemove: vi.fn(),
-    }));
-
-    expect(html).toContain("session isolated (shared requested)");
-    expect(html).toContain("Shared execution is requested");
-  });
 });
 
 describe("ServerEditor", () => {

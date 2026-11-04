@@ -93,28 +93,6 @@ describe("ProvidersSection GitHub defaults badge", () => {
     vi.restoreAllMocks();
   });
 
-  async function renderProviders(providers: AppSettings["providers"]): Promise<string> {
-    harness = await createReactDomHarness();
-    await harness.render(
-      createElement(ProvidersSection, {
-        draft: { mcpServers: {}, providers },
-        setDraft: vi.fn(),
-      }),
-    );
-    return harness.dom.container.textContent ?? "";
-  }
-
-  it("says defaults are set once an owner is configured", async () => {
-    const text = await renderProviders({
-      github: { owner: "microsoft", defaultRepo: "vscode" },
-    });
-
-    expect(text).toContain("defaults set");
-    expect(text).not.toContain("no defaults");
-    expect(text).toContain("microsoft");
-    expect(text).toContain("vscode");
-  });
-
   it("allows saving with no defaults but rejects a repository without its owner", async () => {
     const setDraft = vi.fn();
     harness = await createReactDomHarness();
@@ -165,7 +143,7 @@ describe("ProvidersSection GitHub defaults badge", () => {
     expect(getReactProps(findButtonByText(harness.dom.container, "Configure"))?.disabled).toBe(true);
   });
 
-  it("persists optional owner and repository defaults together", async () => {
+  it("saves the owner and repository together and shows the defaults read back from that change", async () => {
     const setDraft = vi.fn();
     harness = await createReactDomHarness();
     await harness.render(
@@ -198,6 +176,13 @@ describe("ProvidersSection GitHub defaults badge", () => {
         },
       },
     });
+
+    await harness.render(createElement(ProvidersSection, { draft: setDraft.mock.lastCall![0], setDraft }));
+    const text = harness.dom.container.textContent ?? "";
+    expect(text).toContain("defaults set");
+    expect(text).not.toContain("no defaults");
+    expect(text).toContain("microsoft");
+    expect(text).toContain("vscode");
   });
 });
 

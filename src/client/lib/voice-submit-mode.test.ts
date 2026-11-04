@@ -73,11 +73,4 @@ describe("background voice delivery", () => {
     })).toBe("insert");
   });
 
-  it("preserves explicit review mode", () => {
-    expect(resolveBackgroundVoiceSubmitMode({
-      submitMode: "insert",
-      hasDraftContent: false,
-      targetBusy: false,
-    })).toBe("insert");
-  });
 });

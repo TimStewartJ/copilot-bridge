@@ -110,19 +110,6 @@ describe("session event projection", () => {
       .toMatchObject(patch);
   });
 
-  it("refreshes visible activity on idle and signals busy/idle to the stream attachment owner", () => {
-    const { project, effects, activeKey } = fixture();
-    project({ type: "session:busy", sessionId: "one" });
-    expect(effects.onBusy).toHaveBeenCalledExactlyOnceWith("one");
-    expect(effects.queries.invalidateQueries).toHaveBeenCalledExactlyOnceWith({ queryKey: queryKeys.dashboard });
-    effects.queries.invalidateQueries.mockClear();
-    project({ type: "session:idle", sessionId: "one" });
-    expect(effects.onIdle).toHaveBeenCalledExactlyOnceWith("one");
-    expect(effects.queries.invalidateQueries.mock.calls).toEqual([
-      [{ queryKey: activeKey }], [{ queryKey: queryKeys.dashboard }],
-    ]);
-  });
-
   it("puts a chat's new playbook in its model state, and removes it when cleared", () => {
     const { queryClient, project } = fixture();
     const key = queryKeys.sessionModel("one");
@@ -207,14 +194,16 @@ describe("session event projection", () => {
     expect(effects.onBusy).not.toHaveBeenCalled();
   });
 
-  it("keeps a live event when an older fetch completes", async () => {
-    const { queryClient, project, activeKey } = fixture();
+  it("keeps the busy event over an older poll and signals and refreshes the session back to idle", async () => {
+    const { queryClient, project, effects, activeKey } = fixture();
     let resolve!: (sessions: Session[]) => void;
     const pending = queryClient.fetchQuery({
       queryKey: activeKey,
       queryFn: () => new Promise<Session[]>((innerResolve) => { resolve = innerResolve; }),
     });
     project({ type: "session:busy", sessionId: "one" });
+    expect(effects.onBusy).toHaveBeenCalledExactlyOnceWith("one");
+    expect(effects.queries.invalidateQueries).toHaveBeenCalledExactlyOnceWith({ queryKey: queryKeys.dashboard });
     resolve([{
       sessionId: "one", summary: "Fresh title", runState: "idle",
       modifiedTime: "2026-10-16T17:00:00.000Z",
@@ -224,5 +213,12 @@ describe("session event projection", () => {
     expect(queryClient.getQueryData<Session[]>(activeKey)?.[0]).toMatchObject({
       summary: "Fresh title", runState: "busy",
     });
+
+    effects.queries.invalidateQueries.mockClear();
+    project({ type: "session:idle", sessionId: "one" });
+    expect(effects.onIdle).toHaveBeenCalledExactlyOnceWith("one");
+    expect(effects.queries.invalidateQueries.mock.calls).toEqual([
+      [{ queryKey: activeKey }], [{ queryKey: queryKeys.dashboard }],
+    ]);
   });
 });

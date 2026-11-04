@@ -96,30 +96,19 @@ describe("useOverlayParam navigation behavior", () => {
     });
   });
 
-  it("does not stack duplicate entries for an overlay that is already open", async () => {
-    await withOverlayHarness(["/home", "/sessions/abc"], 1, async (getApi, act) => {
-      await act(async () => { getApi().open("plan"); });
-      await act(async () => { getApi().open("plan"); });
-      expect(getApi().location).toBe("/sessions/abc?sheet=plan");
-
-      await act(async () => { getApi().close(); });
-      expect(getApi().location).toBe("/sessions/abc");
-
-      await act(async () => { getApi().back(); });
-      expect(getApi().location).toBe("/home");
-    });
-  });
-
-  it("keeps the underlying entry and its return state when overlay content is replaced", async () => {
+  it("keeps one owned entry and its return state when reopening and replacing an overlay", async () => {
     const state = { returnTo: "home-card" };
     await withOverlayHarness(["/home", { pathname: "/sessions/abc", state }], 1, async (getApi, act, remount) => {
       await act(async () => { getApi().open("one"); });
+      await act(async () => { getApi().open("one"); });
+      expect(getApi().location).toBe("/sessions/abc?sheet=one");
       await act(async () => { getApi().open("two", { replace: true }); });
       expect(getApi().location).toBe("/sessions/abc?sheet=two");
       expect(getApi().state).toMatchObject(state);
       await remount();
       await act(async () => { getApi().close(); });
       expect(getApi().location).toBe("/sessions/abc");
+      expect(getApi().state).toEqual(state);
       await act(async () => { getApi().back(); });
       expect(getApi().location).toBe("/home");
     });

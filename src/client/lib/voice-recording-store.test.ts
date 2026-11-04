@@ -24,9 +24,9 @@ describe("voice recording store", () => {
     __resetVoiceRecordingStoreForTests();
   });
 
-  it("round-trips a pending recording for a composer", async () => {
+  it("keeps the pending draft recording through handoff and accepts updates and deletion only from its owner", async () => {
     const result = await savePendingVoiceRecording({
-      composerKey: "session-1",
+      composerKey: "draft:task:task-1",
       recordingId: "rec-1",
       submitMode: "autosend",
       audio: audioBuffer("hello"),
@@ -42,9 +42,9 @@ describe("voice recording store", () => {
     expect(result.durable).toBe(false);
     expect(result.reason).toBe("unavailable");
 
-    const stored = await getPendingVoiceRecording("session-1");
+    const stored = await getPendingVoiceRecording("draft:task:task-1");
     expect(stored).toMatchObject({
-      composerKey: "session-1",
+      composerKey: "draft:task:task-1",
       recordingId: "rec-1",
       submitMode: "autosend",
       mimeType: "audio/wav",
@@ -56,6 +56,24 @@ describe("voice recording store", () => {
       },
     });
     expect(pendingVoiceRecordingToBlob(stored!).size).toBe(5);
+
+    const moved = await migratePendingVoiceRecording("draft:task:task-1", "session-9");
+
+    expect(moved?.composerKey).toBe("session-9");
+    expect(await getPendingVoiceRecording("draft:task:task-1")).toBeNull();
+    expect(await listPendingVoiceRecordingKeys()).toEqual(["session-9"]);
+
+    await patchPendingVoiceRecording("session-9", "stale-rec", { serverJobId: "job-x" });
+    expect((await getPendingVoiceRecording("session-9"))?.serverJobId).toBeUndefined();
+
+    await patchPendingVoiceRecording("session-9", "rec-1", { serverJobId: "job-1" });
+    expect((await getPendingVoiceRecording("session-9"))?.serverJobId).toBe("job-1");
+
+    await deletePendingVoiceRecording("session-9", "stale-rec");
+    expect(await getPendingVoiceRecording("session-9")).not.toBeNull();
+
+    await deletePendingVoiceRecording("session-9", "rec-1");
+    expect(await getPendingVoiceRecording("session-9")).toBeNull();
   });
 
   it("refuses to overwrite a different pending recording for the same composer", async () => {
@@ -90,44 +108,6 @@ describe("voice recording store", () => {
 
     expect(result).toEqual({ durable: false, reason: "too-large" });
     expect(await getPendingVoiceRecording("session-1")).not.toBeNull();
-  });
-
-  it("only patches and deletes the recording that still owns the slot", async () => {
-    await savePendingVoiceRecording({
-      composerKey: "session-1",
-      recordingId: "rec-1",
-      submitMode: "autosend",
-      audio: audioBuffer("hello"),
-      mimeType: "audio/wav",
-    });
-
-    await patchPendingVoiceRecording("session-1", "stale-rec", { serverJobId: "job-x" });
-    expect((await getPendingVoiceRecording("session-1"))?.serverJobId).toBeUndefined();
-
-    await patchPendingVoiceRecording("session-1", "rec-1", { serverJobId: "job-1" });
-    expect((await getPendingVoiceRecording("session-1"))?.serverJobId).toBe("job-1");
-
-    await deletePendingVoiceRecording("session-1", "stale-rec");
-    expect(await getPendingVoiceRecording("session-1")).not.toBeNull();
-
-    await deletePendingVoiceRecording("session-1", "rec-1");
-    expect(await getPendingVoiceRecording("session-1")).toBeNull();
-  });
-
-  it("migrates a recording to a new composer key", async () => {
-    await savePendingVoiceRecording({
-      composerKey: "draft:task:task-1",
-      recordingId: "rec-1",
-      submitMode: "autosend",
-      audio: audioBuffer("hello"),
-      mimeType: "audio/wav",
-    });
-
-    const moved = await migratePendingVoiceRecording("draft:task:task-1", "session-9");
-
-    expect(moved?.composerKey).toBe("session-9");
-    expect(await getPendingVoiceRecording("draft:task:task-1")).toBeNull();
-    expect(await listPendingVoiceRecordingKeys()).toEqual(["session-9"]);
   });
 
   it("rejects a conflicting oversized recording instead of replacing the pending one", async () => {

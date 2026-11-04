@@ -78,44 +78,31 @@ describe("McpStatusBar status ownership", () => {
     }
   });
 
-  it("keeps the chat identity and plan action visible even with nothing to report", async () => {
+  it("keeps Plan separate from session details before and after the first cost arrives", async () => {
     const harness = await createReactDomHarness();
     const onPlan = vi.fn();
     try {
-      await harness.render(createElement(McpStatusBar, {
+      const header = {
         servers: [],
-        statusState: "ready",
+        statusState: "ready" as const,
         leading: createElement("span", null, "Chat title / Model"),
         actions: createElement("button", { onClick: onPlan }, "Plan"),
-      }));
+      };
+      await harness.render(createElement(McpStatusBar, header));
       expect(harness.dom.container.textContent).toBe("Chat title / ModelPlan");
       const buttons = findAllByTag(harness.dom.container, "BUTTON");
       expect(buttons).toHaveLength(1);
       await harness.act(async () => getReactProps(buttons[0])?.onClick?.());
       expect(onPlan).toHaveBeenCalledOnce();
-    } finally {
-      await harness.cleanup();
-    }
-  });
 
-  it("opens session details without making the identity or plan part of its button", async () => {
-    const harness = await createReactDomHarness();
-    const onPlan = vi.fn();
-    try {
-      await harness.render(createElement(McpStatusBar, {
-        servers: [],
-        statusState: "ready",
-        sessionCostUsd: 0.025,
-        leading: createElement("span", null, "Chat title / Model"),
-        actions: createElement("button", { onClick: onPlan }, "Plan"),
-      }));
+      await harness.render(createElement(McpStatusBar, { ...header, sessionCostUsd: 0.025 }));
       const toggle = findAllByTag(harness.dom.container, "BUTTON")
         .find((button) => getReactProps(button)?.["aria-label"] === "Session details");
       expect(toggle?.textContent).toBe("Cost $0.03");
       await harness.act(async () => getReactProps(toggle)?.onClick?.());
       expect(getReactProps(toggle)?.["aria-expanded"]).toBe(true);
       expect(harness.dom.container.textContent).toContain("This sessionCost$0.03");
-      expect(onPlan).not.toHaveBeenCalled();
+      expect(onPlan).toHaveBeenCalledOnce();
     } finally {
       await harness.cleanup();
     }

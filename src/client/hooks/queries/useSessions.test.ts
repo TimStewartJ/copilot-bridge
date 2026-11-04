@@ -118,29 +118,18 @@ describe("mergeActiveAndArchivedSessions", () => {
       .toEqual([activeSession]);
   });
 
-  it("adds archived-query archived sessions without duplicating active sessions", () => {
+  it("adds archived and restoring rows once, leaving unrelated stale active rows out", () => {
     const activeSession = createSession({ sessionId: "active-session" });
     const archivedSession = createSession({ sessionId: "archived-session", archived: true });
-    const staleActiveSession = createSession({ sessionId: "stale-active-session" });
-
-    expect(mergeActiveAndArchivedSessions(
-      [activeSession],
-      [activeSession, staleActiveSession, archivedSession],
-      true,
-    )).toEqual([activeSession, archivedSession]);
-  });
-
-  it("keeps restoring unarchived sessions until the active query contains them", () => {
-    const activeSession = createSession({ sessionId: "active-session" });
     const restoringSession = createSession({ sessionId: "restoring-session", archived: false });
     const staleActiveSession = createSession({ sessionId: "stale-active-session", archived: false });
 
     expect(mergeActiveAndArchivedSessions(
       [activeSession],
-      [restoringSession, staleActiveSession],
+      [{ ...activeSession, archived: true }, archivedSession, restoringSession, staleActiveSession],
       true,
       new Set(["restoring-session"]),
-    )).toEqual([activeSession, restoringSession]);
+    )).toEqual([activeSession, archivedSession, restoringSession]);
   });
 });
 

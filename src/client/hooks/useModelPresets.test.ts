@@ -94,12 +94,16 @@ describe("useModelPresets", () => {
     });
   });
 
-  it("remembers only the last tier picked, never rewriting a tier from a chat's choice", async () => {
+  it("writes only a change of the last selected tier, never a per-chat model into the tier", async () => {
     await harness!.render(createElement(TestComponent));
     const before = queryClient.getQueryData<AppSettings>(queryKeys.settings)?.modelPresets;
 
     await harness!.act(async () => {
       memory?.remember({ slot: "preset1", modelId: "gpt-5-mini", reasoningEffort: "high" });
+    });
+    expect(fetch).not.toHaveBeenCalled();
+
+    await harness!.act(async () => {
       memory?.remember({ slot: "preset2", modelId: "gpt-5.6", contextTier: "long_context" });
     });
 
@@ -109,16 +113,6 @@ describe("useModelPresets", () => {
     for (const call of vi.mocked(fetch).mock.calls) {
       expect(JSON.parse(String(call[1]?.body))).not.toHaveProperty("modelPresets");
     }
-  });
-
-  it("skips the write when the preset already matches memory", async () => {
-    await harness!.render(createElement(TestComponent));
-
-    await harness!.act(async () => {
-      memory?.remember({ slot: "preset1", modelId: "gpt-5.6" });
-    });
-
-    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("saves a chat's choice into a tier only when asked", async () => {

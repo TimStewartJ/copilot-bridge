@@ -317,7 +317,7 @@ describe("SettingsView categories", () => {
 });
 
 describe("SettingsView autosave", () => {
-  it("saves a change at once without a page Save or Discard", async () => {
+  it("saves a change at once, announces it, and undoes that save from the header", async () => {
     createWriter({ ...savedSettings, mcpServers: { teams: { command: "node", args: ["teams.js"] } } });
     const harness = await renderSettingsView();
     expect(buttonsWithText(harness.dom.container, "Save")).toHaveLength(0);
@@ -334,11 +334,7 @@ describe("SettingsView autosave", () => {
     await harness.act(async () => { pending.resolve(); });
     await waitUntilAct(harness.act, () => feedbackWithRole(harness.dom.container, "status").textContent?.includes("Saved") === true);
     expect(buttonsWithText(harness.dom.container, "Save")).toHaveLength(0);
-  });
 
-  it("undoes the last save from the header", async () => {
-    const harness = await renderSettingsView();
-    await changeSettings(harness);
     await waitUntilAct(harness.act, () => buttonsWithText(harness.dom.container, "Undo").length === 1, { label: "undo offer" });
 
     await harness.act(async () => { getReactProps(buttonWithText(harness.dom.container, "Undo"))?.onClick?.(); });

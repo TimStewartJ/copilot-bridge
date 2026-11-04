@@ -35,13 +35,21 @@ const controller = {
 describe("Hands-free settings sheet", () => {
   let harness: ReactDomHarness;
 
+  async function renderSheet(next = controller) {
+    await harness.render(createElement(VoiceSettingsSheet, { controller: next, onClose: mocks.onClose }));
+  }
+
   beforeEach(async () => {
     vi.clearAllMocks();
     harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
-    await harness.render(createElement(VoiceSettingsSheet, { controller, onClose: mocks.onClose }));
+
   });
 
-  it("names every select and preserves setting values and handlers", async () => {
+  it("shows the model link before status arrives, then exposes labelled, working voice choices", async () => {
+    await renderSheet({ ...controller, status: null, settings: null });
+    expect(findAllByTag(harness.dom.container, "select")).toHaveLength(0);
+    expect(harness.dom.container.textContent).toContain("Settings › Models");
+    await renderSheet();
     const selects = findAllByTag(harness.dom.container, "select");
     const labels = findAllByTag(harness.dom.container, "label");
     expect(selects).toHaveLength(3);
@@ -66,6 +74,7 @@ describe("Hands-free settings sheet", () => {
   });
 
   it("keeps the header outside the safe-area-aware scrolling body and closes", async () => {
+    await renderSheet();
     const divs = findAllByTag(harness.dom.container, "div");
     const panel = divs.find((div) => getReactProps(div)?.className?.includes("sm:max-w-sm"));
     const body = divs.find((div) => getReactProps(div)?.className?.includes("overscroll-contain"));
@@ -83,16 +92,8 @@ describe("Hands-free settings sheet", () => {
     expect(mocks.onClose).toHaveBeenCalledOnce();
   });
 
-  it("waits for the speech engine status before showing voice choices, and points to the model setting", async () => {
-    await harness.render(createElement(VoiceSettingsSheet, {
-      controller: { ...controller, status: null, settings: null } as unknown as VoiceModeController,
-      onClose: mocks.onClose,
-    }));
-    expect(findAllByTag(harness.dom.container, "select")).toHaveLength(0);
-    expect(harness.dom.container.textContent).toContain("Settings › Models");
-  });
-
   it("edits the names list and saves it only when it changed and the field loses focus", async () => {
+    await renderSheet();
     const [field] = findAllByTag(harness.dom.container, "textarea");
     expect(getReactProps(field)!.value).toBe("devbox = Timmy PC");
     expect(findAllByTag(harness.dom.container, "label").some((label) => getReactProps(label)?.htmlFor === "hands-free-setting-glossary")).toBe(true);

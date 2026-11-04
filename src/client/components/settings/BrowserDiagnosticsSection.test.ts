@@ -163,14 +163,6 @@ afterEach(() => {
 });
 
 describe("BrowserDiagnosticsSection", () => {
-  it("says which browser runs, where it comes from and how old it is", async () => {
-    const harness = await renderSection();
-    const text = harness.dom.container.textContent ?? "";
-    expect(text).toContain("Google Chrome 154.0.8037.97 · found on this machine · updated 12 days ago");
-    expect(text).not.toContain("Sites can spot this build");
-    expect(text).not.toContain("has not been updated");
-    expect(text).toContain("installed · 0.38.2");
-  });
 
   it("warns about a build that sites recognise as automation", async () => {
     for (const kind of ["chrome-for-testing", "chromium"] as const) {
@@ -216,9 +208,13 @@ describe("BrowserDiagnosticsSection", () => {
     expect(text).not.toContain("installed ·");
   });
 
-  it("lists the launch arguments and says where the inherited ones come from", async () => {
+  it("reports the selected browser and the source of its launch arguments", async () => {
     const harness = await renderSection();
     let text = harness.dom.container.textContent ?? "";
+    expect(text).toContain("Google Chrome 154.0.8037.97 · found on this machine · updated 12 days ago");
+    expect(text).not.toContain("Sites can spot this build");
+    expect(text).not.toContain("has not been updated");
+    expect(text).toContain("installed · 0.38.2");
     expect(text).toContain("2 arguments");
     expect(text).toContain("--no-first-run");
     expect(text).toContain("--disable-blink-features=AutomationControlled");

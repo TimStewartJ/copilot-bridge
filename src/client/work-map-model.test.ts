@@ -120,17 +120,6 @@ function rowIds(rows: WorkMapTreeRow[]): string[] {
 }
 
 describe("work map tree", () => {
-  it("places map items under their ADO ancestors and keeps unparented items together", () => {
-    const sections = buildWorkMapTree(MODEL, ALL_IDS);
-
-    expect(sections.map((section) => section.key)).toEqual(["0", "unparented"]);
-    expect(rowIds(flattenWorkMapTree(sections[0].nodes, new Set()))).toEqual([
-      "0", "1", "20", "21", "22", "30", "40", "31", "41",
-    ]);
-    expect(sections[0].nodes[0].children[0].children[0].hiddenChildCount).toBe(1);
-    expect(sections[0].nodes[0].mapItem).toBeNull();
-    expect(sections[1].nodes.map((node) => node.id)).toEqual(["50"]);
-  });
 
   it("keeps filtered-out ancestors as context and counts hidden children", () => {
     const sections = buildWorkMapTree(MODEL, new Set(["21"]));
@@ -140,9 +129,17 @@ describe("work map tree", () => {
     expect(rows.map((row) => row.node.hiddenChildCount)).toEqual([2, 0, 2, 0]);
   });
 
-  it("draws one run per branch in a task's lane and names the task where each run starts", () => {
+  it("places items under their ancestors and draws the matching branch runs on those rows", () => {
     const sections = buildWorkMapTree(MODEL, ALL_IDS);
     const rows = flattenWorkMapTree(sections[0].nodes, new Set());
+    expect(sections.map((section) => section.key)).toEqual(["0", "unparented"]);
+    expect(rowIds(rows)).toEqual([
+      "0", "1", "20", "21", "22", "30", "40", "31", "41",
+    ]);
+    expect(sections[0].nodes[0].children[0].children[0].hiddenChildCount).toBe(1);
+    expect(sections[0].nodes[0].mapItem).toBeNull();
+    expect(sections[1].nodes.map((node) => node.id)).toEqual(["50"]);
+
     const lanes = layoutWorkMapLanes(rows, new Set(), 6);
     const index = (id: string) => rowIds(rows).indexOf(id);
 

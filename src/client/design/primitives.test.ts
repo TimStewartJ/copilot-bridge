@@ -141,15 +141,14 @@ describe("design primitives", () => {
     expect(getReactProps(ongoing)?.["aria-pressed"]).toBe(false);
   });
 
-  it("keeps an inherited placeholder selected and inert until a concrete value is chosen", async () => {
-    const onChange = vi.fn();
+  it("keeps the inherited choice inert, reports selection, and allows reaffirming only while enabled", async () => {
+    const onChange = vi.fn<(value: "high") => void>();
+    const onReselect = vi.fn();
     const options = [{ value: null, label: "Default" }, { value: "high", label: "High" }] as const;
-    const container = await render(createElement(SegmentedControl<"high">, {
-      ariaLabel: "Effort",
-      options,
-      value: undefined,
-      onChange,
-    }));
+    const control = (value?: "high", disabled = false) => createElement(SegmentedControl<"high">, {
+      ariaLabel: "Effort", options, value, onChange, onReselect, disabled,
+    });
+    const container = await render(control());
     const [placeholder, high] = findAllByTag(container, "BUTTON");
     expect(getReactProps(placeholder)?.["aria-pressed"]).toBe(true);
     expect(getReactProps(placeholder)?.disabled).toBe(true);
@@ -157,26 +156,15 @@ describe("design primitives", () => {
     expect(onChange).not.toHaveBeenCalled();
     await click(high);
     expect(onChange).toHaveBeenCalledExactlyOnceWith("high");
-  });
 
-  it("can reaffirm a launch choice, but never a disabled choice", async () => {
-    const onChange = vi.fn();
-    const onReselect = vi.fn();
-    const props = {
-      ariaLabel: "Effort",
-      options: [{ value: "high", label: "High" }] as const,
-      value: "high" as const,
-      onChange,
-      onReselect,
-    };
-    let container = await render(createElement(SegmentedControl<"high">, props));
-    await click(findAllByTag(container, "BUTTON")[0]);
-    expect(onChange).not.toHaveBeenCalled();
+    const selected = onChange.mock.calls[0]![0];
+    await render(control(selected));
+    await click(high);
+    expect(onChange).toHaveBeenCalledTimes(1);
     expect(onReselect).toHaveBeenCalledExactlyOnceWith("high");
-    onReselect.mockClear();
-    container = await render(createElement(SegmentedControl<"high">, { ...props, disabled: true }));
-    await click(findAllByTag(container, "BUTTON")[0]);
-    expect(onReselect).not.toHaveBeenCalled();
+    await render(control(selected, true));
+    await click(high);
+    expect(onReselect).toHaveBeenCalledTimes(1);
   });
 
   it("marks a choice as pressed only when it holds a state", async () => {

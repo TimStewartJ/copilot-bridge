@@ -52,38 +52,6 @@ describe("NewSessionLaunchPanel", () => {
     harness = null;
   });
 
-  it("hides selector labels but preserves accessible names and the actual choices", async () => {
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...requiredProps(),
-      models: [{ id: "gpt-5.6", name: "GPT-5.6" }],
-      selectedModelId: "gpt-5.6",
-      reasoningEffortOptions: [{ value: "high", label: "High" }],
-      selectedReasoningEffort: "high",
-      contextOptions: [{ value: "default", label: "Standard context" }],
-      selectedContextTier: "default",
-    }));
-    const container = harness!.dom.container;
-    const hiddenLabels = [...findAllByTag(container, "LABEL"), ...findAllByTag(container, "DIV")]
-      .filter((element) => getReactProps(element)?.className === "sr-only")
-      .map((element) => element.textContent);
-    expect(hiddenLabels).toEqual(["Playbook", "Model", "Effort", "Context", "Mode"]);
-    const playbookLabel = findAllByTag(container, "LABEL")[0];
-    expect(getReactProps(playbookLabel)?.htmlFor).toBe(getReactProps(findAllByTag(container, "SELECT")[0])?.id);
-    expect(container.textContent).not.toContain("Default Copilot agent");
-    const groupLabels = findAllByTag(container, "DIV")
-      .filter((element) => getReactProps(element)?.role === "group")
-      .map((element) => getReactProps(element)?.["aria-label"]);
-    expect(groupLabels).toEqual([
-      "Model presets",
-      "Effort for new session",
-      "Context for new session",
-      "Run mode for new session",
-    ]);
-    for (const choice of ["GPT-5.6", "High", "Standard context", "Automatic playbook", "Interactive", "Autopilot"]) {
-      expect(container.textContent).toContain(choice);
-    }
-  });
-
   it("lists playbooks by family with Direct, and reports Automatic as no choice", async () => {
     const onPlaybookChange = vi.fn();
     await harness!.render(createElement(NewSessionLaunchPanel, {
@@ -151,8 +119,8 @@ describe("NewSessionLaunchPanel", () => {
     expect(getReactProps(findTile(harness!.dom.container, "Standard"))?.["aria-pressed"]).toBe(false);
   });
 
-  it("reports preset switches and the other launch selections", async () => {
-    const props = requiredProps();
+  it("labels the launch controls and reports a committed preset selection and the other choices", async () => {
+    const props = { ...requiredProps(), onModelSelectionCommitted: vi.fn() };
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...props,
       models: [
@@ -160,6 +128,7 @@ describe("NewSessionLaunchPanel", () => {
         { id: "claude-opus-5", name: "Claude Opus 5" },
       ],
       selectedModelId: "gpt-5.6",
+      selectedPresetSlot: "preset1",
       reasoningEffortOptions: [
         { value: "low", label: "Low" },
         { value: "high", label: "High" },
@@ -172,8 +141,30 @@ describe("NewSessionLaunchPanel", () => {
       selectedContextTier: "long_context",
     }));
 
-    const buttons = findAllByTag(harness!.dom.container, "BUTTON");
+    const container = harness!.dom.container;
+    const hiddenLabels = [...findAllByTag(container, "LABEL"), ...findAllByTag(container, "DIV")]
+      .filter((element) => getReactProps(element)?.className === "sr-only")
+      .map((element) => element.textContent);
+    expect(hiddenLabels).toEqual(["Playbook", "Model", "Effort", "Context", "Mode"]);
+    const playbookLabel = findAllByTag(container, "LABEL")[0];
+    expect(getReactProps(playbookLabel)?.htmlFor).toBe(getReactProps(findAllByTag(container, "SELECT")[0])?.id);
+    expect(container.textContent).not.toContain("Default Copilot agent");
+    const groupLabels = findAllByTag(container, "DIV")
+      .filter((element) => getReactProps(element)?.role === "group")
+      .map((element) => getReactProps(element)?.["aria-label"]);
+    expect(groupLabels).toEqual([
+      "Model presets",
+      "Effort for new session",
+      "Context for new session",
+      "Run mode for new session",
+    ]);
+    for (const choice of ["GPT-5.6", "High", "Standard context", "Automatic playbook", "Interactive", "Autopilot"]) {
+      expect(container.textContent).toContain(choice);
+    }
+
+    const buttons = findAllByTag(container, "BUTTON");
     const preset2 = findTile(harness!.dom.container, "Standard");
+    expect(getReactProps(preset2)?.["aria-haspopup"]).toBeUndefined();
     const autopilot = buttons.find((button) => button.textContent === "Autopilot");
     const lowEffort = buttons.find((button) => button.textContent === "Low");
     const standardContext = buttons.find(
@@ -190,6 +181,8 @@ describe("NewSessionLaunchPanel", () => {
       getReactProps(autopilot)?.onClick?.();
     });
 
+    expect(props.onModelSelectionCommitted).toHaveBeenCalledTimes(1);
+    expect(findAllByTag(container, "BUTTON").some((button) => getReactProps(button)?.role === "option")).toBe(false);
     expect(props.onPresetChange).toHaveBeenCalledWith("preset2");
     expect(props.onReasoningEffortChange).toHaveBeenCalledWith("low");
     expect(props.onContextTierChange).toHaveBeenCalledWith("default");
@@ -292,29 +285,6 @@ describe("NewSessionLaunchPanel", () => {
       getReactProps(options[0])?.onClick?.();
     });
     expect(props.onModelChange).toHaveBeenCalledWith("preset1", "gpt-5.6");
-    expect(props.onModelSelectionCommitted).toHaveBeenCalledTimes(1);
-    expect(findAllByTag(harness!.dom.container, "BUTTON")
-      .some((button) => getReactProps(button)?.role === "option")).toBe(false);
-  });
-
-  it("reports a committed selection when an inactive preset tile is chosen", async () => {
-    const props = { ...requiredProps(), onModelSelectionCommitted: vi.fn() };
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...props,
-      models: [
-        { id: "gpt-5.6", name: "GPT-5.6" },
-        { id: "claude-opus-5", name: "Claude Opus 5" },
-      ],
-      selectedModelId: "gpt-5.6",
-      selectedPresetSlot: "preset1",
-    }));
-
-    const inactive = findTile(harness!.dom.container, "Standard");
-    expect(getReactProps(inactive)?.["aria-haspopup"]).toBeUndefined();
-    await harness!.act(async () => {
-      getReactProps(inactive)?.onClick?.();
-    });
-    expect(props.onPresetChange).toHaveBeenCalledWith("preset2");
     expect(props.onModelSelectionCommitted).toHaveBeenCalledTimes(1);
     expect(findAllByTag(harness!.dom.container, "BUTTON")
       .some((button) => getReactProps(button)?.role === "option")).toBe(false);

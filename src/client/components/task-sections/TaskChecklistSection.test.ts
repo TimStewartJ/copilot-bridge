@@ -73,7 +73,7 @@ async function clickButton(harness: ChecklistHarness, text: string) {
 }
 
 describe("TaskChecklistSection panel expansion", () => {
-  it("expands all open items in place without revealing done items", async () => {
+  it("expands hidden open items first and reveals completed items only through their own control", async () => {
     const checklistItems = [
       createChecklistItem({ id: "open-1", text: "Open one", order: 0 }),
       createChecklistItem({ id: "open-2", text: "Open two", order: 1 }),
@@ -102,25 +102,9 @@ describe("TaskChecklistSection panel expansion", () => {
       expect(harness.dom.container.textContent).toContain("Show fewer open items");
       expect(harness.dom.container.textContent).not.toContain("Done one");
       expect(harness.dom.container.textContent).not.toContain("Done two");
-    });
-  });
-
-  it("reveals completed items only through the separate done expansion", async () => {
-    const checklistItems = [
-      createChecklistItem({ id: "open-1", text: "Open one", order: 0 }),
-      createChecklistItem({ id: "done-1", text: "Done one", done: true, order: 1 }),
-    ];
-
-    await withChecklistSection(createBaseProps({
-      checklistItems,
-      variant: "panel",
-    }), async (harness) => {
-      expect(harness.dom.container.textContent).toContain("1 done");
-      expect(harness.dom.container.textContent).not.toContain("Done one");
-
-      await clickButton(harness, "1 done");
-
+      await clickButton(harness, "2 done");
       expect(harness.dom.container.textContent).toContain("Done one");
+      expect(harness.dom.container.textContent).toContain("Done two");
     });
   });
 

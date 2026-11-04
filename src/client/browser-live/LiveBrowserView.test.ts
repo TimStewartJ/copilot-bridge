@@ -104,15 +104,27 @@ describe("LiveBrowserView", () => {
     };
   }
 
-  it("shows the connection state and the page address", async () => {
+  it("shows connection and address changes and enables the navigation toolbar only once live", async () => {
     const view = await mount();
     expect(view.text()).toContain("Connecting…");
     expect(view.text()).toContain("Waiting for the page…");
     expect(view.shownAddress()).toBe("");
 
+    for (const label of ["Back", "Forward", "Reload"]) expect(getReactProps(findButton(view.container, label))!.disabled).toBe(true);
+
     await view.goLive();
     expect(view.text()).toContain("Live");
     expect(view.shownAddress()).toBe("https://accounts.example.com/signin");
+
+    await view.harness.act(async () => {
+      for (const label of ["Back", "Forward", "Reload"]) getReactProps(findButton(view.container, label))!.onClick();
+    });
+
+    expect(view.network.latestSocket().sent).toEqual([
+      { type: "history", direction: "back" },
+      { type: "history", direction: "forward" },
+      { type: "reload" },
+    ]);
 
     await view.harness.act(async () => {
       view.network.latestSocket().receive({ type: "frame", seq: 1, data: "AAAA" });
@@ -294,22 +306,6 @@ describe("LiveBrowserView", () => {
 
     expect(view.network.ticketRequests).toEqual([]);
     expect(view.network.latestSocket().url).toContain("browserSessionId=bs_signedin&token=own-ticket");
-  });
-
-  it("goes back, forward and reloads from the toolbar once the view is live", async () => {
-    const view = await mount();
-    for (const label of ["Back", "Forward", "Reload"]) expect(getReactProps(findButton(view.container, label))!.disabled).toBe(true);
-
-    await view.goLive();
-    await view.harness.act(async () => {
-      for (const label of ["Back", "Forward", "Reload"]) getReactProps(findButton(view.container, label))!.onClick();
-    });
-
-    expect(view.network.latestSocket().sent).toEqual([
-      { type: "history", direction: "back" },
-      { type: "history", direction: "forward" },
-      { type: "reload" },
-    ]);
   });
 
   /** Puts the keyboard in the address field and types into it. */

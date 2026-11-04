@@ -25,6 +25,7 @@ const TIERED_MODEL: ModelInfo = {
 };
 
 describe("new-session launch state", () => {
+
   it("preserves SDK model order while filtering disabled models", () => {
     const state = resolveNewSessionLaunchState({
       models: [
@@ -39,6 +40,8 @@ describe("new-session launch state", () => {
       selectedModelId: "",
     });
 
+    expect(state.modelKey).toBe("");
+    expect(state.modelForCreate).toBeUndefined();
     expect(state.availableModels.map((model) => model.id)).toEqual([
       "claude-sonnet-5",
       "claude-haiku-4.5",

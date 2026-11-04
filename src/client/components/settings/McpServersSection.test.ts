@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { McpServerConfig } from "../../api";
 import {
   createReactDomHarness,
   findAllByTag,
@@ -53,8 +54,8 @@ describe("McpServersSection remove confirmation", () => {
     vi.clearAllMocks();
   });
 
-  async function renderSection(confirmResult: boolean) {
-    apiMocks.fetchMcpServers.mockResolvedValue([server]);
+  async function renderSection(confirmResult: boolean, config: McpServerConfig = server.config) {
+    apiMocks.fetchMcpServers.mockResolvedValue([{ ...server, config }]);
     apiMocks.fetchGlobalMcpStatus.mockResolvedValue([]);
     apiMocks.deleteMcpServer.mockResolvedValue(undefined);
     const confirmSpy = vi.fn(() => confirmResult);
@@ -67,9 +68,14 @@ describe("McpServersSection remove confirmation", () => {
     return { confirmSpy };
   }
 
-  it("deletes an MCP server only after the user confirms", async () => {
-    const { confirmSpy } = await renderSection(true);
+  it("opens the server’s execution details before confirming its removal", async () => {
+    const { confirmSpy } = await renderSection(true, { command: "agency", args: ["mcp", "ado"], executionScope: "shared" });
+    const container = harness!.dom.container;
+    expect(getReactProps(findButtonByLabel(container, "example details"))?.["aria-expanded"]).toBe(false);
+    expect(container.textContent).not.toContain("agency");
     const button = await openRowAndFindRemove(harness!);
+    expect(container.textContent).toContain("session isolated (shared requested)");
+    expect(container.textContent).toContain("Shared execution is requested");
     await harness!.act(async () => {
       await getReactProps(button)?.onClick?.({});
     });

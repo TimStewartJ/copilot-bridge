@@ -48,27 +48,22 @@ beforeEach(() => { vi.stubGlobal("sessionStorage", memoryStorage()); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("SystemPromptSection", () => {
-  it("shows natural-and-direct defaults, adaptive detail, quality safeguards, and truthful apply timing", async () => {
+  it("renders the default guidance and its labelled native detail choices", async () => {
     const { container } = await renderSection({ mcpServers: {} });
     expect(getReactProps(styleTextarea(container))?.value).toBe(DEFAULT_RESPONSE_STYLE_GUIDANCE);
     expect(getReactProps(styleTextarea(container))?.maxLength).toBe(MAX_RESPONSE_STYLE_GUIDANCE_LENGTH);
-    const radios = radiosNamed(container, "-detail");
+    const radios = findAllByTag(container, "INPUT");
     expect(radios.map((radio) => getReactProps(radio)?.value)).toEqual(["adaptive", "concise", "detailed"]);
     expect(radios.map((radio) => getReactProps(radio)?.checked)).toEqual([true, false, false]);
     expect(container.textContent).toContain("Response quality (always on)");
     expect(container.textContent).toContain("Applies to new and resumed chats.");
     expect(getReactProps(buttonWithText(container, "Reset to default"))?.disabled).toBe(true);
-  });
 
-  it("uses associated labels and an accessible native radio group", async () => {
-    const { container } = await renderSection({ mcpServers: {} });
-    const textareas = findAllByTag(container, "TEXTAREA");
     const labels = findAllByTag(container, "LABEL");
-    for (const textarea of textareas) {
+    for (const textarea of findAllByTag(container, "TEXTAREA")) {
       const props = getReactProps(textarea);
       expect(labels.some((label) => getReactProps(label)?.htmlFor === props?.id)).toBe(true);
     }
-    const radios = findAllByTag(container, "INPUT");
     expect(new Set(radios.map((radio) => getReactProps(radio)?.name)).size).toBe(1);
     expect(radios.every((radio) => getReactProps(radio)?.type === "radio")).toBe(true);
     expect(findAllByTag(container, "LEGEND").map((legend) => legend.textContent))

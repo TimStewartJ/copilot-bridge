@@ -84,17 +84,6 @@ function setup(initial: Partial<AppSettings> = {}) {
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("settings writer", () => {
-  it("shows a change at once and sends only the keys that changed", async () => {
-    const env = setup();
-    env.writer.update((current) => ({ ...current, theme: "light" }));
-
-    expect(env.writer.getSnapshot().settings?.theme).toBe("light");
-    expect(env.cache?.theme).toBe("light");
-    await env.writer.whenIdle();
-
-    expect(env.patches).toEqual([{ theme: "light" }]);
-    expect(env.writer.getSnapshot().status).toMatchObject({ kind: "saved", keys: ["theme"], canUndo: true });
-  });
 
   it("sends changes made during a write together once it returns", async () => {
     const env = setup();
@@ -130,7 +119,7 @@ describe("settings writer", () => {
     expect(env.server.model).toBe("gpt-c");
   });
 
-  it("puts a rejected value back, says which setting failed, and still sends other edits", async () => {
+  it("explains a nonretryable rejection, restores its value and still saves a queued edit", async () => {
     const env = setup();
     env.holdResponses();
     env.writer.update((current) => ({ ...current, model: "not-a-model" }));
@@ -142,38 +131,17 @@ describe("settings writer", () => {
     const snapshot = env.writer.getSnapshot();
     expect(snapshot.settings?.model).toBe("gpt-a");
     expect(snapshot.failedKeys.has("model")).toBe(true);
-    expect(snapshot.status).toMatchObject({ kind: "saving", keys: ["theme"] });
-    env.respond();
-    await env.writer.whenIdle();
-    expect(env.server.theme).toBe("light");
-    expect(env.patches).toEqual([{ model: "not-a-model" }, { theme: "light" }]);
-  });
-
-  it("marks a validation failure as not retryable and names the setting", async () => {
-    const env = setup();
-    env.holdResponses();
-    env.writer.update((current) => ({ ...current, model: "not-a-model" }));
-    env.fail(new ApiError("Unknown model", 400));
-    await env.writer.whenIdle();
-
-    expect(env.writer.getSnapshot().error).toEqual({
+    expect(snapshot.error).toEqual({
       keys: ["model"],
       message: "Couldn't save model: Unknown model",
       retryable: false,
       at: 1_000,
     });
-  });
-
-  it("asks the server what it holds after a lost response instead of assuming the write failed", async () => {
-    const env = setup();
-    env.holdResponses();
-    env.writer.update((current) => ({ ...current, theme: "light" }));
-    env.fail(new TypeError("Failed to fetch"), { commit: true });
+    expect(snapshot.status).toMatchObject({ kind: "saving", keys: ["theme"] });
+    env.respond();
     await env.writer.whenIdle();
-
-    expect(env.fetch).toHaveBeenCalled();
-    expect(env.writer.getSnapshot().settings?.theme).toBe("light");
-    expect(env.writer.getSnapshot().error).toMatchObject({ retryable: true });
+    expect(env.server.theme).toBe("light");
+    expect(env.patches).toEqual([{ model: "not-a-model" }, { theme: "light" }]);
   });
 
   it("retries a failed write with the values the user chose", async () => {
@@ -205,10 +173,14 @@ describe("settings writer", () => {
     expect(env.writer.getSnapshot().status).toMatchObject({ kind: "saved" });
   });
 
-  it("undoes the last save", async () => {
+  it("projects only the changed settings into the cache, saves them and undoes that save", async () => {
     const env = setup();
     env.writer.update((current) => ({ ...current, theme: "light", motion: "reduce" }));
+    expect(env.writer.getSnapshot().settings?.theme).toBe("light");
+    expect(env.cache?.theme).toBe("light");
     await env.writer.whenIdle();
+    expect(env.patches).toEqual([{ theme: "light", motion: "reduce" }]);
+    expect(env.writer.getSnapshot().status).toMatchObject({ kind: "saved", keys: ["theme", "motion"], canUndo: true });
 
     env.writer.undo();
     await env.writer.whenIdle();
@@ -231,20 +203,6 @@ describe("settings writer", () => {
     expect(env.server.theme).toBe("system");
     expect(env.server.favicon).toBeUndefined();
     expect(env.patches.at(-1)).toEqual({ favicon: undefined });
-  });
-
-  it("adopts fetched settings when idle and ignores them while its own write is in flight", async () => {
-    const env = setup();
-    env.fetched({ theme: "system" });
-    expect(env.writer.getSnapshot().settings?.theme).toBe("system");
-
-    env.holdResponses();
-    env.writer.update((current) => ({ ...current, model: "gpt-b" }));
-    env.fetched({ favicon: "stale-read" });
-    expect(env.writer.getSnapshot().settings?.model).toBe("gpt-b");
-    env.respond();
-    await env.writer.whenIdle();
-    expect(env.writer.getSnapshot().settings?.model).toBe("gpt-b");
   });
 
   it("sends every key an explicit patch() names, even when the cache already agrees", async () => {
@@ -306,13 +264,15 @@ describe("settings writer", () => {
     expect(env.server).toMatchObject({ theme: "system", favicon: "cyan" });
   });
 
-  it("clears the error when a retry finds the server already holds the values", async () => {
+  it("recovers a committed write after losing its response and clears the error on retry", async () => {
     const env = setup();
     env.holdResponses();
     env.writer.update((current) => ({ ...current, theme: "light" }));
     env.fail(new TypeError("Failed to fetch"), { commit: true });
     await env.writer.whenIdle();
-    expect(env.writer.getSnapshot().error).not.toBeNull();
+    expect(env.fetch).toHaveBeenCalled();
+    expect(env.writer.getSnapshot().settings?.theme).toBe("light");
+    expect(env.writer.getSnapshot().error).toMatchObject({ retryable: true });
 
     env.writer.retry();
     expect(env.writer.getSnapshot().error).toBeNull();
@@ -321,12 +281,16 @@ describe("settings writer", () => {
     expect(env.writer.getSnapshot().status).toMatchObject({ kind: "saved" });
   });
 
-  it("keeps the intended settings in the cache when a fetch lands mid-write, then checks again", async () => {
+  it("adopts idle refetches, preserves the pending change on a mid-write refetch and rechecks when saved", async () => {
     const env = setup();
+    env.fetched({ theme: "system" });
+    expect(env.writer.getSnapshot().settings?.theme).toBe("system");
+
     env.holdResponses();
     env.writer.update((current) => ({ ...current, model: "gpt-b" }));
     env.fetched({ favicon: "from-other-tab" });
     expect(env.cache?.model).toBe("gpt-b");
+    expect(env.writer.getSnapshot().settings).toMatchObject({ model: "gpt-b", theme: "system" });
 
     env.respond();
     await env.writer.whenIdle();

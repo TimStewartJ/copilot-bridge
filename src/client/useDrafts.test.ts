@@ -161,146 +161,72 @@ describe("useDrafts launch persistence", () => {
     expect(localStorage.getItem("copilot-bridge:session-drafts")).toBe("{}");
   });
 
-  it("does not rewrite valid persisted drafts during hydration or reload", async () => {
-    seedStorage({
-      "draft:quickchat": {
-        text: "hello",
-        attachments: [{
-          type: "file",
-          path: join("test-files", "notes.txt"),
-          displayName: "notes.txt",
-        }],
-        launch: {
-          model: "gpt-5.6",
-          presetSlot: "preset1",
-          reasoningEffort: { modelId: "gpt-5.6", value: "high" },
-          contextTier: { modelId: "gpt-5.6", value: "default" },
-        },
-      },
-    });
-
-    await renderProbe();
-    expect(storage.setItem).not.toHaveBeenCalled();
-    expect(drafts!.getDraft("draft:quickchat")?.text).toBe("hello");
-
-    await harness!.cleanup();
-    harness = null;
-    drafts = null;
-    storage.setItem.mockClear();
-    await renderProbe();
-
-    expect(storage.setItem).not.toHaveBeenCalled();
-    expect(drafts!.getDraft("draft:quickchat")?.launch?.reasoningEffort?.value).toBe("high");
-  });
-
-  it("preserves launch selections while composer text changes and across reload", async () => {
-    await renderProbe();
-    await harness!.act(async () => {
-      drafts!.setDraftLaunchOptions("draft:quickchat", {
-        model: "gpt-5.6",
-        presetSlot: "preset1",
-        reasoningEffort: { modelId: "gpt-5.6", value: "high" },
-        contextTier: { modelId: "gpt-5.6", value: "long_context" },
-      });
-      drafts!.setDraft("draft:quickchat", "hello");
-    });
-    await advanceTimersByTimeAct(harness!.act, 500);
-
-    expect(drafts!.getDraft("draft:quickchat")).toEqual({
-      text: "hello",
-      launch: {
-        model: "gpt-5.6",
-        presetSlot: "preset1",
-        reasoningEffort: { modelId: "gpt-5.6", value: "high" },
-        contextTier: { modelId: "gpt-5.6", value: "long_context" },
-      },
-    });
-
-    await harness!.cleanup();
-    harness = null;
-    drafts = null;
-    await renderProbe();
-
-    expect(drafts!.getDraft("draft:quickchat")?.launch).toEqual({
-      model: "gpt-5.6",
-      presetSlot: "preset1",
+  it("keeps the chosen launch options from an empty composer through typing, reload and explicit clear", async () => {
+    const key = "draft:quickchat";
+    const launch = {
+      model: "gpt-5.6", presetSlot: "preset1",
       reasoningEffort: { modelId: "gpt-5.6", value: "high" },
       contextTier: { modelId: "gpt-5.6", value: "long_context" },
+    } as const;
+    await renderProbe();
+    await harness!.act(async () => {
+      drafts!.setDraftLaunchOptions(key, launch);
+      drafts!.setDraft(key, "");
     });
+    expect(drafts!.getDraft(key)).toEqual({ text: "", launch });
+
+    const attachments = [{ type: "file" as const, path: join("test-files", "notes.txt"), displayName: "notes.txt" }];
+    await harness!.act(async () => { drafts!.setDraft(key, "hello", attachments); });
+    await advanceTimersByTimeAct(harness!.act, 500);
+    const expected = { text: "hello", attachments, launch };
+    expect(drafts!.getDraft(key)).toEqual(expected);
+
+    await harness!.cleanup();
+    storage.setItem.mockClear();
+    await renderProbe();
+    expect(drafts!.getDraft(key)).toEqual(expected);
+    expect(storage.setItem).not.toHaveBeenCalled();
+
+    await harness!.act(async () => { drafts!.clearDraft(key); });
+    expect(drafts!.getDraft(key)).toBeNull();
+    expect(localStorage.getItem("copilot-bridge:session-drafts")).toBe("{}");
   });
 
-  it("preserves the active composer draft while the session inventory is incomplete", async () => {
+  it("keeps the active draft while session inventory settles and prunes only unowned conversations", async () => {
     const otherSession: Session = {
       sessionId: "other-session",
       deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
     };
-    function ActiveDraftProbe() {
-      drafts = useDrafts([otherSession], "archived-session");
-      return null;
-    }
-
-    harness = await createReactDomHarness();
-    await harness.render(createElement(ActiveDraftProbe));
-    await harness.act(async () => {
-      drafts!.setDraft("archived-session", "hello");
-    });
-
-    expect(drafts!.getDraft("archived-session")).toEqual({ text: "hello" });
-  });
-
-  it("keeps drafts of conversations that live outside the session list, and waits until they are known", async () => {
-    const otherSession: Session = {
-      sessionId: "other-session",
-      deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    const taskDraft = {
+      text: "", launch: { model: "gpt-5.6", contextTier: { modelId: "gpt-5.6", value: "default" } },
     };
-    seedStorage({ "helm-session": { text: "ask Helm later" }, "gone-session": { text: "stale" } });
+    seedStorage({ "helm-session": { text: "ask Helm later" }, "gone-session": { text: "stale" }, "draft:task:task-1": taskDraft });
+    let active: string | null = "archived-session";
     let preserved: readonly string[] | null = null;
     function HelmDraftProbe() {
-      drafts = useDrafts([otherSession], null, preserved);
+      drafts = useDrafts([otherSession], active, preserved);
       return null;
     }
 
     harness = await createReactDomHarness();
     await harness.render(createElement(HelmDraftProbe));
+    expect(drafts!.getDraft("draft:task:task-1")).toEqual(taskDraft);
+    expect(storage.setItem).not.toHaveBeenCalled();
     // Unknown yet: cleanup is postponed rather than guessing.
     expect(drafts!.getDraft("helm-session")).toEqual({ text: "ask Helm later" });
     expect(drafts!.getDraft("gone-session")).toEqual({ text: "stale" });
 
+    await harness.act(async () => { drafts!.setDraft("archived-session", "hello"); });
     preserved = ["helm-session"];
     await harness.render(createElement(HelmDraftProbe));
     expect(drafts!.getDraft("helm-session")).toEqual({ text: "ask Helm later" });
     expect(drafts!.getDraft("gone-session")).toBeNull();
-  });
+    expect(drafts!.getDraft("archived-session")).toEqual({ text: "hello" });
 
-  it("keeps a launch-only draft when its message is empty", async () => {
-    await renderProbe();
-    await harness!.act(async () => {
-      drafts!.setDraftLaunchOptions("draft:task:task-1", {
-        model: "claude-opus-5",
-      });
-      drafts!.setDraft("draft:task:task-1", "");
-    });
-    await advanceTimersByTimeAct(harness!.act, 500);
-
-    expect(drafts!.getDraft("draft:task:task-1")).toEqual({
-      text: "",
-      launch: { model: "claude-opus-5" },
-    });
-  });
-
-  it("removes text and launch selections only when the draft is explicitly cleared", async () => {
-    await renderProbe();
-    await harness!.act(async () => {
-      drafts!.setDraftLaunchOptions("draft:quickchat", { model: "gpt-5.6" });
-      drafts!.setDraft("draft:quickchat", "unsent");
-    });
-    await advanceTimersByTimeAct(harness!.act, 500);
-
-    await harness!.act(async () => {
-      drafts!.clearDraft("draft:quickchat");
-    });
-    expect(drafts!.getDraft("draft:quickchat")).toBeNull();
-    expect(localStorage.getItem("copilot-bridge:session-drafts")).toBe("{}");
+    active = null;
+    await harness.render(createElement(HelmDraftProbe));
+    expect(drafts!.getDraft("archived-session")).toBeNull();
+    expect(drafts!.getDraft("helm-session")).toEqual({ text: "ask Helm later" });
   });
 
   it("hands a first message off without touching what the next new chat writes", async () => {

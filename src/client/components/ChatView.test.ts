@@ -629,13 +629,26 @@ describe("ChatView exact-message history", () => {
     }
   });
 
-  it("loads a bounded around-message window without warming or resuming the session", async () => {
+  it("loads the exact read-only window once and stays inert on a busy signal or tab wake", async () => {
     warmSessionMock.mockClear();
     useSessionStreamMock.mockClear();
     fetchSessionContextMock.mockClear();
     chatInputMock.mockClear();
-    const { act, dom, cleanup, reconnectMock, ensureConnectedMock } = await renderChatView({
+    let visibilityHandler: (() => void) | undefined;
+    const { act, dom, cleanup, render, reconnectMock, ensureConnectedMock } = await renderChatView({
       routeEntry: "/sessions/session-1?message=event-77&search=needle&from=%2Fsearch%3Fq%3Dneedle",
+      prepareDom: () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          value: "visible",
+        });
+        document.addEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+          if (type === "visibilitychange" && typeof listener === "function") {
+            visibilityHandler = listener as () => void;
+          }
+        });
+        document.removeEventListener = vi.fn();
+      },
       streamOverrides: { isStreaming: false, pendingOrigin: null },
       fetchMessagesFastResult: {
         messages: [
@@ -670,6 +683,15 @@ describe("ChatView exact-message history", () => {
       expect(dom.container.textContent).toContain("Previous match");
       expect(dom.container.textContent).toContain("Next match");
       expect(dom.container.textContent).toContain("Jump to latest");
+      await render({ busySignal: 1 });
+      await act(async () => {
+        visibilityHandler?.();
+        await waitTick();
+      });
+      expect(fetchMessagesFastMock).toHaveBeenCalledTimes(1);
+      expect(warmSessionMock).not.toHaveBeenCalled();
+      expect(reconnectMock).not.toHaveBeenCalled();
+      expect(ensureConnectedMock).not.toHaveBeenCalled();
     } finally {
       await cleanup();
     }
@@ -817,51 +839,6 @@ describe("ChatView exact-message history", () => {
         && getReactProps(span)?.["data-location"]?.includes("matchOffset=0")
       )));
       expect(dom.container.textContent).toContain("20 of 21");
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("keeps historical reading inert across busy and visibility refresh signals", async () => {
-    let visibilityHandler: (() => void) | undefined;
-    const { act, cleanup, render, reconnectMock, ensureConnectedMock } = await renderChatView({
-      routeEntry: "/sessions/session-1?message=event-1",
-      busySignal: 0,
-      streamOverrides: { isStreaming: false, pendingOrigin: null },
-      fetchMessagesFastResult: {
-        messages: [{ id: "entry-1", sourceEventId: "event-1", role: "assistant", content: "target" }],
-        runState: "idle",
-        total: 1,
-        startOffset: 0,
-        hasMore: false,
-        hasNewer: false,
-        warm: false,
-      },
-      prepareDom: () => {
-        Object.defineProperty(document, "visibilityState", {
-          configurable: true,
-          value: "visible",
-        });
-        document.addEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
-          if (type === "visibilitychange" && typeof listener === "function") {
-            visibilityHandler = listener as () => void;
-          }
-        });
-        document.removeEventListener = vi.fn();
-      },
-    });
-
-    try {
-      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
-      await render({ busySignal: 1 });
-      await act(async () => {
-        visibilityHandler?.();
-        await waitTick();
-      });
-      expect(fetchMessagesFastMock).toHaveBeenCalledTimes(1);
-      expect(warmSessionMock).not.toHaveBeenCalled();
-      expect(reconnectMock).not.toHaveBeenCalled();
-      expect(ensureConnectedMock).not.toHaveBeenCalled();
     } finally {
       await cleanup();
     }
@@ -1235,7 +1212,6 @@ describe("ChatView cached resume loading state", () => {
       await cleanup();
     }
   });
-
 });
 
 describe("ChatView navigation landing position", () => {
@@ -3428,26 +3404,9 @@ describe("ChatView steering sends", () => {
 });
 
 describe("ChatView live streaming UX", () => {
-  it("shows a compact status before the first streamed text arrives", async () => {
-    const { dom, act, cleanup } = await renderChatView({
-      streamOverrides: {
-        streamingContent: "",
-        streamStatus: "thinking",
-        intentText: "Planning the response",
-      },
-    });
 
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("Planning the response") ?? false);
-      expect(() => findMessageBubble(dom.container, true)).toThrow();
-      expect(dom.container.textContent).not.toContain("The assistant is working before any text or tool activity is visible.");
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("streams the model's thinking in place of the waiting status, collapsed until it is opened", async () => {
-    const { dom, act, cleanup } = await renderChatView({
+  it("replaces the compact waiting status with the live thought and opens its full text", async () => {
+    const { dom, act, cleanup, render } = await renderChatView({
       fetchMessagesFastResult: {
         messages: [{ id: "user-1", role: "user", content: "How many sheep?", sourceEventId: "user-event-1" }],
         runState: "busy",
@@ -3458,16 +3417,22 @@ describe("ChatView live streaming UX", () => {
       streamOverrides: {
         streamStatus: "thinking",
         activeTurnInstanceId: "turn-start-1",
+        intentText: "Planning the response",
+      },
+    });
+
+    try {
+      await waitUntilAct(act, () => dom.container.textContent?.includes("Planning the response") ?? false);
+      expect(() => findMessageBubble(dom.container, true)).toThrow();
+      expect(dom.container.textContent).not.toContain("The assistant is working before any text or tool activity is visible.");
+      await render({ streamOverrides: {
         liveReasoning: [{
           id: "r-1",
           content: "All but nine run away, so nine remain.",
           startedAt: "2026-09-20T08:00:01.000Z",
           turnInstanceId: "turn-start-1",
         }],
-      },
-    });
-
-    try {
+      } });
       await waitUntilAct(act, () => dom.container.textContent?.includes("so nine remain.") ?? false);
       const block = findAllByTag(dom.container, "DIV").find((candidate) => (
         candidate.getAttribute?.("data-activity-block") === "activity:turn-start-1:0"
@@ -3964,47 +3929,6 @@ describe("ChatView sub-agents", () => {
 });
 
 describe("ChatView message actions", () => {
-  it("reconciles completed live turns from disk so undo boundaries appear without navigation", async () => {
-    const { dom, act, cleanup, render } = await renderChatView({
-      fetchMessagesFastResult: {
-        messages: [],
-        runState: "busy",
-        total: 0,
-        warm: true,
-        hasMore: false,
-      },
-      streamOverrides: { isStreaming: true },
-    });
-
-    try {
-      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length >= 1);
-      fetchMessagesFastMock.mockResolvedValue({
-        messages: [
-          { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
-          { id: "assistant-1", role: "assistant", content: "reply one", undoEventId: "user-event-1" },
-        ],
-        runState: "idle",
-        total: 2,
-        warm: true,
-        hasMore: false,
-      });
-
-      await render({ streamOverrides: { isStreaming: false, historyEpoch: 1 } });
-      await waitUntilAct(act, () => dom.container.textContent?.includes("reply one") ?? false);
-
-      const wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-1");
-      const menuButton = findAllByTag(wrapper, "BUTTON").find((button) => (
-        getReactProps(button)?.["aria-label"] === "Open message actions"
-      ));
-      await act(async () => {
-        clickButton(menuButton);
-      });
-
-      expect(dom.container.textContent).toContain("Undo turn from here");
-    } finally {
-      await cleanup();
-    }
-  });
 
   it("shows timestamp, copy, and bounded fork actions for assistant messages", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -4317,9 +4241,24 @@ describe("ChatView message actions", () => {
     }
   });
 
-  it("offers undo on assistant messages and optimistically removes that turn and later history", async () => {
-    const { dom, act, cleanup, dropFinishedRunOutputMock } = await renderChatView({
+  it("undoes a newly finished turn as soon as its disk boundary arrives, without changing chats", async () => {
+    const { dom, act, cleanup, render, dropFinishedRunOutputMock } = await renderChatView({
       fetchMessagesFastResult: {
+        messages: [],
+        runState: "busy",
+        total: 0,
+        warm: true,
+        hasMore: false,
+      },
+      streamOverrides: { isStreaming: true },
+    });
+
+    const confirm = stubWindowConfirm(true);
+    const refresh = createDeferred<FetchMessagesFastResult>();
+
+    try {
+      await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length >= 1);
+      fetchMessagesFastMock.mockResolvedValue({
         messages: [
           { id: "user-1", role: "user", content: "first", undoEventId: "user-event-1" },
           { id: "assistant-1", role: "assistant", content: "reply one", undoEventId: "user-event-1" },
@@ -4330,13 +4269,8 @@ describe("ChatView message actions", () => {
         total: 4,
         warm: true,
         hasMore: false,
-      },
-      streamOverrides: { isStreaming: false },
-    });
-    const confirm = stubWindowConfirm(true);
-    const refresh = createDeferred<FetchMessagesFastResult>();
-
-    try {
+      });
+      await render({ streamOverrides: { isStreaming: false, historyEpoch: 1 } });
       await waitUntilAct(act, () => dom.container.textContent?.includes("reply two") ?? false);
       fetchMessagesFastMock.mockImplementation(() => refresh.promise);
       const wrapper = findMessageWrapperByAnchorKey(dom.container, "assistant-2");
@@ -4930,6 +4864,8 @@ describe("ChatView disk-authoritative synchronization", () => {
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("run blew up") ?? false);
+      expect(findAllByTag(dom.container, "BUTTON").some((button) =>
+        getReactProps(button)?.["aria-label"] === "Retry failed response")).toBe(false);
       const renderedText = dom.container.textContent ?? "";
       expect(renderedText).toContain("Run failed");
       // The notice is not a transcript message bubble.
@@ -5009,5 +4945,4 @@ describe("ChatView disk-authoritative synchronization", () => {
       await cleanup();
     }
   });
-
 });

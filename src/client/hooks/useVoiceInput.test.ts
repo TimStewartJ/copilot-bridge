@@ -157,30 +157,23 @@ describe("useVoiceInput recording limit", () => {
     expect(onAudioCaptured.mock.calls[0]![0].audio.size).toBe(WAV_HEADER_BYTES + SAMPLE_RATE * 2);
   });
 
-  it("reports how loud the microphone is while recording, and nothing once it stops", async () => {
-    await mount({});
-    expect(voice!.getLevel()).toBe(0);
-    await harness!.act(async () => {
-      await voice!.startRecording();
-    });
-    analyser.samples = 0.25;
-    expect(voice!.getLevel()).toBeCloseTo(0.25);
-
-    await harness!.act(async () => { voice!.cancelRecording(); });
-    expect(voice!.getLevel()).toBe(0);
-  });
-
-  it("discards recorded audio, stops capture, resets the clock, and never submits", async () => {
+  it("reports the microphone level during capture and discards the recording, level and clock on cancel", async () => {
     const stopTrack = vi.fn();
     getUserMedia = async () => ({ getTracks: () => [{ stop: stopTrack }] });
     const onAudioCaptured = vi.fn();
     const onMaxDurationReached = vi.fn();
-    await startRecording({ onAudioCaptured, onMaxDurationReached });
+    await mount({ onAudioCaptured, onMaxDurationReached });
+    expect(voice!.getLevel()).toBe(0);
+    await harness!.act(async () => { await voice!.startRecording(); });
+    expect(voice!.phase).toBe("recording");
+    analyser.samples = 0.25;
+    expect(voice!.getLevel()).toBeCloseTo(0.25);
     await hear(1);
     const queuedAudioProcess = processor.onaudioprocess;
 
     await harness!.act(async () => { await voice!.cancelRecording(); });
     expect(voice!.phase).toBe("idle");
+    expect(voice!.getLevel()).toBe(0);
     expect(voice!.elapsedSeconds).toBe(0);
     expect(voice!.error).toBeNull();
     expect(processor.onaudioprocess).toBeNull();

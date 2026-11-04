@@ -41,10 +41,16 @@ describe("opusPacketSamples", () => {
 });
 
 describe("a standard Ogg Opus file", () => {
-  it("is recognised, read, and measured without decoding it", () => {
+  it("recognises the reference recording and reads its checksummed pages, packet timing and headers", () => {
     const file = oggOpusToneFixture();
     expect(isOggOpus(file)).toBe(true);
     expect(isOggOpus(new TextEncoder().encode("RIFF....WAVE"))).toBe(false);
+
+    const segments = file[26]!;
+    const firstPage = file.slice(0, 27 + segments + file.subarray(27, 27 + segments).reduce((sum, length) => sum + length, 0));
+    const stored = new DataView(firstPage.buffer).getUint32(22, true);
+    firstPage.fill(0, 22, 26);
+    expect(oggPageChecksum(firstPage)).toBe(stored);
 
     const stream = demuxOggOpus(file);
     expect(stream).toMatchObject({ channels: 1, preSkip: 312, inputSampleRate: 16_000 });
@@ -53,32 +59,15 @@ describe("a standard Ogg Opus file", () => {
     expect(oggOpusDurationSeconds(stream)).toBeCloseTo(OGG_OPUS_TONE_SECONDS, 1);
   });
 
-  it("carries page checksums this module computes the same way", () => {
-    const file = oggOpusToneFixture();
-    const segments = file[26]!;
-    const firstPage = file.slice(0, 27 + segments + file.subarray(27, 27 + segments).reduce((sum, length) => sum + length, 0));
-    const stored = new DataView(firstPage.buffer).getUint32(22, true);
-    firstPage.fill(0, 22, 26);
-    expect(oggPageChecksum(firstPage)).toBe(stored);
-  });
 });
 
 describe("muxOggOpus", () => {
-  it("writes a stream that reads back packet for packet", () => {
+  it("writes numbered, checksummed pages and preserves every packet and its duration on readback", () => {
     // Sizes around the 255-byte lacing boundary, and enough packets to need several pages.
     const packets = [1, 254, 255, 256, 510, 700].map((length) => packet(WIDEBAND_20_MS, length))
       .concat(Array.from({ length: 400 }, (_, index) => packet(WIDEBAND_20_MS, 60 + (index % 7), index)));
 
     const file = muxOggOpus({ channels: 1, preSkip: 104, inputSampleRate: 16_000, packets });
-    const stream = demuxOggOpus(file);
-
-    expect(stream).toMatchObject({ channels: 1, preSkip: 104, inputSampleRate: 16_000 });
-    expect(stream.packets.map((entry) => [...entry])).toEqual(packets.map((entry) => [...entry]));
-    expect(oggOpusDurationSeconds(stream)).toBeCloseTo((packets.length * 960 - 104) / 48_000, 6);
-  });
-
-  it("marks where the stream begins and ends, numbers its pages, and checksums each one", () => {
-    const file = muxOggOpus({ channels: 1, preSkip: 312, inputSampleRate: 16_000, packets: Array.from({ length: 120 }, () => packet(WIDEBAND_20_MS, 50)) });
     const pages: Array<{ flags: number; sequence: number; granule: number; valid: boolean }> = [];
     for (let offset = 0; offset < file.length;) {
       const segments = file[offset + 26]!;
@@ -96,8 +85,15 @@ describe("muxOggOpus", () => {
     expect(pages[0]!.flags).toBe(0x02);
     expect(pages.at(-1)!.flags).toBe(0x04);
     // Two header pages, then about a second of audio to a page, each stamped with the running length.
-    expect(pages.slice(2).map((page) => page.granule)).toEqual([48_000, 96_000, 115_200]);
+    expect(pages.slice(2).map((page) => page.granule)).toEqual([48_000, 96_000, 144_000, 192_000, 240_000, 288_000, 336_000, 384_000, 389_760]);
+
+    const stream = demuxOggOpus(file);
+
+    expect(stream).toMatchObject({ channels: 1, preSkip: 104, inputSampleRate: 16_000 });
+    expect(stream.packets.map((entry) => [...entry])).toEqual(packets.map((entry) => [...entry]));
+    expect(oggOpusDurationSeconds(stream)).toBeCloseTo((packets.length * 960 - 104) / 48_000, 6);
   });
+
 });
 
 describe("where a recording ends", () => {

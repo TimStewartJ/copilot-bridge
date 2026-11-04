@@ -423,13 +423,7 @@ describe("ChatInput voice retry", () => {
     expect(getReactProps(findTextarea(container))?.className).not.toContain("hidden");
   });
 
-  it("does not offer cancellation while finishing", async () => {
-    useVoiceInputMock.mockReturnValue({ ...useVoiceInputMock(), phase: "finishing" });
-    await renderChatInput();
-    expect(queryButtonByAriaLabel(getHarness().dom.container, "Cancel voice recording")).toBeUndefined();
-  });
-
-  it("keeps the submission mode and shows no cancellation confirmation when Stop won the race", async () => {
+  it("hides Cancel once Stop wins and preserves the submission mode without a cancellation notice", async () => {
     const state = useVoiceInputMock();
     let phase = "idle";
     const cancelRecording = vi.fn(() => false);
@@ -457,6 +451,8 @@ describe("ChatInput voice retry", () => {
     });
     expect(cancelRecording).toHaveBeenCalledOnce();
     expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ submitMode: "autosend" }));
+    await renderChatInput({ onSubmitVoiceCapture });
+    expect(queryButtonByAriaLabel(container, "Cancel voice recording")).toBeUndefined();
     phase = "idle";
     await renderChatInput({ onSubmitVoiceCapture });
     expect(container.textContent).not.toContain("Recording cancelled.");
@@ -467,6 +463,7 @@ describe("ChatInput voice retry", () => {
     const onAbort = vi.fn();
     await renderChatInput({ onSend, onAbort });
 
+    expect(queryButtonByAriaLabel(getHarness().dom.container, "Autopilot")).toBeUndefined();
     const stopButton = findButtonByAriaLabel(getHarness().dom.container, "Stop generating");
     expect(queryButtonByAriaLabel(getHarness().dom.container, "Send steering note")).toBeUndefined();
 
@@ -541,6 +538,7 @@ describe("ChatInput voice retry", () => {
       defaultSendMode: "autopilot",
     });
 
+    expect(queryButtonByAriaLabel(getHarness().dom.container, "Autopilot")).toBeUndefined();
     const textarea = findTextarea(getHarness().dom.container);
     await getHarness().act(async () => {
       getReactProps(textarea)?.onChange?.({
@@ -828,14 +826,6 @@ describe("ChatInput voice retry", () => {
 
     expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ sendMode: "autopilot" }));
     expect(findButtonByAriaLabel(getHarness().dom.container, "Autopilot").getAttribute("aria-pressed")).toBe("true");
-  });
-
-  it("hides the Autopilot toggle while steering and in a new chat", async () => {
-    await renderChatInput({ onAbort: vi.fn() });
-    expect(findAllByTag(getHarness().dom.container, "BUTTON").some((button) => button.getAttribute("aria-label") === "Autopilot")).toBe(false);
-
-    await renderChatInput({ isDraft: true, defaultSendMode: "autopilot" });
-    expect(findAllByTag(getHarness().dom.container, "BUTTON").some((button) => button.getAttribute("aria-label") === "Autopilot")).toBe(false);
   });
 
   it("uses the selected Autopilot mode when Enter submits the draft", async () => {

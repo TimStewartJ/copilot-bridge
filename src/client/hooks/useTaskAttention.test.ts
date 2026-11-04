@@ -69,15 +69,6 @@ describe("task attention source gaps", () => {
     expect(reading.activityDescriptions.get("idle")).toBe("");
   });
 
-  it("groups shared gaps without suppressing a healthy task's review cue", async () => {
-    await render(["copy-a", "copy-b", "healthy"].map(id => task(id)), overview([
-      row("copy-a", { activity: sourceGap() }), row("copy-b", { activity: sourceGap() }), row("healthy"),
-    ]));
-    expect(reading.taskSignals.get("copy-a")).toBeNull();
-    expect(reading.taskSignals.get("copy-b")).toBeNull();
-    expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
-  });
-
   it("does not retain a stale review cue when a preview gap is expected", async () => {
     const tasks = [task("copy")];
     let data = overview([row("copy")]);
@@ -104,8 +95,9 @@ describe("task attention source gaps", () => {
     expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
   });
 
-  it("keeps saved waits and known work blank while shared information is missing", async () => {
-    await render([task("wait", { waitingOn: "Reviewer" }), task("work"), task("question")], overview([
+  it("keeps healthy review, explicit questions and saved waits distinct within a partially unavailable task list", async () => {
+    await render([task("wait", { waitingOn: "Reviewer" }), task("work"), task("question"), task("copy-a"), task("copy-b"), task("healthy")], overview([
+      row("copy-a", { activity: sourceGap() }), row("copy-b", { activity: sourceGap() }), row("healthy"),
       row("wait", { activity: sourceGap() }), row("work", { activity: sourceGap() }),
       row("question", { activity: sourceGap(), inputCount: 1 }),
     ]), new Map([["work", indicator({ busy: true, busyCount: 1, sessionStateKnown: false, readStateKnown: false })]]));
@@ -113,6 +105,9 @@ describe("task attention source gaps", () => {
     expect(reading.taskSignals.get("work")).toBeNull();
     expect(reading.taskSignals.get("question")?.kind).toBe("needs-input");
     expect(reading.activityDescriptions.get("wait")).toBe("Waiting for: Reviewer");
+    expect(reading.taskSignals.get("copy-a")).toBeNull();
+    expect(reading.taskSignals.get("copy-b")).toBeNull();
+    expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
   });
 
   it("distinguishes read-state loading, initial failure and failed refresh", async () => {

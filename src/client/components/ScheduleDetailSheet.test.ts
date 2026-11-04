@@ -381,80 +381,26 @@ describe("ScheduleDetailSheet one-time run-at editing", () => {
 });
 
 describe("ScheduleDetailSheet run history pagination", () => {
-  it("loads more runs and disables the control while the next page is loading", async () => {
+  it("loads the next page once, disables it while pending and appends only distinct older runs", async () => {
     const fetchNextPage = vi.fn();
-    queryMocks.useScheduleSessionsQuery.mockReturnValue({
-      data: {
-        pages: [{
-          sessions: [makeScheduleRun(21, "Newest run")],
-          total: 21,
-          offset: 0,
-          limit: 20,
-        }],
-        pageParams: [0],
-      },
-      fetchNextPage,
-      hasNextPage: true,
-      isFetchingNextPage: false,
-    });
-
+    const newestRun = makeScheduleRun(21, "Newest run", "stalled");
+    const first = { sessions: [newestRun], total: 21, offset: 0, limit: 20 };
+    const query = { data: { pages: [first], pageParams: [0] }, fetchNextPage, hasNextPage: true, isFetchingNextPage: false };
+    apiMocks.getSessionRunState.mockImplementation((session: ScheduleRun) => session.runState ?? "idle");
+    queryMocks.useScheduleSessionsQuery.mockReturnValue(query);
     const { harness, rerender } = await renderViewSheet();
     try {
       await clickButton(harness, "Load more");
       expect(fetchNextPage).toHaveBeenCalledOnce();
+      queryMocks.useScheduleSessionsQuery.mockReturnValue({ ...query, isFetchingNextPage: true });
+      await rerender();
+      expect(getReactProps(findButtonByText(harness, "Loading..."))?.disabled).toBe(true);
 
       queryMocks.useScheduleSessionsQuery.mockReturnValue({
-        data: {
-          pages: [{
-            sessions: [makeScheduleRun(21, "Newest run")],
-            total: 21,
-            offset: 0,
-            limit: 20,
-          }],
-          pageParams: [0],
-        },
-        fetchNextPage,
-        hasNextPage: true,
-        isFetchingNextPage: true,
+        ...query, hasNextPage: false,
+        data: { pages: [first, { ...first, offset: 20, sessions: [newestRun, makeScheduleRun(1, "Older run")] }], pageParams: [0, 20] },
       });
       await rerender();
-
-      const loadingButton = findButtonByText(harness, "Loading...");
-      expect(getReactProps(loadingButton)?.disabled).toBe(true);
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("appends older pages in order without changing run status rendering", async () => {
-    const newestRun = makeScheduleRun(21, "Newest run", "stalled");
-    const olderRun = makeScheduleRun(1, "Older run");
-    apiMocks.getSessionRunState.mockImplementation((session: ScheduleRun) => session.runState ?? "idle");
-    queryMocks.useScheduleSessionsQuery.mockReturnValue({
-      data: {
-        pages: [
-          {
-            sessions: [newestRun],
-            total: 2,
-            offset: 0,
-            limit: 20,
-          },
-          {
-            sessions: [newestRun, olderRun],
-            total: 2,
-            offset: 1,
-            limit: 20,
-          },
-        ],
-        pageParams: [0, 1],
-      },
-      fetchNextPage: vi.fn(),
-      hasNextPage: false,
-      isFetchingNextPage: false,
-    });
-
-    const { harness } = await renderViewSheet();
-    try {
       const text = harness.dom.container.textContent ?? "";
       expect(text.indexOf("Newest run")).toBeLessThan(text.indexOf("Older run"));
       expect(text.match(/Newest run/g)).toHaveLength(1);
@@ -470,4 +416,5 @@ describe("ScheduleDetailSheet run history pagination", () => {
       await harness.cleanup();
     }
   });
+
 });

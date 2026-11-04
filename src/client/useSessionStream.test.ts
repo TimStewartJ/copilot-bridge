@@ -308,16 +308,26 @@ describe("useSessionStream EventSource lifecycle", () => {
     });
   });
 
-  it("sends a message and opens the session EventSource", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
+  it("sends the chosen message, opens its stream and settles without waiting for the list refresh", async () => {
+    await withHarness(async ({ getState, getSource, queryClient, act }) => {
       const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
         ok: true,
         json: async () => ({ status: "accepted" }),
       } as Response);
 
+      const refresh = vi.spyOn(queryClient, "invalidateQueries").mockReturnValue(new Promise<void>(() => {}));
+
+      let settled = false;
       await act(async () => {
-        await getState().sendMessage("hello", undefined, "autopilot", "client-message-1");
+        void getState().sendMessage("hello", undefined, "autopilot", "client-message-1")
+          .then(() => { settled = true; });
+        await new Promise((resolve) => setTimeout(resolve, 0));
       });
+
+      expect(refresh).toHaveBeenCalledWith({
+        queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
+      });
+      expect(settled).toBe(true);
 
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
@@ -335,30 +345,8 @@ describe("useSessionStream EventSource lifecycle", () => {
     });
   });
 
-  it("settles a send without waiting for the chat list refresh", async () => {
-    await withHarness(async ({ getState, queryClient, act }) => {
-      vi.spyOn(globalThis, "fetch").mockResolvedValue({
-        ok: true,
-        json: async () => ({ status: "accepted" }),
-      } as Response);
-      const refresh = vi.spyOn(queryClient, "invalidateQueries").mockReturnValue(new Promise<void>(() => {}));
-
-      let settled = false;
-      await act(async () => {
-        void getState().sendMessage("hello", undefined, "interactive", "client-message-1")
-          .then(() => { settled = true; });
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-
-      expect(refresh).toHaveBeenCalledWith({
-        queryKey: queryKeys.sessions({ includeArchived: false }), exact: true,
-      });
-      expect(settled).toBe(true);
-    });
-  });
-
-  it("restores a failure on navigation back without opening a stream", async () => {
-    await withHarness(async ({ getState, setSessionId, act }) => {
+  it("restores a failure without connecting and retries that run when the reader returns", async () => {
+    await withHarness(async ({ getState, getSource, setSessionId, act }) => {
       const notice = { kind: "error" as const, message: "upstream failed", retryRunId: "failed-run" };
       await act(async () => getState().restoreRunNotice("session-1", notice, 0));
       expect(getState().runNotice).toEqual(notice);
@@ -370,6 +358,17 @@ describe("useSessionStream EventSource lifecycle", () => {
       await act(async () => getState().restoreRunNotice("session-1", notice, 0));
       expect(getState().runNotice).toEqual(notice);
       expect(MockEventSource.instances).toHaveLength(0);
+
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true, json: async () => ({ status: "accepted" }),
+      } as Response);
+      await act(async () => getState().retryFailedRun(getState().runNotice!.retryRunId!));
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/sessions/session-1/retry");
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ runId: "failed-run" });
+      expect(getSource().url).toBe("/api/sessions/session-1/stream");
+      expect(getState().runMode).toBe("interactive");
+      expect(getState().pendingUserMessages).toEqual([]);
     });
   });
 
@@ -387,21 +386,6 @@ describe("useSessionStream EventSource lifecycle", () => {
       expect(getState().runNotice?.message).toBe("new error");
       await act(async () => getState().restoreRunNotice("session-1", undefined, getState().historyEpoch));
       expect(getState().runNotice).toBeNull();
-    });
-  });
-
-  it("retries with the failure ID only and attaches an interactive stream", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-        ok: true, json: async () => ({ status: "accepted" }),
-      } as Response);
-      await act(async () => getState().retryFailedRun("failed-run"));
-      expect(fetchMock).toHaveBeenCalledOnce();
-      expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/sessions/session-1/retry");
-      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ runId: "failed-run" });
-      expect(getSource().url).toBe("/api/sessions/session-1/stream");
-      expect(getState().runMode).toBe("interactive");
-      expect(getState().pendingUserMessages).toEqual([]);
     });
   });
 
@@ -581,39 +565,6 @@ describe("useSessionStream ephemeral state", () => {
     });
   });
 
-  it("keeps a finished tool with its result so it can render before the next disk read", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-
-      await emitAndWait(act, source, {
-        type: "tool_start",
-        toolCallId: "tc-1",
-        name: "bash",
-        timestamp: "2026-07-24T10:00:00.000Z",
-      }, () => getState().liveTools.length === 1);
-
-      await emitAndWait(act, source, {
-        type: "tool_progress",
-        toolCallId: "tc-1",
-        message: "running",
-      }, () => getState().liveTools[0]?.progressText === "running");
-
-      await emitAndWait(act, source, {
-        type: "tool_done",
-        toolCallId: "tc-1",
-        success: true,
-        result: "done output",
-      }, () => getState().liveTools[0]?.completedAt !== undefined);
-
-      // Retained with its result; the view substitutes this onto the disk entry once that lands.
-      expect(getState().liveTools).toMatchObject([
-        { toolCallId: "tc-1", success: true, result: "done output" },
-      ]);
-    });
-
-  });
-
   it("merges live sub-agent instructions and late responses onto the agent tool", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
@@ -667,32 +618,6 @@ describe("useSessionStream ephemeral state", () => {
       await waitTick();
 
       expect(getState().liveTools).toEqual([]);
-    });
-  });
-
-  it("does not un-complete a finished tool from late progress events", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-
-      await emitAndWait(act, source, {
-        type: "tool_start",
-        toolCallId: "tc-1",
-        name: "bash",
-      }, () => getState().liveTools.length === 1);
-      await emitAndWait(act, source, {
-        type: "tool_done",
-        toolCallId: "tc-1",
-        success: true,
-      }, () => getState().liveTools[0]?.completedAt !== undefined);
-
-      await act(async () => {
-        source.emit({ type: "tool_progress", toolCallId: "tc-1", message: "late" });
-      });
-      await waitTick();
-
-      // Late progress must not un-complete a finished tool.
-      expect(getState().liveTools[0]?.completedAt).toBeDefined();
     });
   });
 
@@ -872,7 +797,7 @@ describe("useSessionStream ephemeral state", () => {
     });
   });
 
-  it("does not let a finished tool fall back to running when the next turn starts", async () => {
+  it("keeps the completed tool result through late progress and until the next turn reaches disk", async () => {
     await withHarness(async ({ getState, getSource, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
@@ -885,9 +810,17 @@ describe("useSessionStream ephemeral state", () => {
       await emitAndWait(act, source, {
         type: "tool_start", toolCallId: "tc-open", name: "bash", turnInstanceId: "turn-start-1", timestamp: "2026-09-20T08:00:01.000Z",
       }, () => getState().liveTools.length === 2);
+      await emitAndWait(act, source, { type: "tool_progress", toolCallId: "tc-done", message: "running" },
+        () => getState().liveTools[0]?.progressText === "running");
       await emitAndWait(act, source, {
-        type: "tool_done", toolCallId: "tc-done", name: "view", turnInstanceId: "turn-start-1", success: true, result: "ok", timestamp: "2026-09-20T08:00:02.000Z",
+        type: "tool_done", toolCallId: "tc-done", name: "view", turnInstanceId: "turn-start-1", success: true, result: "ok",
       }, () => getState().liveTools.some((tool) => tool.toolCallId === "tc-done" && tool.completedAt !== undefined));
+
+      expect(getState().liveTools[0]).toMatchObject({ toolCallId: "tc-done", success: true, result: "ok" });
+      const completedAt = getState().liveTools[0]?.completedAt;
+      await act(async () => source.emit({ type: "tool_progress", toolCallId: "tc-done", message: "late" }));
+      await waitTick();
+      expect(getState().liveTools[0]?.completedAt).toBe(completedAt);
 
       // The disk read that carries the completion is still in flight here. Dropping the finished
       // tool now would hand the row back to a disk entry that still says "running".
@@ -1064,24 +997,6 @@ describe("useSessionStream terminal handling", () => {
     });
   });
 
-  it("emits no notice for a normal done that disk history already covers", async () => {
-    await withHarness(async ({ getState, getSource, titleChanged, act }) => {
-      await act(async () => getState().reconnect("session-1"));
-      const source = getSource();
-
-      const before = getState().historyEpoch;
-      await emitAndWait(act, source, {
-        type: "done",
-        content: "All set",
-        sourceEventId: "terminal-1",
-      }, () => getState().streamStatus === "idle");
-
-      expect(getState().runNotice).toBeNull();
-      expect(getState().historyEpoch).toBeGreaterThan(before);
-      expect(titleChanged).toHaveBeenCalled();
-    });
-  });
-
   it("bumps the history epoch and clears live segments when history is truncated", async () => {
     await withHarness(async ({ getState, getSource, settled, act }) => {
       await act(async () => getState().reconnect("session-1"));
@@ -1134,8 +1049,8 @@ describe("useSessionStream terminal handling", () => {
     });
   });
 
-  it("drops what a finished run left behind on request, and leaves a running one alone", async () => {
-    await withHarness(async ({ getState, getSource, act }) => {
+  it("settles a normal run without a notice and drops its output only after it finishes", async () => {
+    await withHarness(async ({ getState, getSource, titleChanged, act }) => {
       await act(async () => getState().reconnect("session-1"));
       const source = getSource();
       await emitAndWait(act, source, {
@@ -1152,8 +1067,12 @@ describe("useSessionStream terminal handling", () => {
       await act(async () => getState().dropFinishedRunOutput());
       expect(getState().liveAssistantSegments).toHaveLength(1);
 
+      const before = getState().historyEpoch;
       await emitAndWait(act, source, { type: "done", content: "the reply", sourceEventId: "t-1" },
         () => getState().streamStatus === "idle");
+      expect(getState().runNotice).toBeNull();
+      expect(getState().historyEpoch).toBeGreaterThan(before);
+      expect(titleChanged).toHaveBeenCalled();
       // Kept so the view can hand it off to disk history, which an undone turn never reaches.
       expect(getState().liveAssistantSegments).toHaveLength(1);
       const epoch = getState().historyEpoch;

@@ -132,20 +132,7 @@ describe("SessionAgentsBar", () => {
     }
   });
 
-  it("says how many agents are working and how many are idle, without reading the list", async () => {
-    const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary({ running: 2, idle: 1, total: 3 }) });
-
-    expect(text(harness)).toBe("2 agents working1 idle");
-    expect(fetchSessionAgents).not.toHaveBeenCalled();
-
-    await harness.render(createElement(SessionAgentsBar, {
-      sessionId: "s1",
-      backgroundAgents: liveSummary({ running: 0, idle: 1, total: 1 }),
-    }));
-    expect(text(harness)).toBe("1 agent idle");
-  });
-
-  it("lists agents by the name they were launched under, working ones first", async () => {
+  it("summarizes background agents without fetching and lists them in launch order when opened", async () => {
     fetchSessionAgents.mockResolvedValue(listing([
       task("a-docs", { status: "idle", toolCallId: "call-docs", agentType: "general-purpose", description: "Update the docs", startedAt: at(0), activeTimeMs: 160_000 }),
       task("a-moves", { toolCallId: "call-moves", name: "moves-agent", agentType: "general-purpose", description: "Refactor move generation", startedAt: at(10) }),
@@ -158,7 +145,13 @@ describe("SessionAgentsBar", () => {
       record("call-moves", { name: "moves-agent", toolCount: 31 }),
     ]);
 
-    const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary({ running: 2, idle: 1, total: 3 }), agents });
+    const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary({ running: 0, idle: 1, total: 1 }), agents });
+    expect(text(harness)).toBe("1 agent idle");
+    await harness.render(createElement(SessionAgentsBar, {
+      sessionId: "s1", backgroundAgents: liveSummary({ running: 2, idle: 1, total: 3 }), agents,
+    }));
+    expect(text(harness)).toBe("2 agents working1 idle");
+    expect(fetchSessionAgents).not.toHaveBeenCalled();
     await openList(harness, "Refactor move generation");
 
     expect(fetchSessionAgents).toHaveBeenCalledWith("s1");
@@ -173,7 +166,7 @@ describe("SessionAgentsBar", () => {
     expect(text(harness)).not.toContain("inline child");
   });
 
-  it("shows what a working agent is doing now, and counts its time up to now", async () => {
+  it("shows each agent’s current step, elapsed time and best available step count from one listing", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(BASE_MS + 95_000);
     fetchSessionAgents.mockResolvedValue(listing([
@@ -183,21 +176,6 @@ describe("SessionAgentsBar", () => {
     ]));
     const latestSteps = new Map([["call-moves", "Running npm test"], ["call-docs", "Read README.md"]]);
 
-    const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary({ running: 1, idle: 1, total: 2 }), latestSteps });
-    await openList(harness, "moves-agent");
-
-    expect(agentRows(harness).map((row) => row.textContent)).toEqual([
-      "moves-agentRunning npm test1m 35s",
-      // An agent that is not working says what it was asked to do, not the last thing it did.
-      "docs-agentUpdate the docsidle",
-    ]);
-  });
-
-  it("counts a step as it is taken, ahead of the session's records", async () => {
-    fetchSessionAgents.mockResolvedValue(listing([
-      task("a-moves", { toolCallId: "call-moves", name: "moves-agent", description: "Refactor move generation" }),
-      task("a-docs", { status: "idle", toolCallId: "call-docs", name: "docs-agent", description: "Update the docs" }),
-    ]));
     // The records were read four steps ago; the transcript already shows those steps.
     const agents = buildTranscriptAgentDirectory([
       record("call-moves", { name: "moves-agent", toolCount: 5 }),
@@ -206,68 +184,42 @@ describe("SessionAgentsBar", () => {
     ]);
     const loadedStepCounts = new Map([["call-moves", 9], ["call-docs", 12]]);
 
-    const harness = await mount({
-      sessionId: "s1",
-      backgroundAgents: liveSummary({ running: 1, idle: 1, total: 2 }),
-      agents,
-      loadedStepCounts,
-    });
+    const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary({ running: 1, idle: 1, total: 2 }), latestSteps, agents, loadedStepCounts });
     await openList(harness, "moves-agent");
 
     expect(agentRows(harness).map((row) => row.textContent)).toEqual([
-      "moves-agentRefactor move generation9 steps",
+      "moves-agentRunning npm test9 steps1m 35s",
+      // An agent that is not working says what it was asked to do, not the last thing it did.
       "docs-agentUpdate the docs40 stepsidle",
     ]);
   });
 
-  it("opens a row onto the agent's report and brief, read in full", async () => {
-    fetchSessionAgents.mockResolvedValue(listing([
-      task("a-moves", { status: "idle", toolCallId: "call-moves", name: "moves-agent", description: "Refactor move generation", latestResponse: "Moved the gen… (truncated)" }),
-    ]));
-    fetchSessionAgentDetail.mockReset();
-    fetchSessionAgentDetail.mockResolvedValue({
+  it("opens an idle agent’s full brief and rereads its report when the listing changes", async () => {
+    const listed = (latestResponse: string) => listing([
+      task("a-moves", { status: "idle", toolCallId: "call-moves", name: "moves-agent", description: "Refactor move generation", latestResponse }),
+    ]);
+    const detail = (latestResponse: string): SessionAgentDetailResponse => ({
       source: "live",
-      task: task("a-moves", {
-        status: "idle",
-        name: "moves-agent",
-        latestResponse: "Moved the generator into its own module and updated every caller.",
-        prompt: "Refactor move generation without changing behaviour.",
-      }),
+      task: task("a-moves", { status: "idle", name: "moves-agent", latestResponse, prompt: "Refactor move generation without changing behaviour." }),
     });
+    fetchSessionAgents.mockResolvedValueOnce(listed("Reading the gen… (truncated)"));
+    fetchSessionAgentDetail.mockReset();
+    fetchSessionAgentDetail.mockResolvedValueOnce(detail("Reading the generator before touching it."));
 
-    const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary({ running: 0, idle: 1 }) });
+    const props: BarProps = { sessionId: "s1", backgroundAgents: liveSummary({ running: 0, idle: 1 }) };
+    const harness = await mount(props);
     await openList(harness, "moves-agent");
     expect(text(harness)).not.toContain("Latest report");
-
     await click(harness, buttonWith(harness, "moves-agent"));
-    await waitUntilAct(harness.act, () => text(harness).includes("updated every caller"), { label: "full report" });
+    await waitUntilAct(harness.act, () => text(harness).includes("before touching it"), { label: "first report" });
 
     expect(fetchSessionAgentDetail).toHaveBeenCalledWith("s1", "a-moves");
     expect(text(harness)).toContain("Latest report");
     expect(text(harness)).toContain("Brief");
     expect(text(harness)).toContain("Refactor move generation without changing behaviour.");
     expect(text(harness)).not.toContain("(truncated)");
-  });
 
-  it("reads an opened row again when the list shows its agent has said something new", async () => {
-    const listed = (latestResponse: string) => listing([
-      task("a-moves", { toolCallId: "call-moves", name: "moves-agent", description: "Refactor move generation", latestResponse }),
-    ]);
-    const detail = (latestResponse: string): SessionAgentDetailResponse => ({
-      source: "live",
-      task: task("a-moves", { name: "moves-agent", latestResponse }),
-    });
-    fetchSessionAgents.mockResolvedValueOnce(listed("Reading the gen…"));
-    fetchSessionAgentDetail.mockReset();
-    fetchSessionAgentDetail.mockResolvedValueOnce(detail("Reading the generator before touching it."));
-
-    const props: BarProps = { sessionId: "s1", backgroundAgents: liveSummary() };
-    const harness = await mount(props);
-    await openList(harness, "moves-agent");
-    await click(harness, buttonWith(harness, "moves-agent"));
-    await waitUntilAct(harness.act, () => text(harness).includes("before touching it"), { label: "first report" });
-
-    // The agent works on: the same state, new words. The counts moving makes the bar read the list again.
+    // The agent reports again: the same state, new words. The counts moving makes the bar read the list again.
     fetchSessionAgents.mockResolvedValue(listed("Moved the gen…"));
     fetchSessionAgentDetail.mockResolvedValue(detail("Moved the generator into its own module."));
     await harness.render(createElement(SessionAgentsBar, {

@@ -134,13 +134,15 @@ describe("SessionList log size", () => {
     });
   }
 
-  it("flags a large log on its row with a word, and leaves an ordinary one to the tooltip", async () => {
-    const { dom, cleanup } = await renderSessionList([
+  it("shows log size on the right rows and explains it in each row menu", async () => {
+    const harness = await renderSessionList([
       createSession({ sessionId: "small", summary: "Small session", eventLogSizeBytes: 4 * MB }),
       createSession({ sessionId: "large", summary: "Large session", eventLogSizeBytes: 125 * MB }),
+      createSession({ sessionId: "empty", summary: "Empty session", eventLogSizeBytes: 0 }),
       createSession({ sessionId: "huge", summary: "Huge session", eventLogSizeBytes: 1807 * MB }),
     ]);
 
+    const { dom, cleanup } = harness;
     try {
       const rowFor = (summary: string) => findAllByTag(dom.container, "BUTTON")
         .find((button) => button.textContent?.includes(summary));
@@ -156,19 +158,7 @@ describe("SessionList log size", () => {
       expect(classes.filter((className) => className.includes("text-warning"))).toHaveLength(1);
       expect(flags.find((span) => span.textContent?.includes("Very large") && getReactProps(span)?.title)
         ?.getAttribute("title")).toContain("Slow to open.");
-    } finally {
-      await cleanup();
-    }
-  });
 
-  it("shows every chat's log size in its row menu, with what a large one means", async () => {
-    const harness = await renderSessionList([
-      createSession({ sessionId: "small", summary: "Small session", eventLogSizeBytes: 4 * MB }),
-      createSession({ sessionId: "large", summary: "Large session", eventLogSizeBytes: 125 * MB }),
-      createSession({ sessionId: "empty", summary: "Empty session", eventLogSizeBytes: 0 }),
-    ]);
-
-    try {
       await openRowMenu(harness, "Small session");
       expect(harness.dom.container.textContent).toContain("Chat log size4.0 MB");
       expect(harness.dom.container.textContent).not.toContain("Larger than most chats");
@@ -180,7 +170,7 @@ describe("SessionList log size", () => {
       await openRowMenu(harness, "Empty session");
       expect(harness.dom.container.textContent).not.toContain("Chat log size");
     } finally {
-      await harness.cleanup();
+      await cleanup();
     }
   });
 });
@@ -295,15 +285,18 @@ describe("SessionList defer summary indicator", () => {
     }
   });
 
-  it("opens deferred work from the defer badge", async () => {
+  it("opens deferred work from its badge without losing the session’s needs-answer mark", async () => {
     const session = createSession({
       sessionId: "session-1",
-      summary: "Deferred session",
+      summary: "Waiting deferred session",
+      needsUserInput: true, pendingUserInputCount: 1,
       deferSummary: { count: 1, runningCount: 0, nextRunAt: minutesFromNow(5) },
     });
     const { dom, act, cleanup } = await renderSessionList([session]);
 
     try {
+      expect(dom.container.textContent).toContain("Needs answer");
+      expect(dom.container.textContent).toContain("Deferred in 5m");
       const badge = findAllByTag(dom.container, "BUTTON").find(
         (button) => getReactProps(button)?.title?.includes("Open deferred work"),
       );
@@ -320,24 +313,6 @@ describe("SessionList defer summary indicator", () => {
     }
   });
 
-  it("coexists with the needs-answer indicator", async () => {
-    const { dom, cleanup } = await renderSessionList([
-      createSession({
-        sessionId: "session-1",
-        summary: "Waiting deferred session",
-        needsUserInput: true,
-        pendingUserInputCount: 1,
-        deferSummary: { count: 1, runningCount: 0, nextRunAt: minutesFromNow(5) },
-      }),
-    ]);
-
-    try {
-      expect(dom.container.textContent).toContain("Needs answer");
-      expect(dom.container.textContent).toContain("Deferred in 5m");
-    } finally {
-      await cleanup();
-    }
-  });
 });
 
 describe("session model menu labels", () => {
@@ -580,27 +555,6 @@ describe("SessionList change model dialog", () => {
     }
   });
 
-  it("opens with the current session's long-context tier selected", async () => {
-    const harness = await openModelDialog(
-      { model: "gpt-5.6", reasoningEffort: "high", contextTier: "long_context", source: "live" },
-      [TIERED_MODEL],
-    );
-    try {
-      await waitUntilAct(
-        harness.act,
-        () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
-        { label: "model metadata" },
-      );
-
-      expect(getReactProps(findButton(harness.dom.container, "Long context (922K)"))?.["aria-pressed"])
-        .toBe(true);
-      expect(getReactProps(findButton(harness.dom.container, "Standard context (272K)"))?.["aria-pressed"])
-        .toBe(false);
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("drops a picked effort when switching to a model without effort metadata", async () => {
     const harness = await openModelDialog(
       { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
@@ -649,34 +603,6 @@ describe("SessionList change model dialog", () => {
       });
 
       expect(apiMocks.patchSessionModel).toHaveBeenCalledWith("session-1", "mystery-model", undefined, undefined);
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("keeps dialog changes local when Cancel is pressed", async () => {
-    const originalState: SessionModelState = {
-      model: "gpt-5.6",
-      reasoningEffort: "low",
-      contextTier: "default",
-      source: "live",
-    };
-    const harness = await openModelDialog(originalState, [
-      TIERED_MODEL,
-      { id: "claude-opus-5", name: "Claude Opus 5" },
-    ]);
-    try {
-      await waitUntilAct(
-        harness.act,
-        () => (harness.dom.container.textContent ?? "").includes("Long context (922K)"),
-        { label: "model metadata" },
-      );
-      await clickPresetTile(harness, "Standard");
-      await clickButton(harness, "Cancel");
-
-      expect(apiMocks.patchSessionModel).not.toHaveBeenCalled();
-      expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual(originalState);
-      expect(harness.dom.container.textContent).not.toContain("Change model");
     } finally {
       await harness.cleanup();
     }
@@ -883,7 +809,7 @@ describe("SessionList change model dialog", () => {
       return tile;
     }
 
-    it("shows the remembered model per preset and restores its effort and context", async () => {
+    it("restores a remembered preset for this switch and remembers only its tier after saving", async () => {
       seedSettings({
         model: "gpt-5.6",
         modelPresets: {
@@ -916,6 +842,14 @@ describe("SessionList change model dialog", () => {
           "high",
           "long_context",
         );
+        await waitUntilAct(harness.act, () => apiMocks.patchSettings.mock.calls.length > 0, {
+          label: "settings patch",
+        });
+
+        // Only the tier picked last is remembered; the tiers are edited in Settings › Models.
+        const expected = { lastModelPreset: "preset2" };
+        expect(apiMocks.patchSettings).toHaveBeenCalledWith(expected);
+        expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject(expected);
       } finally {
         await harness.cleanup();
       }
@@ -952,44 +886,6 @@ describe("SessionList change model dialog", () => {
           undefined,
           undefined,
         );
-      } finally {
-        await harness.cleanup();
-      }
-    });
-
-    it("remembers a saved switch for the new-chat picker", async () => {
-      seedSettings({
-        modelPresets: { preset1: { model: "gpt-5.6", reasoningEffort: "low" } },
-        lastModelPreset: "preset1",
-      });
-      apiMocks.patchSessionModel.mockResolvedValue({
-        model: "claude-opus-5",
-        reasoningEffort: "high",
-        contextTier: "long_context",
-      });
-      const harness = await openModelDialog(
-        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
-        [TIERED_MODEL, CLAUDE_OPUS],
-      );
-      try {
-        await waitUntilAct(
-          harness.act,
-          () => (harness.dom.container.textContent ?? "").includes("Claude Opus 5"),
-          { label: "model metadata" },
-        );
-
-        await clickPresetTile(harness, "Standard");
-        await clickButton(harness, "High");
-        await clickButton(harness, "Long context (1M)");
-        await clickButton(harness, "Save");
-        await waitUntilAct(harness.act, () => apiMocks.patchSettings.mock.calls.length > 0, {
-          label: "settings patch",
-        });
-
-        // Only the tier picked last is remembered; the tiers are edited in Settings › Models.
-        const expected = { lastModelPreset: "preset2" };
-        expect(apiMocks.patchSettings).toHaveBeenCalledWith(expected);
-        expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject(expected);
       } finally {
         await harness.cleanup();
       }
@@ -1038,13 +934,14 @@ describe("SessionList change model dialog", () => {
       }
     });
 
-    it("leaves memory untouched when the dialog is cancelled", async () => {
+    it("opens with the stored long context and cancels a preset switch without changing session or tier memory", async () => {
       seedSettings({
         modelPresets: { preset1: { model: "gpt-5.6" } },
         lastModelPreset: "preset1",
       });
+      const original: SessionModelState = { model: "gpt-5.6", reasoningEffort: "high", contextTier: "long_context", source: "live" };
       const harness = await openModelDialog(
-        { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
+        original,
         [TIERED_MODEL, CLAUDE_OPUS],
       );
       try {
@@ -1054,9 +951,14 @@ describe("SessionList change model dialog", () => {
           { label: "model metadata" },
         );
 
+        expect(getReactProps(findButton(harness.dom.container, "Long context (922K)"))?.["aria-pressed"]).toBe(true);
+        expect(getReactProps(findButton(harness.dom.container, "Standard context (272K)"))?.["aria-pressed"]).toBe(false);
         await clickPresetTile(harness, "Standard");
         await clickButton(harness, "Cancel");
 
+        expect(apiMocks.patchSessionModel).not.toHaveBeenCalled();
+        expect(queryClient.getQueryData(queryKeys.sessionModel("session-1"))).toEqual(original);
+        expect(harness.dom.container.textContent).not.toContain("Change model");
         expect(apiMocks.patchSettings).not.toHaveBeenCalled();
         expect(queryClient.getQueryData<AppSettings>(queryKeys.settings)).toMatchObject({
           modelPresets: { preset1: { model: "gpt-5.6" } },

@@ -440,64 +440,6 @@ describe("TaskPanel", () => {
     }
   });
 
-  it("passes every loaded linked session to the compact list without the preview cap", async () => {
-    sessionListMock.mockClear();
-    const linkedSessions = [
-      createSession({ sessionId: "session-1", lastVisibleActivityAt: "2026-01-01T10:00:00.000Z" }),
-      createSession({ sessionId: "session-2", lastVisibleActivityAt: "2026-01-01T14:00:00.000Z" }),
-      createSession({ sessionId: "session-3", lastVisibleActivityAt: "2026-01-01T12:00:00.000Z" }),
-      createSession({ sessionId: "session-4", lastVisibleActivityAt: "2026-01-01T13:00:00.000Z" }),
-      createSession({ sessionId: "session-5", archived: true, lastVisibleActivityAt: "2026-01-01T11:00:00.000Z" }),
-    ];
-    useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions }));
-    useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
-
-    const harness = await createReactDomHarness();
-
-    try {
-      const { default: TaskPanel } = await import("./TaskPanel");
-      await harness.render(
-        createElement(
-          MemoryRouter,
-          null,
-          createElement(TaskPanel, {
-            task: createTask({
-              activeSessionIds: linkedSessions.filter((session) => !session.archived).map((session) => session.sessionId),
-              sessionCount: linkedSessions.length,
-              archivedSessionCount: 1,
-            }),
-            taskGroups: [],
-            sessions: linkedSessions,
-            activeSessionId: null,
-            onSelectSession: () => {},
-            onNewSession: () => {},
-            onUpdateTask: async () => null,
-          }),
-        ),
-      );
-
-      const lastCall = sessionListMock.mock.calls[sessionListMock.mock.calls.length - 1];
-      if (!lastCall) throw new Error("SessionList was not rendered");
-      const props = lastCall[0] as {
-        sessions: Session[];
-        onRequestArchived?: () => void;
-        archivedLoaded?: boolean;
-      };
-      // Archived rows come from the task's own paged query, never from the shared list.
-      expect(props.sessions.map((session) => session.sessionId)).toEqual([
-        "session-2",
-        "session-4",
-        "session-3",
-        "session-1",
-      ]);
-      expect(props.onRequestArchived).toEqual(expect.any(Function));
-      expect(props.archivedLoaded).toBe(false);
-
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("shows Instructions and History rows in Details, prompting when they are empty", async () => {
     taskHistoryMock.mockReturnValueOnce({ data: undefined }).mockReturnValue({ data: undefined });
     await renderTaskPanelHtml(createTask());
@@ -530,10 +472,16 @@ describe("TaskPanel", () => {
     }
   });
 
-  it("loads the task's archived sessions a page at a time only once Archived is opened", async () => {
+  it("shows all loaded active sessions, counts only those and pages the task’s archive on demand", async () => {
     sessionListMock.mockClear();
     taskArchivedSessionsQueryMock.mockClear();
-    const loadedSessions = [createSession({ sessionId: "session-1" })];
+    const loadedSessions = [
+      createSession({ sessionId: "session-1", lastVisibleActivityAt: "2026-01-01T10:00:00.000Z" }),
+      createSession({ sessionId: "session-2", lastVisibleActivityAt: "2026-01-01T14:00:00.000Z" }),
+      createSession({ sessionId: "session-3", lastVisibleActivityAt: "2026-01-01T12:00:00.000Z" }),
+      createSession({ sessionId: "session-4", lastVisibleActivityAt: "2026-01-01T13:00:00.000Z" }),
+      createSession({ sessionId: "session-5", archived: true, lastVisibleActivityAt: "2026-01-01T11:00:00.000Z" }),
+    ];
     const archivedSession = createSession({ sessionId: "archived-session", archived: true });
     useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions: loadedSessions }));
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
@@ -547,7 +495,7 @@ describe("TaskPanel", () => {
         MemoryRouter,
         null,
         createElement(TaskPanel, {
-          task: createTask({ activeSessionIds: ["session-1"], sessionCount: 3, archivedSessionCount: 2, sessionLinksRevision }),
+          task: createTask({ activeSessionIds: [...loadedSessions.map((session) => session.sessionId), "missing"], sessionCount: 6, archivedSessionCount: 2, sessionLinksRevision }),
           taskGroups: [],
           sessions: loadedSessions,
           activeSessionId: null,
@@ -567,6 +515,9 @@ describe("TaskPanel", () => {
         onLoadMoreArchived?: () => void;
       };
       const lastProps = () => sessionListMock.mock.calls[sessionListMock.mock.calls.length - 1]?.[0] as ListProps;
+      const active = ["session-2", "session-4", "session-3", "session-1"];
+      expect(lastProps().sessions.map((session) => session.sessionId)).toEqual(active);
+      expect(findAllByTag(harness.dom.container, "H3").map((heading) => heading.textContent)).toContain("Sessions4");
       expect(taskArchivedSessionsQueryMock).toHaveBeenLastCalledWith("task-1", false);
       expect(lastProps().archivedLoaded).toBe(false);
       expect(lastProps().archivedLoading).toBe(false);
@@ -588,7 +539,7 @@ describe("TaskPanel", () => {
       });
       await harness.render(element());
 
-      expect(lastProps().sessions.map((session) => session.sessionId)).toEqual(["session-1", "archived-session"]);
+      expect(lastProps().sessions.map((session) => session.sessionId)).toEqual([...active, "archived-session"]);
       expect(lastProps().archivedLoaded).toBe(true);
       expect(lastProps().archivedTotal).toBe(2);
       lastProps().onLoadMoreArchived?.();
@@ -627,18 +578,6 @@ describe("TaskPanel", () => {
     expect(due).not.toContain("Ready to revisit");
     await expect(renderTaskPanelHtml(createTask({ nextTouchAt: "9999-01-01T00:00:00.000Z" }))).resolves.not.toContain("Time to revisit");
     await expect(renderTaskPanelHtml(createTask({ status: "archived", nextTouchAt: "2000-01-01T00:00:00.000Z" }))).resolves.not.toContain("Time to revisit");
-  });
-
-  it("counts only active sessions in the Sessions header", async () => {
-    const linkedSessions = [
-      createSession({ sessionId: "session-1" }),
-      createSession({ sessionId: "session-2", archived: true }),
-    ];
-    const html = await renderTaskPanelHtml(
-      createTask({ activeSessionIds: ["session-1", "session-2", "session-3"] }),
-      { linkedSessions },
-    );
-    expect(html).toMatch(/Sessions<span[^>]*>1<\/span>/);
   });
 
   it("force-refreshes git status when opening workspace details", async () => {
@@ -720,5 +659,4 @@ describe("TaskPanel", () => {
     expect(archived).not.toContain("Done when");
     expect(archived).not.toContain("QA signs off");
   });
-
 });

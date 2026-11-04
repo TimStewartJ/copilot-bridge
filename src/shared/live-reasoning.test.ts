@@ -26,7 +26,7 @@ describe("live reasoning fold", () => {
     expect(appendReasoningDelta(blocks, { reasoningId: "r-1", content: "" })).toBe(blocks);
   });
 
-  it("closes the previous block when a different one starts", () => {
+  it("closes the previous thought on a new id and folds both into the one persisted message", () => {
     const first = stream([], "r-1", "first thought");
     const second = appendReasoningDelta(first, { reasoningId: "r-2", content: "second thought", timestamp: T1 });
 
@@ -34,25 +34,27 @@ describe("live reasoning fold", () => {
       ["r-1", true],
       ["r-2", false],
     ]);
+
+    const committed = commitReasoning(second, { content: "first\n\nsecond", sourceEventId: "assistant-message-1" });
+
+    expect(committed).toHaveLength(1);
+    expect(committed[0]).toMatchObject({ id: "r-1", content: "first\n\nsecond", sourceEventId: "assistant-message-1" });
   });
 
-  it("closes open blocks once, and leaves an already closed list untouched", () => {
-    const open = stream([], "r-1", "thought");
+  it("closes a thought once and reopens it when more text arrives", () => {
+    const open = stream([], "r-1", "part one");
     const closed = closeOpenReasoning(open, T1);
 
     expect(closed[0]?.completedAt).toBe(T1);
     expect(closeOpenReasoning(closed, T2)).toBe(closed);
-  });
 
-  it("reopens a block that receives more text after it was closed", () => {
-    const closed = closeOpenReasoning(stream([], "r-1", "part one"), T1);
     const resumed = appendReasoningDelta(closed, { reasoningId: "r-1", content: ", part two" });
 
     expect(resumed[0]).toMatchObject({ content: "part one, part two" });
     expect(resumed[0]?.completedAt).toBeUndefined();
   });
 
-  it("commits a streamed block under the assistant message that persisted it", () => {
+  it("keeps the persisted thought and ignores its late streaming echoes", () => {
     const streamed = closeOpenReasoning(stream([], "r-1", "streamed text"), T1);
     const committed = commitReasoning(streamed, {
       content: "persisted text",
@@ -69,22 +71,21 @@ describe("live reasoning fold", () => {
       completedAt: T1,
       committedAt: T2,
     }]);
+
+    const afterDelta = appendReasoningDelta(committed, { reasoningId: "r-1", content: " echo" });
+    expect(afterDelta).toBe(committed);
+    const afterComplete = completeReasoningBlock(afterDelta, { reasoningId: "r-1", content: "persisted text" });
+    expect(afterComplete).toBe(committed);
+    expect(completeReasoningBlock(afterComplete, { reasoningId: "unknown", content: "persisted  text\n" })).toBe(committed);
   });
 
-  it("folds every uncommitted block into one, matching the single disk entry", () => {
-    const two = appendReasoningDelta(stream([], "r-1", "first"), { reasoningId: "r-2", content: "second" });
-    const committed = commitReasoning(two, { content: "first\n\nsecond", sourceEventId: "assistant-message-1" });
-
-    expect(committed).toHaveLength(1);
-    expect(committed[0]).toMatchObject({ id: "r-1", content: "first\n\nsecond", sourceEventId: "assistant-message-1" });
-  });
-
-  it("creates a committed block when no deltas were seen", () => {
-    const committed = commitReasoning([], {
+  it("creates a thought from the persisted message without deltas and ignores a duplicate copy", () => {
+    const message = {
       content: "thinking from a model that does not stream it",
       sourceEventId: "assistant-message-1",
       timestamp: T2,
-    });
+    };
+    const committed = commitReasoning([], message);
 
     expect(committed).toMatchObject([{
       id: "reasoning-assistant-message-1",
@@ -92,6 +93,7 @@ describe("live reasoning fold", () => {
       startedAt: T2,
       completedAt: T2,
     }]);
+    expect(commitReasoning(committed, message)).toBe(committed);
   });
 
   it("keeps separate blocks for separate assistant messages in one model call", () => {
@@ -102,18 +104,6 @@ describe("live reasoning fold", () => {
       ["a", "message-1"],
       ["b", "message-2"],
     ]);
-  });
-
-  it("does not commit the same assistant message twice", () => {
-    const committed = commitReasoning([], { content: "once", sourceEventId: "message-1" });
-
-    expect(commitReasoning(committed, { content: "once", sourceEventId: "message-1" })).toBe(committed);
-  });
-
-  it("drops a late delta for a block the disk already owns", () => {
-    const committed = commitReasoning(stream([], "r-1", "text"), { content: "text", sourceEventId: "message-1" });
-
-    expect(appendReasoningDelta(committed, { reasoningId: "r-1", content: " echo" })).toBe(committed);
   });
 
   it("repairs a block whose deltas were missed from the complete text", () => {
@@ -128,14 +118,6 @@ describe("live reasoning fold", () => {
       content: "the whole thought, including only the tail",
       completedAt: T1,
     });
-  });
-
-  it("ignores the complete text once it is already represented", () => {
-    // The SDK sends `assistant.reasoning` after the `assistant.message` that commits the block.
-    const committed = commitReasoning(stream([], "r-1", "text"), { content: "the text", sourceEventId: "message-1" });
-
-    expect(completeReasoningBlock(committed, { reasoningId: "r-1", content: "the text" })).toBe(committed);
-    expect(completeReasoningBlock(committed, { reasoningId: "unknown", content: "the  text\n" })).toBe(committed);
   });
 
   it("adds a finished block when the complete text is all that arrived", () => {

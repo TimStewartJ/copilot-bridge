@@ -62,16 +62,6 @@ describe("ToastProvider", () => {
     expect(vi.mocked(haptic).mock.calls).toEqual([["success"], ["error"]]);
   });
 
-  it("renders a shown toast and dismisses it by id", async () => {
-    const harness = await mountProvider();
-
-    const id = await show(harness, { title: "Unlinked WI-1" });
-    expect(toastTitles(harness)).toContain("Unlinked WI-1");
-
-    await harness.act(async () => { api!.dismissToast(id); });
-    expect(toastTitles(harness)).toHaveLength(0);
-  });
-
   it("auto-dismisses after the requested duration", async () => {
     const harness = await mountProvider();
 
@@ -82,13 +72,19 @@ describe("ToastProvider", () => {
     expect(toastTitles(harness)).toHaveLength(0);
   });
 
-  it("shows a spinner for background progress toasts", async () => {
+  it("shows one progress toast, updates it in place and dismisses it by its returned id", async () => {
     const harness = await mountProvider();
 
-    await show(harness, { title: "Creating fork", loading: true, durationMs: 0 });
+    const id = await show(harness, { title: "Creating fork", loading: true, durationMs: 0 });
 
     const icons = findAllByTag(harness.dom.container, "svg");
     expect(icons.some((icon) => (icon.getAttribute("class") ?? "").includes("animate-spin"))).toBe(true);
+    expect(toastTitles(harness)).toEqual(["Creating fork"]);
+
+    await harness.act(async () => { api!.updateToast(id, { title: "Fork ready", loading: false }); });
+    expect(toastTitles(harness)).toEqual(["Fork ready"]);
+    await harness.act(async () => { api!.dismissToast(id); });
+    expect(toastTitles(harness)).toHaveLength(0);
   });
 
   it("replaces a toast that reuses the same id instead of stacking", async () => {
@@ -165,15 +161,6 @@ describe("ToastProvider", () => {
     // The old timer must not dismiss a sticky toast.
     await harness.act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(toastTitles(harness)).toHaveLength(MAX_VISIBLE_TOASTS);
-  });
-
-  it("updates an existing toast in place", async () => {
-    const harness = await mountProvider();
-
-    const id = await show(harness, { title: "Before", durationMs: 0 });
-    await harness.act(async () => { api!.updateToast(id, { title: "After" }); });
-
-    expect(toastTitles(harness)).toEqual(["After"]);
   });
 });
 

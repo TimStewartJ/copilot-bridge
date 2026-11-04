@@ -136,12 +136,6 @@ afterEach(() => {
 });
 
 describe("refreshCopilotUsageQuery", () => {
-  it("disables automatic focus refetches for expensive local usage scans", () => {
-    const options = getCopilotUsageQueryOptions();
-
-    expect(options.refetchOnWindowFocus).toBe(false);
-    expect(options.staleTime).toBe(5 * 60_000);
-  });
 
   it("scopes task usage queries and forwards task filtering to the API", async () => {
     const queryClient = new QueryClient({
@@ -187,7 +181,7 @@ describe("refreshCopilotUsageQuery", () => {
     }));
   });
 
-  it("cancels an in-flight stale fetch before applying the manual refresh result", async () => {
+  it("keeps expensive usage reads off focus and cancels a stale one on manual refresh", async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -195,7 +189,10 @@ describe("refreshCopilotUsageQuery", () => {
         },
       },
     });
-    const observer = new QueryObserver(queryClient, getCopilotUsageQueryOptions());
+    const options = getCopilotUsageQueryOptions();
+    expect(options.refetchOnWindowFocus).toBe(false);
+    expect(options.staleTime).toBe(5 * 60_000);
+    const observer = new QueryObserver(queryClient, options);
     const staleFetch = createDeferred<CopilotUsageSummary>();
     const refreshed = createUsageSummary("2026-04-23T12:00:00.000Z", 200);
     let staleSignal: AbortSignal | undefined;
@@ -220,7 +217,7 @@ describe("refreshCopilotUsageQuery", () => {
     expect(vi.mocked(fetchCopilotUsage)).toHaveBeenNthCalledWith(1, expect.objectContaining({ refresh: undefined }));
     expect(vi.mocked(fetchCopilotUsage)).toHaveBeenNthCalledWith(2, expect.objectContaining({ refresh: true }));
     expect(staleSignal?.aborted).toBe(true);
-    expect(queryClient.getQueryData(getCopilotUsageQueryOptions().queryKey)).toEqual(refreshed);
+    expect(queryClient.getQueryData(options.queryKey)).toEqual(refreshed);
 
     unsubscribe();
   });

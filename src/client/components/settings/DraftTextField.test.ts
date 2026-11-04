@@ -80,16 +80,12 @@ describe("DraftTextField", () => {
     expect(sessionStorage.getItem(STORAGE_KEY)).toBe("newer");
   });
 
-  it("follows a new saved value when it has not been edited", async () => {
+  it("follows a remote edit until the reader changes the same field", async () => {
     await renderField({ value: "old" });
     await renderField({ value: "from elsewhere" });
     expect(getReactProps(textarea())?.value).toBe("from elsewhere");
-  });
-
-  it("keeps an edit when the saved value changes underneath it", async () => {
-    await renderField({ value: "old" });
     await harness!.act(async () => { getReactProps(textarea())?.onChange?.({ target: { value: "mine" } }); });
-    await renderField({ value: "from elsewhere" });
+    await renderField({ value: "new remote edit" });
     expect(getReactProps(textarea())?.value).toBe("mine");
   });
 });

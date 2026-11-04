@@ -84,41 +84,22 @@ function renderAgentRow(
 }
 
 describe("ToolCallNodeGroup", () => {
-  it("renders sibling calls as one row each, in the order they started", () => {
+
+  it("renders each sibling once in order with its own status and elapsed time", () => {
     const { roots } = buildToolCallForest([
-      completedToolCall("first", 0, 2),
-      completedToolCall("second", 3, 5),
-      completedToolCall("third", 6, 8),
-    ]);
-
-    const text = visibleText(renderToStaticMarkup(createElement(ToolCallNodeGroup, { nodes: roots })));
-
-    expect(text.indexOf("First")).toBeGreaterThanOrEqual(0);
-    expect(text.indexOf("Second")).toBeGreaterThan(text.indexOf("First"));
-    expect(text.indexOf("Third")).toBeGreaterThan(text.indexOf("Second"));
-  });
-
-  it("shows how long a call took once that is worth a glance", () => {
-    const { roots } = buildToolCallForest([
-      completedToolCall("instant", 0, 0.2),
-      completedToolCall("slow", 1, 75),
-    ]);
-
-    const text = visibleText(renderToStaticMarkup(createElement(ToolCallNodeGroup, { nodes: roots })));
-
-    expect(text).toContain("1m 14s");
-    expect(text).not.toContain("200ms");
-  });
-
-  it("marks a failed call and a running call without colouring the finished ones", () => {
-    const { roots } = buildToolCallForest([
-      completedToolCall("fine", 0, 1),
-      completedToolCall("broken", 1, 2, { success: false, result: "exit code 1" }),
-      toolCall("pending", { startedAt: at(2) }),
+      completedToolCall("fine", 0, 0.2),
+      completedToolCall("broken", 1, 75, { success: false, result: "exit code 1" }),
+      toolCall("pending", { startedAt: at(80) }),
     ]);
 
     const html = renderToStaticMarkup(createElement(ToolCallNodeGroup, { nodes: roots }));
 
+    const text = visibleText(html);
+    expect(text.indexOf("Fine")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Broken")).toBeGreaterThan(text.indexOf("Fine"));
+    expect(text.indexOf("Pending")).toBeGreaterThan(text.indexOf("Broken"));
+    expect(text).toContain("1m 14s");
+    expect(text).not.toContain("200ms");
     expect(html).toContain('data-tool-status="failed"');
     expect(html).toContain('aria-label="Failed"');
     expect(html).toContain('data-tool-status="running"');

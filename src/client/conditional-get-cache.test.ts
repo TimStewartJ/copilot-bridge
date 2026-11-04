@@ -2,17 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConditionalGetCache, readEtagHeader } from "./conditional-get-cache";
 
 describe("ConditionalGetCache", () => {
-  it("does not reuse anything for 200s or for unknown keys", () => {
+  it("requires a known 304 for reuse and forgets an entry when its next 200 has no ETag", () => {
     const cache = new ConditionalGetCache();
     cache.remember("/api/sessions", 'W/"abc"', { sessions: [] });
     expect(cache.reuseIfNotModified("/api/sessions", 200)).toBeUndefined();
     expect(cache.reuseIfNotModified("/api/tasks", 304)).toBeUndefined();
     expect(cache.reuseIfNotModified("/api/sessions", undefined)).toBeUndefined();
-  });
 
-  it("forgets a key when the latest response carried no ETag", () => {
-    const cache = new ConditionalGetCache();
-    cache.remember("/api/sessions", 'W/"abc"', { sessions: [] });
     cache.remember("/api/sessions", null, { sessions: [] });
     expect(cache.requestHeaders("/api/sessions")).toEqual({});
   });

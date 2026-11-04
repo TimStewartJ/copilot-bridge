@@ -36,26 +36,12 @@ describe("phone task list sections", () => {
   }
   const text = () => harness!.dom.container.textContent ?? "";
 
-  it("keeps a set-aside task with current work once its revisit date has arrived, and the rest collapsed", async () => {
-    await renderList({ tasks: [
-      createTask(),
-      createTask({ id: "due", title: "Parked idea", deferred: true, order: 1, nextTouchAt: "2000-01-01T00:00:00.000Z" }),
-      createTask({ id: "ahead", title: "Next year", deferred: true, order: 2, nextTouchAt: "9999-01-01T00:00:00.000Z" }),
-      createTask({ id: "muted", title: "Quiet feed", muted: true, order: 3 }),
-    ] });
-    expect(text()).toContain("Active (2)");
-    expect(text()).toContain("Parked idea");
-    expect(findAllByTag(harness!.dom.container, "SPAN").map((node) => getReactProps(node)?.title)).toContain("Deferred · ready to revisit");
-    expect(text()).toContain("Set aside (2)");
-    expect(text()).not.toContain("Next year");
-    expect(text()).not.toContain("Quiet feed");
-  });
-
-  it("says how many collapsed tasks hold unread conversations, leaving muted ones out", async () => {
+  it("shows due tasks with current work and names unread tasks inside the collapsed sections", async () => {
     await renderList({
       tasks: [
         createTask(),
-        createTask({ id: "deferred", title: "Parked idea", deferred: true, order: 1, activeSessionIds: ["parked-chat"] }),
+        createTask({ id: "due", title: "Parked idea", deferred: true, nextTouchAt: "2000-01-01T00:00:00.000Z" }),
+        createTask({ id: "deferred", title: "Next year", deferred: true, nextTouchAt: "9999-01-01T00:00:00.000Z", order: 1, activeSessionIds: ["parked-chat"] }),
         createTask({ id: "muted", title: "Quiet feed", muted: true, order: 2, activeSessionIds: ["feed-chat"] }),
         createTask({ id: "closed", title: "Closed work", status: "archived", order: 3, activeSessionIds: ["late-chat"] }),
         createTask({ id: "closed-read", title: "Old work", status: "archived", order: 4, activeSessionIds: ["old-chat"] }),
@@ -63,6 +49,11 @@ describe("phone task list sections", () => {
       sessions: [createSession("parked-chat", LATER), createSession("feed-chat", LATER), createSession("late-chat", LATER), createSession("old-chat")],
       isUnread: (_sessionId, time) => time === LATER,
     });
+    expect(text()).toContain("Active (2)");
+    expect(text()).toContain("Parked idea");
+    expect(findAllByTag(harness!.dom.container, "SPAN").map((node) => getReactProps(node)?.title)).toContain("Deferred · ready to revisit");
+    expect(text()).not.toContain("Next year");
+    expect(text()).not.toContain("Quiet feed");
     expect(text()).toContain("Set aside (2)1 unread");
     expect(text()).toContain("Closed (2)1 unread");
 

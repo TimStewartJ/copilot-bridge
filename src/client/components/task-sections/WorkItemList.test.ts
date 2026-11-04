@@ -111,7 +111,12 @@ async function clickCopy(harness: WorkItemHarness, index = 0) {
 // -- Tests ------------------------------------------------------------
 
 describe("WorkItemList - summary variant", () => {
-  it("starts collapsed, expands both linked rows, and collapses on the next click", async () => {
+  beforeEach(() => {
+    clipboardMocks.writeClipboardText.mockReset();
+    clipboardMocks.writeClipboardText.mockResolvedValue(undefined);
+  });
+
+  it("expands linked rows, copies the selected URL and collapses the summary", async () => {
     await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "summary" }, async (harness) => {
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
 
@@ -121,25 +126,17 @@ describe("WorkItemList - summary variant", () => {
       expect(anchors[0].getAttribute("target")).toBe("_blank");
       expect(anchors[0].getAttribute("rel")).toBe("noopener");
 
+      expect(findCopyButtons(harness)).toHaveLength(2);
+      expect(findUnlinkButtons(harness)).toHaveLength(0);
+      const { button, preventDefault, stopPropagation } = await clickCopy(harness, 1);
+
+      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(wiB.url);
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(stopPropagation).toHaveBeenCalledOnce();
+      expect(button.getAttribute("aria-label")).toBe("Copied work item WI-2 URL");
+
       await clickFirstSummaryButton(harness);
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-    });
-  });
-
-  it("single item with a real URL expands inline to its link instead of navigating", async () => {
-    await withWorkItemList({ enrichedWIs: [wiReal], rawWIs: [], variant: "summary" }, async (harness) => {
-      const mockOpen = vi.fn();
-      (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
-      try {
-        expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-        await clickFirstSummaryButton(harness);
-
-        expect(mockOpen).not.toHaveBeenCalled();
-        const [anchor] = findAllByTag(harness.dom.container, "A");
-        expect(anchor?.getAttribute("href")).toBe(wiReal.url);
-      } finally {
-        delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
-      }
     });
   });
 
@@ -153,27 +150,6 @@ describe("WorkItemList - summary variant", () => {
   });
 });
 
-describe("WorkItemList - copy affordance", () => {
-  beforeEach(() => {
-    clipboardMocks.writeClipboardText.mockReset();
-    clipboardMocks.writeClipboardText.mockResolvedValue(undefined);
-  });
-
-  it("copies the exact work-item URL without following the row link", async () => {
-    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "compact" }, async (harness) => {
-      expect(findCopyButtons(harness)).toHaveLength(2);
-      expect(findUnlinkButtons(harness)).toHaveLength(0);
-      const { button, preventDefault, stopPropagation } = await clickCopy(harness, 1);
-
-      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(wiB.url);
-      expect(preventDefault).toHaveBeenCalledOnce();
-      expect(stopPropagation).toHaveBeenCalledOnce();
-      expect(button.getAttribute("aria-label")).toBe("Copied work item WI-2 URL");
-    });
-  });
-
-});
-
 describe("WorkItemList - unlink affordance", () => {
   beforeEach(() => {
     apiMocks.unlinkResource.mockReset();
@@ -184,7 +160,7 @@ describe("WorkItemList - unlink affordance", () => {
     toastMocks.dismissToast.mockClear();
   });
 
-  it("unlinks with the row provider/id and notifies the parent", async () => {
+  it("unlinks with the row provider/id and notifies the parent before undo restores that row", async () => {
     const onTasksChanged = vi.fn();
     await withWorkItemList(
       { enrichedWIs: [wiA, wiB], rawWIs: [], variant: "compact", taskId: "task-1", onTasksChanged },
@@ -198,16 +174,7 @@ describe("WorkItemList - unlink affordance", () => {
           provider: "ado",
         });
         expect(onTasksChanged).toHaveBeenCalledOnce();
-      },
-    );
-  });
 
-  it("undo re-links the work item and dismisses its toast", async () => {
-    const onTasksChanged = vi.fn();
-    await withWorkItemList(
-      { enrichedWIs: [wiA], rawWIs: [], variant: "compact", taskId: "task-1", onTasksChanged },
-      async (harness) => {
-        await clickUnlink(harness);
         const toast = lastToast();
         expect(toast?.tone).toBe("success");
         expect(toast?.action?.label).toBe("Undo");
@@ -220,7 +187,7 @@ describe("WorkItemList - unlink affordance", () => {
 
         expect(apiMocks.linkResource).toHaveBeenCalledWith("task-1", {
           type: "workItem",
-          workItemId: "WI-1",
+          workItemId: "WI-2",
           provider: "ado",
         });
         expect(onTasksChanged).toHaveBeenCalledOnce();
@@ -280,12 +247,22 @@ describe("WorkItemList - unlink affordance", () => {
     );
   });
 
-  it("keeps unlink in the opened row of a single-item summary", async () => {
+  it("opens a single linked work item inline with its unlink action", async () => {
     await withWorkItemList(
       { enrichedWIs: [wiReal], rawWIs: [], variant: "summary", taskId: "task-single-summary" },
       async (harness) => {
-        expect(findUnlinkButtons(harness)).toHaveLength(0);
-        await clickFirstSummaryButton(harness);
+        const open = vi.fn();
+        const previousOpen = window.open;
+        window.open = open;
+        try {
+          expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
+          expect(findUnlinkButtons(harness)).toHaveLength(0);
+          await clickFirstSummaryButton(harness);
+          expect(open).not.toHaveBeenCalled();
+          expect(findAllByTag(harness.dom.container, "A")[0]?.getAttribute("href")).toBe(wiReal.url);
+        } finally {
+          window.open = previousOpen;
+        }
         expect(findUnlinkButtons(harness)).toHaveLength(1);
 
         await clickUnlink(harness);
@@ -298,5 +275,4 @@ describe("WorkItemList - unlink affordance", () => {
       },
     );
   });
-
 });

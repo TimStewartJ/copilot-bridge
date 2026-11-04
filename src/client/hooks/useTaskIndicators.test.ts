@@ -60,35 +60,8 @@ function createIndicator(overrides: Partial<TaskIndicator> = {}): TaskIndicator 
 }
 
 describe("summarizeTaskTabAttention", () => {
-  it("counts each unmuted task once, archived ones too, and tracks needs-answer tasks", () => {
-    const tasks = [
-      createTask({ id: "task-unread" }),
-      createTask({ id: "task-needs-answer" }),
-      createTask({ id: "task-both" }),
-      createTask({ id: "task-read" }),
-      createTask({ id: "task-muted", muted: true }),
-      createTask({ id: "task-archived", status: "archived" }),
-    ];
-    const indicators = new Map<string, TaskIndicator>([
-      ["task-unread", createIndicator({ unread: true, unreadCount: 1 })],
-      ["task-needs-answer", createIndicator({ unread: true, needsUserInputCount: 2 })],
-      ["task-both", createIndicator({ unread: true, unreadCount: 1, needsUserInputCount: 1 })],
-      ["task-read", createIndicator()],
-      ["task-muted", createIndicator({ unreadCount: 1, needsUserInputCount: 1 })],
-      ["task-archived", createIndicator({ unreadCount: 1, needsUserInputCount: 1 })],
-    ]);
-
-    // Archiving a task marks its conversations read, so what is unread there arrived afterwards.
-    expect(summarizeTaskTabAttention(tasks, indicators)).toEqual({
-      count: 4,
-      needsUserInputCount: 3,
-    });
-    expect(countUnreadTasks(tasks, indicators)).toBe(3);
-    expect(unreadTasksLabel(3)).toBe("3 unread");
-  });
-
-  it("does not double-count a task with unread and needs-answer sessions", () => {
-    const task = createTask({
+  it("counts each unmuted task once even when two of its chats need different attention", () => {
+    const both = createTask({ id: "task-both",
       activeSessionIds: ["unread-session", "needs-answer-session"],
     });
     const sessionMap = new Map<string, Session>([
@@ -100,19 +73,38 @@ describe("summarizeTaskTabAttention", () => {
       })],
     ]);
     const indicator = getTaskIndicator(
-      task,
+      both,
       sessionMap,
       (sessionId) => sessionId === "unread-session",
     );
 
-    expect(summarizeTaskTabAttention(
-      [task],
-      new Map([[task.id, indicator]]),
-    )).toEqual({
-      count: 1,
-      needsUserInputCount: 1,
+    const tasks = [
+      createTask({ id: "task-unread" }),
+      createTask({ id: "task-needs-answer" }),
+      both,
+      createTask({ id: "task-read" }),
+      createTask({ id: "task-muted", muted: true }),
+      createTask({ id: "task-archived", status: "archived" }),
+    ];
+    const indicators = new Map<string, TaskIndicator>([
+      ["task-unread", createIndicator({ unread: true, unreadCount: 1 })],
+      ["task-needs-answer", createIndicator({ unread: true, needsUserInputCount: 2 })],
+      [both.id, indicator],
+      ["task-read", createIndicator()],
+      ["task-muted", createIndicator({ unreadCount: 1, needsUserInputCount: 1 })],
+      ["task-archived", createIndicator({ unreadCount: 1, needsUserInputCount: 1 })],
+    ]);
+
+    expect(indicator).toMatchObject({ unreadCount: 1, needsUserInputCount: 1 });
+    // Archiving a task marks its conversations read, so what is unread there arrived afterwards.
+    expect(summarizeTaskTabAttention(tasks, indicators)).toEqual({
+      count: 4,
+      needsUserInputCount: 3,
     });
+    expect(countUnreadTasks(tasks, indicators)).toBe(3);
+    expect(unreadTasksLabel(3)).toBe("3 unread");
   });
+
 });
 
 describe("summarizeChatTabAttention", () => {

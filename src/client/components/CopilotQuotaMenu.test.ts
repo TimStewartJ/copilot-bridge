@@ -156,44 +156,6 @@ describe("CopilotQuotaMenu", () => {
     expect(harness.dom.container.textContent).not.toContain("of 10,000,000 this period");
   });
 
-  it("shows current and remaining daily run rates in the detail view", async () => {
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date(2026, 5, 16, 0, 0));
-      useCopilotQuotaQueryMock.mockReturnValue({
-        data: createQuotaStatus({
-          primary: {
-            ...createQuotaStatus().primary!,
-            entitlement: 1_000,
-            used: 100,
-            remaining: 900,
-            remainingPercentage: 90,
-          },
-        }),
-        error: null,
-        isLoading: false,
-        refresh: vi.fn(),
-      });
-      harness = await createReactDomHarness();
-      await harness.render(routed(CopilotQuotaMenu));
-
-      const trigger = findButtonByLabel(
-        harness.dom.container,
-        "Live Copilot quota, 100 AI credits used",
-      );
-      await harness.act(async () => {
-        getReactProps(trigger)?.onClick?.();
-      });
-
-      expect(harness.dom.container.textContent).toContain("Current run rate");
-      expect(harness.dom.container.textContent).toContain("6.67 AI credits/day");
-      expect(harness.dom.container.textContent).toContain("To exhaust before reset");
-      expect(harness.dom.container.textContent).toContain("60 AI credits/day");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   async function openDetailsAt(now: string, primary: Partial<NonNullable<CopilotQuotaStatus["primary"]>>): Promise<string> {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(now));
@@ -333,7 +295,7 @@ describe("CopilotQuotaMenu", () => {
     expect(harness.dom.container.textContent).not.toContain("Unknown of");
   });
 
-  it("draws quota used over month progress in the rail's mini bar", async () => {
+  it("shows the same half-month usage in the rail, hover and daily run-rate details", async () => {
     freezeAtHalfMonth();
     mockQuotaUsage(100);
     harness = await createReactDomHarness();
@@ -352,6 +314,13 @@ describe("CopilotQuotaMenu", () => {
     });
     expect(harness.dom.container.textContent).toContain("10% used");
     expect(harness.dom.container.textContent).toContain("50% of month");
+
+    await harness.act(async () => getReactProps(findButtonByLabel(harness!.dom.container, "Live Copilot quota, 100 AI credits used"))?.onClick());
+    const details = harness.dom.container.textContent ?? "";
+    expect(details).toContain("Current run rate");
+    expect(details).toContain("6.67 AI credits/day");
+    expect(details).toContain("To exhaust before reset");
+    expect(details).toContain("60 AI credits/day");
   });
 
   it("marks where the month stands once usage has run past it", async () => {
@@ -363,7 +332,6 @@ describe("CopilotQuotaMenu", () => {
     expect(getReactProps(paceFill(harness.dom.container, "usage"))?.style).toMatchObject({ width: "90%" });
     expect(getReactProps(paceFill(harness.dom.container, "month-marker"))?.style).toEqual({ marginLeft: "50%" });
   });
-
 });
 
 describe("CopilotQuotaCard", () => {

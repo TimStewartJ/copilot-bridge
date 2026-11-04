@@ -59,7 +59,7 @@ afterEach(() => {
 });
 
 describe("TaskPanelSummaryDisclosure persistence", () => {
-  it("saves expansion independently for each task and restores it when switching back", async () => {
+  it("restores the selected task section and removes only that section when collapsed", async () => {
     const storage = stubLocalStorage();
     const harness = await createReactDomHarness();
     try {
@@ -74,25 +74,12 @@ describe("TaskPanelSummaryDisclosure persistence", () => {
 
       await renderDisclosure(harness, { taskId: "task-1", disclosureId: "work-items" });
       expect(harness.dom.container.textContent).toContain("Expanded content");
-      expect(JSON.parse(storage.getItem(TASK_PANEL_DISCLOSURE_STORAGE_KEY) ?? "{}")).toEqual({
-        "task-1": { "work-items": true },
-      });
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("collapsing removes only that task section from saved state", async () => {
-    const storage = stubLocalStorage({
-      [TASK_PANEL_DISCLOSURE_STORAGE_KEY]: JSON.stringify({
-        "task-1": { "work-items": true, docs: true },
-        "task-2": { schedules: true },
-      }),
-    });
-    const harness = await createReactDomHarness();
-    try {
-      await renderDisclosure(harness, { taskId: "task-1", disclosureId: "work-items" });
-      expect(harness.dom.container.textContent).toContain("Expanded content");
+      const saved = JSON.parse(storage.getItem(TASK_PANEL_DISCLOSURE_STORAGE_KEY) ?? "{}");
+      expect(saved).toEqual({ "task-1": { "work-items": true } });
+      // Other disclosures were opened before this one was closed.
+      storage.setItem(TASK_PANEL_DISCLOSURE_STORAGE_KEY, JSON.stringify({
+        "task-1": { ...saved["task-1"], docs: true }, "task-2": { schedules: true },
+      }));
       await clickDisclosure(harness);
 
       expect(harness.dom.container.textContent).not.toContain("Expanded content");

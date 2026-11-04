@@ -30,18 +30,7 @@ describe("useBrowserLive", () => {
     return { network, harness };
   }
 
-  it("closes the connection on unmount", async () => {
-    const { network, harness } = await mount();
-    const socket = network.latestSocket();
-    await harness.act(async () => {
-      socket.open();
-    });
-    await harness.cleanup();
-    expect(socket.closedByClient).toBe(true);
-    expect(network.clock.pending()).toBe(0);
-  });
-
-  it("opens a new connection when the browser session changes", async () => {
+  it("replaces the socket when switching browser sessions and closes the active one on unmount", async () => {
     const { network, harness } = await mount("bs_first");
     const first = network.latestSocket();
     await harness.render(createElement(Probe, { browserSessionId: "bs_second", network }));
@@ -49,5 +38,10 @@ describe("useBrowserLive", () => {
     expect(first.closedByClient).toBe(true);
     expect(network.ticketRequests).toEqual(["bs_first", "bs_second"]);
     expect(network.latestSocket().url).toContain("browserSessionId=bs_second");
+    const socket = network.latestSocket();
+    await harness.act(async () => socket.open());
+    await harness.cleanup();
+    expect(socket.closedByClient).toBe(true);
+    expect(network.clock.pending()).toBe(0);
   });
 });

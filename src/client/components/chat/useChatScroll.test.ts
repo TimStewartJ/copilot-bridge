@@ -39,12 +39,16 @@ async function withScroll(run: (helpers: {
 }
 
 describe("chat scrolling", () => {
-  it("stops following on reader intent and resumes only when explicitly requested", async () => {
-    await withScroll(async ({ get, act }) => {
+  it("cancels pending follow on reader intent and resumes only on an explicit jump", async () => {
+    await withScroll(async ({ get, frames, act }) => {
       const scroller = get().scrollContainerRef.current;
       if (!scroller) throw new Error("Missing scroller");
       scroller.scrollTop = 100;
+      await act(async () => get().scrollToLatest());
+      expect(frames.size).toBe(1);
       await act(async () => get().handleUserScrollIntent());
+      expect(frames.size).toBe(0);
+      expect(get().programmaticScrollRef.current).toBe(false);
       expect(get().stickToBottomRef.current).toBe(false);
       expect(get().showJumpToLatest).toBe(true);
       await act(async () => get().scrollToLatest({ immediate: true }));
@@ -53,16 +57,6 @@ describe("chat scrolling", () => {
       expect(scroller.scrollTop).toBe(800);
       expect(get().stickToBottomRef.current).toBe(true);
       expect(get().showJumpToLatest).toBe(false);
-    });
-  });
-
-  it("cancels a scheduled animation when the reader takes control", async () => {
-    await withScroll(async ({ get, frames, act }) => {
-      await act(async () => get().scrollToLatest());
-      expect(frames.size).toBe(1);
-      await act(async () => get().handleUserScrollIntent());
-      expect(frames.size).toBe(0);
-      expect(get().programmaticScrollRef.current).toBe(false);
     });
   });
 

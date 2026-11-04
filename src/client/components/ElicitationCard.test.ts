@@ -320,33 +320,6 @@ describe("ElicitationCard", () => {
       apiMocks.requestBrowserLiveTicket.mockReset();
     });
 
-    it("shows the agent's reason and answers done through the form's one field", async () => {
-      const onSubmit = vi.fn().mockResolvedValue(undefined);
-      harness = await createReactDomHarness();
-      await harness.render(createElement(ElicitationCard, { request: handoffRequest(), onSubmit }));
-
-      const text = harness.dom.container.textContent ?? "";
-      expect(text).toContain("Browser needs you");
-      expect(text).toContain("Solve the check on the sign-in page.");
-      expect(hasButton(harness.dom.container, "Open browser")).toBe(true);
-      expect(hasButton(harness.dom.container, "Submit answers")).toBe(false);
-      expect(findAllByTag(harness.dom.container, "FORM")).toHaveLength(0);
-
-      await harness.act(async () => {
-        getReactProps(findButton(harness!.dom.container, "Done, continue"))?.onClick?.();
-      });
-      await waitUntilAct(harness.act, () => onSubmit.mock.calls.length === 1);
-
-      expect(onSubmit).toHaveBeenCalledWith("el-handoff", { action: "accept", content: { outcome: "done" } });
-      await waitUntilAct(
-        harness.act,
-        () => harness!.dom.container.textContent?.includes("Response submitted") ?? false,
-      );
-      for (const label of ["Open browser", "Done, continue", "I couldn't do it"]) {
-        expect(getReactProps(findButton(harness.dom.container, label))?.disabled).toBe(true);
-      }
-    });
-
     it("answers not done, and shows a failed answer on the card", async () => {
       const onSubmit = vi.fn()
         .mockRejectedValueOnce(new Error("The run is busy."))
@@ -370,11 +343,18 @@ describe("ElicitationCard", () => {
       await waitUntilAct(harness.act, () => onSubmit.mock.calls.length === 2);
     });
 
-    it("opens the live browser for the session, and Close leaves the request pending", async () => {
+    it("closes the browser without answering, then explicitly submits the pending handoff", async () => {
       apiMocks.requestBrowserLiveTicket.mockReturnValue(new Promise(() => {}));
       const onSubmit = vi.fn().mockResolvedValue(undefined);
       harness = await createReactDomHarness();
       await harness.render(createElement(ElicitationCard, { request: handoffRequest(), onSubmit }));
+      const text = harness.dom.container.textContent ?? "";
+      expect(text).toContain("Browser needs you");
+      expect(text).toContain("Solve the check on the sign-in page.");
+      expect(hasButton(harness.dom.container, "Open browser")).toBe(true);
+      expect(hasButton(harness.dom.container, "Submit answers")).toBe(false);
+      expect(findAllByTag(harness.dom.container, "FORM")).toHaveLength(0);
+
       expect(findDialog(harness.dom.container)).toBeUndefined();
 
       await harness.act(async () => {
@@ -392,6 +372,20 @@ describe("ElicitationCard", () => {
       expect(findDialog(harness.dom.container)).toBeUndefined();
       expect(onSubmit).not.toHaveBeenCalled();
       expect(getReactProps(findButton(harness.dom.container, "Done, continue"))?.disabled).toBe(false);
+
+      await harness.act(async () => {
+        getReactProps(findButton(harness!.dom.container, "Done, continue"))?.onClick?.();
+      });
+      await waitUntilAct(harness.act, () => onSubmit.mock.calls.length === 1);
+
+      expect(onSubmit).toHaveBeenCalledWith("el-handoff", { action: "accept", content: { outcome: "done" } });
+      await waitUntilAct(
+        harness.act,
+        () => harness!.dom.container.textContent?.includes("Response submitted") ?? false,
+      );
+      for (const label of ["Open browser", "Done, continue", "I couldn't do it"]) {
+        expect(getReactProps(findButton(harness.dom.container, label))?.disabled).toBe(true);
+      }
     });
 
     it("keeps what happens in the live browser away from the page that opened it", async () => {

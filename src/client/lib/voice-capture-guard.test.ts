@@ -97,25 +97,16 @@ describe("voice capture guard", () => {
     } finally { cancel(); release(); }
   });
 
-  it("asks before the tab closes only while a capture is at risk", async () => {
-    const { windowListeners } = stubBrowser();
+  it("guards tab close and holds the wake lock only while the recording is at risk", async () => {
+    const { windowListeners, documentListeners, sentinels, fakeDocument } = stubBrowser();
     const end = holdVoiceCapture();
+    await settle();
+    expect(sentinels).toHaveLength(1);
 
     const event = { preventDefault: vi.fn(), returnValue: undefined as string | undefined };
     windowListeners.get("beforeunload")?.(event);
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(event.returnValue).toBe("");
-
-    end();
-    await settle();
-    expect(windowListeners.has("beforeunload")).toBe(false);
-  });
-
-  it("keeps the screen awake, takes the lock again when the tab returns, and lets go at the end", async () => {
-    const { documentListeners, sentinels, fakeDocument } = stubBrowser();
-    const end = holdVoiceCapture();
-    await settle();
-    expect(sentinels).toHaveLength(1);
 
     // The browser releases the lock when the tab is hidden.
     sentinels[0]!.released = true;
@@ -133,6 +124,7 @@ describe("voice capture guard", () => {
     await settle();
     expect(sentinels[1]!.released).toBe(true);
     expect(documentListeners.has("visibilitychange")).toBe(false);
+    expect(windowListeners.has("beforeunload")).toBe(false);
   });
 
   it("releases a lock that arrives after the capture is already safe", async () => {

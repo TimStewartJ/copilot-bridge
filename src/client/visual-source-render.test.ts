@@ -67,33 +67,20 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe("useVisualSource", () => {
-  it("reads as loading, never as an empty source, until its first fetch answers", async () => {
-    const { respond } = deferredFetch();
-    const visual = chart();
-
-    await harness!.render(createElement(SourceProbe, { visual }));
-    expect(renders[0]).toEqual({ source: "", loading: true, error: null });
-
-    await harness!.act(async () => {
-      respond(SPEC);
-    });
-    await waitUntilAct(harness!.act, () => renders.at(-1)?.source === SPEC, { label: "source loaded" });
-    expect(renders.every((state) => state.loading || state.error !== null || state.source !== "")).toBe(true);
-  });
-});
-
 describe("VegaLiteVisual", () => {
   const viewport = { width: 800, height: 600 };
 
-  it("draws at once in the expanded view when the source is already fetched", async () => {
+  it("shows loading on the first fetch and draws the same source immediately in the expanded view", async () => {
     const { fetchMock, respond } = deferredFetch();
     const visual = chart();
     await harness!.render(createElement(SourceProbe, { visual }));
+    expect(renders[0]).toEqual({ source: "", loading: true, error: null });
     await harness!.act(async () => {
       respond(SPEC);
     });
     await waitUntilAct(harness!.act, () => renders.at(-1)?.source === SPEC, { label: "source cached" });
+
+    expect(renders.every((state) => state.loading || state.error !== null || state.source !== "")).toBe(true);
 
     await harness!.render(createElement(VegaLiteVisual, { visual, mode: "focus", viewport }));
     await waitUntilAct(harness!.act, () => embedCalls.length === 1, { label: "chart drawn" });

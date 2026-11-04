@@ -62,20 +62,17 @@ function isDisabled(el: any): boolean {
 }
 
 describe("ConfirmTaskDeleteDialog", () => {
-  it("dispatches the chosen disposition", async () => {
+  it("explains linked and shared sessions, dispatches the disposition and disables actions while it runs", async () => {
     const harness = await createReactDomHarness();
     const onConfirm = vi.fn();
+    const props = { task, preview: makePreview({ sharedSessionCount: 2 }), onConfirm, onClose: vi.fn() };
     try {
-      await harness.render(createElement(ConfirmTaskDeleteDialog, {
-        task,
-        preview: makePreview(),
-        onConfirm,
-        onClose: vi.fn(),
-      }));
+      await harness.render(createElement(ConfirmTaskDeleteDialog, props));
 
       const text = harness.dom.container.textContent ?? "";
       expect(text).toContain("3 linked sessions");
       expect(text).toContain("1 already archived");
+      expect(text).toContain("2 sessions also belong to another task");
       await harness.act(async () => {
         getReactProps(findButton(harness.dom.container, "Archive sessions"))?.onClick();
       });
@@ -85,6 +82,14 @@ describe("ConfirmTaskDeleteDialog", () => {
         getReactProps(findButton(harness.dom.container, "Delete sessions"))?.onClick();
       });
       expect(onConfirm).toHaveBeenCalledWith("delete");
+
+      await harness.render(createElement(ConfirmTaskDeleteDialog, {
+        ...props, busy: onConfirm.mock.lastCall![0], progressRemaining: 1,
+      }));
+      for (const button of buttonsOf(harness.dom.container)) {
+        expect(isDisabled(button)).toBe(true);
+      }
+      expect(harness.dom.container.textContent).toContain("2 of 3 done");
     } finally {
       await harness.cleanup();
     }
@@ -138,45 +143,6 @@ describe("ConfirmTaskDeleteDialog", () => {
       expect(harness.dom.container.textContent).toContain("No sessions are linked");
       expect(findButton(harness.dom.container, "Delete task")).toBeDefined();
       expect(findButton(harness.dom.container, "Delete sessions & delete task")).toBeUndefined();
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("mentions sessions shared with another task", async () => {
-    const harness = await createReactDomHarness();
-    try {
-      await harness.render(createElement(ConfirmTaskDeleteDialog, {
-        task,
-        preview: makePreview({ sharedSessionCount: 2 }),
-        onConfirm: vi.fn(),
-        onClose: vi.fn(),
-      }));
-
-      expect(harness.dom.container.textContent)
-        .toContain("2 sessions also belong to another task");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("disables every action while a disposition is running", async () => {
-    const harness = await createReactDomHarness();
-    const onClose = vi.fn();
-    try {
-      await harness.render(createElement(ConfirmTaskDeleteDialog, {
-        task,
-        preview: makePreview(),
-        busy: "delete",
-        progressRemaining: 1,
-        onConfirm: vi.fn(),
-        onClose,
-      }));
-
-      for (const button of buttonsOf(harness.dom.container)) {
-        expect(isDisabled(button)).toBe(true);
-      }
-      expect(harness.dom.container.textContent).toContain("2 of 3 done");
     } finally {
       await harness.cleanup();
     }

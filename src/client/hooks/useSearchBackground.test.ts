@@ -76,11 +76,13 @@ describe("floating search route retention", () => {
     expect(harness.dom.container.textContent).toBe("/tasks/task-1?tab=notes#note");
   });
 
-  it("preserves the background restoration policy and does not duplicate history when dismissed", async () => {
+  it("restores the input focus and original history entry when dismissing search", async () => {
     function Probe() {
-      const { actual, navigationType, close } = useSearchBackground();
+      const { actual, navigationType, open, close } = useSearchBackground();
       const navigate = useNavigate();
+      useEffect(() => { if (open) document.body.focus(); }, [open]);
       return createElement("div", null,
+        createElement("textarea"),
         createElement("output", null, `${actual.pathname}:${navigationType}`),
         createElement("button", { onClick: () => navigate("/search") }, "Open"),
         createElement("button", { onClick: close }, "Close"),
@@ -92,37 +94,18 @@ describe("floating search route retention", () => {
     const click = async (label: string) => harness!.act(async () => {
       getReactProps(findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent === label))?.onClick?.();
     });
+    const textarea = findAllByTag(harness.dom.container, "TEXTAREA")[0];
+    Object.defineProperty(textarea, "isConnected", { configurable: true, value: true });
+    textarea.focus();
     await click("Open");
     expect(harness.dom.container.textContent).toContain("/search:POP");
+    expect(document.activeElement).not.toBe(textarea);
     await click("Close");
+    expect(document.activeElement).toBe(textarea);
     await click("Open");
     await click("Close");
     await click("Back");
     expect(harness.dom.container.textContent).toContain("/docs:POP");
   });
 
-  it("restores the control captured before the inert background blurs it", async () => {
-    function Probe() {
-      const { open, close } = useSearchBackground();
-      const navigate = useNavigate();
-      useEffect(() => {
-        if (open) document.body.focus();
-      }, [open]);
-      return createElement("div", null,
-        createElement("textarea"),
-        createElement("button", { onClick: () => navigate("/search") }, "Open"),
-        createElement("button", { onClick: close }, "Close"),
-      );
-    }
-    harness = await createReactDomHarness();
-    await harness.render(createElement(MemoryRouter, { initialEntries: ["/tasks/task-1"] }, createElement(Probe)));
-    const textarea = findAllByTag(harness.dom.container, "TEXTAREA")[0];
-    Object.defineProperty(textarea, "isConnected", { configurable: true, value: true });
-    textarea.focus();
-    const buttons = findAllByTag(harness.dom.container, "BUTTON");
-    await harness.act(async () => { getReactProps(buttons[0])?.onClick?.(); });
-    expect(document.activeElement).not.toBe(textarea);
-    await harness.act(async () => { getReactProps(buttons[1])?.onClick?.(); });
-    expect(document.activeElement).toBe(textarea);
-  });
 });

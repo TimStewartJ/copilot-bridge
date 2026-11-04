@@ -416,21 +416,7 @@ describe("System page runtime and management jobs", () => {
     }
   });
 
-  it("renders agent backend disconnected with the expected badge tone", async () => {
-    mockManagementJobs([], createRuntimeStatus({ agentBackend: createAgentBackendStatus({ state: "disconnected" }) }));
-
-    const harness = await renderSection();
-    try {
-      const badge = findAllByTag(harness.dom.container, "SPAN")
-        .find((candidate) => candidate.textContent === "disconnected");
-      expect(badge).toBeTruthy();
-      expect(getReactProps(badge)?.className).toContain("text-error");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("offers restart now with explicit confirmation and resume", async () => {
+  it("offers a confirmed restart with resume when the backend is disconnected", async () => {
     mockManagementJobs([], createRuntimeStatus());
     let harness = await renderSection();
     try {
@@ -445,6 +431,10 @@ describe("System page runtime and management jobs", () => {
     const confirm = vi.fn(() => true);
     harness = await renderSection();
     try {
+      const badge = findAllByTag(harness.dom.container, "SPAN")
+        .find((candidate) => candidate.textContent === "disconnected");
+      expect(badge).toBeTruthy();
+      expect(getReactProps(badge)?.className).toContain("text-error");
       (globalThis.window as unknown as { confirm: typeof confirm }).confirm = confirm;
       expect(getReactProps(findButtonByText(harness.dom.container, "Restart now"))?.disabled).toBe(false);
       await clickButton(harness, "Restart now");

@@ -160,22 +160,6 @@ describe("HelmView", () => {
     harness = await createReactDomHarness();
   });
 
-  it("is an ordinary chat over the current Helm conversation", async () => {
-    state.helm = helmState({ current: conversation({}) });
-    await render();
-    expect(state.chatViewProps).toMatchObject({
-      sessionId: SESSION_A,
-      composerKey: SESSION_A,
-      busySignal: 3,
-      onCreateAndSend: undefined,
-      hideVoiceInput: false,
-      composerAccessory: null,
-      composerPlaceholder: "Ask Helm…",
-    });
-    expect(props.getVoiceJob).toHaveBeenCalledWith(SESSION_A);
-    expect(handsFree.refreshStatus).toHaveBeenCalled();
-  });
-
   it("creates the conversation with the first message and keeps the view mounted through it", async () => {
     state.helm = helmState({});
     api.createHelmConversation.mockResolvedValue(conversation({ sessionId: SESSION_B, turnCount: 0, title: null }));
@@ -230,9 +214,20 @@ describe("HelmView", () => {
     expect((state.helm as HelmState).recent).toEqual([]);
   });
 
-  it("enters hands-free from the composer on the same conversation and docks it above the composer", async () => {
+  it("starts as an ordinary Helm chat and docks hands-free on that same conversation", async () => {
     state.helm = helmState({ current: conversation({}) });
     await render();
+    expect(state.chatViewProps).toMatchObject({
+      sessionId: SESSION_A,
+      composerKey: SESSION_A,
+      busySignal: 3,
+      onCreateAndSend: undefined,
+      hideVoiceInput: false,
+      composerAccessory: null,
+      composerPlaceholder: "Ask Helm…",
+    });
+    expect(props.getVoiceJob).toHaveBeenCalledWith(SESSION_A);
+    expect(handsFree.refreshStatus).toHaveBeenCalled();
     expect(state.chatViewProps!.composerTool).toMatchObject({ label: "Hands-free", active: false });
     await harness.act(() => state.chatViewProps!.composerTool.onSelect());
     expect(handsFree.start).toHaveBeenCalledWith(SESSION_A);

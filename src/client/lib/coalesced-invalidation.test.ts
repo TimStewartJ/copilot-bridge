@@ -56,15 +56,22 @@ afterEach(() => {
 });
 
 describe("createCoalescedInvalidator", () => {
-  it("answers a burst of 30 invalidations with one refetch at once and one follow-up", async () => {
+  it("coalesces the burst, settles each caller for its own fetch and starts a later single event immediately", async () => {
     const sessions = await showQuery(ACTIVE_SESSIONS);
     const events = createCoalescedInvalidator(queryClient);
 
-    for (let index = 0; index < 30; index += 1) void events.invalidateQueries({ queryKey: ACTIVE_SESSIONS, exact: true });
+    let first = "pending";
+    void events.invalidateQueries({ queryKey: ACTIVE_SESSIONS }).then(() => { first = "settled"; });
+    let second = "pending";
+    void events.invalidateQueries({ queryKey: ACTIVE_SESSIONS }).then(() => { second = "settled"; });
+    for (let index = 2; index < 30; index += 1) void events.invalidateQueries({ queryKey: ACTIVE_SESSIONS, exact: true });
 
+    await vi.advanceTimersByTimeAsync(0);
+    expect([first, second]).toEqual(["pending", "settled"]);
     // The first refetch needs no timer.
     expect(sessions.requests()).toBe(2);
     await sessions.answer();
+    expect(first).toBe("settled");
     await vi.advanceTimersByTimeAsync(EVENT_REFETCH_GAP_MS - 1);
     expect(sessions.requests()).toBe(2);
     await vi.advanceTimersByTimeAsync(1);
@@ -74,19 +81,12 @@ describe("createCoalescedInvalidator", () => {
     await vi.advanceTimersByTimeAsync(EVENT_REFETCH_MAX_WAIT_MS * 2);
     expect(sessions.requests()).toBe(3);
     expect(queryClient.getQueryData(ACTIVE_SESSIONS)).toBe(3);
-  });
-
-  it("refetches at once again when the previous refetch is over and the gap has passed", async () => {
-    const sessions = await showQuery(ACTIVE_SESSIONS);
-    const events = createCoalescedInvalidator(queryClient);
 
     void events.invalidateQueries({ queryKey: ACTIVE_SESSIONS });
+    expect(sessions.requests()).toBe(4);
     await sessions.answer();
     await vi.advanceTimersByTimeAsync(EVENT_REFETCH_GAP_MS);
-    expect(sessions.requests()).toBe(2);
-
-    void events.invalidateQueries({ queryKey: ACTIVE_SESSIONS });
-    expect(sessions.requests()).toBe(3);
+    expect(sessions.requests()).toBe(4);
   });
 
   it("never has two of its refetches of one query in flight: a slow answer delays the follow-up", async () => {
@@ -156,21 +156,6 @@ describe("createCoalescedInvalidator", () => {
 
     await sessions.answer();
     expect(queryClient.getQueryData(ACTIVE_SESSIONS)).toBe(3);
-  });
-
-  it("settles with the refetch it started and does not wait for a follow-up", async () => {
-    const sessions = await showQuery(ACTIVE_SESSIONS);
-    const events = createCoalescedInvalidator(queryClient);
-
-    let first = "pending";
-    void events.invalidateQueries({ queryKey: ACTIVE_SESSIONS }).then(() => { first = "settled"; });
-    let second = "pending";
-    void events.invalidateQueries({ queryKey: ACTIVE_SESSIONS }).then(() => { second = "settled"; });
-    await vi.advanceTimersByTimeAsync(0);
-    expect([first, second]).toEqual(["pending", "settled"]);
-
-    await sessions.answer();
-    expect(first).toBe("settled");
   });
 
   it("leaves an awaited invalidation of the query client with data fetched after that call", async () => {

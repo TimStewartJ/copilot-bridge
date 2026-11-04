@@ -112,7 +112,12 @@ async function clickCopy(harness: PullRequestHarness, index = 0) {
 // -- Tests ------------------------------------------------------------
 
 describe("PullRequestList - summary variant", () => {
-  it("starts collapsed, expands both linked rows, and collapses on the next click", async () => {
+  beforeEach(() => {
+    clipboardMocks.writeClipboardText.mockReset();
+    clipboardMocks.writeClipboardText.mockResolvedValue(undefined);
+  });
+
+  it("expands linked rows, copies the selected URL and collapses the summary", async () => {
     await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, async (harness) => {
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
 
@@ -122,25 +127,17 @@ describe("PullRequestList - summary variant", () => {
       expect(anchors[0].getAttribute("target")).toBe("_blank");
       expect(anchors[0].getAttribute("rel")).toBe("noopener");
 
+      expect(findCopyButtons(harness)).toHaveLength(2);
+      expect(findUnlinkButtons(harness)).toHaveLength(0);
+      const { button, preventDefault, stopPropagation } = await clickCopy(harness, 1);
+
+      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(prB.url);
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(stopPropagation).toHaveBeenCalledOnce();
+      expect(button.getAttribute("aria-label")).toBe("Copied pull request #2 URL");
+
       await clickFirstSummaryButton(harness);
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-    });
-  });
-
-  it("single PR with a real URL expands inline to its link instead of navigating", async () => {
-    await withPullRequestList({ enrichedPRs: [prReal], rawPRs: [], variant: "summary" }, async (harness) => {
-      const mockOpen = vi.fn();
-      (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
-      try {
-        expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-        await clickFirstSummaryButton(harness);
-
-        expect(mockOpen).not.toHaveBeenCalled();
-        const [anchor] = findAllByTag(harness.dom.container, "A");
-        expect(anchor?.getAttribute("href")).toBe(prReal.url);
-      } finally {
-        delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
-      }
     });
   });
 
@@ -154,27 +151,6 @@ describe("PullRequestList - summary variant", () => {
   });
 });
 
-describe("PullRequestList - copy affordance", () => {
-  beforeEach(() => {
-    clipboardMocks.writeClipboardText.mockReset();
-    clipboardMocks.writeClipboardText.mockResolvedValue(undefined);
-  });
-
-  it("copies the exact PR URL without following the row link", async () => {
-    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "compact" }, async (harness) => {
-      expect(findCopyButtons(harness)).toHaveLength(2);
-      expect(findUnlinkButtons(harness)).toHaveLength(0);
-      const { button, preventDefault, stopPropagation } = await clickCopy(harness, 1);
-
-      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(prB.url);
-      expect(preventDefault).toHaveBeenCalledOnce();
-      expect(stopPropagation).toHaveBeenCalledOnce();
-      expect(button.getAttribute("aria-label")).toBe("Copied pull request #2 URL");
-    });
-  });
-
-});
-
 describe("PullRequestList - unlink affordance", () => {
   beforeEach(() => {
     apiMocks.unlinkResource.mockReset();
@@ -183,32 +159,6 @@ describe("PullRequestList - unlink affordance", () => {
     apiMocks.linkResource.mockResolvedValue({});
     toastMocks.showToast.mockClear();
     toastMocks.dismissToast.mockClear();
-  });
-
-  it("requires an in-place second click without a browser confirmation prompt", async () => {
-    const confirmMock = vi.fn(() => false);
-    (globalThis.window as unknown as { confirm?: typeof confirmMock }).confirm = confirmMock;
-    try {
-      await withPullRequestList(
-        { enrichedPRs: [prA], rawPRs: [], variant: "compact", taskId: "task-1" },
-        async (harness) => {
-          const { button, preventDefault, stopPropagation } = await clickUnlinkOnce(harness);
-
-          expect(confirmMock).not.toHaveBeenCalled();
-          expect(apiMocks.unlinkResource).not.toHaveBeenCalled();
-          expect(button.getAttribute("aria-label")).toBe("Confirm unlink pull request #1 from task");
-          expect(button.getAttribute("data-unlink-state")).toBe("confirming");
-          expect(preventDefault).toHaveBeenCalledOnce();
-          expect(stopPropagation).toHaveBeenCalledOnce();
-
-          await clickUnlinkOnce(harness);
-
-          expect(apiMocks.unlinkResource).toHaveBeenCalledOnce();
-        },
-      );
-    } finally {
-      delete (globalThis.window as unknown as { confirm?: typeof confirmMock }).confirm;
-    }
   });
 
   it("disarms the in-place confirmation after a short timeout", async () => {
@@ -232,13 +182,30 @@ describe("PullRequestList - unlink affordance", () => {
     }
   });
 
-  it("unlinks with the row provider/repo/PR id and notifies the parent", async () => {
+  it("unlinks with the row provider/repo/PR id and notifies the parent before undo restores that row", async () => {
     const onTasksChanged = vi.fn();
     await withPullRequestList(
       { enrichedPRs: [prA, prB], rawPRs: [], variant: "compact", taskId: "task-1", onTasksChanged },
       async (harness) => {
         expect(findUnlinkButtons(harness)).toHaveLength(2);
-        await clickUnlink(harness, 1);
+        const previousConfirm = window.confirm;
+        const confirmMock = vi.fn(() => false);
+        window.confirm = confirmMock;
+        try {
+          const { button, preventDefault, stopPropagation } = await clickUnlinkOnce(harness, 1);
+
+          expect(confirmMock).not.toHaveBeenCalled();
+          expect(apiMocks.unlinkResource).not.toHaveBeenCalled();
+          expect(button.getAttribute("aria-label")).toBe("Confirm unlink pull request #2 from task");
+          expect(button.getAttribute("data-unlink-state")).toBe("confirming");
+          expect(preventDefault).toHaveBeenCalledOnce();
+          expect(stopPropagation).toHaveBeenCalledOnce();
+
+          await clickUnlinkOnce(harness, 1);
+        } finally {
+          window.confirm = previousConfirm;
+        }
+        expect(apiMocks.unlinkResource).toHaveBeenCalledOnce();
 
         expect(apiMocks.unlinkResource).toHaveBeenCalledWith("task-1", {
           type: "pr",
@@ -247,16 +214,7 @@ describe("PullRequestList - unlink affordance", () => {
           provider: "github",
         });
         expect(onTasksChanged).toHaveBeenCalledOnce();
-      },
-    );
-  });
 
-  it("undo re-links the PR with its repo name and dismisses its toast", async () => {
-    const onTasksChanged = vi.fn();
-    await withPullRequestList(
-      { enrichedPRs: [prA], rawPRs: [], variant: "compact", taskId: "task-1", onTasksChanged },
-      async (harness) => {
-        await clickUnlink(harness);
         const toast = lastToast();
         expect(toast?.tone).toBe("success");
         expect(toast?.action?.label).toBe("Undo");
@@ -271,7 +229,7 @@ describe("PullRequestList - unlink affordance", () => {
           type: "pr",
           repoId: "repo-1",
           repoName: "org/repo",
-          prId: 1,
+          prId: 2,
           provider: "github",
         });
         expect(onTasksChanged).toHaveBeenCalledOnce();
@@ -332,12 +290,22 @@ describe("PullRequestList - unlink affordance", () => {
     );
   });
 
-  it("keeps unlink in the opened row of a single-PR summary", async () => {
+  it("opens a single linked pull request inline with its unlink action", async () => {
     await withPullRequestList(
       { enrichedPRs: [prReal], rawPRs: [], variant: "summary", taskId: "task-single-summary" },
       async (harness) => {
-        expect(findUnlinkButtons(harness)).toHaveLength(0);
-        await clickFirstSummaryButton(harness);
+        const open = vi.fn();
+        const previousOpen = window.open;
+        window.open = open;
+        try {
+          expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
+          expect(findUnlinkButtons(harness)).toHaveLength(0);
+          await clickFirstSummaryButton(harness);
+          expect(open).not.toHaveBeenCalled();
+          expect(findAllByTag(harness.dom.container, "A")[0]?.getAttribute("href")).toBe(prReal.url);
+        } finally {
+          window.open = previousOpen;
+        }
         expect(findUnlinkButtons(harness)).toHaveLength(1);
 
         await clickUnlink(harness);
@@ -351,5 +319,4 @@ describe("PullRequestList - unlink affordance", () => {
       },
     );
   });
-
 });

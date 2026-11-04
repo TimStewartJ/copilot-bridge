@@ -38,8 +38,10 @@ describe("TaskMomentumFields design migration", () => {
     return harness.dom.container;
   }
 
-  it("starts collapsed with one context summary and leaves Defer to the task menu", async () => {
-    const container = await render(createTask({ nextAction: "Review\n the quotes", waitingOn: "The dealer" }), vi.fn(), false);
+  it("summarizes a multiline next step, opens it and clears it back to the add action", async () => {
+    const task = createTask({ nextAction: "Review\n the quotes", waitingOn: "The dealer" });
+    patchTaskMock.mockResolvedValue({ ...task, nextAction: undefined });
+    const container = await render(task, vi.fn(), false);
     expect(container.textContent).toContain("Where things stand");
     expect(container.textContent).toContain("Next: Review the quotes");
     expect(container.textContent).not.toContain("The dealer");
@@ -49,6 +51,18 @@ describe("TaskMomentumFields design migration", () => {
     await harness!.act(async () => getReactProps(disclosure(container))!.onClick());
     expect(container.textContent).toContain("The dealer");
     expect(findAllByTag(container, "DL")).toHaveLength(1);
+
+    const expand = findAllByTag(container, "BUTTON")
+      .find((button) => getReactProps(button)?.["aria-label"] === "Expand Next step");
+    expect(getReactProps(expand)?.["aria-expanded"]).toBe(false);
+    await harness!.act(async () => getReactProps(expand)?.onClick?.());
+    expect(getReactProps(expand)?.["aria-expanded"]).toBe(true);
+    const clear = findAllByTag(container, "BUTTON")
+      .find((button) => getReactProps(button)?.["aria-label"] === "Clear Next step");
+    await harness!.act(async () => getReactProps(clear)?.onClick?.());
+    expect(patchTaskMock).toHaveBeenCalledExactlyOnceWith(task.id, { nextAction: null });
+    expect(container.textContent).not.toContain("the quotes");
+    expect(container.textContent).toContain("Add next step");
   });
 
   it.each([
@@ -89,20 +103,7 @@ describe("TaskMomentumFields design migration", () => {
     expect(patchTaskMock).toHaveBeenCalledWith(task.id, { nextTouchAt: new Date(2030, 4, 2, 10, 30).toISOString() });
   });
 
-  it("stays open after saves and same-task updates, but closes when switching tasks", async () => {
-    const task = createTask({ nextAction: "Read" });
-    const container = await render(task);
-    await render({ ...task, nextAction: "Review" }, vi.fn(), false);
-    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(true);
-    expect(container.textContent).toContain("Next: Review");
-    await render({ ...task, id: "other-task", nextAction: "Different task" }, vi.fn(), false);
-    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
-    expect(findAllByTag(container, "DL")).toHaveLength(0);
-    await render(task, vi.fn(), false);
-    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
-  });
-
-  it("keeps add/edit/autosave working in a field list", async () => {
+  it("keeps the saved field open for the same task but closes it when switching tasks", async () => {
     const task = createTask();
     const updated = { ...task, nextAction: "Validate the preview" };
     patchTaskMock.mockResolvedValue(updated);
@@ -121,23 +122,12 @@ describe("TaskMomentumFields design migration", () => {
     expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(true);
     expect(container.textContent).toContain("Validate the preview");
     expect(findAllByTag(container, "INPUT")).toHaveLength(0);
-  });
-
-  it("preserves expansion, clearing, and the return to an add action", async () => {
-    const task = createTask({ nextAction: "First line\nSecond line" });
-    patchTaskMock.mockResolvedValue({ ...task, nextAction: undefined });
-    const container = await render(task);
-    const expand = findAllByTag(container, "BUTTON")
-      .find((button) => getReactProps(button)?.["aria-label"] === "Expand Next step");
-    expect(getReactProps(expand)?.["aria-expanded"]).toBe(false);
-    await harness!.act(async () => getReactProps(expand)?.onClick?.());
-    expect(getReactProps(expand)?.["aria-expanded"]).toBe(true);
-    const clear = findAllByTag(container, "BUTTON")
-      .find((button) => getReactProps(button)?.["aria-label"] === "Clear Next step");
-    await harness!.act(async () => getReactProps(clear)?.onClick?.());
-    expect(patchTaskMock).toHaveBeenCalledExactlyOnceWith(task.id, { nextAction: null });
-    expect(container.textContent).not.toContain("First line");
-    expect(container.textContent).toContain("Add next step");
+    expect(container.textContent).toContain("Next: Validate the preview");
+    await render({ ...updated, id: "other-task", nextAction: "Different task" }, onPatched, false);
+    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
+    expect(findAllByTag(container, "DL")).toHaveLength(0);
+    await render(updated, onPatched, false);
+    expect(getReactProps(disclosure(container))?.["aria-expanded"]).toBe(false);
   });
 
   it("cancels an edit without saving and still omits a finish line for ongoing work", async () => {

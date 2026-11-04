@@ -112,34 +112,6 @@ afterEach(() => {
 });
 
 describe("ModelMoveDisclosure", () => {
-  it("is one closed line that counts the chats only once it is opened, then lists models in use", async () => {
-    const harness = await renderSection();
-    try {
-      await waitUntilAct(harness.act, () => apiMocks.fetchSessionModelMove.mock.calls.length === 1);
-      expect(text(harness)).toBe(OPEN_LABEL);
-      expect(getReactProps(button(harness, OPEN_LABEL))?.["aria-expanded"]).toBe(false);
-      expect(apiMocks.fetchSessionModelUsage).not.toHaveBeenCalled();
-
-      await click(harness, OPEN_LABEL);
-      await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 2);
-
-      expect(apiMocks.fetchSessionModelUsage).toHaveBeenCalledWith({ refresh: false });
-      const [from, to] = findAllByTag(harness.dom.container, "SELECT");
-      expect(findAllByTag(from, "OPTION").map((option) => option.textContent)).toEqual([
-        "Choose a model",
-        "Old Model · 12 chats",
-        "model-retired · 3 chats",
-      ]);
-      expect(findAllByTag(to, "OPTION").map((option) => option.textContent)).toEqual([
-        "Choose a model",
-        "New Model",
-        "Old Model",
-      ]);
-      expect(getReactProps(button(harness, "Move chats"))?.disabled).toBe(true);
-    } finally {
-      await harness.cleanup();
-    }
-  });
 
   it("starts the move, follows it, and reports what was left behind", async () => {
     const harness = await renderSection();
@@ -222,7 +194,7 @@ describe("ModelMoveDisclosure", () => {
     }
   });
 
-  it("returns to the closed line when the result is dismissed", async () => {
+  it("opens the model-move form on demand and closes it after all selected chats move", async () => {
     apiMocks.startSessionModelMove.mockResolvedValue(job({
       status: "completed",
       processed: 12,
@@ -230,7 +202,30 @@ describe("ModelMoveDisclosure", () => {
     }));
     const harness = await renderSection();
     try {
-      await openAndChoose(harness);
+      await waitUntilAct(harness.act, () => apiMocks.fetchSessionModelMove.mock.calls.length === 1);
+      expect(text(harness)).toBe(OPEN_LABEL);
+      expect(getReactProps(button(harness, OPEN_LABEL))?.["aria-expanded"]).toBe(false);
+      expect(apiMocks.fetchSessionModelUsage).not.toHaveBeenCalled();
+
+      await click(harness, OPEN_LABEL);
+      await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 2);
+
+      expect(apiMocks.fetchSessionModelUsage).toHaveBeenCalledWith({ refresh: false });
+      const [from, to] = findAllByTag(harness.dom.container, "SELECT");
+      expect(findAllByTag(from, "OPTION").map((option) => option.textContent)).toEqual([
+        "Choose a model",
+        "Old Model · 12 chats",
+        "model-retired · 3 chats",
+      ]);
+      expect(findAllByTag(to, "OPTION").map((option) => option.textContent)).toEqual([
+        "Choose a model",
+        "New Model",
+        "Old Model",
+      ]);
+      expect(getReactProps(button(harness, "Move chats"))?.disabled).toBe(true);
+
+      await choose(harness, 0, "model-old");
+      await choose(harness, 1, "model-new");
       await click(harness, "Move 12 chats");
       await waitUntilAct(harness.act, () => Boolean(button(harness, "Done")));
       expect(text(harness)).toContain("Moved 12 of 12 chats from Old Model to New Model");
