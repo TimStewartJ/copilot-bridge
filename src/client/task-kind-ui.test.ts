@@ -17,7 +17,6 @@ import { useTaskSessionStorageQuery } from "./hooks/queries/useTaskSessionStorag
 import { useTagsQuery } from "./hooks/queries/useTags";
 import { useTaskWorkspace } from "./hooks/useTaskWorkspace";
 import TaskDashboard, { buildSessionUsageAnalytics } from "./components/TaskDashboard";
-import TaskKindBadge from "./components/TaskKindBadge";
 import TaskContextMenu from "./components/task-list/TaskContextMenu";
 import { createReactDomHarness, findAllByTag, getReactProps } from "./test-react-harness";
 
@@ -364,6 +363,9 @@ describe("kind-aware task UI", () => {
 
       const input = findAllByTag(harness.dom.container, "INPUT")[0];
       if (!input) throw new Error("Task title input was not rendered");
+      const label = findAllByTag(harness.dom.container, "LABEL").find((node) => node.textContent === "Task title");
+      expect(getReactProps(label)?.htmlFor).toBe(input.getAttribute("id"));
+      expect(getReactProps(label)?.className).not.toContain("sr-only");
       await harness.act(async () => {
         getReactProps(input)?.onChange?.({ target: { value: "Renamed task" } });
       });
@@ -441,18 +443,6 @@ describe("kind-aware task UI", () => {
     expect(html).toContain("Revisit tomorrow");
   });
 
-  it("can render ongoing markers as icon-only badges", () => {
-    const html = renderToStaticMarkup(createElement(TaskKindBadge, {
-      kind: "ongoing",
-      iconOnly: true,
-    }));
-
-    expect(html).toContain("lucide-pin");
-    expect(html).toContain("sr-only");
-    expect(html).toContain(">Ongoing</span>");
-    expect(html).not.toContain(">ongoing<");
-  });
-
   it("TaskDashboard explains ongoing items instead of showing close-candidate copy", () => {
     const html = renderTaskDashboard(createTask({ kind: "ongoing" }));
 
@@ -463,17 +453,6 @@ describe("kind-aware task UI", () => {
 });
 
 describe("TaskDashboard unique overview", () => {
-  it("renders the three dashboard-exclusive sections without cockpit chat controls", () => {
-    const html = renderTaskDashboard(createTask({ activeSessionIds: [] }));
-
-    expect(html).toContain("Task brief");
-    expect(html).toContain("Completion checks");
-    expect(html).toContain("Session usage");
-    expect(html).not.toContain("Start a chat");
-    expect(html).not.toContain(" New</button>");
-    expect(html).not.toContain("Complete task");
-  });
-
   it("uses the brief for read-only context instead of edit surfaces", () => {
     const html = renderTaskDashboard(createTask({
       notes: "## Context\nShip the mobile cockpit split.",

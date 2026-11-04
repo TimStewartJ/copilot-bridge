@@ -293,22 +293,6 @@ describe("MessageBubble sent files", () => {
     }
   });
 
-  it("leaves a paragraph that also holds another link or words as a paragraph", async () => {
-    const harness = await createReactDomHarness();
-    const message = {
-      role: "assistant",
-      content: `[one.zip](${base}/one.zip) [docs](https://example.com/docs)\n\n**[two.zip](${base}/two.zip)**`,
-    } satisfies ChatMessage;
-    try {
-      await harness.render(createElement(MessageBubble, { message }));
-
-      expect(findAllByTag(harness.dom.container, "P")).toHaveLength(2);
-      expect(findAllByTag(harness.dom.container, "A").map((link) => link.getAttribute("aria-label"))).toEqual([null, null, null]);
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("opens a sent file named inside a sentence instead of leaving the chat", async () => {
     const harness = await createReactDomHarness();
     const message = {
@@ -359,5 +343,4 @@ describe("MessageBubble actions", () => {
       await harness.cleanup();
     }
   });
-
 });

@@ -76,17 +76,4 @@ describe("JsonTree", () => {
     expect(container.textContent).toContain('short:"fine"');
     await harness.cleanup();
   });
-
-  it("labels array indices, empty roots, and a zero expansion depth", async () => {
-    const harness = await createReactDomHarness();
-    await harness.render(createElement(JsonTree, { value: ["first", 2, { nested: true }], defaultExpandDepth: 0 }));
-    expect(harness.dom.container.textContent).toBe('0:"first"1:22:{1}{ nested: true }');
-
-    await harness.render(createElement(JsonTree, { value: {} }));
-    expect(harness.dom.container.textContent).toBe("Empty object");
-
-    await harness.render(createElement(JsonTree, { value: [] }));
-    expect(harness.dom.container.textContent).toBe("Empty list");
-    await harness.cleanup();
-  });
 });

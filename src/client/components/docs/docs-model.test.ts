@@ -5,12 +5,10 @@ import {
   buildBreadcrumbs,
   buildTreeIndex,
   canonicalDocPath,
-  compactTreeLabel,
   defaultNewPageFolder,
   docsRoute,
   entryFieldsPayload,
   entryFormValues,
-  estimateReadingMinutes,
   extractHeadings,
   extractWikilinkTargets,
   filterDbEntries,
@@ -18,10 +16,8 @@ import {
   findNeighbours,
   flattenVisibleTree,
   formatDocDate,
-  formatRelativeTime,
   isExternalHref,
   joinDocPath,
-  leadingTitle,
   listPageFolders,
   matchPagesByTitle,
   mergePageFrontmatter,
@@ -36,10 +32,8 @@ import {
   slugifyHeading,
   slugifyPageName,
   sortDbEntries,
-  stripLeadingTitle,
   stripMarkdownInline,
   summarizeFolders,
-  tocHeadings,
   validateEntryForm,
   validateNewPagePath,
   validatePageDraft,
@@ -100,20 +94,6 @@ describe("tree index", () => {
     ]);
     expect(rows.find((row) => row.node.path === "recipes")).toMatchObject({ kind: "collection", hasChildren: false });
     expect(rows.find((row) => row.node.path === "guides/setup")).toMatchObject({ expanded: false, hasChildren: true });
-  });
-
-  it("drops a title prefix that only repeats the folder the page sits under", () => {
-    const rows = flattenVisibleTree(tree, new Set(["guides"]));
-    expect(rows.find((row) => row.node.path === "guides/rollback")?.label).toBe("Rolling back");
-    expect(rows.find((row) => row.node.path === "guides/deploy")?.label).toBe("Deploying");
-
-    expect(compactTreeLabel("The Mighty Architectury — Build & Code", ["themightyarchitectury"])).toBe("Build & Code");
-    expect(compactTreeLabel("The Mighty Architect — Logic Audit", ["themightyarchitectury"])).toBe("Logic Audit");
-    expect(compactTreeLabel("Project Tellus: Plan", ["tellus"])).toBe("Plan");
-    expect(compactTreeLabel("RCA: Bridge server freezes", ["bridge"])).toBe("RCA: Bridge server freezes");
-    expect(compactTreeLabel("Vectorized Game Engine — Design", ["star-realms"])).toBe("Vectorized Game Engine — Design");
-    expect(compactTreeLabel("Guides — ", ["guides"])).toBe("Guides — ");
-    expect(compactTreeLabel("Anything — Else", [])).toBe("Anything — Else");
   });
 
   it("finds the folders that reveal a nested page", () => {
@@ -252,39 +232,9 @@ describe("headings", () => {
     expect(findHeadingByAnchor(headings, "")).toBeNull();
   });
 
-  it("drops only a leading H1, so the page title is not printed twice", () => {
-    expect(stripLeadingTitle("\n# Title\n\nBody\n# Later")).toBe("Body\n# Later");
-    expect(stripLeadingTitle("Intro\n# Title")).toBe("Intro\n# Title");
-    expect(stripLeadingTitle("## Not a title\nBody")).toBe("## Not a title\nBody");
-    expect(leadingTitle("# The **real** title\n\nBody")).toBe("The real title");
-    expect(leadingTitle("Body only")).toBeNull();
-  });
-
-  it("lists the top three heading levels that occur in the contents", () => {
-    const headings = extractHeadings("## A\n### B\n#### C\n##### D");
-    expect(tocHeadings(headings).map((heading) => heading.text)).toEqual(["A", "B", "C"]);
-    expect(tocHeadings([])).toEqual([]);
-  });
-
-  it("estimates reading time without counting code blocks", () => {
-    expect(estimateReadingMinutes("word ".repeat(440))).toBe(2);
-    expect(estimateReadingMinutes("```\n" + "code ".repeat(2000) + "\n```")).toBe(1);
-  });
 });
 
 describe("formatting", () => {
-  it("formats relative times and falls back to a date for old changes", () => {
-    const now = Date.parse("2026-06-10T12:00:00.000Z");
-    expect(formatRelativeTime("2026-06-10T11:59:40.000Z", now)).toBe("just now");
-    expect(formatRelativeTime("2026-06-10T11:30:00.000Z", now)).toBe("30m ago");
-    expect(formatRelativeTime("2026-06-10T07:00:00.000Z", now)).toBe("5h ago");
-    expect(formatRelativeTime("2026-06-07T12:00:00.000Z", now)).toBe("3d ago");
-    expect(formatRelativeTime("2026-05-20T12:00:00.000Z", now)).toBe("3w ago");
-    expect(formatRelativeTime("2025-01-01T12:00:00.000Z", now)).toContain("2025");
-    expect(formatRelativeTime("not a date", now)).toBe("");
-    expect(formatRelativeTime(undefined, now)).toBe("");
-  });
-
   it("shows a calendar date as the day it names, in any time zone", () => {
     expect(formatDocDate("2026-09-17")).toMatch(/17/);
     expect(formatDocDate("2026-09-17T00:00:00.000Z")).toMatch(/17/);

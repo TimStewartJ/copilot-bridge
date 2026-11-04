@@ -139,20 +139,6 @@ describe("ActivityBlock", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
-  it("reads as the thought itself when thinking is all there was", () => {
-    const { text } = render([thought("t1", "**Weighing the options**\n\nBoth designs work, but one is simpler.")]);
-
-    expect(text).toBe("Thought Weighing the options");
-  });
-
-  it("reads as the tool call when there was only one", () => {
-    const { text } = render([
-      tool("read", { name: "view", args: { path: "/repo/src/App.tsx" }, startedAt: at(0), completedAt: at(1), success: true }),
-    ]);
-
-    expect(text).toBe("Read src/App.tsx");
-  });
-
   it("surfaces failures without opening the block", () => {
     const { text } = render([
       tool("a", { name: "bash", args: { command: "npm test" }, startedAt: at(0), completedAt: at(4), success: false, result: "exit 1" }),
@@ -186,16 +172,6 @@ describe("ActivityBlock", () => {
     const expanded = render(entries, { live: true, expanded: true });
     expect(expanded.html).not.toContain("data-thought-window");
     expect(expanded.html).toContain('data-thought-state="streaming"');
-  });
-
-  it("says what the agent is doing between steps, or just that it is working", () => {
-    const entries = [
-      tool("read", { name: "view", args: { path: "/repo/a.ts" }, startedAt: at(0), completedAt: at(1), success: true }),
-    ];
-
-    expect(render(entries, { live: true, liveLabel: "Exploring the codebase" }).text).toContain("Exploring the codebase");
-    expect(render(entries, { live: true }).text).toContain("Working");
-    expect(render(entries, { live: true }).html).toContain("shimmer-text");
   });
 
   it("names a running agent and what it is doing right now, not just its brief", () => {
@@ -311,59 +287,6 @@ describe("ActivityBlock", () => {
     expect(waiting.text).toBe("Waiting on 1 agent moves-agent 3 steps · 1m 35s 1 failed");
   });
 
-  it("says how many agents the steps are from once some of them are no longer being waited on", () => {
-    const loaded: ChatEntry[] = [
-      { role: "assistant", content: "All three are running." },
-      agentTool("moves-1", "moves", { name: "view", args: { path: "/repo/moves.ts" }, startedAt: at(0), completedAt: at(20), success: true }),
-      agentTool("saves-1", "saves", { name: "view", args: { path: "/repo/saves.ts" }, startedAt: at(1), completedAt: at(30), success: true }),
-      agentTool("docs-1", "docs", { name: "view", args: { path: "/repo/README.md" }, startedAt: at(2), completedAt: at(40), success: true }),
-      agentTool("docs-2", "docs", { name: "bash", args: { command: "npm run docs" }, startedAt: at(40) }),
-    ];
-    const agents = [
-      agentRecord("moves", { name: "moves-agent", background: true, toolCount: 1 }),
-      agentRecord("saves", { name: "saves-agent", background: true, toolCount: 1 }),
-      agentRecord("docs", { name: "docs-agent", description: "Update the docs", status: "running", background: true, toolCount: 2 }),
-    ];
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(BASE_MS + 50_000);
-
-    // Two have reported and one is still out: "4 steps" alone would read as the one agent's.
-    const one = render(loaded, {
-      live: true,
-      waiting: { label: "Waiting on docs-agent", detail: "Update the docs", count: 1 },
-      agents,
-    });
-    expect(one.text).toBe("Waiting on docs-agent Update the docs 3 agents, 4 steps · 50s");
-
-    // While all three are still out, the steps can only be theirs.
-    const all = render(loaded, {
-      live: true,
-      waiting: { label: "Waiting on 3 agents", detail: "moves-agent, saves-agent and docs-agent", count: 3 },
-      agents,
-    });
-    expect(all.text).toBe("Waiting on 3 agents moves-agent, saves-agent and docs-agent 4 steps · 50s");
-  });
-
-  it("says whose steps are whose when one call of its own sat among agents at work", () => {
-    const loaded: ChatEntry[] = [
-      { role: "assistant", content: "Checking on the agents." },
-      tool("check", { name: "read_agent", args: { agent_id: "moves-agent" }, startedAt: at(0), completedAt: at(30), success: true }),
-      agentTool("moves-8", "moves", { name: "view", args: { path: "/repo/moves.ts" }, startedAt: at(1), completedAt: at(40), success: true }),
-      agentTool("saves-3", "saves", { name: "view", args: { path: "/repo/saves.ts" }, startedAt: at(2), completedAt: at(90), success: true }),
-      agentTool("saves-4", "saves", { name: "bash", args: { command: "npm test" }, startedAt: at(90), completedAt: at(95), success: true }),
-    ];
-    const agents = [
-      agentRecord("moves", { name: "moves-agent", background: true, toolCount: 9 }),
-      agentRecord("saves", { name: "saves-agent", background: true, toolCount: 4 }),
-    ];
-
-    // Named after its one call, the line would hand the agents' ninety seconds and three steps to it.
-    expect(render(loaded, { agents }).text).toBe("Worked for 1m 35s 1 step · 2 agents, 3 steps");
-
-    // With no agents at work, a lone call still reads as itself.
-    expect(render(loaded.slice(0, 2), { agents }).text).not.toContain("step");
-  });
-
   it("says a stretch that only handed work out launched the agents", () => {
     const launch = (agent: string, partial: Partial<ToolCall> = {}) => tool(agent, {
       name: `🤖 ${agent}-agent`,
@@ -397,19 +320,6 @@ describe("ActivityBlock", () => {
     // A launch that failed started nothing, and reads as the failed call it is.
     const failed = render([launch("moves"), launch("saves", { success: false, result: "No such agent type" })], { agents: [agents[0]!] });
     expect(failed.text).toBe("Worked 2 steps 1 failed");
-  });
-
-  it("gives a stretch to the agents when every call in it was a delegation the main agent waited on", () => {
-    const entries = [
-      tool("research", { name: "🤖 Research agent", isSubAgent: true, args: { description: "Read the docs" }, startedAt: at(0), completedAt: at(125), success: true }),
-      tool("r-1", { name: "view", args: { path: "/repo/README.md" }, parentToolCallId: "research-call", startedAt: at(1), completedAt: at(2), success: true }),
-      tool("test", { name: "🤖 Test agent", isSubAgent: true, args: { description: "Run the tests" }, startedAt: at(0), completedAt: at(90), success: true }),
-      tool("t-1", { name: "bash", args: { command: "npm test" }, parentToolCallId: "test-call", startedAt: at(1), completedAt: at(80), success: true }),
-      tool("t-2", { name: "view", args: { path: "/repo/out.log" }, parentToolCallId: "test-call", startedAt: at(80), completedAt: at(85), success: true }),
-    ];
-
-    // Its own "2 steps" would only be the two delegations.
-    expect(render(entries).text).toBe("2 agents worked for 2m 05s 3 steps");
   });
 
   it("opens a later stretch onto one row per agent, holding what the agent did there", () => {

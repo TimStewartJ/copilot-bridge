@@ -88,7 +88,10 @@ describe("SortableTaskItem", () => {
   describe("leading attention mark", () => {
     it("names an input request with a blue badge and one decorative leading glyph", async () => {
       for (const variant of ["rail", "list"] as const) {
-        const root = await renderRow(task, indicator({ needsUserInputCount: 1, unreadCount: 1 }), variant);
+        const root = await renderRow({ ...task, kind: "ongoing" }, indicator({ needsUserInputCount: 1, unreadCount: 1 }), variant);
+        const row = findAllByTag(root, "BUTTON")[0];
+        expect(row.textContent).toMatch(/ongoing/i);
+        expect(findAllByTag(row, "SPAN").some((node) => node.getAttribute("aria-hidden") === "true" && /ongoing/i.test(node.textContent))).toBe(false);
         const leading = leadingIcon(root);
         expect(getReactProps(leading)?.["data-status"]).toBe("needs-input");
         expect(getReactProps(leading)?.["aria-hidden"]).toBe(true);
@@ -109,21 +112,6 @@ describe("SortableTaskItem", () => {
         expect(row?.["data-unread-task-id"]).toBe("task-1");
         expect(row?.title).toContain("3 unread conversations");
       }
-    });
-
-    it("keeps a single unread cue when a legacy stalled flag is also present", async () => {
-      const root = await renderRow(task, indicator({ busy: true, busyCount: 1, stalled: true, unreadCount: 1, unread: true }));
-      expect(getReactProps(leadingIcon(root))?.["data-status"]).toBe("unread");
-      expect(statusIcons(root)).toEqual(["unread"]);
-      expect(root.textContent).not.toContain("Stalled");
-    });
-
-    it("keeps a normal working task iconless and exposes progress on hover", async () => {
-      const root = await renderRow(task, indicator({ busy: true, busyCount: 2 }));
-      const leading = leadingIcon(root);
-      expect(leading).toBeNull();
-      expect(statusIcons(root)).toEqual([]);
-      expect(getReactProps(findAllByTag(root, "BUTTON")[0])?.title).toBe("Agent working");
     });
 
     it("keeps Stalled as a badge and draws no spinner for it", async () => {

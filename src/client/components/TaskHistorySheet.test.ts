@@ -94,6 +94,8 @@ describe("TaskHistorySheet", () => {
     ])).toEqual([["true", expect.stringMatching(/^History/)]]);
     const text = container.textContent ?? "";
     expect(text.indexOf("Toured 2040 Main")).toBeLessThan(text.indexOf("Dropped the Elm St listing"));
+    const latest = findAllByTag(container, "LI")[0];
+    expect(getReactProps(findAllByTag(latest, "TIME")[0])?.dateTime).toBe(ENTRIES[0].at);
     const authors = findAllByTag(container, "LI").slice(0, 5)
       .map((row) => findAllByTag(row, "SPAN").find((span) => getReactProps(span)?.className === "text-text-secondary")?.textContent);
     expect(authors).toEqual(["Daily rental search", "You", "Bridge", "Agent session", "Agent"]);

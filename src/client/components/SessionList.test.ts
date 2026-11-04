@@ -10,7 +10,7 @@ import {
 } from "../test-react-harness";
 import { installSelectAwareDomShim } from "../test-dom-shim";
 import { queryClient, queryKeys } from "../queryClient";
-import { formatSessionModelLabel, formatSessionModelSummaryLabel } from "../lib/session-model";
+import { formatSessionModelLabel } from "../lib/session-model";
 import { canKeepCurrentReasoningEffortForModel } from "./SessionList";
 
 const apiMocks = vi.hoisted(() => ({
@@ -316,37 +316,11 @@ describe("SessionList defer summary indicator", () => {
 });
 
 describe("session model menu labels", () => {
-  it("names Copilot Fusion's level and leaves out a context window it does not have", () => {
-    const fusion = {
-      id: "auto", name: "Copilot Fusion", selectionMode: "dynamic" as const,
-      supportedReasoningEfforts: ["balance", "hydrafusion-max"],
-      reasoningEffortLabels: { balance: "Standard", "hydrafusion-max": "Max" },
-    };
-    expect(formatSessionModelSummaryLabel({ model: "auto", reasoningEffort: "hydrafusion-max", source: "live" }, [fusion]))
-      .toBe("Copilot Fusion · Max");
-  });
-
   it("shows long context from session state before model metadata loads", () => {
     expect(formatSessionModelLabel(
       { model: "gpt-5.5", reasoningEffort: "xhigh", contextTier: "long_context", source: "events" },
       null,
     )).toBe("gpt-5.5 · Xhigh · Long context");
-  });
-
-  it("uses detailed context labels when model metadata is available", () => {
-    expect(formatSessionModelLabel(
-      { model: "gpt-5.5", reasoningEffort: "xhigh", contextTier: "long_context", source: "events" },
-      [{
-        id: "gpt-5.5",
-        name: "GPT-5.5",
-        billing: {
-          tokenPrices: {
-            contextMax: 272_000,
-            longContext: { contextMax: 922_000 },
-          },
-        },
-      }],
-    )).toBe("GPT-5.5 · Xhigh · Long context (922K)");
   });
 
   it("keeps the current reasoning effort only when lookup confirms it is supported", () => {

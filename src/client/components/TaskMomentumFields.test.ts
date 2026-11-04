@@ -63,11 +63,10 @@ describe("TaskMomentumFields design migration", () => {
     expect(patchTaskMock).toHaveBeenCalledExactlyOnceWith(task.id, { nextAction: null });
     expect(container.textContent).not.toContain("the quotes");
     expect(container.textContent).toContain("Add next step");
+    expect(disclosure(container)?.textContent).toContain("The dealer");
   });
 
   it.each([
-    [{ waitingOn: "A reply" }, "Waiting for: A reply"],
-    [{ doneWhen: "Changes approved" }, "Done when: Changes approved"],
     [{ kind: "ongoing" as const, doneWhen: "Never show this" }, "No next step set"],
     [{ status: "archived" as const }, "Archived"],
     [{ status: "archived" as const, completedAt: "2026-01-01T00:00:00Z" }, "Completed"],

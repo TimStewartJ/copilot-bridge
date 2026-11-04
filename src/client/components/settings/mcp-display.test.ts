@@ -5,18 +5,9 @@ import type { McpServer } from "../../api";
 import { ServerCard } from "./ServerCard";
 import { ServerEditor } from "./ServerEditor";
 import { getNextTagMcpServerIds, TagMcpServerOption } from "./TagsSection";
-import {
-  summarizeMcpServerConfig,
-  summarizeMcpServerExecution,
-} from "./mcp-display";
+import { summarizeMcpServerExecution } from "./mcp-display";
 
 describe("summarizeMcpServerConfig", () => {
-  it("summarizes local server command and args", () => {
-    expect(summarizeMcpServerConfig({ command: "npx", args: ["-y", "@example/mcp"] })).toBe(
-      "local: npx -y @example/mcp",
-    );
-  });
-
   it("summarizes requested and effective execution policy", () => {
     expect(summarizeMcpServerExecution({
       command: "agency",

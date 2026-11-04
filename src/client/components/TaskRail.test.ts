@@ -267,6 +267,7 @@ describe("TaskRail navigation attention", () => {
     const row = findAllByTag(harness!.dom.container, "BUTTON").find(node =>
       getReactProps(node)?.["data-task-id"] === "running-task");
     expect(findAllByTag(row, "SPAN").map(node => getReactProps(node)?.["data-status"]).filter(Boolean)).toEqual(["working"]);
+    expect(getReactProps(row)?.title).toMatch(/working/i);
     expect(harness!.dom.container.textContent).not.toMatch(/need[s]? a look|marked/);
   });
 

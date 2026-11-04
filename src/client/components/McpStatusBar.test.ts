@@ -210,7 +210,9 @@ describe("McpStatusBar status ownership", () => {
       statusState: "ready",
     }));
     await harness.act(async () => getReactProps(findAllByTag(harness.dom.container, "BUTTON")[0])?.onClick());
-    expect(getReactProps(findAllByTag(harness.dom.container, "DETAILS")[0])?.open).toBe(false);
+    const servers = findAllByTag(harness.dom.container, "DETAILS")[0];
+    expect(getReactProps(servers)?.open).toBe(false);
+    expect(findAllByTag(servers, "SUMMARY")[0]?.textContent).toContain("MCP servers");
     await harness.render(createElement(McpStatusBar, {
       servers: [{ name: "demo", status: "needs-auth" }, { name: "offline", status: "failed", error: "Connection refused" }],
       statusState: "ready",

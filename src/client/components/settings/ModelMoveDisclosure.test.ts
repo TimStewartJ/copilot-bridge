@@ -31,7 +31,7 @@ vi.mock("../../hooks/queries/useModels", () => ({
   }),
 }));
 
-const { describeMoveLeftovers, describeMoveOutcome, ModelMoveDisclosure } = await import("./ModelMoveDisclosure");
+const { ModelMoveDisclosure } = await import("./ModelMoveDisclosure");
 
 const USAGE: SessionModelUsage = {
   scannedAt: "2026-10-05T12:00:00.000Z",
@@ -137,19 +137,21 @@ describe("ModelMoveDisclosure", () => {
           status: "completed",
           processed: 12,
           completedAt: "2026-10-05T12:05:00.000Z",
-          counts: { moved: 10, busy: 1, "needs-compaction": 1, changed: 0, failed: 0 },
+          counts: { moved: 9, busy: 1, "needs-compaction": 1, changed: 0, failed: 1 },
           results: [
             { sessionId: "busy-session-id", title: "Standup notes", outcome: "busy" },
             { sessionId: "long-session-id", title: "Long investigation", outcome: "needs-compaction", detail: "310,000 tokens, and model-new takes 200,000" },
             { sessionId: "moved-session-id", title: "Moved chat", outcome: "moved" },
+            { sessionId: "failed-session-id", title: "Build review", outcome: "failed", detail: "Connection lost" },
           ],
         }),
       });
       await advanceTimersByTimeAct(harness.act, 1_500);
-      await waitUntilAct(harness.act, () => text(harness).includes("Moved 10 of 12 chats"));
+      await waitUntilAct(harness.act, () => text(harness).includes("Moved 9 of 12 chats"));
 
-      expect(text(harness)).toContain("Moved 10 of 12 chats from Old Model to New Model");
-      expect(text(harness)).toContain("Left as they were: 1 busy, 1 too long for New Model.");
+      expect(text(harness)).toContain("Moved 9 of 12 chats from Old Model to New Model");
+      expect(text(harness)).toContain("Left as they were: 1 busy, 1 too long for New Model, 1 failed.");
+      expect(text(harness)).toContain("Connection lost");
       expect(text(harness)).toContain("Standup notes");
       expect(text(harness)).toContain("Too long (310,000 tokens, and model-new takes 200,000)");
       expect(text(harness)).not.toContain("Moved chat");
@@ -310,19 +312,5 @@ describe("ModelMoveDisclosure", () => {
     } finally {
       await harness.cleanup();
     }
-  });
-});
-
-describe("model move result copy", () => {
-  it("names a move that found nothing to do", () => {
-    expect(describeMoveOutcome(job({ status: "completed", total: 0 }), "Old Model", "New Model"))
-      .toBe("No chats are on Old Model");
-  });
-
-  it("marks a move that gave up", () => {
-    const stopped = job({ status: "stopped", processed: 3, counts: { ...job().counts, failed: 3 } });
-    expect(describeMoveOutcome(stopped, "Old Model", "New Model"))
-      .toBe("Stopped early. Moved 0 of 12 chats from Old Model to New Model");
-    expect(describeMoveLeftovers(stopped, "New Model")).toEqual(["3 failed", "9 not tried"]);
   });
 });

@@ -30,7 +30,7 @@ const deployPage: DocPage = {
   title: "Deploying",
   tags: ["release"],
   frontmatter: { title: "Deploying", description: "How releases ship.", tags: ["release"], owner: "core", created: "2026-01-01T00:00:00.000Z", modified: "2026-04-01T00:00:00.000Z" },
-  body: "# Deploying\n\nShip it carefully\nacross two lines.\n\n## Steps\n\n- build\n- release\n",
+  body: "# Deploying\n\nShip it carefully\nacross two lines.\n\n## Steps\n\n- build\n- release\n\n# Rollback\n\nRestore the previous build.\n",
   folder: "guides",
   isDbItem: false,
   isFolderIndex: false,
@@ -108,12 +108,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
 describe("DocsView", () => {
   it("shows a page's title once, with its summary, and titles instead of slugs in the tree", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-04T00:00:00Z"));
     const harness = await createReactDomHarness();
     await harness.render(docsAt("/docs/guides/deploy"));
     await waitUntilAct(harness.act, () => text(harness).includes("Ship it carefully"), { label: "page body" });
@@ -121,6 +124,10 @@ describe("DocsView", () => {
     // The body opens with "# Deploying"; the header already shows it, so it must not repeat.
     const titles = findAllByTag(harness.dom.container, "H1").filter((node) => node.textContent?.includes("Deploying"));
     expect(titles).toHaveLength(1);
+    expect(findAllByTag(harness.dom.container, "H1").some((heading) => heading.textContent === "Rollback")).toBe(true);
+    expect(findAllByTag(harness.dom.container, "BUTTON").some((button) => button.getAttribute("aria-label") === "On this page")).toBe(true);
+    expect(text(harness)).toMatch(/Updated 3(?:d| days?) ago/i);
+    expect(text(harness)).toMatch(/1 min(?:ute)? read/i);
     expect(text(harness)).toContain("How releases ship.");
 
     // Hard-wrapped source lines flow as one paragraph rather than breaking at the wrap column.
@@ -182,7 +189,7 @@ describe("DocsView", () => {
         modified: "2026-04-01T00:00:00.000Z",
       },
       // The leading H1 mirrored the old title, so it follows the new one.
-      body: "# Deploying: the safe way\n\nShip it carefully\nacross two lines.\n\n## Steps\n\n- build\n- release\n",
+      body: "# Deploying: the safe way\n\nShip it carefully\nacross two lines.\n\n## Steps\n\n- build\n- release\n\n# Rollback\n\nRestore the previous build.\n",
       baseModified: "2026-04-01T00:00:00.000Z",
     });
   });

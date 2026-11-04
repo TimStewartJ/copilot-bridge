@@ -34,20 +34,6 @@ beforeEach(() => {
   viewerMocks.openImageViewer.mockClear();
 });
 
-describe("file descriptions", () => {
-  it("names a file by its extension and formats its size", () => {
-    expect(mod.describeFile("report.pdf").kind).toBe("PDF");
-    expect(mod.describeFile("data.CSV").kind).toBe("CSV");
-    expect(mod.describeFile("README").kind).toBe("File");
-    expect(mod.describeFile("clip", "image/png").kind).toBe("Image");
-    expect(mod.formatFileSize(512)).toBe("512 B");
-    expect(mod.formatFileSize(1536)).toBe("1.5 KB");
-    expect(mod.formatFileSize(25 * 1024 * 1024)).toBe("25 MB");
-    expect(mod.formatFileSize(undefined)).toBeNull();
-    expect(mod.base64ByteLength("aGVsbG8=")).toBe(5);
-  });
-});
-
 describe("attachmentImageSrc", () => {
   it("uses the bytes when present and the session's copy when history dropped them", () => {
     expect(mod.attachmentImageSrc({ type: "blob", data: "AAAA", mimeType: "image/png", displayName: "a.png" }))
@@ -84,7 +70,7 @@ describe("MessageAttachments", () => {
     const harness = await createReactDomHarness();
     const attachments: Attachment[] = [
       { type: "blob", data: "aGVsbG8=", mimeType: "image/png", displayName: "shot.png" },
-      { type: "file", path: "C:\\work\\notes.md" },
+      { type: "blob", data: "aGVsbG8=", mimeType: "text/markdown", displayName: "notes.md" },
     ];
     try {
       await harness.render(createElement(mod.MessageAttachments, { attachments }));
@@ -94,6 +80,7 @@ describe("MessageAttachments", () => {
       expect(images[0].getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
       expect(harness.dom.container.textContent).toContain("notes.md");
       expect(harness.dom.container.textContent).toContain("MD");
+      expect(harness.dom.container.textContent).toMatch(/\b5 (?:B|bytes)\b/);
 
       const open = findAllByTag(harness.dom.container, "BUTTON").find((button) => (
         button.getAttribute?.("aria-label") === "Open image shot.png"

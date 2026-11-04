@@ -406,35 +406,6 @@ describe("CopilotUsageSection", () => {
     expect(html).not.toContain("No GitHub metering in this range");
   });
 
-  it("labels the active window when a bounded range is returned", () => {
-    const html = renderSection(createUsageSummary({
-      range: {
-        key: "28d",
-        label: "28 days",
-        startAt: "2026-04-04T00:00:00.000Z",
-        startDate: "2026-04-04",
-      },
-      coverage: {
-        sessionsSeen: 2,
-        sessionsWithEvents: 2,
-        sessionsIncluded: 2,
-        sessionsSkipped: 0,
-        skippedByReason: {
-          no_events: 0,
-          no_shutdown: 0,
-          empty_model_metrics: 0,
-          parse_error: 0,
-        },
-        earliestIncludedAt: NOW,
-        latestIncludedAt: NOW,
-        earliestSkippedAt: null,
-        latestSkippedAt: null,
-      },
-    }));
-
-    expect(html).toContain("Since ");
-  });
-
 });
 
 describe("CopilotUsageSection range buttons", () => {

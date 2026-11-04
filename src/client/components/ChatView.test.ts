@@ -3494,13 +3494,11 @@ describe("ChatView live streaming UX", () => {
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Eighteen sheep.") ?? false);
-      const blocks = findAllByTag(dom.container, "DIV").filter((candidate) => candidate.getAttribute?.("data-activity-block"));
-      expect(blocks).toHaveLength(1);
-      expect(blocks[0]?.getAttribute("data-activity-state")).toBe("done");
-      // Thinking sits above the reply it led to.
-      const text = dom.container.textContent ?? "";
-      expect(text.indexOf("Thought")).toBeGreaterThanOrEqual(0);
-      expect(text.indexOf("Thought")).toBeLessThan(text.indexOf("Eighteen sheep."));
+      const rows = findAllByTag(dom.container, "DIV").filter((node) =>
+        node.getAttribute?.("data-activity-block") || node.getAttribute?.("data-testid") === "message-bubble");
+      expect(rows).toHaveLength(2);
+      expect(rows[0].getAttribute("data-activity-state")).toBe("done");
+      expect(rows[1].textContent).toContain("Eighteen sheep.");
 
       await expandActivity(dom.container, act);
       expect(dom.container.textContent).toContain("DISK-THOUGHT");

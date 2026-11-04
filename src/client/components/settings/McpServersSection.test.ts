@@ -74,6 +74,8 @@ describe("McpServersSection remove confirmation", () => {
     expect(getReactProps(findButtonByLabel(container, "example details"))?.["aria-expanded"]).toBe(false);
     expect(container.textContent).not.toContain("agency");
     const button = await openRowAndFindRemove(harness!);
+    expect(container.textContent).toContain("agency");
+    expect(container.textContent).toContain("mcp ado");
     expect(container.textContent).toContain("session isolated (shared requested)");
     expect(container.textContent).toContain("Shared execution is requested");
     await harness!.act(async () => {

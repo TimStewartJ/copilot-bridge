@@ -45,9 +45,11 @@ describe("BackendStatusBanner", () => {
       },
     });
 
-    expect(text).toContain("Agent backend reconnecting...");
-    expect(text).toContain("In-flight turns were interrupted");
-    expect(text).toContain("stdio closed - broken pipe");
+    expect(text).toMatch(/backend reconnecting/i);
+    expect(text).toMatch(/turns? (?:were |was )?interrupted/i);
+    expect(text).toMatch(/will (?:be resumed automatically|resume automatically|automatically resume)/i);
+    expect(text).toContain("stdio closed");
+    expect(text).toContain("broken pipe");
   });
 
   it("says when the Bridge restarted the backend itself", async () => {
@@ -62,7 +64,11 @@ describe("BackendStatusBanner", () => {
       },
     });
 
-    expect(text).toContain("Cause: Bridge restarted it because a session did not release in time (cleanup-stalled - session abc).");
+    expect(text).toMatch(/backend recovered/i);
+    expect(text).toMatch(/Bridge restarted/i);
+    expect(text).toMatch(/did not release in time|release timed out/i);
+    expect(text).toContain("cleanup-stalled");
+    expect(text).toContain("session abc");
     expect(text).toContain("2 sessions resumed automatically.");
   });
 

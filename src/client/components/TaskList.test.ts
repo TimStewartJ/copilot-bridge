@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session, Task } from "../api";
 import { createDialogTestHarness, type DialogTestHarness } from "../test-dialog-harness";
 import { findAllByTag, getReactProps, waitTick } from "../test-react-harness";
-import { createTaskActivity } from "../../test-support/task-attention";
 
 const api = vi.hoisted(() => ({ fetchTaskOverview: vi.fn() }));
 vi.mock("../api", async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }));
@@ -29,8 +28,8 @@ describe("phone task list sections", () => {
   let harness: DialogTestHarness | null = null;
   afterEach(async () => { await harness?.cleanup(); harness = null; });
 
-  async function renderList(overrides: Partial<ComponentProps<typeof TaskList>>, overviewTasks: unknown[] = []) {
-    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, sessionsComplete: true, counts: {}, tasks: overviewTasks });
+  async function renderList(overrides: Partial<ComponentProps<typeof TaskList>>) {
+    api.fetchTaskOverview.mockResolvedValue({ generatedAt: NOW, sessionsComplete: true, counts: {}, tasks: [] });
     harness = await createDialogTestHarness();
     await harness.render(createElement(TaskList, { tasks: [], activeTaskId: null, onSelectTask: vi.fn(), onNewTask: vi.fn(), ...overrides }));
   }
@@ -64,19 +63,5 @@ describe("phone task list sections", () => {
     const unreadRows = findAllByTag(harness!.dom.container, "BUTTON")
       .map((node) => getReactProps(node)?.["data-unread-task-id"]).filter(Boolean);
     expect(unreadRows).toEqual(["deferred", "closed"]);
-  });
-
-  it("shows no source notice on the phone and keeps task order", async () => {
-    const tasks = ["one", "two"].map((id, order) => createTask({ id, title: `Copied ${id}`, order }));
-    await renderList({ tasks }, tasks.map(task => ({
-      ...task, activity: createTaskActivity({
-        known: false, sessionIndexKnown: false,
-        unavailable: { scope: "source", reason: "Preview conversations are isolated." },
-      }),
-    })));
-    expect(harness!.dom.container.textContent).not.toContain("Activity data");
-    const rows = findAllByTag(harness!.dom.container, "BUTTON").filter(node => getReactProps(node)?.["data-task-id"]);
-    expect(rows.map(node => getReactProps(node)?.["data-task-id"])).toEqual(["one", "two"]);
-    expect(rows.every(node => !getReactProps(node)?.["data-task-attention"])).toBe(true);
   });
 });

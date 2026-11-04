@@ -557,18 +557,6 @@ describe("TaskPanel", () => {
     }
   });
 
-  it("keeps Details closed behind a one-line summary until it is opened", async () => {
-    detailsExpandedMock.value = false;
-    try {
-      const html = await renderTaskPanelHtml(createTask({ notes: "Some notes", cwd: "/workspace/copilot-bridge" }));
-      expect(html).toContain("notes");
-      expect(html).toContain("copilot-bridge");
-      expect(taskPanelSummaryRowMock).not.toHaveBeenCalled();
-    } finally {
-      detailsExpandedMock.value = true;
-    }
-  });
-
   it("asks about a reached revisit date above the task's sections, and only while the task is active", async () => {
     const due = await renderTaskPanelHtml(createTask({ deferred: true, nextTouchAt: "2000-01-01T00:00:00.000Z" }));
     expect(due).toContain("Time to revisit");
@@ -581,6 +569,7 @@ describe("TaskPanel", () => {
   });
 
   it("force-refreshes git status when opening workspace details", async () => {
+    detailsExpandedMock.value = false;
     const linkedSession = createSession();
     useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions: [linkedSession] }));
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
@@ -605,6 +594,12 @@ describe("TaskPanel", () => {
         ),
       );
 
+      const details = findAllByTag(harness.dom.container, "SECTION")
+        .find((section) => findAllByTag(section, "H3")[0]?.textContent === "Details");
+      const toggle = findAllByTag(details, "BUTTON")[0];
+      expect(getReactProps(toggle)?.["aria-expanded"]).toBe(false);
+      expect(taskPanelSummaryRowMock).not.toHaveBeenCalled();
+      await harness.act(async () => getReactProps(toggle)!.onClick());
       const workspaceRowCall = taskPanelSummaryRowMock.mock.calls.find(([props]) =>
         (props as { label?: string }).label === "Workspace");
       if (!workspaceRowCall) throw new Error("Workspace row was not rendered");
@@ -632,6 +627,7 @@ describe("TaskPanel", () => {
       });
 
     } finally {
+      detailsExpandedMock.value = true;
       await harness.cleanup();
     }
   });

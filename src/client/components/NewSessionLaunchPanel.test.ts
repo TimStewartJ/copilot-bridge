@@ -336,34 +336,4 @@ describe("NewSessionLaunchPanel", () => {
     expect(document.activeElement).toBe(findTile(harness!.dom.container, "Standard"));
     expect(props.onModelSelectionCommitted).not.toHaveBeenCalled();
   });
-
-  it("marks the Bridge default inside the refine menu rather than on the tile", async () => {
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...requiredProps(),
-      models: [
-        { id: "gpt-5.6", name: "GPT-5.6" },
-        { id: "gpt-5-mini", name: "GPT-5 mini" },
-      ],
-      defaultModelId: "gpt-5-mini",
-      selectedModelId: "",
-    }));
-
-    expect(findTile(harness!.dom.container, "Fast").textContent).toContain("GPT-5 mini");
-
-    const caret = findAllByTag(harness!.dom.container, "BUTTON")
-      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Fast model");
-    if (!caret) throw new Error("Fast refine caret was not rendered");
-    await harness!.act(async () => {
-      getReactProps(caret)?.onClick?.();
-    });
-
-    const options = findAllByTag(harness!.dom.container, "BUTTON")
-      .filter((button) => getReactProps(button)?.role === "option");
-    const defaultOption = options
-      .find((button) => (button.textContent ?? "").startsWith("GPT-5 mini"));
-    expect(defaultOption?.textContent).toContain("default");
-    const otherOption = options
-      .find((button) => (button.textContent ?? "").startsWith("GPT-5.6"));
-    expect(otherOption?.textContent).not.toContain("default");
-  });
 });

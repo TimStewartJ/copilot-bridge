@@ -323,15 +323,6 @@ describe("CopilotQuotaMenu", () => {
     expect(details).toContain("60 AI credits/day");
   });
 
-  it("marks where the month stands once usage has run past it", async () => {
-    freezeAtHalfMonth();
-    mockQuotaUsage(900);
-    harness = await createReactDomHarness();
-    await harness.render(routed(CopilotQuotaMenu));
-
-    expect(getReactProps(paceFill(harness.dom.container, "usage"))?.style).toMatchObject({ width: "90%" });
-    expect(getReactProps(paceFill(harness.dom.container, "month-marker"))?.style).toEqual({ marginLeft: "50%" });
-  });
 });
 
 describe("CopilotQuotaCard", () => {

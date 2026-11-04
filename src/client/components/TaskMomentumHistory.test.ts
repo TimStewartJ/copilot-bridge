@@ -54,7 +54,7 @@ describe("TaskMomentumHistory", () => {
   it("summarizes the latest change on one closed line and opens to the history with session links", async () => {
     fetchTaskMomentumEventsMock.mockResolvedValue(EVENTS);
     const onSelectSession = vi.fn();
-    const { dom, act } = await render({ onSelectSession });
+    const { dom, act } = await render({ standalone: true, onSelectSession });
     const container = dom.container as any;
     await waitUntilAct(act, () => (container.textContent ?? "").includes("by Daily rental search"));
 
@@ -95,12 +95,5 @@ describe("TaskMomentumHistory", () => {
     const { dom, act } = await render({ standalone: true });
     await waitUntilAct(act, () => ((dom.container as any).textContent ?? "").includes("could not be loaded"));
     expect((dom.container as any).textContent).toContain("Where things stood");
-  });
-
-  it("wraps archived-task history in its own group", async () => {
-    fetchTaskMomentumEventsMock.mockResolvedValue(EVENTS);
-    const { dom, act } = await render({ standalone: true });
-    await waitUntilAct(act, () => ((dom.container as any).textContent ?? "").includes("Where things stood"));
-    expect((dom.container as any).textContent).toContain("Changed");
   });
 });

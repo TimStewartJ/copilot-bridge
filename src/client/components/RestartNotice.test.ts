@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createReactDomHarness, findAllByTag, getReactProps, type ReactDomHarness } from "../test-react-harness";
-import RestartNotice, { describeWaiting } from "./RestartNotice";
+import RestartNotice from "./RestartNotice";
 
 let harness: ReactDomHarness | undefined;
 afterEach(async () => { await harness?.cleanup(); harness = undefined; });
@@ -23,6 +23,9 @@ describe("RestartNotice", () => {
     expect(button.textContent).toBe("Restart now");
     await harness!.act(async () => { getReactProps(button)?.onClick?.(); });
     expect(restart).toHaveBeenCalledOnce();
+    await harness!.render(createElement(RestartNotice, { notice: { kind: "restarting" } }));
+    expect(harness!.dom.container.textContent).toMatch(/\brestarting\b/i);
+    expect(findAllByTag(harness!.dom.container, "BUTTON")).toHaveLength(0);
   });
 
   it("does not promise a forced reload while unsent work holds it back", async () => {
@@ -30,12 +33,5 @@ describe("RestartNotice", () => {
     expect(text).toContain("reloads once your unsent work is safe");
     expect(text).not.toContain("reloading");
     expect(findAllByTag(harness!.dom.container, "button")[0].textContent).toBe("Reload now");
-  });
-
-  it("uses singular grammar and distinguishes actual restart from waiting", async () => {
-    expect(describeWaiting(1, 0)).toBe("after 1 session finishes");
-    expect(describeWaiting(0, 1)).toBe("after 1 job finishes");
-    expect(describeWaiting(0, 0)).toBe("when Bridge is idle");
-    expect(await renderNotice({ notice: { kind: "restarting" } })).toContain("Bridge is restarting");
   });
 });

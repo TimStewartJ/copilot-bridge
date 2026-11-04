@@ -38,14 +38,17 @@ describe("SessionModelSummary editing", () => {
     const onEdit = vi.fn();
     try {
       await harness.render(createElement(SessionModelSummary, {
-        state: STATE,
-        models: MODELS,
+        state: { model: "router", reasoningEffort: "router-max", source: "live" },
+        models: [{ id: "router", name: "Routed model", selectionMode: "dynamic", reasoningEffortLabels: { "router-max": "Max" } }],
         loading: false,
         onRetry: vi.fn(),
         onEdit,
       }));
       const button = findEditButton(harness.dom.container);
-      expect(button?.textContent).toContain("GPT-5.6 · High");
+      expect(button?.textContent).toContain("Routed model");
+      expect(button?.textContent).toContain("Max");
+      expect(button?.textContent).not.toMatch(/context/i);
+      expect(button?.getAttribute("aria-label")).toMatch(/Change model, effort, and context:.*Routed model.*Max/);
       expect(getReactProps(button)?.disabled).toBe(false);
       await harness.act(async () => getReactProps(button)?.onClick?.());
       expect(onEdit).toHaveBeenCalledOnce();

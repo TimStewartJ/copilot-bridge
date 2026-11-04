@@ -1,44 +1,11 @@
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { advanceTimersByTimeAct, createReactDomHarness } from "../../test-react-harness";
-import {
-  LoadingSkeletonRegion,
-  Skeleton,
-  SkeletonCard,
-  SkeletonRow,
-  SkeletonText,
-} from "./Skeleton";
+import { advanceTimersByTimeAct, createReactDomHarness, findAllByTag } from "../../test-react-harness";
+import { LoadingSkeletonRegion, SkeletonText } from "./Skeleton";
 
 describe("shared skeleton primitives", () => {
   afterEach(() => {
     vi.useRealTimers();
-  });
-
-  it("renders decorative skeletons with reduced-motion-safe classes", () => {
-    const html = renderToStaticMarkup(
-      createElement(
-        LoadingSkeletonRegion,
-        { isLoading: true, label: "Loading dashboard", children: null },
-        createElement(
-          SkeletonCard,
-          null,
-          createElement(Skeleton, { height: 16, width: "40%" }),
-          createElement(SkeletonText, { lines: 2, widths: ["100%", "64%"] }),
-          createElement(SkeletonRow, { leading: "circle" }),
-        ),
-      ),
-    );
-
-    expect(html).toContain('aria-busy="true"');
-    expect(html).toContain('role="status"');
-    expect(html).toContain("Loading dashboard");
-    expect(html).toContain("sr-only");
-    expect(html).toContain('aria-hidden="true"');
-    expect(html).toContain("animate-pulse");
-    expect(html).toContain("motion-reduce:animate-none");
-    expect(html).not.toContain("<button");
-    expect(html).not.toContain("<a ");
   });
 
   it("delays rendering to avoid loading flicker", async () => {
@@ -60,7 +27,16 @@ describe("shared skeleton primitives", () => {
       expect(harness.dom.container.textContent).toBe("");
 
       await advanceTimersByTimeAct(harness.act, 100);
-      expect(harness.dom.container.textContent).toContain("Loading settings");
+      const status = findAllByTag(harness.dom.container, "SPAN").find((node) => node.getAttribute("role") === "status");
+      expect(status?.textContent).toBe("Loading settings");
+      const surfaces = findAllByTag(harness.dom.container, "DIV");
+      const busy = surfaces.find((node) => node.getAttribute("aria-busy") === "true");
+      expect(busy?.getAttribute("aria-describedby")).toBe(status.getAttribute("id"));
+      const placeholders = surfaces.filter((node) => node.getAttribute("aria-hidden") === "true");
+      expect(placeholders.length).toBeGreaterThan(0);
+      expect(placeholders.every((node) => node.getAttribute("class")?.includes("motion-reduce:animate-none"))).toBe(true);
+      expect(findAllByTag(busy, "BUTTON")).toHaveLength(0);
+      expect(findAllByTag(busy, "A")).toHaveLength(0);
 
       await harness.render(
         createElement(

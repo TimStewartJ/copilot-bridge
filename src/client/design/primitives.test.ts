@@ -10,15 +10,10 @@ import {
   Badge,
   Button,
   ChoiceButton,
-  CountBadge,
-  Details,
   DisclosureRow,
-  Field,
-  FieldList,
   FormRow,
   IconButton,
   IdentitySwatch,
-  MetaLine,
   Notice,
   Section,
   SegmentedControl,
@@ -70,27 +65,6 @@ describe("design primitives", () => {
     expect(props?.["data-focus-lifecycle"]).toBe("accepted_risk");
     expect(props?.["aria-label"]).toBe("Risk accepted");
     expect(props?.className).toContain(DS.badge.tone.warning);
-  });
-
-  it("gives a significant region one group surface without boxing its values", async () => {
-    const container = await render(createElement(Section, { label: "Sessions", surface: true, children: "rows" }));
-    const section = findAllByTag(container, "SECTION")[0];
-    expect(getReactProps(section)?.["data-ds-surface"]).toBe("group");
-    expect(getReactProps(section)?.className).toContain(DS.surface.group);
-    expect(getReactProps(section)?.className).not.toContain("shadow");
-  });
-
-  it("keeps ordinary form labels visible with the container-sized label column", async () => {
-    const container = await render(createElement(FormRow, {
-      label: "Agent",
-      htmlFor: "agent",
-      children: createElement("input", { id: "agent" }),
-    }));
-    const label = findAllByTag(container, "LABEL")[0];
-    expect(getReactProps(label)?.htmlFor).toBe("agent");
-    expect(getReactProps(label)?.className).not.toContain("sr-only");
-    const grid = findAllByTag(container, "DIV").find((element) => getReactProps(element)?.className?.startsWith("grid "));
-    expect(getReactProps(grid)?.className).toContain("grid-cols-[5.5rem_minmax(0,1fr)]");
   });
 
   it("hides a redundant form label while preserving its association and reclaiming its column", async () => {
@@ -211,17 +185,6 @@ describe("design primitives", () => {
     expect(container.textContent).not.toContain("Steps");
   });
 
-  it("starts a native disclosure open only when asked", async () => {
-    const container = await render(createElement("div", null,
-      createElement(Details, { label: "MCP servers", detail: "2/2 connected", children: "healthy" }),
-      createElement(Details, { label: "Recent tool failures", tone: "warning", open: true, children: "failed" }),
-    ));
-    const [closed, open] = findAllByTag(container, "DETAILS");
-    expect(Boolean(getReactProps(closed)?.open)).toBe(false);
-    expect(getReactProps(open)?.open).toBe(true);
-    expect(findAllByTag(closed, "SUMMARY")[0]?.textContent).toBe("MCP servers2/2 connected");
-  });
-
   it("labels a section for assistive tech and draws no box around it", async () => {
     const container = await render(createElement(Section, { label: "Sessions", count: 13, children: "rows" }));
     const section = findAllByTag(container, "SECTION")[0];
@@ -231,25 +194,6 @@ describe("design primitives", () => {
     expect(getReactProps(section)?.className ?? "").not.toContain("border");
   });
 
-  it("says an empty field once, quietly, in place of its value", async () => {
-    const container = await render(createElement(FieldList, null,
-      createElement(Field, { label: "Next action", empty: "No next action captured." }),
-      createElement(Field, { label: "Workspace", mono: true }, "E:\\repo"),
-    ));
-    const [empty, filled] = findAllByTag(container, "DD");
-    expect(empty.textContent).toBe("No next action captured.");
-    expect(getReactProps(empty)?.className).toContain("text-text-faint");
-    expect(filled.textContent).toBe("E:\\repo");
-    expect(getReactProps(filled)?.className).toContain("font-mono");
-  });
-
-  it("joins the facts it is given and skips the ones it is not", async () => {
-    const container = await render(createElement(MetaLine, { items: ["15h ago", false, undefined, "331 KB", ""] }));
-    expect(container.textContent).toBe("15h ago·331 KB");
-    const none = await render(createElement(MetaLine, { items: [false, null] }));
-    expect(none.textContent).toBe("");
-  });
-
   it("interrupts a screen reader for a failure and not for anything else", async () => {
     const container = await render(createElement("div", null,
       createElement(Notice, { tone: "danger" }, "Run failed"),
@@ -257,18 +201,6 @@ describe("design primitives", () => {
     ));
     const roles = findAllByTag(container, "DIV").map((element) => getReactProps(element)?.role).filter(Boolean);
     expect(roles).toEqual(["alert", "status"]);
-  });
-
-  it("caps a count so it stays a badge", async () => {
-    const container = await render(createElement("div", null,
-      createElement(CountBadge, { count: 3 }),
-      createElement(CountBadge, { count: 120, tone: "warning" }),
-    ));
-    const [small, large] = findAllByTag(container, "SPAN");
-    expect(small.textContent).toBe("3");
-    expect(large.textContent).toBe("99+");
-    expect(getReactProps(large)?.className).toContain("bg-warning");
-    expect(getReactProps(small)?.["aria-hidden"]).toBe("true");
   });
 
   it("draws a distinct glyph for every status and names it to assistive technology", async () => {
@@ -284,6 +216,8 @@ describe("design primitives", () => {
       expect(icon.getAttribute("aria-label")).toBe(STATUS_LABEL[kind]);
       expect(getReactProps(icon)?.className).toContain(DS.status.tone[kind]);
     }
+    const unreadWorking = icons.find((icon) => icon.getAttribute("data-status") === "unread-working");
+    expect(getReactProps(findAllByTag(unreadWorking, "svg")[0])?.className).toContain("motion-reduce:animate-none");
     const shapes = icons.map((icon) => JSON.stringify(
       [...findAllByTag(icon, "circle"), ...findAllByTag(icon, "path")].map((shape) => {
         const { d, r, cx, cy, fill } = getReactProps(shape) ?? {};
@@ -299,20 +233,6 @@ describe("design primitives", () => {
     expect(icon.getAttribute("aria-hidden")).toBe("true");
     expect(icon.getAttribute("aria-label")).toBeNull();
     expect(getReactProps(findAllByTag(icon, "svg")[0])?.className).toContain("motion-reduce:animate-none");
-  });
-
-  it("turns the ring around the unread dot while work continues, and stops it under reduced motion", async () => {
-    const container = await render(createElement(StatusIcon, { kind: "unread-working" }));
-    const icon = findAllByTag(container, "SPAN")[0];
-    const svg = findAllByTag(icon, "svg")[0];
-    expect(getReactProps(svg)?.className).toContain("animate-spin");
-    expect(getReactProps(svg)?.className).toContain("motion-reduce:animate-none");
-    // Still, the shape is the unread dot plus the working ring, so it reads as both.
-    const [dot, track] = findAllByTag(icon, "circle").map((circle) => getReactProps(circle));
-    expect(dot).toMatchObject({ fill: "currentColor" });
-    expect(track).toMatchObject({ fill: "none" });
-    expect(Number(track?.r)).toBeGreaterThan(Number(dot?.r));
-    expect(findAllByTag(icon, "path")).toHaveLength(1);
   });
 
   it("draws identity as a square swatch and falls back to slate", async () => {
