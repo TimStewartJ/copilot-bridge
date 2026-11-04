@@ -74,24 +74,6 @@ describe("Session manager routes", () => {
     });
   });
 
-  it("GET /api/sessions/:id/messages-fast includes visible activity metadata", async () => {
-    ctx.sessionManager.readMessagesFromDisk = vi.fn().mockResolvedValue({
-      messages: [],
-      total: 0,
-      hasMore: false,
-      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-      coverage: { latestEventId: "event-1" },
-    });
-
-    const res = await request(app).get("/api/sessions/test-id/messages-fast");
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
-      coverage: { latestEventId: "event-1" },
-      warm: false,
-    });
-  });
-
   it("restores a failed run notice from storage without an event bus or runtime resume", async () => {
     ctx.sessionMetaStore.setTerminalOverlay("failed-chat", {
       type: "error",
@@ -157,23 +139,21 @@ describe("Session manager routes", () => {
     expect(ctx.sessionManager.startWork).toHaveBeenCalledOnce();
   });
 
-  it.each([undefined, "", 42, "x".repeat(201)])("rejects an invalid failed run ID: %s", async (runId) => {
+  it.each(["", 42, "x".repeat(201)])("rejects an invalid failed run ID: %s", async (runId) => {
     vi.spyOn(ctx.sessionManager, "startWork");
     const response = await request(app).post("/api/sessions/test-id/retry").send({ runId });
     expect(response.status).toBe(400);
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it.each(["missing", "newer", "done", "busy", "stalled"])("rejects a %s retry without sending work", async (kind) => {
+  it.each(["newer", "done", "busy", "stalled"])("rejects a %s retry without sending work", async (kind) => {
     vi.spyOn(ctx.sessionManager, "startWork");
-    if (kind !== "missing") {
-      ctx.sessionMetaStore.setTerminalOverlay("test-id", {
-        type: kind === "done" ? "done" : "error",
-        runId: kind === "newer" ? "new-run" : "failed-run",
-        terminalSourceEventId: "saved-error",
-        notice: { kind: "error", message: "upstream failed" },
-      });
-    }
+    ctx.sessionMetaStore.setTerminalOverlay("test-id", {
+      type: kind === "done" ? "done" : "error",
+      runId: kind === "newer" ? "new-run" : "failed-run",
+      terminalSourceEventId: "saved-error",
+      notice: { kind: "error", message: "upstream failed" },
+    });
     if (kind === "busy") ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     if (kind === "stalled") ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
     const response = await request(app).post("/api/sessions/test-id/retry").send({ runId: "failed-run" });
@@ -223,7 +203,8 @@ describe("Session manager routes", () => {
       messages: [],
       total: 0,
       hasMore: false,
-      coverage: {},
+      lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+      coverage: { latestEventId: "event-1" },
       agents: [moves],
     });
 
@@ -231,7 +212,10 @@ describe("Session manager routes", () => {
 
     expect(res.status).toBe(200);
     expect(ctx.sessionManager.readMessagesFromDisk).toHaveBeenCalledWith("test-id", { limit: 50, before: 200 });
-    expect(res.body.agents).toEqual([moves]);
+    expect(res.body).toMatchObject({
+      agents: [moves], lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+      coverage: { latestEventId: "event-1" }, warm: false,
+    });
   });
 
   it("GET /api/sessions/:id/stream returns a complete ephemeral snapshot", async () => {

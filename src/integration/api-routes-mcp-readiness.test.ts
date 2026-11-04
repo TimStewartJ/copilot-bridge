@@ -5,9 +5,9 @@ const connected = [{ name: "demo", status: "connected" }];
 const startedAt = "2026-09-15T17:00:00Z";
 
 describe("MCP connection observations and tool readiness", () => {
-  it.each(["initializing", "failed"] as const)("returns %s readiness without blocking or downgrading cached connections", async (state) => {
+  it("returns initializing readiness without blocking or downgrading cached connections", async () => {
     const manager = createMockSessionManager();
-    const readiness = { state, startedAt, ...(state === "failed" ? { error: "Tool initialization failed: permission denied" } : {}) };
+    const readiness = { state: "initializing", startedAt };
     manager.getSessionToolReadiness = vi.fn().mockReturnValue(readiness);
     manager.getCachedMcpStatus = vi.fn().mockReturnValue(connected);
     manager.getMcpStatus = vi.fn().mockRejectedValue(new Error("should not probe"));

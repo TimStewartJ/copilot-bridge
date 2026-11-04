@@ -48,6 +48,7 @@ describe("session list: one build at a time, never older than the reader", () =>
     // A mutation answers while the first build is still reading.
     list.invalidate("test:mutation");
     const after = list.read();
+    list.invalidate("test:another-mutation");
     const alsoAfter = list.read();
 
     builds[0]!.resolve(named("old"));
@@ -57,27 +58,6 @@ describe("session list: one build at a time, never older than the reader", () =>
     expect(ids(await before)).toEqual(["old"]);
     expect(ids(await after)).toEqual(["old", "new"]);
     expect(ids(await alsoAfter)).toEqual(["old", "new"]);
-    expect(listing).toHaveBeenCalledTimes(2);
-  });
-
-  it("costs exactly two builds for any number of invalidations during one build", async () => {
-    const builds = [deferredBuild(), deferredBuild()];
-    const { list, listing } = createOwner(() => builds[listing.mock.calls.length - 1]!.promise);
-
-    const first = list.read();
-    await vi.waitFor(() => expect(listing).toHaveBeenCalledTimes(1));
-    const readers: Array<Promise<SessionListRow[]>> = [];
-    for (let i = 0; i < 20; i++) {
-      list.invalidate(`test:burst-${i}`);
-      readers.push(list.read());
-    }
-    builds[0]!.resolve(named("a"));
-    await first;
-    await vi.waitFor(() => expect(listing).toHaveBeenCalledTimes(2));
-    builds[1]!.resolve(named("a", "b"));
-
-    for (const reader of readers) expect(ids(await reader)).toEqual(["a", "b"]);
-    expect(ids(await list.read())).toEqual(["a", "b"]);
     expect(listing).toHaveBeenCalledTimes(2);
   });
 
@@ -356,32 +336,6 @@ describe("session list routes", () => {
     const sessionManager = { ...createMockSessionManager(), listSessionsFromDisk } as any;
     return { ...createTestApp({ sessionManager }), listSessionsFromDisk };
   }
-
-  it("builds nothing for any number of archive events", async () => {
-    const sessionIds = Array.from({ length: 12 }, (_, index) => `chat-${index}`);
-    const { app, listSessionsFromDisk } = createApp(sessionIds);
-    expect((await request(app).get("/api/sessions")).body.sessions).toHaveLength(12);
-
-    for (const sessionId of sessionIds.slice(0, 10)) {
-      expect((await request(app).patch(`/api/sessions/${sessionId}`).send({ archived: true })).status).toBe(200);
-      const listed = (await request(app).get("/api/sessions")).body.sessions.map((s: any) => s.sessionId);
-      expect(listed).not.toContain(sessionId);
-    }
-
-    expect((await request(app).get("/api/sessions")).body.sessions.map((s: any) => s.sessionId).sort()).toEqual(["chat-10", "chat-11"]);
-    expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
-  });
-
-  it("reflects a task link made after the build in the next response", async () => {
-    const { app, ctx } = createApp(["chat"]);
-    await request(app).get("/api/sessions");
-    const task = ctx.taskStore.createTask("Later");
-
-    ctx.taskStore.linkSession(task.id, "chat");
-    const linked = await request(app).get("/api/sessions");
-
-    expect(linked.body.sessions).toEqual([expect.objectContaining({ sessionId: "chat", linkedTaskIds: [task.id] })]);
-  });
 
   it("lists a chat whose creation has answered but not finished, and drops it when the creation fails", async () => {
     // What SessionManager does for a background creation: the id at once; the folder, or the

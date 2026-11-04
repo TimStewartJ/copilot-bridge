@@ -4,45 +4,6 @@ import { createTestApp } from "../test-support/api-routes.js";
 import { endDeferLoop } from "../server/__tests__/helpers.js";
 
 describe("api router defer reactivation", () => {
-  it("reactivates a cancelled one-shot defer", async () => {
-    const { app, ctx } = createTestApp();
-    const prompt = ctx.deferredPromptStore!.create(
-      "session-1",
-      "retry this later",
-      "2030-01-01T00:00:00.000Z",
-    );
-    expect(ctx.deferredPromptStore!.cancelById(prompt.id)).toBe(true);
-    const poke = vi.fn();
-    ctx.deferredPromptRunner = {
-      poke,
-      start: vi.fn(),
-      shutdown: vi.fn(),
-    } as NonNullable<typeof ctx.deferredPromptRunner>;
-    const events: unknown[] = [];
-    ctx.globalBus.subscribe((event) => events.push(event));
-
-    const response = await request(app)
-      .post(`/api/sessions/session-1/defers/${prompt.deferId}/reactivate`);
-
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      ok: true,
-      deferId: prompt.deferId,
-      kind: "once",
-      status: "pending",
-      nextRunAt: expect.any(String),
-    });
-    expect(ctx.deferredPromptStore!.get(prompt.id)).toMatchObject({
-      status: "pending",
-      runAt: response.body.nextRunAt,
-    });
-    expect(poke).toHaveBeenCalledOnce();
-    expect(events).toContainEqual({
-      type: "session:defer-summary",
-      sessionId: "session-1",
-      deferSummary: { count: 1, runningCount: 0, nextRunAt: response.body.nextRunAt },
-    });
-  });
 
   it("reactivates a failed interval defer", async () => {
     const { app, ctx, db } = createTestApp();
@@ -83,23 +44,6 @@ describe("api router defer reactivation", () => {
       type: "session:defer-summary",
       sessionId: "session-1",
       deferSummary: { count: 1, runningCount: 0, nextRunAt: response.body.nextRunAt },
-    });
-  });
-
-  it("returns 409 when the defer status cannot be reactivated", async () => {
-    const { app, ctx } = createTestApp();
-    const prompt = ctx.deferredPromptStore!.create(
-      "session-1",
-      "already pending",
-      "2030-01-01T00:00:00.000Z",
-    );
-
-    const response = await request(app)
-      .post(`/api/sessions/session-1/defers/${prompt.deferId}/reactivate`);
-
-    expect(response.status).toBe(409);
-    expect(response.body).toEqual({
-      error: `Defer ${prompt.deferId} is pending and cannot be reactivated.`,
     });
   });
 

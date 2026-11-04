@@ -123,6 +123,7 @@ describe("api router server management reliability", () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       ok: true,
+      docsFts: { ok: true, status: "available" },
       agentBackend: {
         state: "reconnecting",
         connection: "disconnected",

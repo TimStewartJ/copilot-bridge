@@ -153,20 +153,6 @@ describe("session deletion cleans up every owned subsystem", () => {
     expect(changedTaskIds).not.toContain(unlinked.id);
   });
 
-  it("does not touch any task when the deleted session had no links", async () => {
-    const task = ctx.taskStore.createTask("Untouched");
-    const updatedAt = ctx.taskStore.getTask(task.id)!.updatedAt;
-    const changedTaskIds: string[] = [];
-    ctx.globalBus.subscribe((event: any) => {
-      if (event.type === "task:changed") changedTaskIds.push(event.taskId);
-    });
-
-    await request(app).delete(`/api/sessions/${SESSION_ID}`).expect(200);
-
-    expect(changedTaskIds).toEqual([]);
-    expect(ctx.taskStore.getTask(task.id)!.updatedAt).toBe(updatedAt);
-  });
-
   it("still cleans Bridge-owned state when only the backend delete fails", async () => {
     seedSessionContext(SESSION_ID);
     const deferStore = ctx.deferredPromptStore!;

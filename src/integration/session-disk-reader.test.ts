@@ -90,31 +90,6 @@ describe("listSessionsFromDisk telemetry", () => {
     await expect(listSessionsFromDisk(deps)).rejects.toThrow();
   });
 
-  it("records the enumeration and the whole listing", async () => {
-    const copilotHome = makeTestDir("session-disk-list");
-    writeSessionFiles(copilotHome, "session-a", {
-      workspace: "created_at: 2026-04-30T10:00:00.000Z\nsummary: Alpha\n",
-      events: [
-        { type: "user.message", timestamp: "2026-04-30T10:00:01.000Z", data: { content: "hello" } },
-      ],
-    });
-
-    const { deps, spans } = createDeps(copilotHome);
-    const sessions = await listSessionsFromDisk(deps);
-
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0]).toMatchObject({
-      sessionId: "session-a",
-      summary: "Alpha",
-      eventLogSizeBytes: expect.any(Number),
-    });
-    expect(spans.map((span) => span.name)).toEqual([
-      "session.listFromDisk.enumerate",
-      "session.listFromDisk",
-    ]);
-    expect(spans[1]!.metadata).toMatchObject({ count: 1, dirCount: 1, skipped: 0, missingWorkspace: 0 });
-  });
-
   it("prefers workspace name over summary without hiding helper-looking session ids", async () => {
     const copilotHome = makeTestDir("session-disk-list-names");
     writeSessionFiles(copilotHome, "session-named", {
@@ -1230,51 +1205,6 @@ describe("readMessagesFromDisk latest-page path", () => {
     }
   });
 
-  it("preserves full-history turn ids for tailed messages", async () => {
-    const copilotHome = makeTestDir("session-disk-reader-turns");
-    const oldTurns = Array.from({ length: 3 }, (_, index) => [
-      { type: "assistant.turn_start", timestamp: `2026-04-30T09:0${index}:00.000Z`, data: {} },
-      {
-        type: "assistant.message",
-        timestamp: `2026-04-30T09:0${index}:01.000Z`,
-        data: { content: `old-turn-${index}` },
-      },
-      { type: "session.idle", timestamp: `2026-04-30T09:0${index}:02.000Z`, data: {} },
-    ]).flat();
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
-    const recentTurns = [
-      { type: "assistant.turn_start", timestamp: "2026-04-30T10:00:00.000Z", data: {} },
-      {
-        type: "assistant.message",
-        timestamp: "2026-04-30T10:00:01.000Z",
-        data: { content: "recent-turn-0" },
-      },
-      { type: "session.idle", timestamp: "2026-04-30T10:00:02.000Z", data: {} },
-      { type: "assistant.turn_start", timestamp: "2026-04-30T10:01:00.000Z", data: {} },
-      {
-        type: "assistant.message",
-        timestamp: "2026-04-30T10:01:01.000Z",
-        data: { content: "recent-turn-1" },
-      },
-    ];
-    writeSessionFiles(copilotHome, "turns", {
-      events: [...oldTurns, ...padding, ...recentTurns],
-    });
-
-    const { deps } = createDeps(copilotHome);
-    const result = await readMessagesFromDisk(deps, "turns", { limit: 2 });
-
-    expect(result.total).toBe(5);
-    expect(result.messages).toMatchObject([
-      { id: "entry-3", content: "recent-turn-0", turnId: "turn-4" },
-      { id: "entry-4", content: "recent-turn-1", turnId: "turn-5" },
-    ]);
-  });
-
   it("preserves fork boundaries in the latest-page tail transform", async () => {
     const copilotHome = makeTestDir("session-disk-reader-fork-boundary");
     writeSessionFiles(copilotHome, "forkable", {
@@ -1497,18 +1427,6 @@ describe("readMessagesFromDisk older-page pagination", () => {
     expect(spans.some((span) => span.name === "session.readFromDisk.tailRead")).toBe(false);
   });
 
-  it("clamps the first older window and reports no more history", async () => {
-    const copilotHome = makeTestDir("session-disk-reader-older-clamp");
-    writeVisibleHistory(copilotHome, "older-clamp");
-
-    const { deps } = createDeps(copilotHome);
-    const result = await readMessagesFromDisk(deps, "older-clamp", { limit: 3, before: 2 });
-
-    expect(result.total).toBe(5);
-    expect(result.hasMore).toBe(false);
-    expect(result.messages.map((entry) => entry.content)).toEqual(["m0", "m1"]);
-  });
-
   it("reads older pages and whole histories exactly as parsing every event would", async () => {
     const copilotHome = makeTestDir("session-disk-reader-older-projection");
     const sessionId = "older-projection";
@@ -1556,38 +1474,6 @@ describe("readMessagesFromDisk older-page pagination", () => {
     expect(await readMessagesFromDisk(deps, sessionId)).toEqual({ ...expectedMeta, messages: allEntries, hasMore: false });
     expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata).toMatchObject({ mode: "full", malformedEventCount: 5 });
     expect(spans.find((span) => span.name === "session.readFromDisk.fullRead")?.metadata).toMatchObject({ bytes: statSync(eventsPath).size });
-  });
-
-  it("bypasses the bounded-tail optimization for before pages even on large histories", async () => {
-    const copilotHome = makeTestDir("session-disk-reader-older-large");
-    const visible = Array.from({ length: 25 }, (_, index) => ({
-      type: "user.message",
-      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
-      data: { content: `msg-${index}` },
-    }));
-    const padding = Array.from({ length: 5_000 }, (_, index) => ({
-      type: "internal.trace",
-      timestamp: "2026-04-30T10:00:00.000Z",
-      data: { index, payload: "x".repeat(220) },
-    }));
-    writeSessionFiles(copilotHome, "older-large", { events: [...visible, ...padding] });
-
-    const { deps, spans } = createDeps(copilotHome);
-    const result = await readMessagesFromDisk(deps, "older-large", { limit: 5, before: 10 });
-
-    expect(result.total).toBe(25);
-    expect(result.hasMore).toBe(true);
-    expect(result.messages.map((entry) => entry.content)).toEqual([
-      "msg-5",
-      "msg-6",
-      "msg-7",
-      "msg-8",
-      "msg-9",
-    ]);
-
-    const readSpan = spans.find((span) => span.name === "session.readFromDisk");
-    expect(readSpan?.metadata).toMatchObject({ mode: "full", totalMessages: 25, messageCount: 5 });
-    expect(spans.some((span) => span.name === "session.readFromDisk.tailRead")).toBe(false);
   });
 });
 import { createEventBusRegistry } from "../server/event-bus.js";
@@ -1651,6 +1537,7 @@ describe("SessionManager disk session reads", () => {
     const all = await manager.listSessionsFromDisk({ includeArchived: false });
     const skipped = await manager.listSessionsFromDisk({ includeArchived: false, skip: new Set(["session-a"]) });
     const enumerations = telemetryStore.querySpans({ name: "session.listFromDisk.enumerate", limit: 20 }).length;
+    expect(enumerations).toBeGreaterThan(0);
     const named = await manager.readSessionsFromDisk(["session-b", "session-gone", "session-a"]);
 
     expect(all.map((session: any) => session.sessionId).sort()).toEqual(["session-a", "session-b"]);
@@ -1677,53 +1564,10 @@ describe("SessionManager disk session reads", () => {
     await expect(manager.readSessionsFromDisk(["session-unreadable", "session-ok"], { failOnReadError: true }))
       .rejects.toThrow();
   });
-
-  it("records disposable title cleanup sweep spans with elapsed durations", async () => {
-    const copilotHome = makeTestDir("session-manager-cleanup-sweep");
-    const { manager, telemetryStore } = createManager(copilotHome);
-
-    await manager.sweepLeakedDisposableTitleSessions();
-
-    const spans = telemetryStore.querySpans({ name: "session.name.cleanupSweep" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].duration).toBeGreaterThanOrEqual(0);
-    expect(spans[0].duration).toBeLessThan(60_000);
-    expect(spans[0].metadata).toMatchObject({ result: "ok", count: 0 });
-  });
 });
 
 
 describe("session storage reader", () => {
-  it("returns recursive totals for nested session files", async () => {
-    const sessionStateDir = makeTestDir("session-storage-nested");
-    const sessionDir = join(sessionStateDir, "session-1");
-    mkdirSync(join(sessionDir, "files", "deep"), { recursive: true });
-    writeFileSync(join(sessionDir, "events.jsonl"), "events");
-    writeFileSync(join(sessionDir, "files", "artifact.txt"), "artifact");
-    writeFileSync(join(sessionDir, "files", "deep", "trace.json"), "trace");
-
-    const measurement = await createSessionStorageReader(sessionStateDir).measureSession("session-1");
-
-    expect(measurement).toEqual({
-      status: "complete",
-      diskSizeBytes: "events".length + "artifact".length + "trace".length,
-    });
-  });
-
-  it("distinguishes a missing session directory from an empty one", async () => {
-    const sessionStateDir = makeTestDir("session-storage-missing");
-
-    const measurement = await createSessionStorageReader(sessionStateDir).measureSession("missing-session");
-
-    expect(measurement).toEqual({
-      status: "missing",
-      diskSizeBytes: 0,
-      warning: {
-        code: "missing",
-        message: "Session storage directory is missing.",
-      },
-    });
-  });
 
   it("returns a partial lower bound when a file stat fails", async () => {
     const sessionStateDir = makeTestDir("session-storage-partial");

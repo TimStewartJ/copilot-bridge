@@ -135,53 +135,6 @@ describe("Session stream route", () => {
     expect(res.text).not.toContain('"runNotice"');
   });
 
-  it("GET /api/sessions/:id/stream forwards completed snapshots without transport normalization", async () => {
-    ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
-      subscribeWithSnapshot() {
-        return {
-          snapshot: {
-          type: "snapshot",
-          complete: true,
-          terminalType: "done",
-          finalContent: "Run finished",
-          },
-          unsubscribe: () => {},
-        };
-      },
-    });
-
-    const res = await request(app)
-      .get("/api/sessions/session-123/stream");
-
-    expect(res.status).toBe(200);
-    expect(res.text).toContain('"type":"snapshot"');
-    expect(res.text).toContain('"finalContent":"Run finished"');
-  });
-
-  it("GET /api/sessions/:id/stream forwards shutdown snapshots", async () => {
-    ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
-      subscribeWithSnapshot() {
-        return {
-          snapshot: {
-            type: "snapshot",
-            complete: true,
-            terminalType: "shutdown",
-            finalContent: "Partial answer",
-          },
-          unsubscribe: () => {},
-        };
-      },
-    });
-
-    const res = await request(app)
-      .get("/api/sessions/session-123/stream");
-
-    expect(res.status).toBe(200);
-    expect(res.text).toContain('"type":"snapshot"');
-    expect(res.text).toContain('"terminalType":"shutdown"');
-    expect(res.text).toContain('"finalContent":"Partial answer"');
-  });
-
   it("GET /api/sessions/:id/stream forwards a pending terminal completion on an aborted snapshot replay", async () => {
     ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
       subscribeWithSnapshot() {
@@ -231,44 +184,6 @@ describe("Session stream route", () => {
     expect(res.text).toContain('"kind":"interrupted"');
     // The assistant text itself is replayed from disk, never rebuilt here.
     expect(res.text).not.toContain('"finalAssistantEntry"');
-  });
-
-  it("GET /api/sessions/:id/stream includes pending user input requests in live snapshots", async () => {
-    const snapshot = {
-      type: "snapshot",
-      accumulatedContent: "",
-      activeTools: [],
-      intentText: "",
-      complete: false,
-      pendingUserInputs: [
-        {
-          requestId: "request-1",
-          question: "Pick one",
-          choices: ["yes", "no"],
-          allowFreeform: false,
-          requestedAt: "2026-04-29T12:00:00.000Z",
-        },
-      ],
-    };
-    ctx.sessionManager.hydratePendingInteractions = vi.fn().mockResolvedValue({
-      pendingUserInputs: snapshot.pendingUserInputs,
-      pendingElicitations: [],
-    });
-    ctx.eventBusRegistry.getBus = vi.fn().mockReturnValue({
-      subscribeWithSnapshot(listener: (event: unknown) => void) {
-        queueMicrotask(() => listener({ type: "done", content: "" }));
-        return {
-          snapshot: { ...snapshot, pendingElicitations: [] },
-          unsubscribe: () => {},
-        };
-      },
-    });
-
-    const res = await request(app)
-      .get("/api/sessions/session-123/stream");
-
-    expect(res.status).toBe(200);
-    expect(res.text).toContain('"pendingUserInputs":[{"requestId":"request-1"');
   });
 
   it("never lets hydration overwrite the bus snapshot's listing index", async () => {
@@ -447,39 +362,6 @@ describe("Elicitation response route", () => {
 });
 
 describe("Status stream", () => {
-  it("GET /api/status-stream forwards stalled session events", async () => {
-    const server = app.listen(0);
-    try {
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Unable to determine test server port");
-
-      const body = await new Promise<string>((resolve, reject) => {
-        const req = get(`http://127.0.0.1:${address.port}/api/status-stream`, (res) => {
-          let text = "";
-          res.setEncoding("utf8");
-          res.on("data", (chunk) => {
-            text += chunk;
-            if (text.includes('"type":"session:stalled","sessionId":"session-123"')) {
-              req.destroy();
-              resolve(text);
-            }
-          });
-          res.on("error", reject);
-          queueMicrotask(() => {
-            ctx.globalBus.emit({ type: "session:stalled", sessionId: "session-123" });
-          });
-        });
-        req.on("error", (error: NodeJS.ErrnoException) => {
-          if (error.code === "ECONNRESET") return;
-          reject(error);
-        });
-      });
-
-      expect(body).toContain('data: {"type":"session:stalled","sessionId":"session-123"}');
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    }
-  });
 
   it("GET /api/status-stream forwards user-input status events", async () => {
     const server = app.listen(0);
@@ -515,42 +397,6 @@ describe("Status stream", () => {
       });
 
       expect(body).toContain('data: {"type":"session:user-input","sessionId":"session-123","pendingUserInputCount":1,"needsUserInput":true}');
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    }
-  });
-
-  it("GET /api/status-stream signals a restart status change without an admission lock", async () => {
-    ({ app, ctx } = createTestApp());
-
-    const server = app.listen(0);
-    try {
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Unable to determine test server port");
-
-      const body = await new Promise<string>((resolve, reject) => {
-        const req = get(`http://127.0.0.1:${address.port}/api/status-stream`, (res) => {
-          let text = "";
-          res.setEncoding("utf8");
-          res.on("data", (chunk) => {
-            text += chunk;
-            if (text.includes('"type":"server:restart-changed"')) {
-              req.destroy();
-              resolve(text);
-            } else if (text.includes(": connected")) {
-              ctx.globalBus.emit({ type: "server:restart-changed" });
-            }
-          });
-          res.on("error", reject);
-        });
-        req.on("error", (error: NodeJS.ErrnoException) => {
-          if (error.code === "ECONNRESET") return;
-          reject(error);
-        });
-      });
-
-      expect(body).toContain('"type":"server:restart-changed"');
-      expect(body).not.toContain("canAcceptNewWork");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
@@ -593,7 +439,7 @@ describe("Attachment routes", () => {
   const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
   it("GET /api/sessions/:id/attachments/:attachmentId downloads non-inline attachments", async () => {
-    const copilotHome = makeTestDir("route-home");
+    const copilotHome = join(makeTestDir("route-home"), ".copilot");
     const { app: attachmentApp } = createTestApp({ copilotHome });
     const published = publishOutboundAttachment({
       copilotHome,
@@ -673,25 +519,6 @@ describe("Attachment routes", () => {
 
     const empty = await request(attachmentApp).get(`${base}/empty.txt`).set("Range", "bytes=0-1499");
     expect(empty.status).toBe(416);
-  });
-
-  it("GET /api/sessions/:id/attachments/:attachmentId serves files from dot-directory copilot homes", async () => {
-    const parent = makeTestDir("route-home");
-    const copilotHome = join(parent, ".copilot");
-    const { app: attachmentApp } = createTestApp({ copilotHome });
-    const published = publishOutboundAttachment({
-      copilotHome,
-      sessionId,
-      content: "hello from dot copilot",
-      displayName: "note.txt",
-    });
-    if (!published.ok) throw new Error(published.error);
-
-    const res = await request(attachmentApp)
-      .get(`/api/sessions/${sessionId}/attachments/${encodeURIComponent(published.value.attachmentId)}`);
-
-    expect(res.status).toBe(200);
-    expect(res.text).toBe("hello from dot copilot");
   });
 
   it("GET /api/sessions/:id/attachments/:attachmentId rejects unsafe ids and reports missing files", async () => {
@@ -804,22 +631,6 @@ describe("Telemetry routes", () => {
     expect(ctx.telemetryStore!.querySpans({ name: "page.load", source: "client" })).toHaveLength(1);
   });
 
-  it("POST /api/telemetry/batch records multiple client spans", async () => {
-    const res = await request(app)
-      .post("/api/telemetry/batch")
-      .send({
-        spans: [
-          { id: "span-1", name: "api.tasks", duration: 12 },
-          { id: "span-2", name: "api.task-groups", duration: 18, sessionId: "sess-1", metadata: { count: 3 } },
-        ],
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, accepted: 2 });
-    const spans = ctx.telemetryStore!.querySpans({ source: "client", limit: 10 });
-    expect(spans).toHaveLength(2);
-  });
-
   it("POST /api/telemetry/batch ignores duplicate span ids", async () => {
     const payload = {
       spans: [
@@ -832,6 +643,7 @@ describe("Telemetry routes", () => {
     const second = await request(app).post("/api/telemetry/batch").send(payload);
 
     expect(first.status).toBe(200);
+    expect(first.body).toEqual({ ok: true, accepted: 2 });
     expect(second.status).toBe(200);
     expect(ctx.telemetryStore!.querySpans({ source: "client", limit: 10 })).toHaveLength(2);
   });

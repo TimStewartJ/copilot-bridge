@@ -34,10 +34,11 @@ describe("Settings routes", () => {
     sessionManager.evictAllCachedSessions = evictSpy;
     sessionManager.validateModelSelection = validateModelSelection;
     const local = createTestApp({ sessionManager });
+    local.ctx.settingsStore.updateSettings({ model: "previous-model", reasoningEffort: "high" });
 
     const res = await request(local.app)
       .patch("/api/settings")
-      .send({ model: "claude-opus-4.7" });
+      .send({ model: "claude-opus-4.7", reasoningEffort: "high" });
 
     expect(res.status).toBe(200);
     // Model changes are future-only — no eviction, no setModel on cached sessions.
@@ -65,19 +66,6 @@ describe("Settings routes", () => {
     });
   });
 
-  it("PATCH /api/settings proceeds when the metadata owner defers validation", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
-    const local = createTestApp({ sessionManager });
-
-    const res = await request(local.app)
-      .patch("/api/settings")
-      .send({ model: "future-model" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.model).toBe("future-model");
-  });
-
   it("PATCH /api/settings skips unchanged stale presets during sticky writes", async () => {
     const sessionManager = createMockSessionManager();
     const validateModelSelection = vi.fn(async ({ model }: { model: string }) => (
@@ -98,14 +86,14 @@ describe("Settings routes", () => {
       .patch("/api/settings")
       .send({
         modelPresets: {
-          preset1: { model: "retired-gpt" },
+          preset1: { model: "retired-gpt", reasoningEffort: "low" },
           preset2: { model: "claude-opus-5", reasoningEffort: "high" },
         },
       });
 
     expect(res.status).toBe(200);
     expect(res.body.modelPresets).toEqual({
-      preset1: { model: "retired-gpt" },
+      preset1: { model: "retired-gpt", reasoningEffort: "low" },
       preset2: { model: "claude-opus-5", reasoningEffort: "high" },
     });
     expect(validateModelSelection).toHaveBeenCalledOnce();
@@ -150,21 +138,6 @@ describe("Settings routes", () => {
     expect(validateModelSelection).not.toHaveBeenCalled();
   });
 
-  it("PATCH /api/settings allows effort changes on an unchanged unavailable global model", async () => {
-    const sessionManager = createMockSessionManager();
-    const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
-    sessionManager.validateModelSelection = validateModelSelection;
-    const local = createTestApp({ sessionManager });
-    local.ctx.settingsStore.updateSettings({ model: "retired-model", reasoningEffort: "low" });
-
-    const res = await request(local.app)
-      .patch("/api/settings")
-      .send({ reasoningEffort: "high" });
-
-    expect(res.status).toBe(200);
-    expect(validateModelSelection).not.toHaveBeenCalled();
-  });
-
   it("PATCH /api/settings does not revalidate unchanged effort when only context changes", async () => {
     const sessionManager = createMockSessionManager();
     const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
@@ -179,47 +152,6 @@ describe("Settings routes", () => {
     const res = await request(local.app)
       .patch("/api/settings")
       .send({ contextTier: "long_context" });
-
-    expect(res.status).toBe(200);
-    expect(validateModelSelection).not.toHaveBeenCalled();
-  });
-
-  it("PATCH /api/settings does not revalidate preserved effort when the global model changes", async () => {
-    const sessionManager = createMockSessionManager();
-    const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
-    sessionManager.validateModelSelection = validateModelSelection;
-    const local = createTestApp({ sessionManager });
-    local.ctx.settingsStore.updateSettings({
-      model: "gpt-5.6-sol",
-      reasoningEffort: "xhigh",
-    });
-
-    const res = await request(local.app)
-      .patch("/api/settings")
-      .send({ model: "grok-4.5", reasoningEffort: "xhigh" });
-
-    expect(res.status).toBe(200);
-    expect(validateModelSelection).toHaveBeenCalledWith({ model: "grok-4.5" });
-  });
-
-  it("PATCH /api/settings allows effort changes on an unchanged unavailable preset model", async () => {
-    const sessionManager = createMockSessionManager();
-    const validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
-    sessionManager.validateModelSelection = validateModelSelection;
-    const local = createTestApp({ sessionManager });
-    local.ctx.settingsStore.updateSettings({
-      modelPresets: {
-        preset1: { model: "retired-model", reasoningEffort: "low" },
-      },
-    });
-
-    const res = await request(local.app)
-      .patch("/api/settings")
-      .send({
-        modelPresets: {
-          preset1: { model: "retired-model", reasoningEffort: "high" },
-        },
-      });
 
     expect(res.status).toBe(200);
     expect(validateModelSelection).not.toHaveBeenCalled();
@@ -348,40 +280,6 @@ describe("Settings routes", () => {
 // ── Read State ───────────────────────────────────────────────────
 
 describe("Read state routes", () => {
-  it("POST /api/read-state/:sessionId honors an explicit read-through cursor", async () => {
-    const res = await request(app)
-      .post("/api/read-state/sess-1")
-      .send({ readThroughActivityAt: "2026-05-07T21:00:00.000Z" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.lastReadAt).toBe("2026-05-07T21:00:00.000Z");
-
-    const state = await request(app).get("/api/read-state");
-    expect(state.body["sess-1"]).toBe("2026-05-07T21:00:00.000Z");
-  });
-
-  it("POST /api/read-state/:sessionId marks attention-only activity as read", async () => {
-    ctx.sessionMetaStore.setLastAttentionAt("sess-1", "2026-05-07T21:03:00.000Z");
-
-    const res = await request(app).post("/api/read-state/sess-1");
-
-    expect(res.status).toBe(200);
-    expect(res.body.lastReadAt).toBe("2026-05-07T21:03:00.000Z");
-    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:03:00.000Z");
-  });
-
-  it("POST /api/read-state/:sessionId honors explicit cursors through server-known attention activity", async () => {
-    ctx.sessionMetaStore.setLastVisibleActivityAt("sess-1", "2026-05-07T21:00:00.000Z");
-    ctx.sessionMetaStore.setLastAttentionAt("sess-1", "2026-05-07T21:05:00.000Z");
-
-    const res = await request(app)
-      .post("/api/read-state/sess-1")
-      .send({ readThroughActivityAt: "2026-05-07T21:05:00.000Z" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.lastReadAt).toBe("2026-05-07T21:05:00.000Z");
-    expect(res.body.readThroughActivityAt).toBe("2026-05-07T21:05:00.000Z");
-  });
 
   it("POST /api/read-state/:sessionId clamps explicit cursors to server-known activity", async () => {
     ctx.sessionMetaStore.setLastVisibleActivityAt("sess-1", "2026-05-07T21:00:00.000Z");
@@ -451,23 +349,6 @@ describe("Schedule routes", () => {
     expect(res.body.error).toMatch(/cron/);
   });
 
-  it("POST /api/schedules accepts a zero-seconds six-field cron", async () => {
-    const cron = "0 */5 * * * *";
-    const res = await request(app)
-      .post("/api/schedules")
-      .send({
-        taskId,
-        name: "Six-field cron",
-        prompt: "Continue the conversation",
-        type: "cron",
-        cron,
-        timezone: "UTC",
-      });
-
-    expect(res.status).toBe(201);
-    expect(res.body.cron).toBe(cron);
-  });
-
   it("POST /api/schedules rejects unknown fields", async () => {
     const res = await request(app)
       .post("/api/schedules")
@@ -502,26 +383,6 @@ describe("Schedule routes", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("unexpectedField");
-  });
-
-  it("PATCH /api/schedules updates schedules", async () => {
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId,
-      name: "Successful patch",
-      prompt: "Continue the conversation",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-
-    const res = await request(app)
-      .patch(`/api/schedules/${schedule.id}`)
-      .send({ name: "Renamed schedule" });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      id: schedule.id,
-      name: "Renamed schedule",
-    });
   });
 
   it("PATCH /api/schedules sets and clears a model tier, and refuses a pinned model", async () => {
@@ -597,6 +458,9 @@ describe("Schedule routes", () => {
     ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-1");
     ctx.sessionMetaStore.recordScheduleRun(schedule.id, "sess-2");
     ctx.taskStore.linkSession(taskId, "sess-1");
+    const artifactDir = join(ctx.copilotHome!, "session-state", "sess-2", "files");
+    mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(join(artifactDir, "record.txt"), "stored file");
 
     const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
     expect(res.status).toBe(200);
@@ -619,6 +483,9 @@ describe("Schedule routes", () => {
         },
       }),
     ]));
+    const measured = res.body.sessions.find((session: { sessionId: string }) => session.sessionId === "sess-2");
+    expect(measured).toMatchObject({ diskSizeBytes: "stored file".length });
+    expect(measured).not.toHaveProperty("storageWarning");
     expect(res.body).toHaveProperty("offset", 0);
     expect(res.body).toHaveProperty("limit", 20);
   });
@@ -666,27 +533,6 @@ describe("Schedule routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ sessions: [], total: 1, offset: Number.MAX_SAFE_INTEGER, limit: 20 });
-  });
-
-  it("GET /api/schedules/:id/sessions includes recursive session storage totals", async () => {
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId, name: "Storage totals", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
-    });
-    const sessionId = "schedule-storage-session";
-    const sessionDir = join(ctx.copilotHome!, "session-state", sessionId);
-    mkdirSync(join(sessionDir, "files"), { recursive: true });
-    writeFileSync(join(sessionDir, "events.jsonl"), "events");
-    writeFileSync(join(sessionDir, "files", "artifact.txt"), "artifact");
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, sessionId);
-
-    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
-
-    expect(res.status).toBe(200);
-    expect(res.body.sessions[0]).toMatchObject({
-      sessionId,
-      diskSizeBytes: "events".length + "artifact".length,
-    });
-    expect(res.body.sessions[0]).not.toHaveProperty("storageWarning");
   });
 
   it("GET /api/schedules/:id/sessions keeps repeated runs of the same target session", async () => {

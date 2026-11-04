@@ -4,16 +4,6 @@ import type { IntegrationScenario } from "./scenario-types.js";
 
 export const operationScenarios: IntegrationScenario[] = [
   {
-    id: "OPS-01", title: "persists appearance settings across separate API reads",
-    async run(world) {
-      const updated = await request(world.app).patch("/api/settings").send({ theme: "dark", favicon: "rocket" });
-      expect(updated.status).toBe(200);
-      const read = await request(world.app).get("/api/settings");
-      expect(read.body).toMatchObject({ theme: "dark", favicon: "rocket" });
-      expect(world.ctx.settingsStore.getSettings()).toMatchObject({ theme: "dark", favicon: "rocket" });
-    },
-  },
-  {
     id: "OPS-02", title: "preserves prior settings while updating an unrelated preference",
     async run(world) {
       await request(world.app).patch("/api/settings").send({ theme: "dark", favicon: "rocket" });
@@ -39,16 +29,6 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-04", title: "adds a default MCP server and evicts stale cached sessions",
-    async run(world) {
-      const evict = vi.spyOn(world.ctx.sessionManager, "evictAllCachedSessions");
-      const created = await request(world.app).post("/api/mcp-servers").send({ name: "local", config: { command: "node", args: ["server.js"] }, enabledByDefault: true });
-      expect(created.status).toBe(201);
-      expect(evict).toHaveBeenCalledOnce();
-      expect(world.ctx.settingsStore.getMcpServers()).toEqual({ local: { command: "node", args: ["server.js"] } });
-    },
-  },
-  {
     id: "OPS-05", title: "rejects a mixed invalid settings update atomically",
     async run(world) {
       await request(world.app).patch("/api/settings").send({ theme: "dark" }).expect(200);
@@ -64,18 +44,6 @@ export const operationScenarios: IntegrationScenario[] = [
       } finally {
         providers.clearProviderCache();
       }
-    },
-  },
-  {
-    id: "OPS-06", title: "creates and lists a recurring schedule for its task",
-    async run(world) {
-      const task = await world.createTask("Scheduled task");
-      world.initializeScheduler();
-      const schedule = await world.createSchedule(task.id, "Weekday review");
-      const listed = await request(world.app).get(`/api/schedules?taskId=${task.id}`);
-      expect(listed.status).toBe(200);
-      expect(listed.body.map((item: any) => item.id)).toContain(schedule.id);
-      expect(world.ctx.scheduleStore.getSchedule(schedule.id)?.taskId).toBe(task.id);
     },
   },
   {
@@ -132,27 +100,12 @@ export const operationScenarios: IntegrationScenario[] = [
       const first = await world.createTask("First automation host");
       const second = await world.createTask("Second automation host");
       world.initializeScheduler();
-      const firstSchedule = await world.createSchedule(first.id, "First automation");
+      const cron = "0 */5 * * * *";
+      const firstSchedule = await world.createSchedule(first.id, "First automation", { cron });
+      expect(firstSchedule.cron).toBe(cron);
       const secondSchedule = await world.createSchedule(second.id, "Second automation");
       expect((await request(world.app).get(`/api/schedules?taskId=${first.id}`)).body.map((item: any) => item.id)).toEqual([firstSchedule.id]);
       expect((await request(world.app).get(`/api/schedules?taskId=${second.id}`)).body.map((item: any) => item.id)).toEqual([secondSchedule.id]);
-    },
-  },
-  {
-    id: "OPS-12", title: "records repeated schedule runs as distinct durable history",
-    async run(world) {
-      const task = await world.createTask("Run history");
-      world.initializeScheduler();
-      const schedule = await world.createSchedule(task.id, "History schedule");
-      world.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "same-session", "2026-09-01T10:00:00.000Z");
-      world.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "same-session", "2026-09-02T10:00:00.000Z");
-      const history = await request(world.app).get(`/api/schedules/${schedule.id}/sessions`);
-      expect(history.status).toBe(200);
-      expect(history.body.sessions).toMatchObject([
-        { sessionId: "same-session", recordedAt: "2026-09-02T10:00:00.000Z", missing: true },
-        { sessionId: "same-session", recordedAt: "2026-09-01T10:00:00.000Z", missing: true },
-      ]);
-      expect(new Set(history.body.sessions.map((item: any) => item.runId)).size).toBe(2);
     },
   },
   {
@@ -226,41 +179,15 @@ export const operationScenarios: IntegrationScenario[] = [
     id: "OPS-22", title: "submits new chat work through the session manager",
     async run(world) {
       const start = vi.spyOn(world.ctx.sessionManager, "startWork");
-      const send = () => request(world.app).post("/api/chat").send({ sessionId: "chat-session", prompt: "Investigate the failure", clientMessageId: "client-message-1" });
+      const send = () => request(world.app).post("/api/chat").send({ sessionId: "chat-session", prompt: "Investigate the failure", mode: "autopilot", clientMessageId: "client-message-1" });
       const response = await send().expect(202);
-      expect(start).toHaveBeenCalledWith("chat-session", "Investigate the failure", undefined, { clientMessageId: "client-message-1", keepUndelivered: true });
+      expect(start).toHaveBeenCalledWith("chat-session", "Investigate the failure", undefined, { clientMessageId: "client-message-1", mode: "autopilot", keepUndelivered: true });
       expect(response.body).toMatchObject({ status: "accepted" });
 
       // A browser retry of an already delivered message must not start work again.
       world.ctx.chatMessageIdStore!.record("chat-session", "runtime-message-1", "client-message-1");
       await send().expect(202);
       expect(start).toHaveBeenCalledTimes(1);
-    },
-  },
-  {
-    id: "OPS-23", title: "steers an already busy session instead of starting duplicate work",
-    async run(world) {
-      vi.spyOn(world.ctx.sessionManager, "isSessionBusy").mockReturnValue(true);
-      const steer = vi.spyOn(world.ctx.sessionManager, "steerSession").mockResolvedValue(undefined);
-      const start = vi.spyOn(world.ctx.sessionManager, "startWork");
-      const response = await request(world.app).post("/api/chat").send({ sessionId: "busy-session", prompt: "Change direction", mode: "autopilot" });
-      expect(response.status).toBe(202);
-      expect(response.body).toEqual({ status: "accepted", mode: "steered" });
-      expect(steer).toHaveBeenCalledWith("busy-session", "Change direction", undefined, undefined, { skipOpenQuestions: true });
-      expect(start).not.toHaveBeenCalled();
-    },
-  },
-  {
-    id: "OPS-24", title: "keeps the server healthy after task, docs, checklist, and settings mutations",
-    async run(world) {
-      const task = await world.createTask("Health workflow");
-      await world.createChecklistItem(task.id, "Health item");
-      await world.updateTask(task.id, { nextAction: "Review the health check" });
-      await world.writePage("health/workflow", "# Healthy Workflow");
-      await request(world.app).patch("/api/settings").send({ theme: "dark" });
-      const health = await request(world.app).get("/api/health");
-      expect(health.status).toBe(200);
-      expect(health.body.ok).toBe(true);
     },
   },
   {

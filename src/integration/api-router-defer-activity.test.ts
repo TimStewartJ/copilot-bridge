@@ -46,7 +46,7 @@ describe("session deferred activity routes", () => {
     });
     ctx.deferredPromptStore!.enqueueDelivery(createReturnedDeferDelivery(
       { deferId: once.deferId, kind: "once", parentSessionId: SESSION_ID },
-      "Returned result",
+      "private delivery result",
       { deliveryId: "delivery-1" },
     ));
     ctx.telemetryStore!.recordSpan({
@@ -104,6 +104,7 @@ describe("session deferred activity routes", () => {
         estimatedAiCredits: 1.25,
       }),
     ]));
+    expect(JSON.stringify(response.body)).not.toContain("private delivery result");
     expect(response.body.recentDeliveries).toEqual([
       expect.objectContaining({
         id: "delivery-1",
@@ -288,9 +289,9 @@ describe("session deferred activity routes", () => {
       .post(`/api/sessions/${SESSION_ID}/defers/${once.deferId}/reactivate`);
 
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ ok: true, kind: "once", status: "pending" });
+    expect(response.body).toMatchObject({ ok: true, deferId: once.deferId, kind: "once", status: "pending", nextRunAt: expect.any(String) });
     expect(response.body.deliveryRetried).toBeUndefined();
-    expect(ctx.deferredPromptStore!.get(once.id)).toMatchObject({ status: "pending", attempts: 0 });
+    expect(ctx.deferredPromptStore!.get(once.id)).toMatchObject({ status: "pending", attempts: 0, runAt: response.body.nextRunAt });
     // The stale notice says the defer is no longer active. It is withdrawn, so nothing can send it later.
     expect(ctx.deferredPromptStore!.get(notice.id)?.status).toBe("cancelled");
 
@@ -302,6 +303,7 @@ describe("session deferred activity routes", () => {
     const again = await request(app)
       .post(`/api/sessions/${SESSION_ID}/defers/${once.deferId}/reactivate`);
     expect(again.status).toBe(409);
+    expect(again.body).toEqual({ error: `Defer ${once.deferId} is pending and cannot be reactivated.` });
     expect(ctx.deferredPromptStore!.get(notice.id)?.status).toBe("cancelled");
   });
 
@@ -379,20 +381,5 @@ describe("session deferred activity routes", () => {
     expect(expiryWindow).toBeGreaterThanOrEqual(
       reactivated.intervalSeconds * 1000 + 15 * 60 * 1000 - 10,
     );
-  });
-
-  it("keeps queued parent messages separate from scheduled defers", async () => {
-    const { app, ctx } = createTestApp();
-    ctx.deferredPromptStore!.enqueueDelivery(createReturnedDeferDelivery(
-      { deferId: "interval_1", kind: "interval", parentSessionId: SESSION_ID },
-      "secret returned result",
-      { deliveryId: "delivery-1" },
-    ));
-
-    const response = await request(app).get(`/api/sessions/${SESSION_ID}/defers`);
-
-    expect(response.status).toBe(200);
-    expect(response.body.defers).toEqual([]);
-    expect(JSON.stringify(response.body)).not.toContain("secret returned result");
   });
 });

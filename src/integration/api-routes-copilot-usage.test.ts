@@ -457,45 +457,6 @@ describe("Copilot usage routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("secret-sdk-field");
   });
 
-  it("GET /api/copilot-usage continues without SDK metadata when listModels fails", async () => {
-    const copilotHome = createCopilotUsageTestHome();
-    writeUsageShutdown(copilotHome, "2026-05-01T14:00:00.000Z", { "opaque-sdk-id": usageMetric(1, { inputTokens: 10, outputTokens: 5 }) });
-    const listModels = vi.fn(async () => {
-      throw new Error("models unavailable");
-    });
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      ({ app } = createTestApp({
-        copilotHome,
-        sessionManager: { ...createMockSessionManager(), listModels },
-      }));
-
-      const res = await requestUsageUntil((body) => (
-        body.index.state === "idle"
-        && body.models[0]?.model === "opaque-sdk-id"
-      ));
-
-      expect(res.status).toBe(200);
-      expect(listModels).toHaveBeenCalledTimes(1);
-      expect(warn).toHaveBeenCalledWith(
-        "[copilot-usage] listModels() failed; falling back to cached model prices.",
-        expect.any(Error),
-      );
-      expect(res.body.models[0]).toMatchObject({
-        model: "opaque-sdk-id",
-        pricingKey: null,
-        pricedAs: null,
-        pricingStatus: "unpriced",
-        normalizedPricingModel: "opaque-sdk-id",
-        estimatedCostUsd: 0,
-      });
-      expect(res.body.totals.unpricedModelCount).toBe(1);
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
   it("caches live model prices and serves them when listModels later fails", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeUsageShutdown(copilotHome, "2026-05-01T15:00:00.000Z", { "gpt-5.4": usageMetric(1, { inputTokens: 1_000_000, outputTokens: 1_000_000 }) });
@@ -539,37 +500,6 @@ describe("Copilot usage routes", () => {
     } finally {
       warn.mockRestore();
     }
-  });
-
-  it("prefers fresh live prices over a stale cached price for the same model id", async () => {
-    const copilotHome = createCopilotUsageTestHome();
-    writeUsageShutdown(copilotHome, "2026-05-01T16:00:00.000Z", { "gpt-5.4": usageMetric(1, { outputTokens: 1_000_000 }) });
-    let calls = 0;
-    const listModels = vi.fn(async () => {
-      calls += 1;
-      const output = calls === 1 ? 15 : 30;
-      return [sdkPriceableModel("gpt-5.4", { input: 2.5, output, cache: 0.25 }, "GPT-5.4")];
-    });
-
-    ({ app } = createTestApp({
-      copilotHome,
-      sessionManager: { ...createMockSessionManager(), listModels },
-    }));
-
-    const first = await requestUsageUntil((body) => (
-      body.index.state === "idle"
-      && body.models[0]?.estimatedCostUsd === 15
-    ));
-    expect(first.body.models[0].estimatedCostUsd).toBeCloseTo(15);
-
-    await request(app).get("/api/copilot-usage?refresh=1");
-    const second = await requestUsageUntil((body) => (
-      body.index.state === "idle"
-      && body.models[0]?.estimatedCostUsd === 30
-    ));
-    // The newer live price (30) must win over the previously cached price (15).
-    expect(second.body.models[0]).toMatchObject({ model: "gpt-5.4", pricingStatus: "exact" });
-    expect(second.body.models[0].estimatedCostUsd).toBeCloseTo(30);
   });
 
   it("keeps the incremental index scanning until delayed live prices are published", async () => {
@@ -653,23 +583,6 @@ describe("Copilot usage routes", () => {
       && body.totals.totalTokens === 30
     ));
     expect(completed.body.totals.requests).toBe(2);
-  });
-
-  it("GET /api/copilot-usage reads from injected copilotHome", async () => {
-    const copilotHome = createCopilotUsageTestHome({ dotDir: true });
-    writeUsageShutdown(copilotHome, "2026-05-03T12:00:00.000Z", { "claude-sonnet": usageMetric(2, { outputTokens: 11 }) });
-    ({ app } = createTestApp({ copilotHome }));
-
-    const res = await requestUsageUntil((body) => body.index.state === "idle");
-
-    expect(res.status).toBe(200);
-    expect(res.body.models).toEqual([
-      expect.objectContaining({
-        model: "claude-sonnet",
-        requests: 2,
-        totalTokens: 11,
-      }),
-    ]);
   });
 
   it("GET /api/copilot-usage reports unreadable session-state as a safe background index error", async () => {

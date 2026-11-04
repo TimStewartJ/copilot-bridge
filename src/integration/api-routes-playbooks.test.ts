@@ -70,10 +70,4 @@ describe("playbook routes", () => {
     await request(app).patch(`/api/tasks/${task.body.task.id}`).send({ playbook: null }).expect(200);
     expect(ctx.taskStore.getTask(task.body.task.id)?.playbook).toBeUndefined();
   });
-
-  it("drops the retired default profile setting", async () => {
-    const { app, ctx } = createTestApp();
-    expect((await request(app).patch("/api/settings").send({ promptProfile: "assistant" })).status).toBe(200);
-    expect(ctx.settingsStore.getSettings()).not.toHaveProperty("promptProfile");
-  });
 });

@@ -47,30 +47,6 @@ async function waitForMoveToFinish(app: ReturnType<typeof createMoveApp>["app"])
 }
 
 describe("session model move routes", () => {
-  it("counts the chats that are not archived by model", async () => {
-    const { app } = createMoveApp();
-
-    const res = await request(app).get("/api/session-model-move/models");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      sessionCount: 3,
-      unknownCount: 0,
-      models: [
-        { model: OLD, sessionCount: 2, busyCount: 0 },
-        { model: "model-other", sessionCount: 1, busyCount: 0 },
-      ],
-    });
-  });
-
-  it("reports no move before one has run", async () => {
-    const { app } = createMoveApp();
-
-    const res = await request(app).get("/api/session-model-move");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ job: null });
-  });
 
   it("answers a dry run with the chats that would move and changes nothing", async () => {
     const { app, setSessionModel } = createMoveApp();
@@ -108,7 +84,8 @@ describe("session model move routes", () => {
     expect(models.get(SESSIONS.archived)).toBe(OLD);
     expect(models.get(SESSIONS.other)).toBe("model-other");
 
-    const after = await request(app).get("/api/session-model-move/models");
+    const after = await request(app).get("/api/session-model-move/models").expect(200);
+    expect(after.body).toMatchObject({ sessionCount: 3, unknownCount: 0 });
     expect(after.body.models).toEqual([
       { model: NEW, sessionCount: 2, busyCount: 0 },
       { model: "model-other", sessionCount: 1, busyCount: 0 },
@@ -168,7 +145,7 @@ describe("session model move routes", () => {
     expect(res.body.error).toBe(`Model is not available: ${NEW}`);
     expect(validateModelSelection).toHaveBeenCalledWith({ model: NEW, reasoningEffort: "high" });
     expect(setSessionModel).not.toHaveBeenCalled();
-    expect((await request(app).get("/api/session-model-move")).body).toEqual({ job: null });
+    expect((await request(app).get("/api/session-model-move").expect(200)).body).toEqual({ job: null });
   });
 
   it("refuses to start or stop a move for another site's page", async () => {

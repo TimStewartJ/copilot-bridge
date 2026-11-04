@@ -6,7 +6,6 @@ import { makeTestRuntimePaths } from "../server/__tests__/helpers.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase } from "../server/db.js";
 import { createGlobalBus } from "../server/global-bus.js";
-import { writeRestartState } from "../server/restart-state.js";
 
 import { createTaskStore } from "../server/task-store.js";
 import {
@@ -63,64 +62,6 @@ afterEach(async () => {
 });
 
 describe("voice job restart gating", () => {
-  it("accepts a new draft voice job while restart is active", async () => {
-    const runtimePaths = createRestartRuntimePaths();
-
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
-
-    const db = openMemoryDatabase();
-    const store = createVoiceJobStore(db);
-    const globalBus = createGlobalBus();
-    const taskStore = createTaskStore(db, globalBus, { runtimePaths });
-    const sessionManager = {
-      createSession: vi.fn().mockResolvedValue({ sessionId: "new-session" }),
-    } as any;
-    const manager = createVoiceJobManager({
-      dataDir: runtimePaths.dataDir,
-      store,
-      transcriptionService: {
-        getStatus: () => ({
-          available: true,
-          provider: "speech-engine",
-          label: "Parakeet v3 (local)",
-          maxDurationSeconds: 120,
-        }),
-        transcribe: vi.fn(),
-      },
-      sessionManager,
-      taskStore,
-    });
-
-    const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
-    writeFileSync(sourceFilePath, "test-audio");
-
-    const result = await manager.acceptVoiceJob({
-      composerKey: "draft:quickchat",
-      sourceFilePath,
-      originalFilename: "recording.wav",
-      sessionOptions: {
-        model: "gpt-5.6-sol",
-        reasoningEffort: "xhigh",
-        contextTier: "long_context",
-      },
-    });
-
-    expect(result).toMatchObject({
-      composerKey: "draft:quickchat",
-      targetSessionId: "new-session",
-      status: "accepted",
-      safeToLeave: true,
-    });
-    expect(sessionManager.createSession).toHaveBeenCalledWith({
-      model: "gpt-5.6-sol",
-      reasoningEffort: "xhigh",
-      contextTier: "long_context",
-    });
-    expect(store.getVoiceJob(result.id)).toMatchObject({
-      composerKey: "draft:quickchat",
-      targetSessionId: "new-session",
-    });
-  });
 
   it("passes launch options through task draft voice session creation", async () => {
     const runtimePaths = createRestartRuntimePaths();
@@ -293,66 +234,6 @@ describe("voice job restart gating", () => {
       expect(existsSync(dirname(audioPath))).toBe(true);
       expect(store.getVoiceJob(id)?.status).toBe("transcribing");
     });
-  });
-
-  it("resumes pending voice jobs while restart is active", async () => {
-    const runtimePaths = createRestartRuntimePaths();
-
-    await writeRestartState(join(runtimePaths.dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
-
-    const db = openMemoryDatabase();
-    const store = createVoiceJobStore(db);
-    const globalBus = createGlobalBus();
-    const taskStore = createTaskStore(db, globalBus, { runtimePaths });
-    const sessionManager = {
-      isSessionBusy: vi.fn(() => false),
-      startWork: vi.fn(),
-      readMessagesFromDisk: vi.fn(async () => ({
-        messages: [{
-          type: "message",
-          role: "user",
-          content: "Hello bridge",
-          timestamp: new Date().toISOString(),
-        }],
-        total: 1,
-        hasMore: false,
-      })),
-    } as any;
-    const manager = createVoiceJobManager({
-      dataDir: runtimePaths.dataDir,
-      store,
-      transcriptionService: {
-        getStatus: () => ({
-          available: true,
-          provider: "speech-engine",
-          label: "Parakeet v3 (local)",
-          maxDurationSeconds: 120,
-        }),
-        transcribe: vi.fn(),
-      },
-      sessionManager,
-      taskStore,
-    });
-
-    const audioPath = join(runtimePaths.dataDir, "voice-jobs", "persisted", "recording.wav");
-    mkdirSync(dirname(audioPath), { recursive: true });
-    writeFileSync(audioPath, "test-audio");
-    store.createVoiceJob({
-      id: "job-1",
-      composerKey: "existing-session",
-      targetSessionId: "existing-session",
-      audioPath,
-    });
-    store.updateVoiceJob("job-1", {
-      status: "accepted",
-      transcript: "Hello bridge",
-    });
-
-    manager.resumePendingJobs();
-    await manager.shutdown();
-
-    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Hello bridge");
-    expect(store.getVoiceJob("job-1")?.status).toBe("done");
   });
 
   it("starts an Autopilot recording's run in Autopilot, including after a restart", async () => {

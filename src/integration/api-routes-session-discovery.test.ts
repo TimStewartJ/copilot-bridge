@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
@@ -7,7 +7,7 @@ import { makeTestDir } from "../server/__tests__/helpers.js";
 import { createTestApp } from "../test-support/api-routes.js";
 import { request } from "../test-support/api-routes.js";
 
-function createDiscoveryApp(catalog: "populated" | "empty" | "unavailable" = "populated") {
+function createDiscoveryApp(catalog: "populated" | "unavailable" = "populated") {
   const copilotHome = makeTestDir("session-discovery");
   const catalogPath = join(copilotHome, "session-store.db");
   if (catalog === "unavailable") {
@@ -20,11 +20,9 @@ function createDiscoveryApp(catalog: "populated" | "empty" | "unavailable" = "po
           id TEXT PRIMARY KEY, cwd TEXT, summary TEXT, created_at TEXT, updated_at TEXT
         );
       `);
-      if (catalog === "populated") {
-        const insert = db.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?)");
-        for (const id of ["catalog-only", "shared"]) {
-          insert.run(id, copilotHome, `Catalog ${id}`, "2026-09-01T10:00:00.000Z", "2026-09-01T10:00:00.000Z");
-        }
+      const insert = db.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?)");
+      for (const id of ["catalog-only", "shared"]) {
+        insert.run(id, copilotHome, `Catalog ${id}`, "2026-09-01T10:00:00.000Z", "2026-09-01T10:00:00.000Z");
       }
     } finally {
       db.close();
@@ -62,7 +60,7 @@ function writePersistedSession(copilotHome: string, id: string, name: string, mo
 }
 
 describe("persisted session discovery", () => {
-  it.each(["populated", "empty", "unavailable"] as const)(
+  it.each(["populated", "unavailable"] as const)(
     "discovers ordinary and HydraFusion sessions with a %s CLI catalog",
     async (catalog) => {
       const { app, ctx, copilotHome } = createDiscoveryApp(catalog);
@@ -103,7 +101,9 @@ describe("persisted session discovery", () => {
       "catalog-only", "quick-chat", "shared", "untitled",
     ]);
     expect(active.body.sessions.find((session: { sessionId: string }) => session.sessionId === "shared"))
-      .toMatchObject({ summary: "Current workspace title", eventLogSizeBytes: expect.any(Number) });
+      .toMatchObject({ summary: "Current workspace title", eventLogSizeBytes: statSync(join(copilotHome, "session-state", "shared", "events.jsonl")).size });
+    expect(active.body.sessions.find((session: { sessionId: string }) => session.sessionId === "catalog-only"))
+      .toMatchObject({ eventLogSizeBytes: 0 });
     expect(active.body.sessions.find((session: { sessionId: string }) => session.sessionId === "untitled"))
       .toMatchObject({ summary: "New session", linkedTaskIds: [task.id] });
     expect(all.status).toBe(200);

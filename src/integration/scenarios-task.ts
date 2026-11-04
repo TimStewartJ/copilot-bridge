@@ -1,4 +1,4 @@
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { request } from "../test-support/api-routes.js";
 import type { IntegrationScenario } from "./scenario-types.js";
 
@@ -32,7 +32,7 @@ export const taskScenarios: IntegrationScenario[] = [
         nextTouchAt: "2030-01-02T12:00:00.000Z",
       });
       const archived = await world.updateTask(task.id, { completionAction: "complete-and-archive" });
-      expect(archived).toMatchObject({ status: "archived", doneWhen: "All regions healthy" });
+      expect(archived).toMatchObject({ status: "archived", doneWhen: "All regions healthy", completedAt: expect.any(String) });
       expect(archived.nextAction).toBeUndefined();
       expect((await world.getTask(task.id)).status).toBe("archived");
     },
@@ -57,8 +57,12 @@ export const taskScenarios: IntegrationScenario[] = [
       const tag = await world.createTag("temporary");
       await world.assignTaskTags(first.id, [tag.id]);
       await world.assignTaskTags(second.id, [tag.id]);
+      const evict = vi.spyOn(world.ctx.sessionManager, "evictAllCachedSessions");
       const removed = await request(world.app).delete(`/api/tags/${tag.id}`);
       expect(removed.status).toBe(200);
+      expect(removed.body.success).toBe(true);
+      expect(evict).toHaveBeenCalledOnce();
+      expect(world.ctx.tagStore!.getTag(tag.id)).toBeUndefined();
       expect((await world.getTask(first.id)).tags).toEqual([]);
       expect((await world.getTask(second.id)).tags).toEqual([]);
     },
@@ -71,7 +75,8 @@ export const taskScenarios: IntegrationScenario[] = [
       const second = await world.createTask("Second workstream", { groupId: group.id });
       const removed = await request(world.app).delete(`/api/task-groups/${group.id}`);
       expect(removed.status).toBe(200);
-      expect(removed.body.ungroupedTaskCount).toBe(2);
+      expect(removed.body).toMatchObject({ success: true, deleted: true, ungroupedTaskCount: 2 });
+      expect(world.ctx.taskGroupStore!.getGroup(group.id)).toBeUndefined();
       expect((await world.getTask(first.id)).groupId).toBeUndefined();
       expect((await world.getTask(second.id)).groupId).toBeUndefined();
     },
@@ -85,17 +90,6 @@ export const taskScenarios: IntegrationScenario[] = [
       expect((await world.updateTask(task.id, { groupId: active.id })).groupId).toBe(active.id);
       expect((await world.updateTask(task.id, { groupId: null })).groupId).toBeUndefined();
       expect((await world.getTask(task.id)).groupId).toBeUndefined();
-    },
-  },
-  {
-    id: "TASK-07", title: "changes work classification while clearing incompatible completion criteria",
-    async run(world) {
-      const task = await world.createTask("Weekly review");
-      await world.updateTask(task.id, { notes: "Keep the context", doneWhen: "Review completed", priority: 7 });
-      const ongoing = await world.updateTask(task.id, { kind: "ongoing" });
-      expect(ongoing).toMatchObject({ kind: "ongoing", notes: "Keep the context", priority: 7 });
-      expect(ongoing.doneWhen).toBeUndefined();
-      expect(await world.getTask(task.id)).toMatchObject({ kind: "ongoing", notes: "Keep the context", priority: 7 });
     },
   },
   {
@@ -133,9 +127,10 @@ export const taskScenarios: IntegrationScenario[] = [
       await world.updateTask(task.id, { nextAction: "Read issue" });
       const linked = await request(world.app).post(`/api/tasks/${task.id}/link`).send({ type: "workItem", workItemId: "octo/repo#42", provider: "github" });
       expect(linked.status).toBe(200);
-      expect(linked.body.task.workItems).toHaveLength(1);
+      expect(linked.body.task.workItems).toEqual([expect.objectContaining({ id: "octo/repo#42", provider: "github" })]);
       const unlinked = await request(world.app).delete(`/api/tasks/${task.id}/link`).send({ type: "workItem", workItemId: "octo/repo#42", provider: "github" });
       expect(unlinked.status).toBe(200);
+      expect(unlinked.body.task.workItems).toEqual([]);
       expect((await world.getTask(task.id))).toMatchObject({ workItems: [], nextAction: "Read issue" });
     },
   },
@@ -164,7 +159,7 @@ export const taskScenarios: IntegrationScenario[] = [
       const complete = await request(world.app).patch(`/api/checklist-items/${first.id}`).send({ done: true });
       expect(complete.status).toBe(200);
       const dashboard = await request(world.app).get("/api/dashboard/focus");
-      expect(dashboard.body.completedChecklistItems.map((item: any) => item.id)).toContain(first.id);
+      expect(dashboard.body.completedChecklistItems).toContainEqual(expect.objectContaining({ id: first.id, taskId: task.id, taskTitle: "Launch checklist" }));
       expect(dashboard.body.openChecklistItems.map((item: any) => item.id)).toContain(second.id);
     },
   },
@@ -225,21 +220,6 @@ export const taskScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "TASK-17", title: "cascades checklist deletion when its owning task is removed",
-    async run(world) {
-      const task = await world.createTask("Disposable task");
-      const item = await world.createChecklistItem(task.id, "Disposable item");
-      const preview = await request(world.app).get(`/api/tasks/${task.id}/deletion-preview`);
-      expect(preview.status).toBe(200);
-      const deleted = await request(world.app).delete(`/api/tasks/${task.id}`);
-      expect(deleted.status).toBe(200);
-      const checklist = await request(world.app).get(`/api/tasks/${task.id}/checklist-items`);
-      expect(checklist.status).toBe(200);
-      expect(checklist.body.checklistItems).toEqual([]);
-      expect(world.ctx.checklistStore.getChecklistItem(item.id)).toBeUndefined();
-    },
-  },
-  {
     id: "TASK-18", title: "keeps task state unchanged after an invalid group move",
     async run(world) {
       const group = await world.createGroup("Valid home");
@@ -260,20 +240,8 @@ export const taskScenarios: IntegrationScenario[] = [
       await world.updateTask(task.id, { title: "Accepted title", notes: "Accepted notes" });
       const rejected = await request(world.app).patch(`/api/tasks/${task.id}`).send({ priority: 1.5 });
       expect(rejected.status).toBe(400);
+      expect(rejected.body.error).toContain("priority must be a finite integer");
       expect(await world.getTask(task.id)).toMatchObject({ title: "Accepted title", notes: "Accepted notes", priority: 0 });
-    },
-  },
-  {
-    id: "TASK-20", title: "clears optional task fields without affecting classification",
-    async run(world) {
-      const task = await world.createTask("Clear fields");
-      await world.updateTask(task.id, { doneWhen: "Done", nextAction: "Act", waitingOn: "Input", nextTouchAt: "2030-04-01T00:00:00.000Z" });
-      const cleared = await world.updateTask(task.id, { doneWhen: "", nextAction: "", waitingOn: " ", nextTouchAt: "" });
-      expect(cleared).toMatchObject({ kind: "task" });
-      expect(cleared.doneWhen).toBeUndefined();
-      expect(cleared.nextAction).toBeUndefined();
-      expect(cleared.waitingOn).toBeUndefined();
-      expect(cleared.nextTouchAt).toBeUndefined();
     },
   },
   {
@@ -334,10 +302,13 @@ export const taskScenarios: IntegrationScenario[] = [
       const survivor = await world.createTask("Survivor");
       const tag = await world.createTag("linked");
       await world.assignTaskTags(doomed.id, [tag.id]);
-      await world.createChecklistItem(doomed.id, "Child item");
+      const child = await world.createChecklistItem(doomed.id, "Child item");
       await request(world.app).post(`/api/tasks/${doomed.id}/link`).send({ type: "workItem", workItemId: "77", provider: "github" });
       const deleted = await request(world.app).delete(`/api/tasks/${doomed.id}`);
       expect(deleted.status).toBe(200);
+      expect(deleted.body.ok).toBe(true);
+      expect(world.ctx.checklistStore.getChecklistItem(child.id)).toBeUndefined();
+      expect(world.ctx.tagStore!.getEntityTags("task", doomed.id)).toEqual([]);
       expect((await request(world.app).get(`/api/tasks/${doomed.id}`)).status).toBe(404);
       expect((await world.getTask(survivor.id)).title).toBe("Survivor");
       expect((await request(world.app).get("/api/tags")).body.tags[0].id).toBe(tag.id);

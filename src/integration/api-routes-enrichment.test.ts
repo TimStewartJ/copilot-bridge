@@ -18,15 +18,6 @@ installApiRouteTestHooks((state) => {
 });
 
 describe("Task enrichment routes", () => {
-  it("GET /api/tasks/:id/enriched returns task with empty enrichment", async () => {
-    const task = (await request(app).post("/api/tasks").send({ title: "Enriched" })).body.task;
-
-    const res = await request(app).get(`/api/tasks/${task.id}/enriched`);
-    expect(res.status).toBe(200);
-    expect(res.body.task.title).toBe("Enriched");
-    expect(res.body.workItems).toEqual([]);
-    expect(res.body.pullRequests).toEqual([]);
-  });
 
   it("GET /api/tasks/:id/enriched returns 404 for missing task", async () => {
     const res = await request(app).get("/api/tasks/nonexistent/enriched");
@@ -73,7 +64,7 @@ describe("Task enrichment routes", () => {
       const res = await request(app).get(`/api/tasks/${task.id}/enriched`);
 
       expect(res.status).toBe(200);
-      expect(res.body.task.id).toBe(task.id);
+      expect(res.body.task).toMatchObject({ id: task.id, title: "Enriched payload" });
       expect(res.body.workItems).toEqual([
         {
           id: "30000015",
@@ -131,41 +122,6 @@ describe("Work-reference preview route", () => {
       expect(res.status).toBe(200);
       expect(enrichSpy).toHaveBeenCalledWith([{ id: "30000015", provider: "ado" }]);
       expect(res.body).toEqual({ kind: "workItem", workItem });
-    } finally {
-      enrichSpy.mockRestore();
-    }
-  });
-
-  it("previews a configured ADO pull-request link", async () => {
-    ctx.settingsStore.updateSettings({
-      providers: { ado: { org: "exampleorg", project: "One" } },
-    });
-    const pullRequest = {
-      repoId: "repo-guid",
-      repoName: "example-repo",
-      prId: 10000002,
-      provider: "ado" as const,
-      title: "Fix region dropdown",
-      status: "active" as const,
-      createdBy: "Tim Stewart",
-      reviewerCount: 2,
-      url: "https://exampleorg.visualstudio.com/One/_git/example-repo/pullrequest/10000002",
-    };
-    const enrichSpy = vi.spyOn(providers, "enrichPullRequests").mockResolvedValue([pullRequest]);
-
-    try {
-      const res = await request(app)
-        .post("/api/work-references/preview")
-        .send({ url: pullRequest.url });
-
-      expect(res.status).toBe(200);
-      expect(enrichSpy).toHaveBeenCalledWith([{
-        repoId: "example-repo",
-        repoName: "example-repo",
-        prId: 10000002,
-        provider: "ado",
-      }]);
-      expect(res.body).toEqual({ kind: "pullRequest", pullRequest });
     } finally {
       enrichSpy.mockRestore();
     }

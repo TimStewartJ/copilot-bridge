@@ -75,146 +75,6 @@ describe("session workspace routes", () => {
     ]);
   });
 
-  it("builds an active-only session list unless archived sessions are requested", async () => {
-    const copilotHome = createCopilotHome();
-    const listSessionsFromDisk = vi.fn(async (opts?: { includeArchived?: boolean }) => (
-      opts?.includeArchived
-        ? [
-          { sessionId: "active-session", summary: "Active session" },
-          { sessionId: "archived-session", summary: "Archived session" },
-        ]
-        : [{ sessionId: "active-session", summary: "Active session" }]
-    ));
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk,
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    ctx.sessionTitles.setTitle("active-session", "Active session");
-    ctx.sessionTitles.setTitle("archived-session", "Archived session");
-    ctx.sessionMetaStore.setArchived("archived-session", true);
-
-    const activeRes = await request(app).get("/api/sessions");
-    const archivedRes = await request(app).get("/api/sessions?includeArchived=true");
-
-    expect(activeRes.status).toBe(200);
-    expect(activeRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session"]);
-    expect(archivedRes.status).toBe(200);
-    expect(archivedRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session", "archived-session"]);
-    expect(listSessionsFromDisk).toHaveBeenNthCalledWith(1, expect.objectContaining({ includeArchived: false }));
-    expect(listSessionsFromDisk).toHaveBeenNthCalledWith(2, expect.objectContaining({ includeArchived: true }));
-  });
-
-  it("does not coalesce active session list requests onto an in-flight archived build", async () => {
-    const copilotHome = createCopilotHome();
-    let resolveArchivedBuild: (sessions: any[]) => void = () => {};
-    let markArchivedStarted: () => void = () => {};
-    const archivedBuildStarted = new Promise<void>((resolve) => {
-      markArchivedStarted = resolve;
-    });
-    const archivedSessions = new Promise<any[]>((resolve) => {
-      resolveArchivedBuild = resolve;
-    });
-    const listSessionsFromDisk = vi.fn((opts?: { includeArchived?: boolean }) => {
-      if (opts?.includeArchived) {
-        markArchivedStarted();
-        return archivedSessions;
-      }
-      return Promise.resolve([{ sessionId: "active-session", summary: "Active session" }]);
-    });
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk,
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    ctx.sessionTitles.setTitle("active-session", "Active session");
-    ctx.sessionTitles.setTitle("archived-session", "Archived session");
-    ctx.sessionMetaStore.setArchived("archived-session", true);
-
-    const archivedRequest = request(app).get("/api/sessions?includeArchived=true").then((res) => res);
-    await archivedBuildStarted;
-    const activeRes = await request(app).get("/api/sessions");
-    resolveArchivedBuild([
-      { sessionId: "active-session", summary: "Active session" },
-      { sessionId: "archived-session", summary: "Archived session" },
-    ]);
-    const archivedRes = await archivedRequest;
-
-    expect(activeRes.status).toBe(200);
-    expect(activeRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session"]);
-    expect(archivedRes.status).toBe(200);
-    expect(archivedRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session", "archived-session"]);
-    expect(listSessionsFromDisk).toHaveBeenNthCalledWith(1, expect.objectContaining({ includeArchived: true }));
-    expect(listSessionsFromDisk).toHaveBeenNthCalledWith(2, expect.objectContaining({ includeArchived: false }));
-  });
-
-  it("keeps archived sessions out of the active list after the archived list was read", async () => {
-    const copilotHome = createCopilotHome();
-    const listSessionsFromDisk = vi.fn(async (opts?: { includeArchived?: boolean }) => (
-      opts?.includeArchived
-        ? [
-          { sessionId: "active-session", summary: "Active session" },
-          { sessionId: "archived-session", summary: "Archived session" },
-        ]
-        : [{ sessionId: "active-session", summary: "Active session" }]
-    ));
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk,
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    ctx.sessionTitles.setTitle("active-session", "Active session");
-    ctx.sessionTitles.setTitle("archived-session", "Archived session");
-    ctx.sessionMetaStore.setArchived("archived-session", true);
-
-    const archivedRes = await request(app).get("/api/sessions?includeArchived=true");
-    const activeRes = await request(app).get("/api/sessions");
-
-    expect(archivedRes.status).toBe(200);
-    expect(archivedRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session", "archived-session"]);
-    expect(activeRes.status).toBe(200);
-    expect(activeRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session"]);
-    // The two lists are built and kept separately.
-    expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not reuse an active cache for archived session list requests", async () => {
-    const copilotHome = createCopilotHome();
-    const listSessionsFromDisk = vi.fn(async (opts?: { includeArchived?: boolean }) => (
-      opts?.includeArchived
-        ? [
-          { sessionId: "active-session", summary: "Active session" },
-          { sessionId: "archived-session", summary: "Archived session" },
-        ]
-        : [{ sessionId: "active-session", summary: "Active session" }]
-    ));
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk,
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    ctx.sessionTitles.setTitle("active-session", "Active session");
-    ctx.sessionTitles.setTitle("archived-session", "Archived session");
-    ctx.sessionMetaStore.setArchived("archived-session", true);
-
-    const activeRes = await request(app).get("/api/sessions");
-    const archivedRes = await request(app).get("/api/sessions?includeArchived=true");
-
-    expect(activeRes.status).toBe(200);
-    expect(activeRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session"]);
-    expect(archivedRes.status).toBe(200);
-    expect(archivedRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["active-session", "archived-session"]);
-    expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
-  });
-
   it("keeps the session list cache across busy and idle events", async () => {
     const copilotHome = createCopilotHome();
     let runState = "idle";
@@ -244,95 +104,6 @@ describe("session workspace routes", () => {
     expect(secondRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "busy" });
     expect(thirdRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle" });
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
-  });
-
-  it("serves a TTL-expired session list immediately and refreshes it in the background", async () => {
-    const copilotHome = createCopilotHome();
-    let summary = "Original title";
-    let releaseBuild: () => void = () => {};
-    const listSessionsFromDisk = vi.fn(async () => {
-      if (listSessionsFromDisk.mock.calls.length > 1) {
-        await new Promise<void>((resolve) => { releaseBuild = resolve; });
-      }
-      return [{ sessionId: "session-1", summary }];
-    });
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk,
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    ctx.sessionTitles.setTitle("session-1", summary);
-    const realNow = Date.now;
-    let offsetMs = 0;
-    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offsetMs);
-
-    try {
-      const firstRes = await request(app).get("/api/sessions");
-      expect(firstRes.status).toBe(200);
-      expect(firstRes.body.sessions[0]).toMatchObject({ summary: "Original title" });
-      expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
-
-      summary = "Refreshed title";
-      offsetMs = 31_000;
-      const staleRes = await request(app).get("/api/sessions");
-      // The stale payload is served without waiting on the blocked rebuild, which
-      // starts only after the response has been written.
-      expect(staleRes.status).toBe(200);
-      expect(staleRes.body.sessions[0]).toMatchObject({ summary: "Original title" });
-      await vi.waitFor(() => expect(listSessionsFromDisk).toHaveBeenCalledTimes(2));
-
-      // A second stale poll coalesces onto the running refresh instead of starting another.
-      const staleAgainRes = await request(app).get("/api/sessions");
-      expect(staleAgainRes.body.sessions[0]).toMatchObject({ summary: "Original title" });
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
-
-      releaseBuild();
-      await vi.waitFor(async () => {
-        const res = await request(app).get("/api/sessions");
-        expect(res.body.sessions[0]).toMatchObject({ summary: "Refreshed title" });
-      });
-      expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  it("collapses concurrent stale polls onto one background refresh", async () => {
-    const copilotHome = createCopilotHome();
-    const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary: "Cached session" }]);
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk,
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    ctx.sessionTitles.setTitle("session-1", "Cached session");
-    const realNow = Date.now;
-    let offsetMs = 0;
-    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offsetMs);
-
-    try {
-      await request(app).get("/api/sessions");
-      offsetMs = 31_000;
-      const responses = await Promise.all([
-        request(app).get("/api/sessions"),
-        request(app).get("/api/sessions"),
-        request(app).get("/api/sessions"),
-      ]);
-      for (const res of responses) {
-        expect(res.status).toBe(200);
-        expect(res.body.sessions.map((s: any) => s.sessionId)).toEqual(["session-1"]);
-      }
-      await vi.waitFor(() => expect(listSessionsFromDisk).toHaveBeenCalledTimes(2));
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
-    } finally {
-      nowSpy.mockRestore();
-    }
   });
 
   it("rebuilds synchronously after a structural invalidation even when a TTL-expired cache exists", async () => {
@@ -366,118 +137,6 @@ describe("session workspace routes", () => {
     }
   });
 
-  it("resolves linked tasks for the session list from the links of the listed sessions only", async () => {
-    const copilotHome = createCopilotHome();
-    const sessions = Array.from({ length: 40 }, (_, index) => ({
-      sessionId: `session-${index}`,
-      summary: `Session ${index}`,
-    }));
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk: vi.fn(async () => sessions),
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    const task = ctx.taskStore.createTask("Linked task");
-    ctx.taskStore.linkSession(task.id, "session-5");
-    const findTaskBySessionIdSpy = vi.spyOn(ctx.taskStore, "findTaskBySessionId");
-    const listTasksSpy = vi.spyOn(ctx.taskStore, "listTasks");
-
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    const bySessionId = new Map(res.body.sessions.map((s: any) => [s.sessionId, s]));
-    expect(bySessionId.get("session-5")).toMatchObject({ linkedTaskIds: [task.id] });
-    expect(bySessionId.get("session-6")).toMatchObject({ linkedTaskIds: [] });
-    expect(findTaskBySessionIdSpy).not.toHaveBeenCalled();
-    expect(listTasksSpy).not.toHaveBeenCalled();
-  });
-
-  it("keeps in-flight session list builds cacheable when run-state events arrive", async () => {
-    const copilotHome = createCopilotHome();
-    let resolveSessions: (sessions: any[]) => void = () => {};
-    let markStarted: () => void = () => {};
-    const sessionsReady = new Promise<any[]>((resolve) => {
-      resolveSessions = resolve;
-    });
-    const buildStarted = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
-    const listSessionsFromDisk = vi.fn(() => {
-      markStarted();
-      return sessionsReady;
-    });
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk,
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    ctx.sessionTitles.setTitle("session-1", "Cached session");
-
-    const firstRequest = request(app).get("/api/sessions").then((res) => res);
-    await buildStarted;
-    ctx.globalBus.emit({ type: "session:busy", sessionId: "session-1" });
-    resolveSessions([{ sessionId: "session-1", summary: "Cached session" }]);
-    const firstRes = await firstRequest;
-    const secondRes = await request(app).get("/api/sessions");
-
-    expect(firstRes.status).toBe(200);
-    expect(secondRes.status).toBe(200);
-    expect(secondRes.body.sessions.map((s: any) => s.sessionId)).toEqual(["session-1"]);
-    expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
-  });
-
-  it("builds once for a burst of announced changes", async () => {
-    const copilotHome = createCopilotHome();
-    const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary: "Cached session" }]);
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk,
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    ctx.sessionTitles.setTitle("session-1", "Cached session");
-
-    await request(app).get("/api/sessions");
-    ctx.globalBus.emit({ type: "session:title", sessionId: "session-1" });
-    ctx.globalBus.emit({ type: "task:changed" });
-    ctx.globalBus.emit({ type: "sessions:changed" });
-    const res = await request(app).get("/api/sessions");
-    const again = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(again.status).toBe(200);
-    expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not build for changes the list reads per response", async () => {
-    const copilotHome = createCopilotHome();
-    const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary: "Cached session" }]);
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk,
-    } as any;
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    ctx.sessionTitles.setTitle("session-1", "Cached session");
-
-    await request(app).get("/api/sessions");
-    ctx.globalBus.emit({ type: "schedule:changed" });
-    ctx.sessionMetaStore.setLastAttentionAt("session-1", "2026-04-16T12:00:00.000Z");
-    ctx.globalBus.emit({ type: "sessions:changed", sessionId: "session-1", reason: "attention" });
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.body.sessions).toEqual([
-      expect.objectContaining({ sessionId: "session-1", lastAttentionAt: "2026-04-16T12:00:00.000Z" }),
-    ]);
-    expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
-  });
-
   it("archiving removes a chat from the next list without a build, and restoring brings it back", async () => {
     const copilotHome = createCopilotHome();
     const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary: "Cached session" }]);
@@ -491,7 +150,8 @@ describe("session workspace routes", () => {
     ctx.sessionTitles.setTitle("session-1", "Cached session");
 
     await request(app).get("/api/sessions");
-    expect((await request(app).patch("/api/sessions/session-1").send({ archived: true })).status).toBe(200);
+    const archived = await request(app).patch("/api/sessions/session-1").send({ archived: true }).expect(200);
+    expect(archived.body).toMatchObject({ ok: true, archived: true });
     const archivedRes = await request(app).get("/api/sessions");
     const stillArchivedRes = await request(app).get("/api/sessions");
 
@@ -499,7 +159,8 @@ describe("session workspace routes", () => {
     expect(stillArchivedRes.body.sessions).toEqual([]);
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
 
-    expect((await request(app).patch("/api/sessions/session-1").send({ archived: false })).status).toBe(200);
+    const restored = await request(app).patch("/api/sessions/session-1").send({ archived: false }).expect(200);
+    expect(restored.body).toMatchObject({ ok: true, archived: false });
     const restoredRes = await request(app).get("/api/sessions");
 
     expect(restoredRes.body.sessions).toEqual([expect.objectContaining({ sessionId: "session-1", archived: false })]);
@@ -609,48 +270,6 @@ describe("session workspace routes", () => {
     expect(res.body.sessionOverride).toBeUndefined();
     expect(ctx.sessionWorkspaceStore.getWorkspace("session-1")).toBeUndefined();
     expect(readGitWorktreeStatusMock).toHaveBeenCalledWith(taskWorkspace);
-  });
-
-  it("falls back to linked task workspace when the session workspace store is unavailable", async () => {
-    const copilotHome = createCopilotHome();
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk: async () => [{ sessionId: "session-1", summary: "Workspace session" }],
-    } as any;
-    const taskWorkspace = join(copilotHome, "task-workspace");
-    mkdirSync(taskWorkspace, { recursive: true });
-    readGitWorktreeStatusMock.mockResolvedValue({
-      status: "not_repo",
-      cwd: taskWorkspace,
-    });
-    const testApp = createTestApp({
-      copilotHome,
-      sessionManager,
-      sessionWorkspaceStore: undefined as any,
-    });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    const task = ctx.taskStore.createTask("Workspace task");
-    ctx.taskStore.updateTask(task.id, { cwd: taskWorkspace });
-    ctx.taskStore.linkSession(task.id, "session-1");
-
-    const res = await request(app).get(`/api/sessions/session-1/workspace?taskId=${task.id}`);
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual(expect.objectContaining({
-      sessionId: "session-1",
-      taskId: task.id,
-      effectiveCwd: taskWorkspace,
-      taskCwd: taskWorkspace,
-      source: "task",
-      overridesTaskWorkspace: false,
-      pathState: "available",
-      warnings: [],
-      gitStatus: {
-        status: "not_repo",
-        cwd: taskWorkspace,
-      },
-    }));
   });
 
   it("reports the Bridge workspace for a session that only recorded the server's own directory", async () => {

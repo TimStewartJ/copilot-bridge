@@ -37,32 +37,6 @@ describe("Error handling", () => {
 // ── Session archive/delete (store-based) ─────────────────────────
 
 describe("Session metadata routes", () => {
-  it("PATCH /api/sessions/:id archives a session", async () => {
-    const res = await request(app)
-      .patch("/api/sessions/test-sess")
-      .send({ archived: true });
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.archived).toBe(true);
-  });
-
-  it("PATCH /api/sessions/:id unarchives a session", async () => {
-    await request(app)
-      .patch("/api/sessions/test-sess")
-      .send({ archived: true });
-
-    const res = await request(app)
-      .patch("/api/sessions/test-sess")
-      .send({ archived: false });
-    expect(res.status).toBe(200);
-    expect(res.body.archived).toBe(false);
-  });
-
-  it("DELETE /api/sessions/:id deletes a session", async () => {
-    const res = await request(app).delete("/api/sessions/some-sess");
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-  });
 
   it("DELETE /api/sessions/:id prunes read state for the deleted session", async () => {
     ctx.readStateStore.markRead("deleted-sess", "2026-05-21T12:00:00.000Z");

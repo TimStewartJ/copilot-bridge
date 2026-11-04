@@ -4,17 +4,6 @@ import type { IntegrationScenario } from "./scenario-types.js";
 
 export const knowledgeScenarios: IntegrationScenario[] = [
   {
-    id: "KNOW-01", title: "writes, reads, and searches a new knowledge page",
-    async run(world) {
-      await world.writePage("runbooks/deploy", "# Deploy Runbook\n\nUse the bluebird procedure.");
-      const page = await world.readPage("runbooks/deploy");
-      expect(page.body).toContain("bluebird procedure");
-      const search = await request(world.app).get("/api/docs/search?q=bluebird");
-      expect(search.status).toBe(200);
-      expect(search.body.results.map((item: any) => item.path)).toContain("runbooks/deploy");
-    },
-  },
-  {
     id: "KNOW-02", title: "updates a page and replaces stale search content",
     async run(world) {
       await world.writePage("notes/rename", "# Old\n\nobsolete-keyword");
@@ -37,18 +26,6 @@ export const knowledgeScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "KNOW-04", title: "exposes nested pages through the docs tree",
-    async run(world) {
-      await world.writePage("projects/alpha/overview", "# Alpha");
-      await world.writePage("projects/alpha/decisions", "# Decisions");
-      const tree = await request(world.app).get("/api/docs/tree");
-      expect(tree.status).toBe(200);
-      expect(JSON.stringify(tree.body.tree)).toContain("alpha");
-      expect(JSON.stringify(tree.body.tree)).toContain("overview");
-      expect(JSON.stringify(tree.body.tree)).toContain("decisions");
-    },
-  },
-  {
     id: "KNOW-05", title: "resolves a wikilink by page title",
     async run(world) {
       await world.writePage("people/alex", "---\ntitle: Alex Rivera\ndescription: Teammate\n---\n# Alex Rivera");
@@ -68,18 +45,6 @@ export const knowledgeScenarios: IntegrationScenario[] = [
       expect(JSON.stringify(resolved.body)).toContain("references/one");
       expect(JSON.stringify(resolved.body)).toContain("references/two");
       expect(resolved.body.Missing).toBeNull();
-    },
-  },
-  {
-    id: "KNOW-07", title: "reindexes multiple pages and keeps them searchable",
-    async run(world) {
-      await world.writePage("reindex/first", "# First\n\nshared-reindex-term");
-      await world.writePage("reindex/second", "# Second\n\nshared-reindex-term");
-      const rebuilt = await request(world.app).post("/api/docs/reindex");
-      expect(rebuilt.status).toBe(200);
-      expect(rebuilt.body.indexed).toBeGreaterThanOrEqual(2);
-      const results = await request(world.app).get("/api/docs/search?q=shared-reindex-term");
-      expect(results.body.results.map((item: any) => item.path)).toEqual(expect.arrayContaining(["reindex/first", "reindex/second"]));
     },
   },
   {
@@ -114,33 +79,15 @@ export const knowledgeScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "KNOW-10", title: "preserves frontmatter metadata through page updates",
-    async run(world) {
-      await world.writePage("guides/metadata", "---\ntitle: Metadata Guide\ndescription: Original\ntags: [guide]\n---\n# Guide");
-      await world.writePage("guides/metadata", "---\ntitle: Metadata Guide\ndescription: Updated\ntags: [guide, current]\n---\n# Guide\n\nUpdated body");
-      const page = await world.readPage("guides/metadata");
-      expect(page.frontmatter).toMatchObject({ title: "Metadata Guide", description: "Updated", tags: ["guide", "current"] });
-      expect(page.body).toContain("Updated body");
-    },
-  },
-  {
-    id: "KNOW-11", title: "creates a structured collection and reports its initial count",
-    async run(world) {
-      await world.createCollection("records/decisions");
-      const schema = await request(world.app).get("/api/docs/schema/records/decisions");
-      expect(schema.status).toBe(200);
-      expect(schema.body).toMatchObject({ name: "records/decisions", entryCount: 0 });
-      expect(schema.body.fields).toHaveLength(2);
-    },
-  },
-  {
     id: "KNOW-12", title: "adds collection entries and increments the durable schema count",
     async run(world) {
       await world.createCollection("records/counts");
-      await world.addCollectionEntry("records/counts", { title: "First", status: "open", priority: 1 });
+      await world.addCollectionEntry("records/counts", { title: "First", status: "open", priority: 1 }, "A saved body");
       await world.addCollectionEntry("records/counts", { title: "Second", status: "closed", priority: 2 });
       const schema = await request(world.app).get("/api/docs/schema/records/counts");
-      expect(schema.body.entryCount).toBe(2);
+      expect(schema.status).toBe(200);
+      expect(schema.body).toMatchObject({ name: "records/counts", entryCount: 2 });
+      expect(schema.body.fields).toHaveLength(2);
       const listed = await request(world.app).get("/api/docs/db/records/counts").expect(200);
       expect(listed.body.total).toBe(2);
       expect(listed.body.entries).toHaveLength(2);
@@ -148,50 +95,16 @@ export const knowledgeScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "KNOW-13", title: "filters structured entries by a select field",
-    async run(world) {
-      await world.createCollection("records/filter");
-      await world.addCollectionEntry("records/filter", { title: "Open record", status: "open", priority: 1 });
-      await world.addCollectionEntry("records/filter", { title: "Closed record", status: "closed", priority: 2 });
-      const filtered = await request(world.app).get("/api/docs/db/records/filter?status=open");
-      expect(filtered.status).toBe(200);
-      expect(filtered.body.entries).toHaveLength(1);
-      expect(filtered.body.entries[0].title).toBe("Open record");
-    },
-  },
-  {
-    id: "KNOW-14", title: "sorts structured entries by a numeric field",
-    async run(world) {
-      await world.createCollection("records/sort");
-      await world.addCollectionEntry("records/sort", { title: "Low", status: "open", priority: 1 });
-      await world.addCollectionEntry("records/sort", { title: "High", status: "open", priority: 9 });
-      await world.addCollectionEntry("records/sort", { title: "Middle", status: "open", priority: 5 });
-      const sorted = await request(world.app).get("/api/docs/db/records/sort?_sort=priority&_order=asc");
-      expect(sorted.body.entries.map((item: any) => item.title)).toEqual(["Low", "Middle", "High"]);
-    },
-  },
-  {
     id: "KNOW-15", title: "paginates structured collection results",
     async run(world) {
       await world.createCollection("records/pages");
+      await world.addCollectionEntry("records/pages", { title: "Three", status: "open", priority: 3 });
       await world.addCollectionEntry("records/pages", { title: "One", status: "open", priority: 1 });
       await world.addCollectionEntry("records/pages", { title: "Two", status: "open", priority: 2 });
-      await world.addCollectionEntry("records/pages", { title: "Three", status: "open", priority: 3 });
-      const page = await request(world.app).get("/api/docs/db/records/pages?limit=1&offset=1&_sort=priority&_order=asc");
-      expect(page.body.entries).toHaveLength(1);
-      expect(page.body.entries[0].title).toBe("Two");
-      expect(page.body.total).toBe(3);
-    },
-  },
-  {
-    id: "KNOW-16", title: "returns markdown bodies only when explicitly requested",
-    async run(world) {
-      await world.createCollection("records/body");
-      await world.addCollectionEntry("records/body", { title: "Body record", status: "open", priority: 1 }, "# Detailed notes");
-      const compact = await request(world.app).get("/api/docs/db/records/body").expect(200);
-      expect(compact.body.entries[0]).not.toHaveProperty("body");
-      const expanded = await request(world.app).get("/api/docs/db/records/body?_includeBody=true").expect(200);
-      expect(expanded.body.entries).toMatchObject([{ title: "Body record", body: "# Detailed notes" }]);
+      await world.addCollectionEntry("records/pages", { title: "Four", status: "open", priority: 4 });
+      const page = await request(world.app).get("/api/docs/db/records/pages?limit=2&offset=1&_sort=priority&_order=asc");
+      expect(page.body.entries.map((entry: any) => entry.title)).toEqual(["Two", "Three"]);
+      expect(page.body.total).toBe(4);
     },
   },
   {
@@ -256,7 +169,9 @@ export const knowledgeScenarios: IntegrationScenario[] = [
       await world.addCollectionEntry("records/protected", { title: "Safe", status: "open", priority: 1 });
       const rejected = await request(world.app).put("/api/docs/pages/records/protected/manual").send({ content: "# Bypass" });
       expect(rejected.status).toBe(400);
+      expect(rejected.body.error).toContain('Cannot write raw content to DB folder "records/protected"');
       expect(rejected.body.error).toContain("docs_db_add");
+      expect(rejected.body.error).toContain('folder: "records/protected"');
       expect((await request(world.app).get("/api/docs/db/records/protected")).body.entries).toHaveLength(1);
     },
   },
@@ -276,25 +191,15 @@ export const knowledgeScenarios: IntegrationScenario[] = [
   {
     id: "KNOW-24", title: "searches both freeform and structured knowledge after reindex",
     async run(world) {
-      await world.writePage("mixed/freeform", "# Freeform\n\ncombined-search-term");
       await world.createCollection("mixed/records");
-      await world.addCollectionEntry("mixed/records", { title: "Structured", status: "open", priority: 1 }, "combined-search-term");
-      await request(world.app).post("/api/docs/reindex");
+      // Changes made on disk have not gone through the search index yet.
+      world.ctx.docsStore!.writePage("mixed/freeform", "# Freeform\n\ncombined-search-term");
+      world.ctx.docsStore!.addDbEntry("mixed/records", { title: "Structured", status: "open", priority: 1 }, "combined-search-term");
+      const rebuilt = await request(world.app).post("/api/docs/reindex").expect(200);
+      expect(rebuilt.body.indexed).toBeGreaterThanOrEqual(2);
       const search = await request(world.app).get("/api/docs/search?q=combined-search-term");
       expect(search.body.results.map((item: any) => item.path)).toEqual(expect.arrayContaining(["mixed/freeform"]));
       expect(search.body.results.some((item: any) => item.path.startsWith("mixed/records/"))).toBe(true);
-    },
-  },
-  {
-    id: "KNOW-25", title: "maintains knowledge health after a create-update-delete sequence",
-    async run(world) {
-      await world.writePage("health/lifecycle", "# Lifecycle\n\ninitial-health-term");
-      await world.writePage("health/lifecycle", "# Lifecycle\n\nupdated-health-term");
-      await request(world.app).delete("/api/docs/pages/health/lifecycle");
-      const health = await request(world.app).get("/api/health");
-      expect(health.status).toBe(200);
-      expect(health.body.ok).toBe(true);
-      expect((await request(world.app).get("/api/docs/search?q=updated-health-term")).body.results).toHaveLength(0);
     },
   },
 ];

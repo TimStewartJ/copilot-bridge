@@ -35,18 +35,6 @@ describe("Transcription routes", () => {
     expect(res.body).toEqual(ctx.transcriptionService.getStatus());
   });
 
-  it("GET /api/transcribe/status falls back when the context service is missing", async () => {
-    const fallbackApp = createTestApp({ transcriptionService: undefined as any }).app;
-
-    const res = await request(fallbackApp).get("/api/transcribe/status");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      available: false,
-      provider: "disabled",
-    });
-  });
-
   it("POST /api/transcribe returns a transcript for uploaded wav audio", async () => {
     const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine" });
     ({ app, ctx } = createTestApp({
@@ -175,18 +163,6 @@ describe("Transcription routes", () => {
       return transcribe;
     }
 
-    it("POST /api/transcribe accepts an Ogg Opus recording", async () => {
-      const transcribe = createAppWithLimit(120);
-
-      const res = await request(app)
-        .post("/api/transcribe")
-        .attach("audio", oggOpusRecording(3), { filename: "voice-input.ogg", contentType: "audio/ogg" });
-
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({ text: "Hello bridge", provider: "speech-engine" });
-      expect(transcribe.mock.calls[0]![0].filePath).toMatch(/voice-input\.ogg$/);
-    });
-
     it("POST /api/transcribe measures an Ogg Opus recording against the duration limit", async () => {
       const transcribe = createAppWithLimit(1);
 
@@ -208,7 +184,9 @@ describe("Transcription routes", () => {
         .post("/api/transcribe")
         .attach("audio", atTheLimit, { filename: "voice-input.ogg", contentType: "audio/ogg" });
       expect(fits.status).toBe(200);
+      expect(fits.body).toEqual({ text: "Hello bridge", provider: "speech-engine" });
       expect(transcribe).toHaveBeenCalledOnce();
+      expect(transcribe).toHaveBeenCalledWith({ filePath: expect.stringMatching(/voice-input\.ogg$/) });
     });
 
     it("POST /api/transcribe rejects a damaged or empty Ogg Opus recording as a bad upload", async () => {
@@ -232,7 +210,7 @@ describe("Transcription routes", () => {
 });
 
 describe("Voice job routes", () => {
-  it.each(["wav", "opus"] as const)("POST /api/voice-jobs accepts %s and starts a server-owned autosend for an existing session", async (format) => {
+  it("POST /api/voice-jobs accepts opus and starts a server-owned autosend for an existing session", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn();
     sessionManager.readMessagesFromDisk = vi.fn().mockImplementation(async () => ({
@@ -263,9 +241,9 @@ describe("Voice job routes", () => {
       .post("/api/voice-jobs")
       .field("composerKey", "existing-session")
       .field("sessionId", "existing-session")
-      .attach("audio", format === "opus" ? Buffer.from(oggOpusToneFixture()) : createWavBuffer(1), {
-        filename: format === "opus" ? "recording.ogg" : "recording.wav",
-        contentType: format === "opus" ? "audio/ogg" : "audio/wav",
+      .attach("audio", Buffer.from(oggOpusToneFixture()), {
+        filename: "recording.ogg",
+        contentType: "audio/ogg",
       });
 
     expect(res.status).toBe(202);

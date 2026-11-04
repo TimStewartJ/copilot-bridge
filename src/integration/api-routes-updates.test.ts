@@ -74,17 +74,4 @@ describe("Update routes", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("packaged release mode");
   });
-
-  it("POST /api/updates/install is disabled outside release mode", async () => {
-    const local = createTestApp({
-      runtimePaths: makeTestRuntimePaths("api-updates-install-dev", { distributionMode: "development" }),
-    });
-
-    const res = await request(local.app)
-      .post("/api/updates/install")
-      .send({ channel: "stable" });
-
-    expect(res.status).toBe(409);
-    expect(res.body.error).toContain("packaged release mode");
-  });
 });

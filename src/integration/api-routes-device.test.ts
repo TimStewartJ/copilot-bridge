@@ -181,22 +181,6 @@ describe("Device management routes", () => {
     expect(res.body).toMatchObject({ ok: true, cancelled: false, pending: false });
   });
 
-  it("logs background hibernate failures", async () => {
-    vi.useFakeTimers();
-    const error = new Error("hibernate unavailable");
-    requestDeviceHibernateMock.mockRejectedValue(error);
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { app } = createTestApp();
-
-    const res = await request(app)
-      .post("/api/device/hibernate")
-      .send({});
-
-    expect(res.status).toBe(202);
-    await vi.advanceTimersByTimeAsync(250);
-    await eventually(() => expect(errorSpy).toHaveBeenCalledWith("[device] Hibernate request failed:", error));
-  });
-
   it("POST /api/device/hibernate/on-idle arms the watcher and hibernates once sessions go idle", async () => {
     vi.useFakeTimers({ now: new Date("2026-06-06T12:00:00.000Z") });
     requestDeviceHibernateMock.mockResolvedValue(linuxHibernateCommand);

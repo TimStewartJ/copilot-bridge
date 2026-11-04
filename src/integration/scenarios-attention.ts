@@ -20,18 +20,8 @@ export const attentionScenarios: IntegrationScenario[] = [
       world.ctx.sessionMetaStore.setLastVisibleActivityAt("session-attention", "2026-09-01T10:00:00.000Z");
       world.ctx.sessionMetaStore.setLastAttentionAt("session-attention", "2026-09-01T10:05:00.000Z");
       const marked = await request(world.app).post("/api/read-state/session-attention");
-      expect(marked.body.readThroughActivityAt).toBe("2026-09-01T10:05:00.000Z");
+      expect(marked.body).toMatchObject({ lastReadAt: "2026-09-01T10:05:00.000Z", readThroughActivityAt: "2026-09-01T10:05:00.000Z" });
       expect((await request(world.app).get("/api/read-state")).body["session-attention"]).toBe("2026-09-01T10:05:00.000Z");
-    },
-  },
-  {
-    id: "ATTN-18", title: "clamps a client read cursor to server-known activity",
-    async run(world) {
-      world.ctx.sessionMetaStore.setLastAttentionAt("session-clamped", "2026-09-01T10:00:00.000Z");
-      const marked = await request(world.app).post("/api/read-state/session-clamped").send({ readThroughActivityAt: "2026-09-01T11:00:00.000Z" });
-      expect(marked.status).toBe(200);
-      expect(marked.body.lastReadAt).toBe("2026-09-01T10:00:00.000Z");
-      expect((await request(world.app).get("/api/read-state")).body["session-clamped"]).toBe("2026-09-01T10:00:00.000Z");
     },
   },
   {
@@ -49,22 +39,12 @@ export const attentionScenarios: IntegrationScenario[] = [
   {
     id: "ATTN-20", title: "rejects an invalid read cursor without overwriting prior state",
     async run(world) {
-      await request(world.app).post("/api/read-state/session-safe").send({ readThroughActivityAt: "2026-08-01T10:00:00.000Z" });
+      const accepted = await request(world.app).post("/api/read-state/session-safe").send({ readThroughActivityAt: "2026-08-01T10:00:00.000Z" }).expect(200);
+      expect(accepted.body.lastReadAt).toBe("2026-08-01T10:00:00.000Z");
       const rejected = await request(world.app).post("/api/read-state/session-safe").send({ readThroughActivityAt: "tomorrow" });
       expect(rejected.status).toBe(400);
       expect(rejected.body.error).toContain("readThroughActivityAt");
       expect((await request(world.app).get("/api/read-state")).body["session-safe"]).toBe("2026-08-01T10:00:00.000Z");
-    },
-  },
-  {
-    id: "ATTN-21", title: "keeps completed checklist history attached to its task",
-    async run(world) {
-      const task = await world.createTask("Historical checklist");
-      const item = await world.createChecklistItem(task.id, "Complete me");
-      await request(world.app).patch(`/api/checklist-items/${item.id}`).send({ done: true });
-      const dashboard = await request(world.app).get("/api/dashboard/focus");
-      const completed = dashboard.body.completedChecklistItems.find((entry: any) => entry.id === item.id);
-      expect(completed).toMatchObject({ taskId: task.id, taskTitle: "Historical checklist" });
     },
   },
   {
@@ -75,16 +55,6 @@ export const attentionScenarios: IntegrationScenario[] = [
       await world.updateTask(task.id, { title: "New dashboard title" });
       const dashboard = await request(world.app).get("/api/dashboard/focus");
       expect(dashboard.body.openChecklistItems.find((entry: any) => entry.id === item.id).taskTitle).toBe("New dashboard title");
-    },
-  },
-  {
-    id: "ATTN-23", title: "removes deleted checklist work from the dashboard",
-    async run(world) {
-      const task = await world.createTask("Dashboard cleanup");
-      const item = await world.createChecklistItem(task.id, "Remove from dashboard");
-      expect((await request(world.app).get("/api/dashboard/focus")).body.openChecklistItems.map((entry: any) => entry.id)).toContain(item.id);
-      await request(world.app).delete(`/api/checklist-items/${item.id}`);
-      expect((await request(world.app).get("/api/dashboard/focus")).body.openChecklistItems.map((entry: any) => entry.id)).not.toContain(item.id);
     },
   },
 ];

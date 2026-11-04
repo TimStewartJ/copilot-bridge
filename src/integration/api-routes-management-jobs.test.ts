@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { request } from "../test-support/api-routes.js";
 import { makeTestDir } from "../server/__tests__/helpers.js";
 import { createTestApp } from "../test-support/api-routes.js";
@@ -226,33 +225,6 @@ describe("management job API routes", () => {
   });
 
   describe("POST /management-jobs", () => {
-    it("enqueues a new self_update job and emits a changed event", async () => {
-      const { app, store, ctx } = createManagementJobApiTestApp();
-      const events: unknown[] = [];
-      const unsubscribe = ctx.globalBus.subscribe((event) => {
-        if ((event as { type?: string }).type === "management-job:changed") {
-          events.push(event);
-        }
-      });
-
-      try {
-        const res = await request(app)
-          .post("/api/management-jobs")
-          .send({ type: "self_update" });
-
-        expect(res.status).toBe(201);
-        expect(res.body.reused).toBe(false);
-        expect(res.body.status).toBe("queued");
-        expect(typeof res.body.jobId).toBe("string");
-        expect(res.body.enqueuedAt).toBe(res.body.job.createdAt);
-        expect(res.body.job).toMatchObject({ type: "self_update", input: {} });
-        expect(store.get(res.body.jobId)?.type).toBe("self_update");
-        expect(events).toHaveLength(1);
-        expect(events[0]).toMatchObject({ jobId: res.body.jobId, jobType: "self_update" });
-      } finally {
-        unsubscribe();
-      }
-    });
 
     it("returns the existing self_update job on duplicate POST with reused: true", async () => {
       const { app, ctx } = createManagementJobApiTestApp();
@@ -263,7 +235,10 @@ describe("management job API routes", () => {
       try {
         const first = await request(app).post("/api/management-jobs").send({ type: "self_update" });
         expect(first.status).toBe(201);
-        expect(events).toHaveLength(1);
+        expect(first.body).toMatchObject({ reused: false, status: "queued", job: { type: "self_update", input: {} } });
+        expect(first.body.enqueuedAt).toBe(first.body.job.createdAt);
+        expect(ctx.managementJobStore!.get(first.body.jobId)?.type).toBe("self_update");
+        expect(events).toEqual([expect.objectContaining({ jobId: first.body.jobId, jobType: "self_update" })]);
 
         const second = await request(app).post("/api/management-jobs").send({ type: "self_update" });
         expect(second.status).toBe(200);
@@ -406,38 +381,6 @@ describe("management job API routes", () => {
         .post("/api/management-jobs")
         .send({ type: "self_update", input: "nope" });
       expect(badInput.status).toBe(400);
-    });
-
-    it("allows every management job type while a restart is pending", async () => {
-      const { app, ctx, store } = createManagementJobApiTestApp();
-      const dataDir = ctx.runtimePaths?.dataDir;
-      if (!dataDir) throw new Error("test app is missing runtime data dir");
-      const signalFile = join(dataDir, "restart.signal");
-
-      // The management-job runner is a separate process: it triggers the
-      // restart the server gets restarted by, so only the on-disk record can
-      // tell the server a cutover is queued.
-      writeFileSync(signalFile, JSON.stringify({ validationMode: "operational", requestedAt: new Date().toISOString() }));
-      try {
-        const update = await request(app).post("/api/management-jobs").send({ type: "self_update" });
-        expect(update.status).toBe(201);
-        expect(update.body.status).toBe("queued");
-        store.succeed(update.body.jobId);
-
-        const previewDir = makeRealStagingDir("preview-during-restart");
-        const preview = await request(app)
-          .post("/api/management-jobs")
-          .send({ type: "staging_preview", input: { stagingDir: previewDir } });
-        expect(preview.status).toBe(201);
-
-        const stagingDir = makeRealStagingDir("deploy-during-restart");
-        const deploy = await request(app)
-          .post("/api/management-jobs")
-          .send({ type: "staging_deploy", input: { stagingDir, message: "later" } });
-        expect(deploy.status).toBe(201);
-      } finally {
-        rmSync(signalFile, { force: true });
-      }
     });
 
     it("rejects cross-site mutations", async () => {

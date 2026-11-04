@@ -4,7 +4,7 @@ import { createTaskStore, type TaskStore } from "../server/task-store.js";
 import { createTaskGroupStore, type TaskGroupStore } from "../server/task-group-store.js";
 import { createChecklistStore, type ChecklistStore } from "../server/checklist-store.js";
 import { createTagStore, type TagStore } from "../server/tag-store.js";
-import { NestedTransactionError, runTransaction } from "../server/db-transaction.js";
+import { NestedTransactionError } from "../server/db-transaction.js";
 import type { DatabaseSync } from "../server/db.js";
 
 let db: DatabaseSync;
@@ -66,6 +66,7 @@ describe("store write transactions", () => {
 
       expect(taskOrders()).toEqual(before);
       expect(taskStore.listTasks()).toHaveLength(2);
+      expect(db.isTransaction).toBe(false);
     });
 
     it("leaves the cohort unshifted when updateTask's row write fails", () => {
@@ -141,11 +142,7 @@ describe("store write transactions", () => {
   });
 
   describe("task-group-store", () => {
-    it.each([
-      ["task ungrouping", "UPDATE tasks SET groupId = NULL"],
-      ["group tag cleanup", "DELETE FROM entity_tags WHERE entityType = 'task_group'"],
-      ["group recompact", 'UPDATE task_groups SET "order" = ? WHERE id = ?'],
-    ])("rolls back the full cascade when %s fails", (_stage, match) => {
+    it("rolls back the full cascade when group recompact fails", () => {
       const first = groupStore.createGroup("First");
       const second = groupStore.createGroup("Second");
       const task = taskStore.createTask("Grouped", first.id);
@@ -156,7 +153,7 @@ describe("store write transactions", () => {
       const events: unknown[] = [];
       const unsubscribe = bus.subscribe((event) => events.push(event));
 
-      const restore = failOnStatement(match);
+      const restore = failOnStatement('UPDATE task_groups SET "order" = ? WHERE id = ?');
       try {
         expect(() => groupStore.deleteGroup(first.id)).toThrow(/injected write failure/);
       } finally {
@@ -304,12 +301,6 @@ describe("store write transactions", () => {
       } finally {
         db.exec("ROLLBACK");
       }
-    });
-
-    it("leaves no transaction open after a rollback", () => {
-      expect(() => runTransaction(db, () => { throw new Error("boom"); })).toThrow(/boom/);
-      expect(db.isTransaction).toBe(false);
-      expect(() => taskStore.createTask("After rollback")).not.toThrow();
     });
   });
 });

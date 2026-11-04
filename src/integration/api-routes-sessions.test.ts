@@ -1,16 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { DatabaseSync } from "node:sqlite";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import {
   createMockSessionManager,
-  createPendingRestartRuntimePaths,
   createTestApp,
   installApiRouteTestHooks,
-  join,
-  makeTestDir,
-  mkdirSync,
   request,
-  writeFileSync,
 } from "../test-support/api-routes.js";
 import { BRIDGE_RESTARTING_MESSAGE } from "../server/backend-availability.js";
 import { SessionCapacityError } from "../server/session-manager.js";
@@ -45,162 +39,6 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/valid session IDs/);
-  });
-
-  it("GET /api/sessions restores event-log sizes for visible CLI catalog sessions", async () => {
-    const copilotHome = join(makeTestDir("api-cli-catalog"), ".copilot");
-    mkdirSync(copilotHome, { recursive: true });
-    const cliDb = new DatabaseSync(join(copilotHome, "session-store.db"));
-    try {
-      cliDb.exec(`
-        CREATE TABLE sessions (
-          id TEXT PRIMARY KEY,
-          cwd TEXT,
-          summary TEXT,
-          created_at TEXT,
-          updated_at TEXT
-        );
-      `);
-      cliDb.prepare(`
-        INSERT INTO sessions (id, cwd, summary, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run("cli-sized-session", "D:\\work", "Sized session", "2026-04-16T12:00:00.000Z", "2026-04-16T12:00:00.000Z");
-      cliDb.prepare(`
-        INSERT INTO sessions (id, cwd, summary, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run("cli-missing-events", "D:\\work", "Missing events", "2026-04-16T11:00:00.000Z", "2026-04-16T11:00:00.000Z");
-    } finally {
-      cliDb.close();
-    }
-    const events = "{\"type\":\"message\",\"text\":\"hello\"}\n{\"type\":\"done\"}\n";
-    mkdirSync(join(copilotHome, "session-state", "cli-sized-session"), { recursive: true });
-    writeFileSync(join(copilotHome, "session-state", "cli-sized-session", "events.jsonl"), events);
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([]);
-    ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
-
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: false }));
-    expect(res.body.sessions).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        sessionId: "cli-sized-session",
-        eventLogSizeBytes: Buffer.byteLength(events),
-      }),
-      expect.objectContaining({
-        sessionId: "cli-missing-events",
-        eventLogSizeBytes: 0,
-      }),
-    ]));
-  });
-
-  it("GET /api/sessions overlays CLI catalog summaries with workspace names after cheap filtering", async () => {
-    const copilotHome = join(makeTestDir("api-cli-catalog-name-overlay"), ".copilot");
-    mkdirSync(copilotHome, { recursive: true });
-    const cliDb = new DatabaseSync(join(copilotHome, "session-store.db"));
-    try {
-      cliDb.exec(`
-        CREATE TABLE sessions (
-          id TEXT PRIMARY KEY,
-          cwd TEXT,
-          summary TEXT,
-          created_at TEXT,
-          updated_at TEXT
-        );
-      `);
-      const insert = cliDb.prepare(`
-        INSERT INTO sessions (id, cwd, summary, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-      `);
-      insert.run(
-        "cli-named-session",
-        "D:\\work",
-        "ok luycyd lyte was sold! update he selling db",
-        "2026-04-16T12:00:00.000Z",
-        "2026-04-16T12:00:00.000Z",
-      );
-      insert.run(
-        "b17e1000-0000-4000-8000-000000000001",
-        "D:\\work",
-        "Disposable helper",
-        "2026-04-16T13:00:00.000Z",
-        "2026-04-16T13:00:00.000Z",
-      );
-    } finally {
-      cliDb.close();
-    }
-    mkdirSync(join(copilotHome, "session-state", "cli-named-session"), { recursive: true });
-    writeFileSync(
-      join(copilotHome, "session-state", "cli-named-session", "workspace.yaml"),
-      [
-        "created_at: 2026-04-16T12:00:00.000Z",
-        "name: Record Lucyd Lyte Sale",
-        "summary: Record Lucyd Lyte Sale",
-      ].join("\n"),
-    );
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([]);
-    ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
-
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: false }));
-    expect(res.body.sessions).toEqual([
-      expect.objectContaining({
-        sessionId: "cli-named-session",
-        summary: "Record Lucyd Lyte Sale",
-      }),
-    ]);
-  });
-
-  it("GET /api/sessions keeps sessions visible when a CLI-owned summary exists", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
-      {
-        sessionId: "fork-session",
-        summary: "Fork of Original session",
-        modifiedTime: "2026-04-16T12:00:00.000Z",
-        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
-      },
-    ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
-
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sessions).toEqual([
-      expect.objectContaining({
-        sessionId: "fork-session",
-        summary: "Fork of Original session",
-      }),
-    ]);
-  });
-
-  it("GET /api/sessions keeps linked untitled task sessions visible", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
-      {
-        sessionId: "new-task-session",
-        modifiedTime: "2026-04-16T12:00:00.000Z",
-        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
-      },
-    ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
-    const task = ctx.taskStore.createTask("Task with new session");
-    ctx.taskStore.linkSession(task.id, "new-task-session");
-
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sessions).toEqual([
-      expect.objectContaining({
-        sessionId: "new-task-session",
-        summary: "New session",
-        linkedTaskIds: [task.id],
-      }),
-    ]);
   });
 
   it("GET /api/sessions keeps the warm cache when an untitled session becomes busy", async () => {
@@ -517,31 +355,6 @@ describe("Session routes (mocked)", () => {
     expect(linked.body.task).not.toHaveProperty("sessionIds");
   });
 
-  it("GET /api/sessions keeps sessions visible when any linked task is active", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
-      {
-        sessionId: "mixed-task-session",
-        summary: "Mixed task session",
-        modifiedTime: "2026-04-16T12:00:00.000Z",
-        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
-      },
-    ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
-    const archivedTask = ctx.taskStore.createTask("Archived parent task");
-    const activeTask = ctx.taskStore.createTask("Active parent task");
-    ctx.taskStore.linkSession(archivedTask.id, "mixed-task-session");
-    ctx.taskStore.linkSession(activeTask.id, "mixed-task-session");
-    ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
-
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sessions).toEqual([
-      expect.objectContaining({ sessionId: "mixed-task-session" }),
-    ]);
-  });
-
   it("GET /api/sessions uses attention activity for unread inclusion and ordering", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
@@ -575,33 +388,6 @@ describe("Session routes (mocked)", () => {
       lastActivityAt: "2026-04-16T13:00:00.000Z",
       modifiedTime: "2026-04-16T13:00:00.000Z",
     });
-  });
-
-  it("GET /api/sessions keeps busy archived-task sessions visible by default", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.getSessionRunState = vi.fn().mockReturnValue("busy");
-    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
-      {
-        sessionId: "busy-archived-task-session",
-        summary: "Busy archived task session",
-        modifiedTime: "2026-04-16T12:00:00.000Z",
-        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
-      },
-    ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
-    const archivedTask = ctx.taskStore.createTask("Archived parent task");
-    ctx.taskStore.linkSession(archivedTask.id, "busy-archived-task-session");
-    ctx.taskStore.updateTask(archivedTask.id, { status: "archived" });
-
-    const res = await request(app).get("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sessions).toEqual([
-      expect.objectContaining({
-        sessionId: "busy-archived-task-session",
-        runState: "busy",
-      }),
-    ]);
   });
 
   it("GET /api/sessions reports stalled sessions through runState", async () => {
@@ -667,19 +453,6 @@ describe("Session routes (mocked)", () => {
     });
   });
 
-  it("POST /api/sessions creates a session while a restart is pending or cutting over", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
-    const runtimePaths = await createPendingRestartRuntimePaths();
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-
-    const res = await request(app).post("/api/sessions");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sessionId: "new-session" });
-    expect(sessionManager.createSession).toHaveBeenCalledWith({ background: true });
-  });
-
   it("POST /api/sessions rejects unavailable and disabled models before creation", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.validateModelSelection = vi.fn(async ({ model }: { model: string }) => ({
@@ -713,33 +486,6 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
   });
 
-  it("POST /api/sessions rejects unsupported effort and long context before creation", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.validateModelSelection = vi.fn(async (
-      selection: { reasoningEffort?: string; contextTier?: string },
-    ) => ({
-      ok: false as const,
-      error: selection.contextTier === "long_context"
-        ? "Model does not support long context: small-model"
-        : "reasoningEffort must be one of: low",
-    }));
-    sessionManager.createSession = vi.fn();
-    ({ app, ctx } = createTestApp({ sessionManager }));
-
-    const unsupportedEffort = await request(app)
-      .post("/api/sessions")
-      .send({ model: "small-model", reasoningEffort: "high" });
-    const unsupportedContext = await request(app)
-      .post("/api/sessions")
-      .send({ model: "small-model", contextTier: "long_context" });
-
-    expect(unsupportedEffort.status).toBe(400);
-    expect(unsupportedEffort.body.error).toContain("reasoningEffort must be one of: low");
-    expect(unsupportedContext.status).toBe(400);
-    expect(unsupportedContext.body.error).toContain("does not support long context");
-    expect(sessionManager.createSession).not.toHaveBeenCalled();
-  });
-
   it("POST /api/sessions validates effort and context against the configured default model", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
@@ -762,50 +508,6 @@ describe("Session routes (mocked)", () => {
       reasoningEffort: "medium",
       contextTier: "long_context",
     });
-  });
-
-  it("session creation routes proceed when model metadata validation is deferred", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.validateModelSelection = vi.fn().mockResolvedValue({ ok: true });
-    sessionManager.createSession = vi.fn().mockResolvedValue({ sessionId: "new-session" });
-    sessionManager.createTaskSession = vi.fn().mockResolvedValue({ sessionId: "task-session" });
-    ({ app, ctx } = createTestApp({ sessionManager }));
-    const task = ctx.taskStore.createTask("Metadata-independent task");
-
-    const general = await request(app)
-      .post("/api/sessions")
-      .send({ model: "future-model" });
-    const taskLinked = await request(app)
-      .post(`/api/tasks/${task.id}/session`)
-      .send({ model: "future-model" });
-
-    expect(general.status).toBe(200);
-    expect(taskLinked.status).toBe(200);
-    expect(sessionManager.createSession).toHaveBeenCalledWith({
-      background: true,
-      model: "future-model",
-    });
-    expect(sessionManager.createTaskSession.mock.calls[0]?.at(-1)).toEqual({
-      background: true,
-      model: "future-model",
-    });
-    expect(sessionManager.validateModelSelection).toHaveBeenCalledTimes(2);
-  });
-
-  it("POST /api/tasks/:id/session creates a task session while a restart is pending or cutting over", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.createTaskSession = vi.fn().mockResolvedValue({ sessionId: "task-session" });
-    const runtimePaths = await createPendingRestartRuntimePaths();
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-    const task = ctx.taskStore.createTask("Task for restart");
-
-    const res = await request(app).post(`/api/tasks/${task.id}/session`);
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sessionId: "task-session" });
-    expect(sessionManager.createTaskSession).toHaveBeenCalledOnce();
-    expect(sessionManager.createTaskSession.mock.calls[0]?.at(-1)).toEqual({ background: true });
-    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("task-session");
   });
 
   it("POST /api/tasks/:id/tidy starts a linked chat with the tidy prompt and keeps it when the prompt isn't confirmed", async () => {
@@ -838,21 +540,6 @@ describe("Session routes (mocked)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("POST /api/chat accepts new work while a restart is pending or cutting over", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.startWork = vi.fn();
-    const runtimePaths = await createPendingRestartRuntimePaths();
-    ({ app, ctx } = createTestApp({ sessionManager, runtimePaths }));
-
-    const res = await request(app)
-      .post("/api/chat")
-      .send({ sessionId: "test-session", prompt: "hello" });
-
-    expect(res.status).toBe(202);
-    expect(res.body).toEqual({ status: "accepted" });
-    expect(sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined);
-  });
-
   it("POST /api/chat records Tim's message for task states only once delivery is accepted", async () => {
     const task = ctx.taskStore.createTask("Linked");
     ctx.taskStore.linkSession(task.id, "test-session");
@@ -862,17 +549,6 @@ describe("Session routes (mocked)", () => {
     ctx.sessionManager.startWork = vi.fn();
     expect((await request(app).post("/api/chat").send({ sessionId: "test-session", prompt: "hello" })).status).toBe(202);
     expect(ctx.taskStore.listMomentumSignals().get(task.id)?.lastMessageAt).toEqual(expect.any(String));
-  });
-
-  it("POST /api/chat passes autopilot mode to new work", async () => {
-    ctx.sessionManager.startWork = vi.fn();
-
-    const res = await request(app)
-      .post("/api/chat")
-      .send({ sessionId: "test-session", prompt: "hello", mode: "autopilot" });
-
-    expect(res.status).toBe(202);
-    expect(ctx.sessionManager.startWork).toHaveBeenCalledWith("test-session", "hello", undefined, { mode: "autopilot" });
   });
 
   it("POST /api/chat keeps a first message that was stopped before the agent got it", async () => {
@@ -950,16 +626,20 @@ describe("Session routes (mocked)", () => {
   it("POST /api/chat passes the client message id to busy-session steering", async () => {
     ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     ctx.sessionManager.steerSession = vi.fn().mockResolvedValue(undefined);
+    const start = vi.spyOn(ctx.sessionManager, "startWork");
 
     const res = await request(app)
       .post("/api/chat")
       .send({
         sessionId: "busy-session",
         prompt: "adjust course",
+        mode: "autopilot",
         clientMessageId: "client-message-2",
       });
 
     expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "accepted", mode: "steered" });
+    expect(start).not.toHaveBeenCalled();
     expect(ctx.sessionManager.steerSession).toHaveBeenCalledWith(
       "busy-session",
       "adjust course",
@@ -1084,15 +764,5 @@ describe("Session routes (mocked)", () => {
 
     expect(res.status).toBe(503);
     expect(res.body.error).toBe(BRIDGE_RESTARTING_MESSAGE);
-  });
-
-
-  it("GET /api/health returns ok", async () => {
-    const res = await request(app).get("/api/health");
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      ok: true,
-      docsFts: { ok: true, status: "available" },
-    });
   });
 });

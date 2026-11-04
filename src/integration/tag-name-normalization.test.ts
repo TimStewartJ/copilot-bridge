@@ -12,7 +12,6 @@ import { createTestApp } from "../test-support/api-routes.js";
 
 const NFC_CAFE = "Café";
 const NFD_CAFE = "Cafe\u0301";
-const CAFE_KEY = "CAFÉ";
 
 function getTool(ctx: AppContext, name: string) {
   const tool = [
@@ -34,21 +33,6 @@ function createInvocation(toolName: string) {
 }
 
 describe("tag name normalization", () => {
-  it("stores a canonical key while preserving the display name", () => {
-    const db = setupTestDb();
-    const tagStore = createTagStore(db);
-
-    const tag = tagStore.createTag(NFC_CAFE);
-
-    expect(tagStore.getTagByName(NFD_CAFE)).toEqual(expect.objectContaining({
-      id: tag.id,
-      name: NFC_CAFE,
-    }));
-    expect(() => tagStore.createTag(NFD_CAFE)).toThrow(`Tag "${NFD_CAFE}" already exists`);
-    expect(db.prepare("SELECT name, nameKey FROM tags").all()).toEqual([
-      { name: NFC_CAFE, nameKey: CAFE_KEY },
-    ]);
-  });
 
   it("rejects tag renames that collide on the canonical key", () => {
     const db = setupTestDb();

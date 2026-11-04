@@ -116,18 +116,6 @@ describe("task deletion removes child schedules", () => {
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
   });
 
-  it("clears entity tags through the shared deletion path", async () => {
-    const task = ctx.taskStore.createTask("Tagged task");
-    const tag = ctx.tagStore!.createTag("release");
-    ctx.tagStore!.setEntityTags("task", task.id, [tag.id]);
-    expect(ctx.tagStore!.getEntityTags("task", task.id)).toHaveLength(1);
-
-    await deleteTaskWithOwnedState(ctx, task.id, { sessionDisposition: "archive" });
-
-    expect(ctx.tagStore!.getEntityTags("task", task.id)).toHaveLength(0);
-    expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
-  });
-
   it("restores entity tags when the cascade rolls back", async () => {
     const task = ctx.taskStore.createTask("Tagged rollback");
     const tag = ctx.tagStore!.createTag("release");
@@ -167,14 +155,6 @@ describe("task deletion session disposition", () => {
     expect(res.body.preview.sessionCount).toBe(2);
     // The whole point: nothing is destroyed and nothing is silently detached.
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
-  });
-
-  it("still deletes a task with no linked sessions without a disposition", async () => {
-    const task = ctx.taskStore.createTask("No sessions");
-
-    await request(app).delete(`/api/tasks/${task.id}`).expect(200);
-
-    expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
   });
 
   describe("ifUntouched", () => {
@@ -466,19 +446,6 @@ describe("scheduler self-heals pre-existing orphaned schedules", () => {
     expect(result).toMatchObject({ skipped: "Parent task not found" });
     expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(false);
     expect(scheduler.getRegisteredScheduleIdsForTests().cron).not.toContain(schedule.id);
-  });
-});
-
-describe("task group deletion clears groupId", () => {
-  it("DELETE /api/task-groups/:id persists groupId = null for member tasks", async () => {
-    const group = ctx.taskGroupStore!.createGroup("Group A");
-    const task = ctx.taskStore.createTask("Grouped", group.id);
-    expect((db.prepare("SELECT groupId FROM tasks WHERE id = ?").get(task.id) as any).groupId).toBe(group.id);
-
-    await request(app).delete(`/api/task-groups/${group.id}`).expect(200);
-
-    expect((db.prepare("SELECT groupId FROM tasks WHERE id = ?").get(task.id) as any).groupId).toBeNull();
-    expect(ctx.taskStore.getTask(task.id)!.groupId).toBeUndefined();
   });
 });
 

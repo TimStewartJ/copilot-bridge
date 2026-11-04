@@ -136,12 +136,14 @@ describe("Task routes", () => {
     const linkedSessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     ctx.taskStore.linkSession(task.id, linkedSessionId);
     ctx.taskStore.linkSession(task.id, "../not-a-session");
+    const missingId = "11111111-2222-4333-8444-555555555555";
+    ctx.taskStore.linkSession(task.id, missingId);
     const linkedDir = join(ctx.copilotHome!, "session-state", linkedSessionId);
     const unlinkedDir = join(ctx.copilotHome!, "session-state", "unlinked-session");
-    mkdirSync(join(linkedDir, "files"), { recursive: true });
+    mkdirSync(join(linkedDir, "files", "deep"), { recursive: true });
     mkdirSync(unlinkedDir, { recursive: true });
     writeFileSync(join(linkedDir, "events.jsonl"), "event bytes\n");
-    writeFileSync(join(linkedDir, "files", "artifact.txt"), "artifact bytes");
+    writeFileSync(join(linkedDir, "files", "deep", "artifact.txt"), "artifact bytes");
     writeFileSync(join(unlinkedDir, "events.jsonl"), "not counted");
 
     const res = await request(app).get(`/api/tasks/${task.id}/session-storage`);
@@ -158,26 +160,11 @@ describe("Task routes", () => {
         sessionId: "../not-a-session",
         diskSizeBytes: 0,
       },
-    ]));
-  });
-
-  it("GET /api/tasks/:id/session-storage warns when a linked session directory is missing", async () => {
-    const task = ctx.taskStore.createTask("Missing storage task");
-    const sessionId = "11111111-2222-4333-8444-555555555555";
-    ctx.taskStore.linkSession(task.id, sessionId);
-
-    const res = await request(app).get(`/api/tasks/${task.id}/session-storage`);
-
-    expect(res.status).toBe(200);
-    expect(res.body.totalDiskSizeBytes).toBe(0);
-    expect(res.body.sessions).toEqual([{
-      sessionId,
-      diskSizeBytes: 0,
-      storageWarning: {
-        code: "missing",
-        message: "Session storage directory is missing.",
+      {
+        sessionId: missingId, diskSizeBytes: 0,
+        storageWarning: { code: "missing", message: "Session storage directory is missing." },
       },
-    }]);
+    ]));
   });
 
   it("GET /api/tasks/:id/session-storage leaves other requests responsive while sizing is pending", async () => {
@@ -221,11 +208,6 @@ describe("Task routes", () => {
     const storageResponse = await storageResponsePromise;
     expect(storageResponse.status).toBe(200);
     expect(storageResponse.body.totalDiskSizeBytes).toBe(42);
-  });
-
-  it("GET /api/tasks/:id returns 404 for missing task", async () => {
-    const res = await request(app).get("/api/tasks/nonexistent");
-    expect(res.status).toBe(404);
   });
 
   it("PATCH /api/tasks/:id updates a task", async () => {
@@ -286,20 +268,6 @@ describe("Task routes", () => {
       .send({ kind: "invalid" });
     expect(invalid.status).toBe(400);
     expect(invalid.body.error).toContain("kind must be either 'task' or 'ongoing'");
-  });
-
-  it("DELETE /api/tasks/:id removes a task", async () => {
-    const create = await request(app)
-      .post("/api/tasks")
-      .send({ title: "To Delete" });
-    const id = create.body.task.id;
-
-    const del = await request(app).delete(`/api/tasks/${id}`);
-    expect(del.status).toBe(200);
-    expect(del.body.ok).toBe(true);
-
-    const get = await request(app).get(`/api/tasks/${id}`);
-    expect(get.status).toBe(404);
   });
 
   it("POST /api/tasks creates a task with an initial work item link", async () => {
@@ -366,38 +334,6 @@ describe("Task routes", () => {
     expect(ctx.taskStore.listTasks()).toEqual([]);
   });
 
-  it("POST /api/tasks/:id/link links a work item", async () => {
-    const create = await request(app)
-      .post("/api/tasks")
-      .send({ title: "Linked Task" });
-    const id = create.body.task.id;
-
-    const res = await request(app)
-      .post(`/api/tasks/${id}/link`)
-      .send({ type: "workItem", workItemId: "42", provider: "github" });
-    expect(res.status).toBe(200);
-    expect(res.body.task.workItems).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: "42", provider: "github" })]),
-    );
-  });
-
-  it("DELETE /api/tasks/:id/link removes a work item link", async () => {
-    const create = await request(app)
-      .post("/api/tasks")
-      .send({ title: "Unlink Task" });
-    const id = create.body.task.id;
-
-    await request(app)
-      .post(`/api/tasks/${id}/link`)
-      .send({ type: "workItem", workItemId: "99", provider: "github" });
-
-    const res = await request(app)
-      .delete(`/api/tasks/${id}/link`)
-      .send({ type: "workItem", workItemId: "99", provider: "github" });
-    expect(res.status).toBe(200);
-    expect(res.body.task.workItems).toEqual([]);
-  });
-
   it("POST /api/tasks/:id/link stores a canonical github repo id and rejects a bad prId", async () => {
     const create = await request(app).post("/api/tasks").send({ title: "PR Link" });
     const id = create.body.task.id;
@@ -456,50 +392,6 @@ describe("Task routes", () => {
     expect(nameOnly.body.error).not.toContain("undefined");
   });
 
-  it("PATCH /api/tasks/:id passes completionAction to the store", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Close me out" });
-    const id = create.body.task.id;
-
-    const done = await request(app).patch(`/api/tasks/${id}`).send({ completionAction: "complete-and-archive" });
-    expect(done.status).toBe(200);
-    expect(done.body.task.status).toBe("archived");
-    expect(done.body.task.completedAt).toEqual(expect.any(String));
-  });
-
-  it("PATCH /api/tasks/:id rejects invalid nextTouchAt values", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Invalid touch" });
-    const id = create.body.task.id;
-
-    for (const nextTouchAt of ["not-a-date", "2026-02-31T00:00:00.000Z", "2026-05-02 09:30", 123]) {
-      const invalid = await request(app)
-        .patch(`/api/tasks/${id}`)
-        .send({ nextTouchAt });
-
-      expect(invalid.status).toBe(400);
-      expect(invalid.body.error).toContain("nextTouchAt must be a valid ISO timestamp with timezone");
-    }
-
-    const get = await request(app).get(`/api/tasks/${id}`);
-    expect(get.status).toBe(200);
-    expect(get.body.task.nextTouchAt).toBeUndefined();
-  });
-
-  it("PATCH /api/tasks/:id rejects invalid status values", async () => {
-    const create = await request(app).post("/api/tasks").send({ title: "Invalid status" });
-    const id = create.body.task.id;
-
-    const invalid = await request(app)
-      .patch(`/api/tasks/${id}`)
-      .send({ status: "bogus" });
-
-    expect(invalid.status).toBe(400);
-    expect(invalid.body.error).toContain("status must be one of: active, archived");
-
-    const get = await request(app).get(`/api/tasks/${id}`);
-    expect(get.status).toBe(200);
-    expect(get.body.task.status).toBe("active");
-  });
-
   it("PATCH /api/tasks/:id rejects unknown fields before mutation", async () => {
     const task = ctx.taskStore.createTask("Known title");
     const before = ctx.taskStore.getTask(task.id);
@@ -527,20 +419,6 @@ describe("Task routes", () => {
     expect(invalidCreate.body.error).toContain("Task group missing-group not found");
 
     expect(ctx.taskStore.listTasks()).toEqual([]);
-  });
-
-  it("PATCH /api/tasks/:id rejects invalid priority values", async () => {
-    const task = ctx.taskStore.createTask("Priority");
-
-    for (const priority of ["high", 1.5]) {
-      const invalid = await request(app)
-        .patch(`/api/tasks/${task.id}`)
-        .send({ priority });
-      expect(invalid.status).toBe(400);
-      expect(invalid.body.error).toContain("priority must be a finite integer");
-    }
-
-    expect(ctx.taskStore.getTask(task.id)?.priority).toBe(0);
   });
 });
 
@@ -580,21 +458,6 @@ describe("Task group routes", () => {
     const list = await request(app).get("/api/task-groups");
     const unchanged = list.body.groups.find((g: { id: string }) => g.id === id);
     expect(unchanged.color).toBe(originalColor);
-  });
-
-  it("DELETE /api/task-groups/:id deletes a group", async () => {
-    const create = await request(app)
-      .post("/api/task-groups")
-      .send({ name: "Temp" });
-    const id = create.body.group.id;
-
-    const del = await request(app).delete(`/api/task-groups/${id}`);
-    expect(del.status).toBe(200);
-    expect(del.body.success).toBe(true);
-    expect(del.body.deleted).toBe(true);
-
-    const list = await request(app).get("/api/task-groups");
-    expect(list.body.groups).toEqual([]);
   });
 
   it("DELETE /api/task-groups/:id reports an idempotent no-op for a missing group", async () => {
@@ -703,24 +566,6 @@ describe("Checklist routes", () => {
 // ── Tag CRUD ─────────────────────────────────────────────────────
 
 describe("Tag routes", () => {
-  it("GET /api/tags returns empty list initially", async () => {
-    const res = await request(app).get("/api/tags");
-    expect(res.status).toBe(200);
-    expect(res.body.tags).toEqual([]);
-  });
-
-  it("DELETE /api/tags/:id removes the tag and evicts cached sessions once", async () => {
-    const create = await request(app).post("/api/tags").send({ name: "temp" });
-    const id = create.body.tag.id;
-    const evict = vi.spyOn(ctx.sessionManager, "evictAllCachedSessions");
-
-    const del = await request(app).delete(`/api/tags/${id}`).expect(200);
-    expect(del.body.success).toBe(true);
-    expect(evict).toHaveBeenCalledTimes(1);
-    expect(ctx.tagStore!.getTag(id)).toBeUndefined();
-    const list = await request(app).get("/api/tags");
-    expect(list.body.tags).toEqual([]);
-  });
 
   it("PUT /api/tags/reorder reorders tags", async () => {
     const t1 = (await request(app).post("/api/tags").send({ name: "alpha" })).body.tag;

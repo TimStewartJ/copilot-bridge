@@ -96,6 +96,7 @@ describe("task git status route", () => {
 
     expect(res.status).toBe(200);
     expect(readCachedGitWorktreeStatusMock).toHaveBeenCalledWith("/workspace/copilot-bridge", { forceRefresh: true });
+    expect(res.body).toEqual({ status: "not_repo", cwd: "/workspace/copilot-bridge" });
   });
 
   it("returns a typed not_configured result when the task has no cwd", async () => {
@@ -109,23 +110,6 @@ describe("task git status route", () => {
       error: "Task working directory is not configured.",
     });
     expect(readCachedGitWorktreeStatusMock).not.toHaveBeenCalled();
-  });
-
-  it("passes through typed non-repo responses", async () => {
-    const task = taskStore.createTask("Outside repo");
-    taskStore.updateTask(task.id, { cwd: "/workspace/not-a-repo" });
-    readCachedGitWorktreeStatusMock.mockResolvedValue({
-      status: "not_repo",
-      cwd: "/workspace/not-a-repo",
-    });
-
-    const res = await request(app).get(`/api/tasks/${task.id}/git-status`);
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      status: "not_repo",
-      cwd: "/workspace/not-a-repo",
-    });
   });
 
   it("returns a typed unavailable result when reading git status throws", async () => {

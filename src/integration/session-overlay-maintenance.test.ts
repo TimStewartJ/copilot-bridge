@@ -46,6 +46,8 @@ describe("session overlay maintenance", () => {
     const terminalPrompt = deferStore.create("gone-session", "done", OLD_ISO);
     deferStore.complete(terminalPrompt.id);
     ageDefer("deferred_prompts", terminalPrompt.id);
+    const recentTerminal = deferStore.create("present-session", "recent", OLD_ISO);
+    deferStore.complete(recentTerminal.id);
     const terminalDelivery = deferStore.enqueueDelivery(createReturnedDeferDelivery(
       { deferId: "once_1", kind: "once", parentSessionId: "gone-session" },
       "Done.",
@@ -90,24 +92,11 @@ describe("session overlay maintenance", () => {
 
     expect(ctx.bridgeSessionStateStore.getState("orphan-overlay")).toBeUndefined();
     expect(deferStore.get(terminalPrompt.id)).toBeUndefined();
+    expect(deferStore.get(recentTerminal.id)).toBeDefined();
     expect(deferStore.get(terminalDelivery.id)).toBeUndefined();
     expect(deferStore.get(livePrompt.id)).toBeDefined();
     expect(loopStore.get(terminalLoop.id)).toBeUndefined();
     expect(loopStore.get(liveLoop.id)).toBeDefined();
-  });
-
-  it("keeps recently-terminal defers until the retention window elapses", async () => {
-    ctx.cliSessionCatalog = { listSessions: () => [] } as any;
-    const deferStore = ctx.deferredPromptStore!;
-    const recentTerminal = deferStore.create("some-session", "done", OLD_ISO);
-    deferStore.complete(recentTerminal.id);
-
-    const maintenance = createSessionOverlayMaintenance(ctx, { logger: { log: vi.fn(), error: vi.fn() } });
-    const result = await maintenance.runOnce();
-    maintenance.stop();
-
-    expect(result.prunedDeferredPrompts).toBe(0);
-    expect(deferStore.get(recentTerminal.id)).toBeDefined();
   });
 
   it("arms an unref'd interval on start and disposes it on stop", async () => {

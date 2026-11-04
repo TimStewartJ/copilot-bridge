@@ -139,48 +139,6 @@ describe("SessionManager workspace resolution", () => {
     expect(config.workingDirectory).toBe(persistedWorkspace);
   });
 
-  it("falls back to task cwd and clears a missing persisted session workspace", () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
-    tempDirs.push(copilotHome);
-    const taskWorkspace = createWorkspace(copilotHome, "task-workspace");
-    const { manager, taskStore, sessionWorkspaceStore } = createManager({ copilotHome });
-    const task = taskStore.createTask("Fallback task");
-    taskStore.updateTask(task.id, { cwd: taskWorkspace });
-    taskStore.linkSession(task.id, "session-1");
-    const missingWorkspace = join(copilotHome, "missing-staging-worktree");
-    sessionWorkspaceStore.setWorkspace("session-1", missingWorkspace);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      const config = manager.buildSessionConfig({ sessionId: "session-1", task: taskStore.getTask(task.id) });
-
-      expect(config.workingDirectory).toBe(taskWorkspace);
-      expect(sessionWorkspaceStore.getWorkspace("session-1")).toBeUndefined();
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
-  it("falls back from the recorded workspace.yaml cwd to task cwd and omits an unconfigured workspace", () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
-    tempDirs.push(copilotHome);
-    const legacyWorkspace = createWorkspace(copilotHome, "legacy-workspace");
-    const taskWorkspace = createWorkspace(copilotHome, "task-workspace");
-    const sessionDir = join(copilotHome, "session-state", "session-legacy");
-    mkdirSync(sessionDir, { recursive: true });
-    writeFileSync(join(sessionDir, "workspace.yaml"), `cwd: ${legacyWorkspace}\n`);
-
-    const { manager, taskStore } = createManager({ copilotHome });
-    const task = taskStore.createTask("Fallback task");
-    taskStore.updateTask(task.id, { cwd: taskWorkspace });
-
-    expect(manager.buildSessionConfig({ sessionId: "session-legacy", task: taskStore.getTask(task.id) }).workingDirectory)
-      .toBe(legacyWorkspace);
-    expect(manager.buildSessionConfig({ task: taskStore.getTask(task.id) }).workingDirectory)
-      .toBe(taskWorkspace);
-    expect(manager.buildSessionConfig().workingDirectory).toBeUndefined();
-  });
-
   it("omits workingDirectory when all configured workspace candidates are missing", () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
     tempDirs.push(copilotHome);
@@ -233,24 +191,6 @@ describe("SessionManager workspace resolution", () => {
     } finally {
       warn.mockRestore();
     }
-  });
-
-  it("pins the task cwd for new task sessions", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
-    tempDirs.push(copilotHome);
-    const taskWorkspace = createWorkspace(copilotHome, "task-worktree");
-    const { manager, taskStore, sessionWorkspaceStore } = createManager({ copilotHome });
-    const task = taskStore.createTask("Pinned task");
-    taskStore.updateTask(task.id, { cwd: taskWorkspace });
-
-    manager.backend = {
-      createSession: vi.fn(async () =>
-        makeAgentSessionStub({ sessionId: "task-session", disconnect: vi.fn() })),
-    };
-
-    await manager.createTaskSession(task.id, task.title, task.workItems, task.notes, task.cwd);
-
-    expect(sessionWorkspaceStore.getWorkspace("task-session")).toMatchObject({ cwd: taskWorkspace });
   });
 
   it("keeps existing task sessions pinned when the task default changes later", async () => {

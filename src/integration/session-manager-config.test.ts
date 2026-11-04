@@ -157,40 +157,6 @@ describe("SessionManager session config", () => {
     expect(HOME_GUIDANCE).toContain("Home visibility is not push authorization");
   });
 
-  it("injects compact task momentum for linked tasks", () => {
-    const db = setupTestDb();
-    const globalBus = createTestBus();
-    const copilotHome = makeTestDir("session-config-adaptive-resume");
-    const taskStore = createTaskStore(db, globalBus);
-    const task = taskStore.createTask("Preview task");
-    const updatedTask = taskStore.updateTask(task.id, {
-      doneWhen: "Preview approved and deployed",
-      nextAction: "Run staging preview",
-      waitingOn: "User approval",
-      nextTouchAt: "9999-05-03T11:00:00.000Z",
-    });
-    const manager = new SessionManager({
-      globalBus,
-      eventBusRegistry: createEventBusRegistry(),
-      sessionTitles: createSessionTitlesStore(db),
-      taskStore,
-      config: { sessionMcpServers: {} },
-      copilotHome,
-    }) as any;
-
-    const prompt = manager.buildSessionConfig({ task: updatedTask }).systemMessage.content;
-    expect(prompt).not.toContain("Run staging preview");
-    const content = turnContextFor(manager, taskStore, updatedTask.id);
-
-    expect(content).toContain("<bridge_context>");
-    expect(content).toContain(`Task: "Preview task" (taskId: ${updatedTask.id}, status: active, kind: task)`);
-    expect(content).toContain("Where this task stands:");
-    expect(content).toContain("- Done when: Preview approved and deployed");
-    expect(content).toContain("- Next step: Run staging preview");
-    expect(content).toContain("- Waiting for: User approval");
-    expect(content).toContain("- Revisit on: 9999-05-03T11:00:00.000Z");
-  });
-
   it("sends bridge_context only when it changed and resends after the conversation may have lost it", () => {
     const db = setupTestDb();
     const globalBus = createTestBus();
@@ -211,6 +177,7 @@ describe("SessionManager session config", () => {
 
     const first = manager.prepareTurnContext("chat");
     expect(first.block).toContain("First notes");
+    expect(first.block).toContain("This context is optional; do not invent work to fill it.");
     // Nothing is marked delivered until the send is accepted.
     expect(manager.prepareTurnContext("chat").block).toContain("First notes");
     first.commit();
@@ -292,29 +259,6 @@ describe("SessionManager session config", () => {
     expect(content).toContain("- Next step: Review telemetry");
     expect(content).not.toContain("- Done when:");
     expect(content).not.toContain("Should not be injected");
-  });
-
-  it("reports active tasks with no next action, blocker, or follow-up without a tool-use nudge", () => {
-    const db = setupTestDb();
-    const globalBus = createTestBus();
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-config-"));
-    tempDirs.push(copilotHome);
-    const taskStore = createTaskStore(db, globalBus);
-    const task = taskStore.createTask("Needs decision");
-    const manager = new SessionManager({
-      globalBus,
-      eventBusRegistry: createEventBusRegistry(),
-      sessionTitles: createSessionTitlesStore(db),
-      taskStore,
-      config: { sessionMcpServers: {} },
-      copilotHome,
-    }) as any;
-
-    const content = turnContextFor(manager, taskStore, task.id);
-
-    expect(content).toContain("Where this task stands:");
-    expect(content).toContain("This context is optional; do not invent work to fill it.");
-    expect(content).not.toContain("update with the task momentum tool");
   });
 
   it("applies one-session model, effort, and context overrides during SDK session creation", async () => {
@@ -451,6 +395,7 @@ describe("SessionManager session config", () => {
     expect(createSessionConfig.systemMessage.content).not.toContain("Open the preview");
     // Callers link the new chat before its first message, which then carries the stored momentum.
     const content = turnContextFor(manager, taskStore, updatedTask.id, "task-session");
+    expect(content).toContain(`Task: "Initial momentum" (taskId: ${updatedTask.id}, status: active, kind: task)`);
     expect(content).toContain("- Done when: Preview is approved");
     expect(content).toContain("- Next step: Open the preview");
     expect(content).toContain("- Waiting for: Design review");
