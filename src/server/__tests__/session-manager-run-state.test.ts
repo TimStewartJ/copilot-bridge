@@ -16,6 +16,7 @@ import { createTelemetryStore } from "../telemetry-store.js";
 import { createSessionContextStore } from "../session-context-store.js";
 import { createChatMessageIdStore } from "../chat-message-id-store.js";
 import { createUnsentMessageStore } from "../unsent-message-store.js";
+import type { AgentSession } from "../agent-backend/index.js";
 import type { TelemetryStore } from "../telemetry-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
@@ -2039,6 +2040,11 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-1")).toBe("idle");
   });
 
+  function undoBackend(truncateHistory: AgentSession["truncateHistory"]) {
+    const session = makeAgentSessionStub({ truncateHistory });
+    return { resumeSession: async () => session };
+  }
+
   it("undoes a validated user turn, rewinds activity metadata, and publishes refresh events", async () => {
     const {
       manager,
@@ -2056,19 +2062,8 @@ describe("SessionManager run state", () => {
       { id: "assistant-2", type: "assistant.message", timestamp: "2026-05-09T10:01:01.000Z", data: { content: "Answer two" } },
     ];
     const truncateHistory = vi.fn().mockResolvedValue({ eventsRemoved: 2 });
-    const session = makeAgentSessionStub({
-      sessionId: "session-1",
-      on: vi.fn(() => vi.fn()),
-      send: vi.fn(),
-      abort: vi.fn(),
-      setModel: vi.fn(),
-      disconnect: vi.fn(),
-      truncateHistory,
-    });
     writeSessionEvents(copilotHome, "session-1", events);
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue(session),
-    };
+    manager.backend = undoBackend(truncateHistory);
     const endSessionResume = vi.spyOn(manager, "endSessionResume");
     const flushPendingSessionEviction = vi.spyOn(manager, "flushPendingSessionEviction");
     sessionMetaStore.setLastVisibleActivityAt("session-1", "2026-05-09T10:01:01.000Z");
@@ -2136,7 +2131,7 @@ describe("SessionManager run state", () => {
   });
   it("rejects stale or non-user undo boundaries before truncating history", async () => {
     const { manager, copilotHome } = createManager();
-    const truncateHistory = vi.fn();
+    const truncateHistory = vi.fn().mockResolvedValue({ eventsRemoved: 1 });
     writeSessionEvents(copilotHome, "session-1", [
       {
         id: "skill-browser",
@@ -2144,17 +2139,7 @@ describe("SessionManager run state", () => {
         data: { content: "<skill-context name=\"browser\">", source: "skill-browser" },
       },
     ]);
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue({
-        sessionId: "session-1",
-        on: vi.fn(() => vi.fn()),
-        send: vi.fn(),
-        abort: vi.fn(),
-        setModel: vi.fn(),
-        disconnect: vi.fn(),
-        truncateHistory,
-      }),
-    };
+    manager.backend = undoBackend(truncateHistory);
 
     await expect(manager.undoSessionTurn("session-1", "skill-browser")).rejects.toMatchObject({
       code: "stale-boundary",
@@ -2170,17 +2155,7 @@ describe("SessionManager run state", () => {
       { id: "user-1", type: "user.message", timestamp: "2026-05-09T10:00:00.000Z", data: { content: "First" } },
       { id: "assistant-1", type: "assistant.message", timestamp: "2026-05-09T10:00:01.000Z", data: { content: "Answer" } },
     ]);
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue({
-        sessionId: "session-1",
-        on: vi.fn(() => vi.fn()),
-        send: vi.fn(),
-        abort: vi.fn(),
-        setModel: vi.fn(),
-        disconnect: vi.fn(),
-        truncateHistory: vi.fn().mockResolvedValue({ eventsRemoved: 2 }),
-      }),
-    };
+    manager.backend = undoBackend(async () => ({ eventsRemoved: 2 }));
 
     await expect(manager.undoSessionTurn("session-1", "user-1"))
       .resolves.toEqual({ eventsRemoved: 2 });
@@ -2199,17 +2174,7 @@ describe("SessionManager run state", () => {
       });
       return { eventsRemoved: 1 };
     });
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue({
-        sessionId: "session-1",
-        on: vi.fn(() => vi.fn()),
-        send: vi.fn(),
-        abort: vi.fn(),
-        setModel: vi.fn(),
-        disconnect: vi.fn(),
-        truncateHistory,
-      }),
-    };
+    manager.backend = undoBackend(truncateHistory);
 
     const firstUndo = manager.undoSessionTurn("session-1", "user-1");
     await flushMicrotasks();
