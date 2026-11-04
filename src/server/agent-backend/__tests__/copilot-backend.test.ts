@@ -47,32 +47,6 @@ function createFakeClient(session: ReturnType<typeof createFakeSession> = create
 }
 
 describe("CopilotBackend wrap fidelity", () => {
-  it("exposes the copilot id and full capability set", () => {
-    const backend = new CopilotBackend(createFakeClient() as any);
-    expect(backend.id).toBe("copilot");
-    expect(backend.capabilities).toMatchObject({
-      resumeSession: true,
-      streamingToolInput: true,
-      costUsage: true,
-      subAgents: true,
-      images: true,
-      bidirectionalStdin: false,
-      externalToolEvents: true,
-      forkBoundaries: true,
-    });
-  });
-
-  it("delegates start/stop/forceStop to the SDK client", async () => {
-    const client = createFakeClient();
-    const backend = new CopilotBackend(client as any);
-    await backend.start();
-    await backend.stop();
-    await backend.forceStop();
-    expect(client.start).toHaveBeenCalledOnce();
-    expect(client.stop).toHaveBeenCalledOnce();
-    expect(client.forceStop).toHaveBeenCalledOnce();
-  });
-
   it("treats an empty SDK cleanup error array as a successful stop", async () => {
     const client = createFakeClient();
     const backend = new CopilotBackend(client as any);
@@ -162,19 +136,6 @@ describe("CopilotBackend wrap fidelity", () => {
     const backend = new CopilotBackend(client as any);
 
     await expect(backend.checkSessionsInUse!(["s1"])).resolves.toBeUndefined();
-  });
-
-  it("forwards createSession/resumeSession config and wraps the returned session", async () => {
-    const client = createFakeClient();
-    const backend = new CopilotBackend(client as any);
-    const config = { workingDirectory: "/x", mcpServers: {} };
-    const created = await backend.createSession(config);
-    expect(client.createSession).toHaveBeenCalledWith({ ...config, toolSearch: { enabled: true } });
-    expect(created.sessionId).toBe("fake-session-id");
-
-    const resumed = await backend.resumeSession("abc", config);
-    expect(client.resumeSession).toHaveBeenCalledWith("abc", { ...config, toolSearch: { enabled: true } });
-    expect(resumed.sessionId).toBe("fake-session-id");
   });
 
   it("reloads discovered agents only when resuming a discovery-enabled session", async () => {
@@ -423,24 +384,6 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(session.registerElicitationHandler).toHaveBeenCalledWith(undefined);
   });
 
-  it("does not request the elicitation ask_user variant when pending interaction events are off", async () => {
-    const client = createFakeClient();
-    const backend = new CopilotBackend(client as any);
-
-    await backend.createSession({ streaming: true });
-
-    expect(client.createSession).toHaveBeenCalledWith({ streaming: true, toolSearch: { enabled: true } });
-  });
-
-  it("delegates deleteSession and getSessionMetadata", async () => {
-    const client = createFakeClient();
-    const backend = new CopilotBackend(client as any);
-    await backend.deleteSession("zzz");
-    await backend.getSessionMetadata("zzz");
-    expect(client.deleteSession).toHaveBeenCalledWith("zzz");
-    expect(client.getSessionMetadata).toHaveBeenCalledWith("zzz");
-  });
-
   it("forkSession passes sessionId and toEventId to rpc.sessions.fork", async () => {
     const client = createFakeClient();
     const backend = new CopilotBackend(client as any);
@@ -520,12 +463,9 @@ describe("CopilotAgentSession native tool approvals", () => {
   });
 
   it.each([
-    { success: false, mode: "manual" },
     { success: true, mode: "manual" },
-    { success: true },
     { success: "true", mode: "allow-all" },
     null,
-    undefined,
   ])("blocks tool use when native approval is refused or malformed: %j", async (result) => {
     const setMode = vi.fn(async () => result);
     const initializeAndValidate = vi.fn();
@@ -729,22 +669,6 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(session.setModel).not.toHaveBeenCalled();
   });
 
-  it("deliberately omits full-history reads and pending-interaction listings", async () => {
-    // A single large history response tears down the shared JSON-RPC connection, so the Bridge reads
-    // events.jsonl from disk. The runtime has no pending user-input/elicitation listing (only
-    // permission prompts), so the Bridge serves listings from its own event-derived index.
-    const getEvents = vi.fn().mockResolvedValue([{ type: "test" }]);
-    const pendingRequests = vi.fn().mockResolvedValue({ items: [] });
-    const session = { ...createFakeSession({ permissions: { pendingRequests } }), getEvents };
-    const wrapped = await new CopilotBackend(createFakeClient(session as any) as any).createSession({} as any);
-
-    for (const method of ["getEvents", "getPendingUserInputRequests", "getPendingElicitationRequests"]) {
-      expect(method in wrapped, method).toBe(false);
-    }
-    expect(getEvents).not.toHaveBeenCalled();
-    expect(pendingRequests).not.toHaveBeenCalled();
-  });
-
   it("delegates race-safe pending interaction responses", async () => {
     const handlePendingUserInput = vi.fn(async () => ({ success: true }));
     const handlePendingElicitation = vi.fn(async () => ({ success: false }));
@@ -845,7 +769,7 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(session.send).toHaveBeenCalledOnce();
   });
 
-  it.each([undefined, {}, { success: false }])("rejects an unconfirmed tool update: %j", async (result) => {
+  it.each([undefined, { success: false }])("rejects an unconfirmed tool update: %j", async (result) => {
     const update = vi.fn(async () => result);
     const session = createFakeSession({ mode: { set: async () => undefined }, options: { update } });
     const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({});

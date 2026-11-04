@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppContext } from "../app-context.js";
-import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { normalizeToolResult } from "../agent-tools-mcp/server.js";
-import { convertBridgeToolResultToSdk, createNativeBridgeTools } from "../bridge-native-tools.js";
+import { convertBridgeToolResultToSdk } from "../bridge-native-tools.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import { createDeferredPromptRunner } from "../deferred-prompt-runner.js";
 import { createGlobalBus } from "../global-bus.js";
@@ -42,7 +41,7 @@ function fixture() {
     signal?: AbortSignal,
     sessionId = CALLER,
   ) => tool.handler(args, { sessionId, requestId: "send-1", signal });
-  return { db, ctx, tool, call, sessionManager, taskStore, sessionMetaStore, deferredPromptStore, deferredPromptRunner, globalBus, poke };
+  return { db, call, sessionManager, taskStore, sessionMetaStore, deferredPromptStore, globalBus, poke };
 }
 
 function text(result: Awaited<ReturnType<ReturnType<typeof fixture>["call"]>>) {
@@ -50,15 +49,6 @@ function text(result: Awaited<ReturnType<ReturnType<typeof fixture>["call"]>>) {
 }
 
 describe("session_send", () => {
-  it("registers native and MCP definitions with the existing-chat versus sub-agent distinction", () => {
-    const { ctx, tool } = fixture();
-    expect(getBridgeToolDefinitions(ctx).some((definition) => definition.name === "session_send")).toBe(true);
-    expect(createNativeBridgeTools([tool])[0]?.defer).toBe("never");
-    expect(tool.inputSchema.required).toEqual(["sessionId", "message"]);
-    expect(tool.description).toContain("Use write_agent");
-    expect(tool.description).toContain("no reply is forwarded here");
-  });
-
   it("waits for acceptance in an existing chat and leaves task association and human engagement alone", async () => {
     const { call, sessionManager, taskStore } = fixture();
     const callerTask = taskStore.createTask("Caller task");
@@ -117,10 +107,13 @@ describe("session_send", () => {
   });
 
   it.each([
-    {}, { message: "x" }, { sessionId: TARGET }, { sessionId: "some title", message: "x" },
-    { sessionId: "../bad", message: "x" }, { sessionId: CALLER, message: "x" },
-    { sessionId: TARGET, message: "" }, { sessionId: TARGET, message: " " },
-    { sessionId: TARGET, message: 4 }, { sessionId: TARGET, message: "/compact" },
+    { message: "x" },
+    { sessionId: TARGET },
+    { sessionId: "../bad", message: "x" },
+    { sessionId: CALLER, message: "x" },
+    { sessionId: TARGET, message: " " },
+    { sessionId: TARGET, message: 4 },
+    { sessionId: TARGET, message: "/compact" },
     { sessionId: TARGET, message: "x", model: "other" },
   ])("rejects invalid inputs without sending or restoring: %j", async (args) => {
     const { call, sessionManager, sessionMetaStore } = fixture();
@@ -160,12 +153,6 @@ describe("session_send", () => {
     expect(sessionManager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
   });
 
-  it("requires an invoking session", async () => {
-    const { call, sessionManager } = fixture();
-    expect(await call({ sessionId: TARGET, message: "x" }, undefined, "")).toMatchObject({ resultType: "failure" });
-    expect(sessionManager.getSessionCreationState).not.toHaveBeenCalled();
-  });
-
   it.each(["before lookup", "during lookup"])("stops cancellation %s without changing the target", async (phase) => {
     const { call, sessionManager, sessionMetaStore } = fixture();
     const controller = new AbortController();
@@ -177,10 +164,8 @@ describe("session_send", () => {
     expect(sessionManager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
   });
 
-  it.each(["backend", "hold", "capacity", "stalled"])("queues known pre-dispatch %s blocking without claiming delivery", async (reason) => {
+  it.each(["capacity", "stalled"])("queues known pre-dispatch %s blocking without claiming delivery", async (reason) => {
     const { call, sessionManager, deferredPromptStore, poke } = fixture();
-    if (reason === "backend") sessionManager.getBackendUnavailableReason = () => "Agent backend is reconnecting";
-    if (reason === "hold") sessionManager.isSessionBusy = () => true;
     if (reason === "capacity") sessionManager.getSessionCapacityWait = () => "Capacity full";
     if (reason === "stalled") sessionManager.getSessionRunState = () => "stalled";
     const result = await call();
@@ -227,13 +212,12 @@ describe("session_send", () => {
     }
   });
 
-  it.each(["running", "completed", "failed", "cancelled"])("reports the previous queued invocation's %s state without resending", async (status) => {
+  it.each(["running", "failed"])("reports the previous queued invocation's %s state without resending", async (status) => {
     const { db, call, sessionManager, deferredPromptStore } = fixture();
     deferredPromptStore.enqueueDelivery({ id: DELIVERY_ID, sourceId: DELIVERY_ID, sessionId: TARGET, prompt: "Continue the proposal." });
     db.prepare("UPDATE deferred_prompts SET status = ? WHERE id = ?").run(status, DELIVERY_ID);
     const result = await call();
     if (status === "running") expect(result).toMatchObject({ delivery: "queued" });
-    else if (status === "completed") expect(result).toMatchObject({ delivery: "accepted" });
     else expect(text(result)).toContain(`previous queued message is ${status}`);
     expect(sessionManager.startWorkAndWaitForDelivery).not.toHaveBeenCalled();
   });

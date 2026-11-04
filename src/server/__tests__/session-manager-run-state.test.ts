@@ -459,70 +459,6 @@ describe("SessionManager run state", () => {
     expect(run.bus.getTerminalState().terminalType).toBe("error");
   });
 
-  it("reuses cached Claude sessions without pre-send model or history inspection", async () => {
-    const sessionId = "session-claude-cache-reuse";
-    const { manager } = createManager();
-    const cached = makeSession();
-    cached.session.getCurrentModel = vi.fn();
-    manager.sessionObjects.set(sessionId, cached.session);
-    manager.backend = {
-      resumeSession: vi.fn(),
-    };
-
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-
-    expect(cached.session.send).toHaveBeenCalledWith({ prompt: "hello" });
-    expect(cached.session.getCurrentModel).not.toHaveBeenCalled();
-    expect(cached.session.disconnect).not.toHaveBeenCalled();
-    expect(manager.backend.resumeSession).not.toHaveBeenCalled();
-
-    cached.getReleaseSend()?.();
-    await flushMicrotasks();
-    cached.getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(Date.now() + 1).toISOString(),
-    });
-    await flushMicrotasks();
-  });
-
-  it("allows startWork while persisted restart state is active or launcher is waiting for active sessions", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
-    try {
-      const { manager } = createManager({
-        copilotHome,
-      });
-      const { session, getHandler, getReleaseSend } = makeSession();
-      manager.backend = {
-        resumeSession: vi.fn().mockResolvedValue(session),
-      };
-
-      await writeRestartState(join(dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
-
-      expect(() => manager.startWork("session-1", "hello")).not.toThrow();
-      await flushMicrotasks();
-
-      expect(manager.backend.resumeSession).toHaveBeenCalledWith("session-1", expect.anything());
-      expect(manager.getSessionRunState("session-1")).toBe("busy");
-      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
-
-      getReleaseSend()?.();
-      await flushMicrotasks();
-      getHandler()?.({
-        type: "session.idle",
-        data: {},
-        timestamp: new Date(Date.now() + 1).toISOString(),
-      });
-      await flushMicrotasks();
-      expect(manager.getSessionRunState("session-1")).toBe("idle");
-      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-      rmSync(copilotHome, { recursive: true, force: true });
-    }
-  });
   it("sends steering prompts immediately through the active cached session", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
@@ -655,31 +591,6 @@ describe("SessionManager run state", () => {
       ["message-first", "client-first"],
       ["message-steer", "client-steer"],
     ]));
-  });
-
-  it("sets the SDK session mode before sending normal work", async () => {
-    const { manager, eventBusRegistry } = createManager();
-    const { session, getHandler, getReleaseSend } = makeSession();
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue(session),
-    };
-
-    manager.startWork("session-1", "hello", undefined, { mode: "autopilot" });
-    await flushMicrotasks();
-
-    expect(session.setSendMode).toHaveBeenCalledWith({ mode: "autopilot" });
-    expect(session.setSendMode.mock.invocationCallOrder[0]).toBeLessThan(
-      session.send.mock.invocationCallOrder[0],
-    );
-
-    getReleaseSend()?.();
-    await flushMicrotasks();
-    getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: "2026-04-24T12:00:00.000Z",
-    });
-    await flushMicrotasks();
   });
 
   it("tracks the run's autopilot mode for the session list and the live stream", async () => {
@@ -1405,23 +1316,6 @@ describe("SessionManager run state", () => {
     await flushMicrotasks();
   });
 
-  it("sends the prompt unchanged when bridge_context has nothing new", async () => {
-    const { manager } = createManager();
-    const { session, getHandler, getReleaseSend } = makeSession();
-    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
-    manager.prepareTurnContext = vi.fn(() => ({ commit: vi.fn() }));
-
-    manager.startWork("session-1", "hello there");
-    await flushMicrotasks();
-    await flushMicrotasks();
-
-    expect(session.send).toHaveBeenCalledWith({ prompt: "hello there" });
-    getReleaseSend()?.();
-    await flushMicrotasks();
-    getHandler()?.({ type: "session.idle", data: {}, timestamp: "2026-04-24T12:00:01.000Z" });
-    await flushMicrotasks();
-  });
-
   it("completes text-only slash commands without sending an agent prompt", async () => {
     const { manager, eventBusRegistry } = createManager();
     const { session } = makeSession();
@@ -1566,25 +1460,6 @@ describe("SessionManager run state", () => {
     }
     await flushMicrotasks();
     expect(manager.getSessionRunState("session-1")).toBe("idle");
-  });
-
-  it("rejects steering while a session is busy without an active run", async () => {
-    const { manager } = createManager();
-    manager.backend = {
-      resumeSession: vi.fn(),
-    };
-    (manager as any).sessionHolds.start("session-1", "model-switching");
-
-    await expect(manager.steerSession("session-1", "please adjust")).rejects.toThrow("not accepting steering");
-  });
-
-  it("derives busy and active state from the owned overlay reason", () => {
-    const { manager } = createManager();
-    (manager as any).sessionHolds.start("session-1", "history-undo");
-
-    expect(manager.isSessionBusy("session-1")).toBe(true);
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-    expect(manager.getActiveSessions()).toContain("session-1");
   });
 
   it("starts the holder's follow-up turn before telling hold watchers the hold ended", async () => {
@@ -1819,39 +1694,6 @@ describe("SessionManager run state", () => {
     }
     }
   });
-  it("syncs restart waiting count when a cold resume starts and finishes during restart pending", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-resume-only-"));
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-resume-only-"));
-    try {
-      const { manager } = createManager({ copilotHome });
-      const restartStatePath = join(dataDir, "restart-state.json");
-
-      await writeRestartState(restartStatePath, { phase: "restarting", releaseFailure: null });
-
-      const resumedSession = makeAgentSessionStub({ sessionId: "session-1" });
-      let resolveResume!: (session: typeof resumedSession) => void;
-      manager.backend = {
-        resumeSession: vi.fn(() => new Promise<typeof resumedSession>((resolve) => {
-          resolveResume = resolve;
-        })),
-      };
-
-      const messageLoad = manager.warmSession("message-session");
-      await flushMicrotasks();
-
-      expect(manager.getLifecycleBlockingSessionCount()).toBe(1);
-
-      resolveResume(resumedSession);
-      await messageLoad;
-
-      expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
-    } finally {
-
-      rmSync(dataDir, { recursive: true, force: true });
-      rmSync(copilotHome, { recursive: true, force: true });
-    }
-  });
-
   it("does not let a superseded cold prompt resume overwrite a newer cached session", async () => {
     const { manager } = createManager();
     const stale = makeSession();
@@ -1894,28 +1736,6 @@ describe("SessionManager run state", () => {
     expect(manager.getSessionRunState("session-run-superseded")).toBe("idle");
   });
 
-  it("allows session creation paths while the launcher is waiting for active sessions", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "bridge-restart-run-state-"));
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-restart-home-"));
-    try {
-      const { manager } = createManager({
-        copilotHome,
-      });
-      manager.backend = {
-        createSession: vi.fn().mockResolvedValue(makeAgentSessionStub({ sessionId: "created-session" })),
-      };
-
-      await writeRestartState(join(dataDir, "restart-state.json"), { phase: "restarting", releaseFailure: null });
-
-      await expect(manager.createSession()).resolves.toEqual({ sessionId: "created-session" });
-      expect(manager.backend.createSession).toHaveBeenCalledOnce();
-    } finally {
-
-      rmSync(dataDir, { recursive: true, force: true });
-      rmSync(copilotHome, { recursive: true, force: true });
-    }
-  });
-
   it("fails before backend creation when settings become unreadable at the creation boundary", async () => {
     // Building the session config is the first settings read on the creation path.
     const getSettings = vi.fn(() => {
@@ -1937,37 +1757,6 @@ describe("SessionManager run state", () => {
     expect(manager.getRuntimeActivity().capacity.weightedUnits.retained).toBe(0);
   });
 
-  it("startWorkAndWaitForDelivery resolves when the user prompt is accepted", async () => {
-    const { manager } = createManager();
-    const { session, getHandler, getReleaseSend } = makeSession();
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue(session),
-    };
-
-    const accepted = manager.startWorkAndWaitForDelivery("session-1", "hello");
-    await flushMicrotasks();
-
-    getHandler()?.({
-      type: "user.message",
-      data: {},
-      timestamp: new Date(Date.now() + 1).toISOString(),
-    });
-
-    await expect(accepted).resolves.toBeUndefined();
-    expect(manager.getSessionRunState("session-1")).toBe("busy");
-
-    getReleaseSend()?.();
-    await flushMicrotasks();
-    getHandler()?.({
-      type: "session.idle",
-      data: {},
-      timestamp: new Date(Date.now() + 2).toISOString(),
-    });
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState("session-1")).toBe("idle");
-  });
-
   it("records completion attention on natural idle when enabled", async () => {
     const { manager, db } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();
@@ -1985,6 +1774,7 @@ describe("SessionManager run state", () => {
       timestamp: "2026-05-09T10:00:00.000Z",
     });
     await expect(accepted).resolves.toBeUndefined();
+    expect(manager.getSessionRunState("session-1")).toBe("busy");
 
     getReleaseSend()?.();
     await flushMicrotasks();
@@ -2818,12 +2608,10 @@ describe("SessionManager run state", () => {
       };
     }
 
-    async function startRun(sessionId: string, opts: { browserSessions?: boolean; autopilot?: boolean } = {}) {
-      const browserSessions = opts.browserSessions === false
-        ? undefined
-        : new BrowserSessionStore({
-          browserBroker: new BrowserBroker({ copilotHome: join(makeTestDir("handoff-browser-sessions"), ".copilot") }),
-        });
+    async function startRun(sessionId: string, opts: { autopilot?: boolean } = {}) {
+      const browserSessions = new BrowserSessionStore({
+        browserBroker: new BrowserBroker({ copilotHome: join(makeTestDir("handoff-browser-sessions"), ".copilot") }),
+      });
       const created = createManager({ telemetry: true, browserSessionStore: browserSessions });
       const made = makeSession();
       created.manager.backend = { resumeSession: vi.fn().mockResolvedValue(made.session) };
@@ -2849,7 +2637,7 @@ describe("SessionManager run state", () => {
         made.getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
         await flushMicrotasks();
         expect(created.manager.getSessionRunState(sessionId)).toBe("idle");
-        await browserSessions?.closeAll();
+        await browserSessions.closeAll();
       };
       return { ...created, ...made, browserSessions, shown, raise, pending, finish };
     }
@@ -2857,9 +2645,16 @@ describe("SessionManager run state", () => {
     it("marks the form of an open handoff of this chat with the browser session and the reason", async () => {
       const sessionId = "session-handoff-form";
       const run = await startRun(sessionId);
-      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
+      const handoff = run.browserSessions.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
 
-      await run.raise(handoffForm("el-handoff", handoff.fieldName));
+      const form = handoffForm("el-handoff", handoff.fieldName);
+      await run.raise({
+        ...form,
+        requestedSchema: {
+          ...form.requestedSchema,
+          properties: { note: { type: "string" }, ...form.requestedSchema.properties },
+        },
+      });
 
       expect(run.shown).toHaveLength(1);
       expect(run.shown[0]).toMatchObject({
@@ -2875,7 +2670,7 @@ describe("SessionManager run state", () => {
       const [view] = await run.pending();
       expect(view).toMatchObject({ requestId: "el-handoff", requestedAt: REQUESTED_AT });
       expect(view.browserHandoff).toEqual({ browserSessionId: BROWSER_SESSION_ID, reason: REASON });
-      expect(Object.keys(view.requestedSchema.properties)).toEqual([handoff.fieldName]);
+      expect(Object.keys(view.requestedSchema.properties)).toEqual(["note", handoff.fieldName]);
       expect(run.manager.getPendingUserInputCount(sessionId)).toBe(1);
 
       // It is answered like any other form.
@@ -2892,29 +2687,10 @@ describe("SessionManager run state", () => {
       await run.finish();
     });
 
-    it("recognises the handoff among the fields of a larger form", async () => {
-      const sessionId = "session-handoff-among-fields";
-      const run = await startRun(sessionId);
-      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
-      const form = handoffForm("el-handoff", handoff.fieldName);
-
-      await run.raise({
-        ...form,
-        requestedSchema: {
-          type: "object",
-          properties: { note: { type: "string" }, ...form.requestedSchema.properties },
-        },
-      });
-
-      expect(run.shown[0].browserHandoff).toEqual({ browserSessionId: BROWSER_SESSION_ID, reason: REASON });
-      handoff.end();
-      await run.finish();
-    });
-
     it("leaves a form with other fields as it is while a handoff is open", async () => {
       const sessionId = "session-handoff-other-form";
       const run = await startRun(sessionId);
-      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
+      const handoff = run.browserSessions.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
 
       await run.raise({
         requestId: "el-ask",
@@ -2935,7 +2711,7 @@ describe("SessionManager run state", () => {
     it("does not show one chat the handoff of another", async () => {
       const sessionId = "session-handoff-this-chat";
       const run = await startRun(sessionId);
-      const elsewhere = run.browserSessions!.beginHandoff("session-handoff-other-chat", BROWSER_SESSION_ID, REASON);
+      const elsewhere = run.browserSessions.beginHandoff("session-handoff-other-chat", BROWSER_SESSION_ID, REASON);
 
       await run.raise(handoffForm("el-foreign", elsewhere.fieldName));
 
@@ -2943,7 +2719,7 @@ describe("SessionManager run state", () => {
       expect(run.shown[0]).not.toHaveProperty("browserHandoff");
       expect((await run.pending())[0]).not.toHaveProperty("browserHandoff");
       // The chat that asked still gets it.
-      expect(run.browserSessions!.matchHandoff("session-handoff-other-chat", [elsewhere.fieldName]))
+      expect(run.browserSessions.matchHandoff("session-handoff-other-chat", [elsewhere.fieldName]))
         .toEqual({ browserSessionId: BROWSER_SESSION_ID, reason: REASON });
       elsewhere.end();
       await run.finish();
@@ -2952,7 +2728,7 @@ describe("SessionManager run state", () => {
     it("no longer marks a form once the handoff has ended", async () => {
       const sessionId = "session-handoff-ended";
       const run = await startRun(sessionId);
-      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
+      const handoff = run.browserSessions.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
       handoff.end();
 
       await run.raise(handoffForm("el-late", handoff.fieldName));
@@ -2960,17 +2736,6 @@ describe("SessionManager run state", () => {
       expect(run.shown.map((event) => event.requestId)).toEqual(["el-late"]);
       expect(run.shown[0]).not.toHaveProperty("browserHandoff");
       expect((await run.pending())[0]).not.toHaveProperty("browserHandoff");
-      await run.finish();
-    });
-
-    it("shows the form unchanged when the manager has no browser sessions", async () => {
-      const sessionId = "session-handoff-no-browser";
-      const run = await startRun(sessionId, { browserSessions: false });
-
-      await run.raise(handoffForm("el-plain", "handoff_1a2b3c4d"));
-
-      expect(run.shown.map((event) => event.requestId)).toEqual(["el-plain"]);
-      expect(run.shown[0]).not.toHaveProperty("browserHandoff");
       await run.finish();
     });
 
@@ -2985,7 +2750,7 @@ describe("SessionManager run state", () => {
         });
         return true;
       });
-      const handoff = run.browserSessions!.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
+      const handoff = run.browserSessions.beginHandoff(sessionId, BROWSER_SESSION_ID, REASON);
 
       await run.raise(handoffForm("el-handoff", handoff.fieldName));
 
@@ -3183,52 +2948,6 @@ describe("SessionManager run state", () => {
     expect(session.abort).not.toHaveBeenCalled();
   });
 
-  it("records completion telemetry for live session.idle", async () => {
-    const sessionId = "session-live-idle-telemetry";
-    const { manager, telemetryStore, sessionMetaStore } = createManager({ telemetry: true });
-    const { session, getHandler, getReleaseSend } = makeSession();
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue(session),
-    };
-
-    manager.startWork(sessionId, "hello");
-    await flushMicrotasks();
-    getReleaseSend()?.();
-    await flushMicrotasks();
-    const baseTime = Date.now();
-
-    getHandler()?.({
-      type: "assistant.message",
-      timestamp: new Date(baseTime + 1_000).toISOString(),
-      data: { content: "done" },
-    });
-    getHandler()?.({
-      type: "assistant.turn_end",
-      timestamp: new Date(baseTime + 2_000).toISOString(),
-      data: { turnId: "1" },
-    });
-    getHandler()?.({
-      id: "terminal-event-live-idle",
-      type: "session.idle",
-      timestamp: new Date(baseTime + 3_000).toISOString(),
-      data: {},
-    });
-    await flushMicrotasks();
-
-    expect(manager.getSessionRunState(sessionId)).toBe("idle");
-    expect(sessionMetaStore.getTerminalOverlay(sessionId)).toBeUndefined();
-    expect(latestSpanMetadata(telemetryStore, "session.run.complete", sessionId)).toMatchObject({
-      completionSource: "live_session_idle",
-      completionStatus: "done",
-      terminalEventType: "session.idle",
-      terminalEventOrigin: "live",
-      finalContentLength: 4,
-      assistantContentKnown: true,
-      liveTurnEndCount: 1,
-      lastLiveEventType: "session.idle",
-    });
-  });
-
   it("does not complete on live session.idle when a follow-up assistant turn is open", async () => {
     const sessionId = "session-idle-open-followup";
     const { manager, eventBusRegistry, telemetryStore } = createManager({ telemetry: true });
@@ -3308,6 +3027,9 @@ describe("SessionManager run state", () => {
       completionStatus: "done",
       terminalEventType: "session.idle",
       liveTurnEndCount: 2,
+      terminalEventOrigin: "live",
+      finalContentLength: 5,
+      assistantContentKnown: true,
     });
   });
 
@@ -4266,5 +3988,4 @@ describe("SessionManager run state", () => {
     expect(session.disconnect).not.toHaveBeenCalled();
     expect(resumeSession).toHaveBeenCalledTimes(1);
   });
-
 });

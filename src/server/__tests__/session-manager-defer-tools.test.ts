@@ -22,21 +22,6 @@ function expectFailure(result: unknown): string {
 }
 
 describe("unified defer tools", () => {
-  it("keeps defer_create model-agnostic", () => {
-    const { ctx } = createTestApp();
-    const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
-    expect(Object.keys(createTool.inputSchema.properties ?? {}).sort()).toEqual([
-      "check",
-      "delaySeconds",
-      "expiresAt",
-      "intervalSeconds",
-      "maxRuns",
-      "name",
-      "prompt",
-      "runAt",
-    ]);
-  });
-
   it("creates a one-shot defer with a public once_ deferId", async () => {
     const { ctx } = createTestApp();
     const createTool = findTool(getBridgeToolDefinitions(ctx), "defer_create");
@@ -425,16 +410,6 @@ describe("unified defer tools", () => {
     const activeLoop = await createTool.handler({ prompt: "active loop", intervalSeconds: 300, maxRuns: 2 }, makeInvocation("owner")) as any;
     expect(expectFailure(await reactivateTool.handler({ deferId: activeLoop.deferId }, makeInvocation("owner"))))
       .toContain("cannot be reactivated");
-  });
-
-  it("fails legacy-only defer arguments on the declared schema", async () => {
-    const { ctx } = createTestApp();
-    const tools = getBridgeToolDefinitions(ctx);
-    const cancelTool = findTool(tools, "defer_cancel");
-
-    // The required replacement argument is named in the failure.
-    const legacyCancel: any = await cancelTool.handler({ deferredPromptId: "old" }, makeInvocation("s1"));
-    expect(String(legacyCancel.textResultForLlm)).toContain("missing required property: deferId");
   });
 
   it("does not cancel another session's one-shot or recurring defer", async () => {

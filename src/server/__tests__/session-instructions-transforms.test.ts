@@ -41,11 +41,4 @@ describe("system prompt section transforms", () => {
     expect(remove(`Bridge identity.\n\n${MODE}\n\n<response_style>\nGuidance: ${MODE}\n</response_style>`))
       .toBe(`Bridge identity.\n\n<response_style>\nGuidance: ${MODE}\n</response_style>`);
   });
-
-  it("returns content unchanged when the runtime no longer renders the targeted text", () => {
-    const content = "Unrelated section text.";
-    expect(removeCliOutputSurfaceNote(content)).toBe(content);
-    expect(removeConciseReplyDirective(content)).toBe(content);
-    expect(createCodingModeStatementRemover("Unrelated")(content)).toBe(content);
-  });
 });

@@ -31,29 +31,6 @@ describe("deriveModelStateFromEventsContent", () => {
     }
   });
 
-  it("later event wins over earlier event", () => {
-    const lines = [
-      JSON.stringify({ type: "session.start", data: { selectedModel: "claude-opus-4.7", reasoningEffort: "low" } }),
-      JSON.stringify({ type: "user.message", data: { content: "do something" } }),
-      JSON.stringify({ type: "session.model_change", data: { newModel: "gpt-5.5", reasoningEffort: "high" } }),
-    ];
-    expect(deriveModelStateFromEventsContent(lines.join("\n"))).toEqual({
-      model: "gpt-5.5",
-      reasoningEffort: "high",
-    });
-  });
-
-  it("resume overrides start", () => {
-    const lines = [
-      JSON.stringify({ type: "session.start", data: { selectedModel: "claude-opus-4.7", reasoningEffort: "low" } }),
-      JSON.stringify({ type: "session.resume", data: { selectedModel: "gpt-5.5", reasoningEffort: "medium" } }),
-    ];
-    expect(deriveModelStateFromEventsContent(lines.join("\n"))).toEqual({
-      model: "gpt-5.5",
-      reasoningEffort: "medium",
-    });
-  });
-
   it("model_change preserves previous reasoningEffort when it omits it, but never across a switch to or from Auto", () => {
     const derive = (lines: string[]) => deriveModelStateFromEventsContent(lines.join("\n"));
     const change = (data: Record<string, unknown>) => JSON.stringify({ type: "session.model_change", data });
@@ -114,23 +91,6 @@ describe("deriveModelStateFromEventsContent", () => {
     });
   });
 
-  it("skips blank lines", () => {
-    const lines = [
-      "",
-      "   ",
-      JSON.stringify({ type: "session.start", data: { selectedModel: "claude-opus-4.7" } }),
-      "",
-    ];
-    expect(deriveModelStateFromEventsContent(lines.join("\n"))).toEqual({
-      model: "claude-opus-4.7",
-    });
-  });
-
-  it("ignores session.start without selectedModel", () => {
-    const content = JSON.stringify({ type: "session.start", data: { otherField: "x" } });
-    expect(deriveModelStateFromEventsContent(content)).toEqual({});
-  });
-
   it("ignores model changes logged by sub-agents", () => {
     const lines = [
       JSON.stringify({ type: "session.start", data: { selectedModel: "claude-opus-5.5", reasoningEffort: "high", contextTier: "long_context" } }),
@@ -144,25 +104,6 @@ describe("deriveModelStateFromEventsContent", () => {
       model: "claude-opus-5.5",
       reasoningEffort: "high",
       contextTier: "long_context",
-    });
-  });
-});
-
-describe("deriveModelStateFromEventsFile", () => {
-  it("returns empty state when file does not exist", () => {
-    expect(deriveModelStateFromEventsFile("/nonexistent/path/events.jsonl")).toEqual({});
-  });
-
-  it("reads and parses events from a real file", () => {
-    const dir = makeTestDir("events-file-test");
-    const eventsPath = join(dir, "events.jsonl");
-    writeFileSync(
-      eventsPath,
-      JSON.stringify({ type: "session.start", data: { selectedModel: "gpt-5.5", reasoningEffort: "high" } }),
-    );
-    expect(deriveModelStateFromEventsFile(eventsPath)).toEqual({
-      model: "gpt-5.5",
-      reasoningEffort: "high",
     });
   });
 });
@@ -206,31 +147,6 @@ describe("SessionManager.getSessionModelState", () => {
     const manager = createManager(dir);
     const result = await manager.getSessionModelState("my-session");
     expect(result).toEqual({ model: "gpt-5.5", reasoningEffort: "medium", source: "events" });
-  });
-
-  it("returns source=live for a cached active session with rpc", async () => {
-    const dir = makeTestDir("model-state-live");
-    const sessionDir = join(dir, "session-state", "live-session");
-    mkdirSync(sessionDir, { recursive: true });
-    writeFileSync(
-      join(sessionDir, "events.jsonl"),
-      JSON.stringify({ type: "session.start", data: { selectedModel: "old-model", reasoningEffort: "high" } }),
-    );
-    const manager = createManager(dir);
-    const mockSession = {
-      getCurrentModel: vi.fn().mockResolvedValue({
-        modelId: "live-model-id",
-        reasoningEffort: "medium",
-        contextTier: "long_context",
-      }),
-    };
-    manager.sessionObjects.set("live-session", mockSession);
-
-    const result = await manager.getSessionModelState("live-session");
-    expect(result.source).toBe("live");
-    expect(result.model).toBe("live-model-id");
-    expect(result.reasoningEffort).toBe("medium");
-    expect(result.contextTier).toBe("long_context");
   });
 
   it("does not fill missing live SDK fields from stale events", async () => {

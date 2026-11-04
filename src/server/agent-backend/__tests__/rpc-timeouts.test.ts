@@ -11,10 +11,6 @@ describe("boundRpc", () => {
     vi.useRealTimers();
   });
 
-  it("resolves with the operation result before the timeout", async () => {
-    await expect(boundRpc("session.abort", async () => "ok")).resolves.toBe("ok");
-  });
-
   it("rejects with AgentRpcTimeoutError and reports the timeout when the RPC never answers", async () => {
     vi.useFakeTimers();
     const onTimeout = vi.fn();

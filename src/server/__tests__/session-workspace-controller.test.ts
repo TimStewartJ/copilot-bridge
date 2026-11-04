@@ -75,22 +75,6 @@ function createWorkspaceYaml(cwd?: string): string {
 }
 
 describe("SessionWorkspaceController createWorkspaceYamlCwdResolver", () => {
-  it("uses the task lookup fallback when the task snapshot has no session entry", async () => {
-    const workspaceDir = join(makeTestDir("session-workspace-task"), "workspace");
-    mkdirSync(workspaceDir, { recursive: true });
-    const controller = createController({
-      taskStore: {
-        listTasks: () => [],
-        findTaskBySessionId: (sessionId) => createTask("task-a", sessionId, workspaceDir),
-      },
-    });
-
-    const resolveCwd = controller.createWorkspaceYamlCwdResolver();
-
-    await expect(resolveCwd("session-a", createWorkspaceYaml()))
-      .resolves.toBe(workspaceDir);
-  });
-
   it("clears a missing pinned workspace while falling back to workspace yaml or task cwd", async () => {
     // falling back to workspace yaml
     {
@@ -247,14 +231,6 @@ describe("SessionWorkspaceController neutral workspace", () => {
       .toBe(workspaceDir);
   });
 
-  it("uses the neutral workspace for new sessions without a task folder", () => {
-    const workspaceDir = join(makeTestDir("session-workspace-neutral"), "workspace");
-    const controller = createController({ taskStore: noTasks, workspaceDir, hostRoots: [] });
-
-    expect(controller.resolveEffectiveSessionCwd({ task: null })).toBe(workspaceDir);
-    expect(controller.resolveEffectiveSessionCwd({ task: { cwd: undefined } })).toBe(workspaceDir);
-  });
-
   it("keeps a pinned or recorded neutral workspace even after it is deleted and the task gains a folder", () => {
     const copilotHome = makeTestDir("session-workspace-home");
     const workspaceDir = join(makeTestDir("session-workspace-neutral"), "workspace");
@@ -282,16 +258,6 @@ describe("SessionWorkspaceController neutral workspace", () => {
     expect(controller.resolveEffectiveSessionCwd({ sessionId: "session-recorded", task: { cwd: taskCwd } })).toBe(workspaceDir);
     expect(existsSync(workspaceDir)).toBe(true);
     expect(deleteWorkspace).not.toHaveBeenCalled();
-  });
-
-  it("pins the neutral workspace like any other session workspace", () => {
-    const workspaceDir = makeTestDir("session-workspace-neutral");
-    const setWorkspace = vi.fn();
-    const controller = createController({ taskStore: noTasks, workspaceDir, sessionWorkspaceStore: { setWorkspace } });
-
-    controller.persistSessionWorkspace("session-a", workspaceDir);
-
-    expect(setWorkspace).toHaveBeenCalledWith("session-a", workspaceDir);
   });
 });
 

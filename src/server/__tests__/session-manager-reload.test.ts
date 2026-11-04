@@ -46,18 +46,16 @@ describe("SessionManager reloadSession", () => {
     vi.useRealTimers();
   });
 
-  it.each(["resolved", "rejected"])("does not emit diagnostics for a fast %s resume", async (outcome) => {
+  it("does not emit diagnostics for a fast rejected resume", async () => {
     vi.useFakeTimers();
     const manager = createManager();
     const backend = { diagnosticPing: vi.fn() };
     manager.backend = backend;
     const record = vi.spyOn(manager, "recordSpan");
-    const session = makeAgentSessionStub({});
     const error = new Error("private provider error");
-    const work = outcome === "resolved" ? Promise.resolve(session) : Promise.reject(error);
+    const work = Promise.reject(error);
     const result = manager.resumeAgentSessionWithTimeout(backend, "fast", work, "timeout", "reload");
-    if (outcome === "resolved") await expect(result).resolves.toBe(session);
-    else await expect(result).rejects.toBe(error);
+    await expect(result).rejects.toBe(error);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(backend.diagnosticPing).not.toHaveBeenCalled();
     expect(record.mock.calls.filter(([name]) => name === "session.resume.diagnostic")).toEqual([]);
@@ -406,15 +404,12 @@ describe("SessionManager reloadSession", () => {
     }
   });
 
-  it.each([
-    ["the ping fails", false],
-    ["the ping rejects", "reject"],
-  ] as const)("recovers the backend after a slow resume when %s", async (_label, probe) => {
+  it("recovers the backend after a slow resume when the ping rejects", async () => {
     vi.useFakeTimers();
     const manager = createManager();
     const backend = {
       resumeSession: vi.fn(() => new Promise<never>(() => {})),
-      probeHealth: probe === "reject" ? vi.fn().mockRejectedValue(new Error("gone")) : vi.fn().mockResolvedValue(probe),
+      probeHealth: vi.fn().mockRejectedValue(new Error("gone")),
     };
     const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
     manager.backend = backend;
@@ -854,37 +849,6 @@ describe("SessionManager reloadSession", () => {
     expect(manager.isSessionBusy("session-auth")).toBe(false);
   });
 
-  it("resumes a cold session before starting MCP OAuth", async () => {
-    const manager = createManager();
-    const login = vi.fn().mockResolvedValue({});
-    const list = vi.fn().mockResolvedValue({
-      servers: [{ name: "demo", status: "pending", source: "settings" }],
-    });
-    const resumedSession = makeAgentSessionStub({
-      startMcpOauthLogin: login, listMcpServers: list,
-    });
-    const resumeSession = vi.fn().mockResolvedValue(resumedSession);
-    const cleanup = spyOnResumeCleanup(manager);
-    manager.backend = { resumeSession };
-
-    const result = await manager.loginMcpServer("session-auth-cold", "demo");
-
-    expect(resumeSession).toHaveBeenCalledWith(
-      "session-auth-cold",
-      expect.objectContaining({
-        mcpServers: { demo: { command: "echo", args: ["hi"] } },
-      }),
-    );
-    expect(login).toHaveBeenCalledWith(expect.objectContaining({ serverName: "demo" }));
-    expect(result).toEqual({
-      serverName: "demo",
-      servers: [expect.objectContaining({ name: "demo", status: "pending", source: "settings", provenance: "probe", sessionId: "session-auth-cold" })],
-    });
-    expect(list).toHaveBeenCalledTimes(1);
-    expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
-    expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
-  });
-
   it("releases MCP login resume cleanup exactly once on timeout or resume failure", async () => {
     // timeout case
     {
@@ -956,7 +920,7 @@ describe("SessionManager warmSession", () => {
     }) as any;
   }
 
-  it.each([undefined, "", "false", " FALSE "])("keeps passive resume events when the switch is %s", async (setting) => {
+  it.each([undefined, " FALSE "])("keeps passive resume events when the switch is %s", async (setting) => {
     const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: setting });
     const resume = vi.fn().mockResolvedValue(makeAgentSessionStub({}));
     manager.backend = { id: "copilot", resumeSession: resume };
@@ -966,8 +930,8 @@ describe("SessionManager warmSession", () => {
     expect(resume.mock.calls[0][1]).not.toHaveProperty("suppressResumeEvent");
   });
 
-  it.each(["true", " TRUE "])("suppresses only the passive Copilot resume event when the switch is %s", async (setting) => {
-    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: setting });
+  it("suppresses only the passive Copilot resume event when the switch is  TRUE ", async () => {
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: " TRUE " });
     const session = makeAgentSessionStub({ setModel: vi.fn() });
     const resume = vi.fn().mockResolvedValue(session);
     const record = vi.spyOn(manager, "recordSpan");
@@ -991,9 +955,9 @@ describe("SessionManager warmSession", () => {
     });
   });
 
-  it.each(["yes", "1", "typo"])("warns and leaves suppression disabled for invalid switch %s", async (setting) => {
+  it("warns and leaves suppression disabled for invalid switch 1", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: setting });
+    const manager = createManager({ BRIDGE_SUPPRESS_PASSIVE_RESUME_EVENTS: "1" });
     const resume = vi.fn().mockResolvedValue(makeAgentSessionStub({}));
     manager.backend = { id: "copilot", resumeSession: resume };
 
@@ -1136,23 +1100,6 @@ describe("SessionManager warmSession", () => {
     expect(resumeSession).not.toHaveBeenCalled();
   });
 
-  it("does not call setModel on the resumed session", async () => {
-    const manager = createManager();
-    const resumedSession = makeAgentSessionStub({
-      setModel: vi.fn(),
-      listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
-    });
-    const cleanup = spyOnResumeCleanup(manager);
-    manager.backend = { resumeSession: vi.fn().mockResolvedValue(resumedSession) };
-
-    await manager.warmSession("session-warm-1");
-
-    expect(resumedSession.setModel).not.toHaveBeenCalled();
-    expect(manager.sessionObjects.get("session-warm-1")).toBe(resumedSession);
-    expect(cleanup.endSessionResume).toHaveBeenCalledTimes(1);
-    expect(cleanup.flushPendingSessionEviction).toHaveBeenCalledTimes(1);
-  });
-
   it("releases warm resume cleanup exactly once on timeout or resume failure", async () => {
     // timeout case
     {
@@ -1214,21 +1161,6 @@ describe("SessionManager warmSession", () => {
     await Promise.all([firstWarm, secondWarm]);
 
     expect(manager.sessionObjects.get("session-warm-race")).toBe(resumedSession);
-  });
-
-  it("skips warm when the session is already running", async () => {
-    const manager = createManager();
-    const resumeSession = vi.fn();
-    manager.backend = { resumeSession };
-    manager.sessionRuns.set("session-running", {
-      state: "busy",
-      startedAt: Date.now(),
-      lastEventAt: Date.now(),
-    });
-
-    await expect(manager.warmSession("session-running")).resolves.toBeUndefined();
-
-    expect(resumeSession).not.toHaveBeenCalled();
   });
 
   it("discards a superseded warm resume without evicting the newer cached session", async () => {

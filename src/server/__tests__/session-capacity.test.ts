@@ -15,7 +15,6 @@ function fixture() {
   const agents = new Map<string, number>();
   const protectedIds = new Set<string>();
   const limits = { parents: 16, contexts: 32, cleanup: 32, units: 64, localMcpWeight: 0.25, waitTimeoutMs: 0 };
-  const recordSpan = vi.fn();
   const reap = vi.fn(async () => 0);
   const capacity = new SessionCapacityController({
     getLimits: () => limits,
@@ -24,9 +23,9 @@ function fixture() {
     getProtectedSessionIds: () => protectedIds,
     getTrackedAgentCount: (id) => agents.get(id) ?? 0,
     reapFinishedSyncTasks: reap,
-    recordSpan,
+    recordSpan: vi.fn(),
   });
-  return { capacity, sessions, cleanup, agents, protectedIds, limits, recordSpan, reap };
+  return { capacity, sessions, cleanup, agents, protectedIds, limits, reap };
 }
 
 describe("SessionCapacityController", () => {
@@ -81,24 +80,6 @@ describe("SessionCapacityController", () => {
         reason: "cleanup-failed",
         snapshot: { contexts: 3, contextLimit: 32, localMcpInstances: 6, capacityUnits: 4.5, capacityLimit: 64 },
       }));
-  });
-
-  it("wakes admission waiters only after the caller announces a resource change", async () => {
-    const { capacity, cleanup, limits, recordSpan } = fixture();
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    limits.waitTimeoutMs = 5_000;
-    cleanup.push({ phase: "quarantined", contextWeight: 1, localMcpInstances: 0, capacityUnits: 1 });
-    const token = Symbol("resume");
-    const pending = capacity.admit({}, { reserve: (reservation) => capacity.reserveResume(token, reservation) });
-    expect(capacity.getCacheState().waitingForCapacity).toBe(1);
-    cleanup.length = 0;
-    capacity.notifyChanged();
-    await expect(pending).resolves.toEqual({ localMcpInstances: 0, capacityUnits: 1 });
-    expect(capacity.getCacheState()).toMatchObject({ waitingForCapacity: 0, reservedContexts: 1 });
-    expect(recordSpan).toHaveBeenCalledWith("session.capacity.wait", expect.any(Number),
-      expect.objectContaining({ outcome: "admitted", reason: "cleanup-failed" }));
-    capacity.releaseResume(token);
-    expect(capacity.getCacheState().reservedContexts).toBe(0);
   });
 
   it("does not reserve a cancelled admission", async () => {

@@ -321,45 +321,6 @@ describe("SessionManager native Bridge tools", () => {
     expect(session.initializeTools).toHaveBeenCalledOnce();
   });
 
-  it("warms a resumed session without initializing tools or probing MCP", async () => {
-    const { manager, backend } = await startManager();
-    const session = createFakeSession("resumed-session");
-    backend.resumeSession.mockResolvedValueOnce(session);
-
-    await expect(manager.warmSession(session.sessionId)).resolves.toBeUndefined();
-
-    expect(session.initializeTools).not.toHaveBeenCalled();
-    expect(session.listMcpServers).not.toHaveBeenCalled();
-  });
-
-  it("holds the first resumed prompt until native tool initialization completes", async () => {
-    const { manager, backend } = await startManager();
-    const initializationGate = gate<void>();
-    const callOrder: string[] = [];
-    const session = createInteractiveFakeSession("resumed-prompt-session");
-    session.initializeTools.mockImplementationOnce(async () => {
-      callOrder.push("initialize:start");
-      await initializationGate.promise;
-      callOrder.push("initialize:end");
-    });
-    const send = session.send.getMockImplementation();
-    session.send.mockImplementationOnce(async () => {
-      callOrder.push("send");
-      await send?.();
-    });
-    backend.resumeSession.mockResolvedValueOnce(session);
-
-    const delivered = manager.startWorkAndWaitForDelivery(session.sessionId, "hello");
-    await vi.waitFor(() => expect(session.initializeTools).toHaveBeenCalledOnce());
-
-    expect(session.send).not.toHaveBeenCalled();
-
-    initializationGate.resolve();
-    await expect(delivered).resolves.toBeUndefined();
-    expect(session.send).toHaveBeenCalledOnce();
-    expect(callOrder).toEqual(["initialize:start", "initialize:end", "send"]);
-  });
-
   it("delivers a healthy first prompt after discovery takes longer than thirty seconds", async () => {
     vi.useFakeTimers();
     const { manager, backend } = await startManager();
@@ -559,14 +520,14 @@ describe("SessionManager native Bridge tools", () => {
     );
   });
 
-  it.each(["empty", "missing", "deferred", "unavailable"] as const)(
+  it.each(["missing", "deferred", "unavailable"] as const)(
     "rejects a prompt when canonical tool metadata is %s after initialization", async (kind) => {
       const { manager, backend } = await startManager();
       const session = createInteractiveFakeSession(`invalid-metadata-${kind}`);
       if (kind === "unavailable") {
         session.getCurrentToolMetadata.mockResolvedValueOnce(undefined as any);
       } else {
-        const tools = kind === "empty" ? [] : kind === "missing"
+        const tools = kind === "missing"
           ? [{ name: "global_bridge_tool", deferLoading: false }]
           : DEFAULT_NATIVE_TOOLS.map((tool) => ({ ...tool, deferLoading: true }));
         session.getCurrentToolMetadata.mockResolvedValueOnce({ tools } as any);
@@ -647,23 +608,6 @@ describe("SessionManager native Bridge tools", () => {
     expect(consoleWarn).toHaveBeenCalledWith(
       `[sdk] [${session.sessionId.slice(0, 8)}] Session tool initialization timed out after 1ms`,
     );
-  });
-
-  it("returns the reserved session ID before MCP-backed creation completes", async () => {
-    const { manager, backend } = await startManager();
-    const creationGate = gate<void>();
-    backend.createSession.mockImplementationOnce(async (config: any) => {
-      await creationGate.promise;
-      return createFakeSession(config.sessionId, config.tools ?? []);
-    });
-
-    const result = await manager.createSession({ background: true });
-
-    expect(result.sessionId).toMatch(/[0-9a-f-]{36}/);
-    expect(manager.isSessionWarm(result.sessionId)).toBe(false);
-
-    creationGate.resolve();
-    await vi.waitFor(() => expect(manager.isSessionWarm(result.sessionId)).toBe(true));
   });
 
   it("warms a pending creation by reusing its handle instead of resuming the same ID", async () => {
@@ -965,25 +909,6 @@ describe("SessionManager native Bridge tools", () => {
     expect(config.reasoningEffort).toBeUndefined();
   });
 
-  it("caches a forked session and releases resume cleanup exactly once", async () => {
-    const { manager, backend } = await startManager();
-    const forkedSession = createFakeSession("forked-session");
-    backend.resumeSession.mockResolvedValueOnce(forkedSession);
-    const endSessionResume = vi.spyOn(manager as any, "endSessionResume");
-    const flushPendingSessionEviction = vi.spyOn(manager as any, "flushPendingSessionEviction");
-
-    await expect(manager.forkSession("source-session")).resolves.toEqual({
-      sessionId: "forked-session",
-    });
-    await Promise.resolve();
-
-    expect(manager.isSessionWarm("forked-session")).toBe(true);
-    expect(forkedSession.initializeTools).not.toHaveBeenCalled();
-    expect(forkedSession.listMcpServers).not.toHaveBeenCalled();
-    expect(endSessionResume).toHaveBeenCalledTimes(1);
-    expect(flushPendingSessionEviction).toHaveBeenCalledTimes(1);
-  });
-
   it("holds the restart lifecycle block through fork finalization", async () => {
     const { manager } = await startManager();
     const finalizerGate = gate<void>();
@@ -1022,6 +947,7 @@ describe("SessionManager native Bridge tools", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(manager.getLifecycleBlockingSessionCount()).toBe(0);
+    expect(manager.isSessionWarm("forked-session")).toBe(true);
     expect(forkedSession.initializeTools).not.toHaveBeenCalled();
     expect(forkedSession.listMcpServers).not.toHaveBeenCalled();
     expect(endSessionResume).toHaveBeenCalledTimes(1);

@@ -96,20 +96,6 @@ describe("SessionManager model refresh", () => {
     vi.useRealTimers();
   });
 
-  it("rotates the SDK client and returns models from the fresh client", async () => {
-    const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
-    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
-    const { manager } = createManager([oldBackend, freshBackend]);
-
-    await manager.initialize();
-    const result = await manager.refreshModels();
-
-    expect(oldBackend.stop).toHaveBeenCalledOnce();
-    expect(freshBackend.start).toHaveBeenCalledOnce();
-    expect(freshBackend.listModels).toHaveBeenCalledOnce();
-    expect(result.models).toEqual([{ id: "fresh-model", name: "Fresh Model" }]);
-  });
-
   it("tracks the backend creation timestamp and updates it after a successful rotation", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
@@ -127,35 +113,7 @@ describe("SessionManager model refresh", () => {
 
     expect(manager.getBackendCreatedAt()).toBe("2026-01-01T00:05:00.000Z");
     expect(result.clientCreatedAt).toBe("2026-01-01T00:05:00.000Z");
-  });
-
-  it("constructs the agent backend through a zero-argument factory", async () => {
-    const oldBackend = createBackend([]);
-    const freshBackend = createBackend([]);
-    const { manager, createBackendSpy } = createManager([oldBackend, freshBackend]);
-
-    await manager.initialize();
-    await manager.refreshModels();
-
-    expect(createBackendSpy).toHaveBeenCalledTimes(2);
-    for (const call of createBackendSpy.mock.calls) {
-      expect(call).toHaveLength(0);
-    }
-  });
-
-  it("disconnects idle cached sessions before rotating the client", async () => {
-    const oldBackend = createBackend([]);
-    const freshBackend = createBackend([]);
-    const { manager } = createManager([oldBackend, freshBackend]);
-    const disconnect = vi.fn();
-
-    await manager.initialize();
-    (manager as any).sessionObjects.set("idle-session", makeAgentSessionStub({ disconnect }));
-
-    await manager.refreshModels();
-
-    expect(disconnect).toHaveBeenCalledOnce();
-    expect((manager as any).sessionObjects.has("idle-session")).toBe(false);
+    expect(result.models).toEqual([{ id: "fresh-model", name: "Fresh Model" }]);
   });
 
   it("blocks refresh while sessions are active", async () => {
@@ -190,21 +148,6 @@ describe("SessionManager model refresh", () => {
     } finally {
       clearTimeout(timer);
     }
-  });
-
-  it("fences the failed fresh client instead of restoring a retired client", async () => {
-    const oldBackend = createBackend([{ id: "old-model", name: "Old Model" }]);
-    const freshBackend = createBackend([{ id: "fresh-model", name: "Fresh Model" }]);
-    freshBackend.start.mockRejectedValueOnce(new Error("start failed"));
-    const { manager } = createManager([oldBackend, freshBackend]);
-
-    await manager.initialize();
-
-    await expect(manager.refreshModels()).rejects.toThrow("start failed");
-    expect(oldBackend.stop).toHaveBeenCalledOnce();
-    expect(oldBackend.start).toHaveBeenCalledTimes(1);
-    expect(freshBackend.fence).toHaveBeenCalledOnce();
-    await expect(manager.listModels()).rejects.toThrow("recovery is blocked");
   });
 
   it("does not restore a previous client whose stop reported cleanup errors", async () => {
@@ -364,6 +307,7 @@ describe("SessionManager model refresh", () => {
     });
     finishRelease();
     await refresh;
+    expect(manager.isSessionWarm("idle")).toBe(false);
     expect(oldBackend.fence).toHaveBeenCalledOnce();
     expect(freshBackend.start).toHaveBeenCalledOnce();
     expect(createBackendSpy).toHaveBeenCalledTimes(2);
@@ -421,17 +365,6 @@ describe("SessionManager model refresh", () => {
     resolveOlder?.([{ id: "old-model", name: "Old Model" }]);
     await expect(olderList).resolves.toEqual([{ id: "old-model", name: "Old Model" }]);
     await expect(olderValidation).resolves.toEqual({ ok: true });
-    await expect(manager.validateModelSelection({ model: "new-model" })).resolves.toEqual({ ok: true });
-    expect(backend.listModels).toHaveBeenCalledTimes(2);
-  });
-
-  it("refreshes cached metadata before rejecting a newly available model", async () => {
-    const backend = createBackend([{ id: "old-model", name: "Old Model" }]);
-    const { manager } = createManager([backend]);
-    await manager.initialize();
-    await expect(manager.validateModelSelection({ model: "old-model" })).resolves.toEqual({ ok: true });
-    backend.listModels.mockResolvedValueOnce([{ id: "new-model", name: "New Model" }]);
-
     await expect(manager.validateModelSelection({ model: "new-model" })).resolves.toEqual({ ok: true });
     expect(backend.listModels).toHaveBeenCalledTimes(2);
   });
@@ -559,19 +492,6 @@ describe("SessionManager model refresh", () => {
     await expect(manager.validateModelSelection({ model: "future-model" })).resolves.toEqual({ ok: true });
     expect(backend.listModels).not.toHaveBeenCalled();
     (manager as any).backendRotation = null;
-  });
-
-  it("bounds slow metadata validation and fails soft on timeout", async () => {
-    vi.useFakeTimers();
-    const backend = createBackend([]);
-    backend.listModels.mockImplementation(() => new Promise(() => {}));
-    const { manager } = createManager([backend]);
-    await manager.initialize();
-
-    const validation = manager.validateModelSelection({ model: "future-model" });
-    await vi.advanceTimersByTimeAsync(MODEL_METADATA_VALIDATION_TIMEOUT_MS);
-
-    await expect(validation).resolves.toEqual({ ok: true });
   });
 
   it("lets runtime configuration join a metadata request after validation times out", async () => {

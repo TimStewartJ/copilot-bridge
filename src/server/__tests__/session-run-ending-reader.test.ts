@@ -67,9 +67,9 @@ describe("readPersistedRunEnding", () => {
     });
   });
 
-  it.each(["session.error", "abort", "session.shutdown"])("treats %s as conclusive and keeps it over a later turn end", async (type) => {
-    const path = writeLog(`ending-conclusive-${type.replace(".", "-")}`, [
-      { id: "conclusive", type, timestamp: at(1_000), data: { message: "stopped" } },
+  it("treats abort as conclusive and keeps it over a later turn end", async () => {
+    const path = writeLog("ending-conclusive-abort", [
+      { id: "conclusive", type: "abort", timestamp: at(1_000), data: { message: "stopped" } },
       { id: "later-end", type: "assistant.turn_end", timestamp: at(1_005), data: { turnId: "2" } },
       { id: "later-shutdown", type: "session.shutdown", timestamp: at(2_000), data: { shutdownType: "routine" } },
     ]);

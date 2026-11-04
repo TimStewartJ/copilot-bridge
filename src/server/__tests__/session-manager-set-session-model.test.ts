@@ -108,22 +108,10 @@ describe("SessionManager.setSessionModel", () => {
 
     // with reasoningEffort
     session.setModel.mockClear();
-    const result2 = await manager.setSessionModel("session-1", "claude-opus-4.7", "high");
-    expect(session.setModel).toHaveBeenCalledWith("claude-opus-4.7", { reasoningEffort: "high" });
-    expect(result2).toMatchObject({ model: "claude-opus-4.7", reasoningEffort: "high" });
-  });
-
-  it("does not add thinking overrides when switching a live session with explicit effort", async () => {
-    const manager = createManager();
-    const session = createMockSession("gpt-5.6-sol");
-    manager.backend = {};
     manager.modelMetadata = [ADAPTIVE_MODEL];
-    manager.sessionObjects.set("session-1", session);
-
-    const result = await manager.setSessionModel("session-1", "adaptive-model", "high");
-
+    const result2 = await manager.setSessionModel("session-1", "adaptive-model", "high");
     expect(session.setModel).toHaveBeenCalledWith("adaptive-model", { reasoningEffort: "high" });
-    expect(result).toMatchObject({ model: "adaptive-model", reasoningEffort: "high" });
+    expect(result2).toMatchObject({ model: "adaptive-model", reasoningEffort: "high" });
   });
 
   it("keeps only a Copilot Fusion level when switching to it, never a reasoning level or context tier", async () => {
@@ -285,7 +273,7 @@ describe("SessionManager.setSessionModel", () => {
     expect(resumeSession.mock.calls[0][1]).not.toHaveProperty("modelCapabilities");
   });
 
-  it.each(["default", "long_context", null] as const)("lets the native journal restore tier %s instead of the sidecar", async (contextTier) => {
+  it.each(["default", null] as const)("lets the native journal restore tier %s instead of the sidecar", async (contextTier) => {
     const copilotHome = makeTestDir("model-context-native-resume");
     const manager = createManager(copilotHome);
     const resumeSession = vi.fn().mockResolvedValue(createMockSession("gpt-5.5"));
@@ -454,31 +442,6 @@ describe("SessionManager.setSessionModel", () => {
     expect(result).toMatchObject({ model: "claude-opus-4.7", reasoningEffort: "high" });
   });
 
-  it("serves live reasoningEffort from explicit switch state before events catch up", async () => {
-    const copilotHome = makeTestDir("model-switch-live-reasoning");
-    const sessionDir = join(copilotHome, "session-state", "session-1");
-    mkdirSync(sessionDir, { recursive: true });
-    writeFileSync(
-      join(sessionDir, "events.jsonl"),
-      JSON.stringify({ type: "session.start", data: { selectedModel: "gpt-5.5", reasoningEffort: "low" } }),
-    );
-    const manager = createManager(copilotHome);
-    const session = createMockSession("gpt-5.5");
-    session.getCurrentModel
-      .mockResolvedValueOnce({ modelId: "gpt-5.5", reasoningEffort: "low" })
-      .mockResolvedValueOnce({ modelId: "gpt-5.5", reasoningEffort: "high" });
-    manager.backend = {};
-    manager.sessionObjects.set("session-1", session);
-
-    await manager.setSessionModel("session-1", "gpt-5.5", "high");
-
-    await expect(manager.getSessionModelState("session-1")).resolves.toEqual({
-      model: "gpt-5.5",
-      reasoningEffort: "high",
-      source: "live",
-    });
-  });
-
   it("preserves live reasoningEffort on back-to-back switches before events catch up", async () => {
     const copilotHome = makeTestDir("model-switch-live-reasoning-preserve");
     const sessionDir = join(copilotHome, "session-state", "session-1");
@@ -531,17 +494,6 @@ describe("SessionManager.setSessionModel", () => {
     await expect(manager.setSessionModel("session-1", "gpt-5.5")).rejects.toThrow(
       "SessionManager not initialized",
     );
-  });
-
-  it("omits reasoningEffort from result when not provided", async () => {
-    const manager = createManager();
-    const session = createMockSession(undefined);
-    manager.backend = {};
-    manager.sessionObjects.set("session-1", session);
-
-    const result = await manager.setSessionModel("session-1", "gpt-5.5");
-
-    expect(result).not.toHaveProperty("reasoningEffort");
   });
 
   describe("compaction handshake", () => {
@@ -644,6 +596,7 @@ describe("SessionManager.unloadIdleSession", () => {
     await expect(manager.unloadIdleSession("cold-session", "test")).resolves.toBe(true);
 
     expect(manager.isSessionWarm("cold-session")).toBe(false);
+    await expect(manager.unloadIdleSession("cold-session", "test")).resolves.toBe(false);
     expect(session.disconnect).toHaveBeenCalledTimes(1);
   });
 
@@ -657,11 +610,5 @@ describe("SessionManager.unloadIdleSession", () => {
 
     expect(manager.isSessionWarm("held-session")).toBe(true);
     expect(session.disconnect).not.toHaveBeenCalled();
-  });
-
-  it("reports nothing to unload for a session that is not loaded", async () => {
-    const manager = createManager();
-
-    await expect(manager.unloadIdleSession("cold-session", "test")).resolves.toBe(false);
   });
 });

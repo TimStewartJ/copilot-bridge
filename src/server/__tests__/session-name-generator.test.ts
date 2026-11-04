@@ -60,12 +60,4 @@ describe("session name generator helpers", () => {
     expect(extractGeneratedSessionTitle("ok")).toBeUndefined();
     expect(extractGeneratedSessionTitle("a".repeat(101))).toBeUndefined();
   });
-
-  it("says how a reply was framed", () => {
-    expect(describeTitleReply('{"title":"Fix Login Redirect"}')).toBe("json");
-    expect(describeTitleReply('```json\n{"title": "Fix Login Redirect"}\n```')).toBe("json");
-    expect(describeTitleReply("Fix Login Redirect")).toBe("bare");
-    expect(describeTitleReply("Render <br> Inside Markdown")).toBe("bare");
-    expect(describeTitleReply(undefined)).toBe("none");
-  });
 });

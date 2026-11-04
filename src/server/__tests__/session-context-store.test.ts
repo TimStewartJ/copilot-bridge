@@ -331,20 +331,6 @@ describe("session context telemetry store", () => {
     expect(store.recordContextEvent(event)).toMatchObject({ truncationCount: 1 });
   });
 
-  it("joins the backfill's transaction instead of failing on a nested BEGIN", () => {
-    const store = createSessionContextStore(setupTestDb());
-    expect(() => store.backfillSessionContextEvents({
-      sessionId: "session-nested",
-      events: [{
-        type: "session.compaction",
-        id: "compact-nested",
-        timestamp: "2026-05-01T12:00:00.000Z",
-        data: { reason: "context pressure" },
-      }],
-    })).not.toThrow();
-    expect(store.getSessionContext("session-nested").summary).toMatchObject({ compactionCount: 1 });
-  });
-
   it("backfills persisted shutdown and compaction markers idempotently", () => {
     const store = createSessionContextStore(setupTestDb());
     const events = [

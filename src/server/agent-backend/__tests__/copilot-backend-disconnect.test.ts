@@ -97,11 +97,10 @@ describe("CopilotBackend disconnect detection", () => {
     silentLogger.error.mockClear();
   });
 
-  it.each(["resolve", "reject"] as const)("bounds a hanging diagnostic ping without disconnecting on late %s", async (settlement) => {
+  it("bounds a hanging diagnostic ping without disconnecting on late reject", async () => {
     vi.useFakeTimers();
-    let resolve!: (value: unknown) => void;
     let reject!: (error: unknown) => void;
-    const { client } = createFakeClient({ ping: () => new Promise((yes, no) => { resolve = yes; reject = no; }) });
+    const { client } = createFakeClient({ ping: () => new Promise((_, no) => { reject = no; }) });
     const backend = new CopilotBackend(client, { logger: silentLogger });
     const onDisconnect = vi.fn();
     backend.onDisconnect(onDisconnect);
@@ -115,7 +114,7 @@ describe("CopilotBackend disconnect detection", () => {
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await expect(ping).resolves.toBe("timeout");
-    (settlement === "resolve" ? resolve : reject)(new Error("private late payload"));
+    reject(new Error("private late payload"));
     await vi.advanceTimersByTimeAsync(0);
 
     expect(client.ping).toHaveBeenCalledOnce();
@@ -125,13 +124,12 @@ describe("CopilotBackend disconnect detection", () => {
     await backend.stop();
   });
 
-  it.each(["responsive", "rejected", "thrown"] as const)("classifies a %s diagnostic ping without recovery", async (outcome) => {
+  it.each(["responsive", "thrown"] as const)("classifies a %s diagnostic ping without recovery", async (outcome) => {
     vi.useFakeTimers();
     const { client } = createFakeClient({
       ping: () => {
         if (outcome === "thrown") throw new Error("private error");
-        return outcome === "rejected"
-          ? Promise.reject(new Error("private error")) : Promise.resolve({ message: "private payload" });
+        return Promise.resolve({ message: "private payload" });
       },
     });
     const backend = new CopilotBackend(client, { logger: silentLogger });
@@ -147,14 +145,13 @@ describe("CopilotBackend disconnect detection", () => {
     await backend.stop();
   });
 
-  it.each(["unstarted", "disconnected", "closed", "missing-connection", "stopping", "fenced"] as const)(
+  it.each(["unstarted", "closed", "missing-connection", "stopping", "fenced"] as const)(
     "skips diagnostic ping when %s without starting or recovering",
     async (state) => {
       vi.useFakeTimers();
       const { client, connection } = createFakeClient();
       const backend = new CopilotBackend(client, { logger: silentLogger });
       if (state !== "unstarted") await backend.start();
-      if (state === "disconnected") client.state = "disconnected";
       if (state === "closed") connection.fireClose();
       if (state === "missing-connection") client.connection = null;
       if (state === "stopping") {

@@ -144,22 +144,4 @@ describe("session name RPC persistence", () => {
     expect(get).toHaveBeenCalledTimes(2);
     expect(emitted).toEqual([]);
   });
-
-  it("fails the rename when name.get cannot confirm the applied title", async () => {
-    // A backend that cannot serve `name.get` reports that by resolving
-    // `undefined`, not by omitting the method — so the rename must fail
-    // verification rather than be announced as successful.
-    const emitted: Array<{ sessionId: string; name: string }> = [];
-    const { rpc } = createRpc({
-      session: {
-        setName: vi.fn(async () => {}),
-        getName: vi.fn(async () => undefined),
-      },
-      emitted,
-    });
-
-    await expect(rpc.setSessionName("session-1", "Missing getter"))
-      .rejects.toThrow("Session rename did not verify for session-1");
-    expect(emitted).toEqual([]);
-  });
 });

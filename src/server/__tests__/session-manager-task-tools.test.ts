@@ -26,40 +26,6 @@ function createInvocation(toolName: string) {
 }
 
 describe("session manager task tools", () => {
-  it("tool metadata exposes kind on task create/update and dedicated momentum tool", () => {
-    const { ctx } = createTestApp();
-    const createTool = getTool(ctx, "task_create") as any;
-    const updateTool = getTool(ctx, "task_update") as any;
-    const momentumTool = getTool(ctx, "task_update_momentum") as any;
-    const listTool = getTool(ctx, "task_list") as any;
-    const infoTool = getTool(ctx, "task_get_info") as any;
-
-    expect(createTool.inputSchema.properties.kind).toEqual({
-      type: "string",
-      enum: ["task", "ongoing"],
-      description: "Task kind. Defaults to task.",
-    });
-    expect("parameters" in createTool).toBe(false);
-    expect(updateTool.inputSchema.properties.kind).toEqual({
-      type: "string",
-      enum: ["task", "ongoing"],
-      description: "Task kind",
-    });
-    expect(updateTool.inputSchema.properties.status).toBeUndefined();
-    expect(updateTool.inputSchema.properties.completionAction).toBeUndefined();
-    expect(updateTool.description).toContain("Task completion and archival are controlled by the UI");
-    expect(updateTool.inputSchema.properties.priority.type).toBe("integer");
-    expect(updateTool.inputSchema.properties.groupId.anyOf).toEqual([{ type: "string" }, { type: "null" }]);
-    expect(updateTool.inputSchema.properties.nextAction).toBeUndefined();
-    expect(updateTool.inputSchema.properties.waitingOn).toBeUndefined();
-    expect(updateTool.inputSchema.properties.nextTouchAt).toBeUndefined();
-    expect(momentumTool.inputSchema.required).toEqual(["taskId", "followUp"]);
-    expect(momentumTool.inputSchema.allOf).toHaveLength(3);
-    expect(momentumTool.inputSchema.properties.followUp.properties.mode.enum).toEqual(["set", "keep", "clear"]);
-    expect(listTool.description).toContain("kinds");
-    expect(infoTool.description).toContain("kind");
-  });
-
   it("validates the emitted momentum contract with AJV and the Bridge validator", () => {
     const { ctx } = createTestApp();
     const tool = getTool(ctx, "task_update_momentum");
@@ -381,61 +347,20 @@ describe("session manager task tools", () => {
     }));
   });
 
-  it("task_update_momentum can keep the existing follow-up while changing other momentum", async () => {
+  it("task_update_momentum reports 'values that match the stored momentum' as an unchanged success", async () => {
     const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Momentum keep");
-    ctx.taskStore.updateTask(task.id, {
-      nextAction: "Check existing review",
-      waitingOn: "Initial reviewer",
-      nextTouchAt: "2026-05-02T10:00:00.000Z",
-    });
+    const task = ctx.taskStore.createTask("Momentum no-op");
+    const stored = { nextAction: "Check existing review", waitingOn: "Initial reviewer", nextTouchAt: "2026-05-02T10:00:00.000Z" };
+    ctx.taskStore.updateTask(task.id, stored);
     const tool = getTool(ctx, "task_update_momentum");
 
     await expect(tool.handler({
-      taskId: task.id,
-      waitingOn: "Updated reviewer",
-      followUp: { mode: "keep" },
+      taskId: task.id, nextAction: stored.nextAction, waitingOn: stored.waitingOn,
+      followUp: { mode: "set", nextTouchAt: "2026-05-02T03:00:00-07:00" },
     }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
-      success: true,
-      nextAction: "Check existing review",
-      waitingOn: "Updated reviewer",
-      nextTouchAt: "2026-05-02T10:00:00.000Z",
+      success: true, changed: false, message: "Task momentum is already current; no changes were applied.", ...stored,
     });
-  });
-
-  it.each([
-    {
-      label: "values that match the stored momentum",
-      initial: { nextAction: "Check existing review", waitingOn: "Initial reviewer", nextTouchAt: "2026-05-02T10:00:00.000Z" },
-      args: {
-        nextAction: "Check existing review",
-        waitingOn: "Initial reviewer",
-        followUp: { mode: "set", nextTouchAt: "2026-05-02T03:00:00-07:00" },
-      },
-      result: { nextAction: "Check existing review", waitingOn: "Initial reviewer", nextTouchAt: "2026-05-02T10:00:00.000Z" },
-      stored: { nextAction: "Check existing review", waitingOn: "Initial reviewer", nextTouchAt: "2026-05-02T10:00:00.000Z" },
-    },
-    {
-      label: "a clear when momentum is already empty",
-      initial: undefined,
-      args: { nextAction: null, waitingOn: null, followUp: { mode: "clear" } },
-      result: { nextAction: null, waitingOn: null, nextTouchAt: null },
-      stored: { nextAction: undefined, waitingOn: undefined, nextTouchAt: undefined },
-    },
-  ])("task_update_momentum reports $label as an unchanged success", async ({ initial, args, result, stored }) => {
-    const { ctx } = createTestApp();
-    const task = ctx.taskStore.createTask("Momentum no-op");
-    if (initial) ctx.taskStore.updateTask(task.id, initial);
-    const tool = getTool(ctx, "task_update_momentum");
-
-    await expect(tool.handler({ taskId: task.id, ...args }, createInvocation("task_update_momentum"))).resolves.toMatchObject({
-      success: true,
-      changed: false,
-      message: "Task momentum is already current; no changes were applied.",
-      ...result,
-    });
-
-    expect(ctx.taskStore.getTask(task.id)).toEqual(expect.objectContaining(stored));
+    expect(ctx.taskStore.getTask(task.id)).toMatchObject(stored);
   });
 
   it("task_history_add records attributed entries that task_history_list pages and searches", async () => {

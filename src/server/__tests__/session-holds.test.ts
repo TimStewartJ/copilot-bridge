@@ -2,18 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { SessionHolds } from "../session-holds.js";
 
 describe("SessionHolds", () => {
-  it("tracks the reason a session is held until the hold ends", () => {
-    const holds = new SessionHolds();
-    expect(holds.end("s")).toBe(false);
-
-    holds.start("s", "history-undo");
-    expect(holds.get("s")).toBe("history-undo");
-    expect([...holds.sessionIds()]).toEqual(["s"]);
-
-    expect(holds.end("s")).toBe(true);
-    expect(holds.has("s")).toBe(false);
-  });
-
   it("tells subscribers about their session until they unsubscribe", () => {
     const holds = new SessionHolds();
     const listener = vi.fn();

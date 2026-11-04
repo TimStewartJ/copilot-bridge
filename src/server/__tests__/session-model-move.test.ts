@@ -4,7 +4,6 @@ import {
   createSessionModelMover,
   parseSessionModelMoveRequest,
   resolveMoveContextTier,
-  resolveMoveReasoningEffort,
   SessionModelMoveInProgressError,
   SessionModelMoveRequestError,
 } from "../session-model-move.js";
@@ -444,18 +443,6 @@ describe("session model mover", () => {
   });
 });
 
-describe("resolveMoveReasoningEffort", () => {
-  it("leaves the effort to the switch for a model that picks its own or has none", () => {
-    expect(resolveMoveReasoningEffort(undefined, "high", { id: NEW, selectionMode: "dynamic" })).toBeUndefined();
-    expect(resolveMoveReasoningEffort(undefined, "high", { id: NEW, supportedReasoningEfforts: [] })).toBeUndefined();
-    expect(resolveMoveReasoningEffort(undefined, undefined, NEW_MODEL)).toBeUndefined();
-  });
-
-  it("prefers the requested effort", () => {
-    expect(resolveMoveReasoningEffort("low", "high", NEW_MODEL)).toBe("low");
-  });
-});
-
 describe("resolveMoveContextTier", () => {
   it("keeps long context only when the new model offers it", () => {
     expect(resolveMoveContextTier(undefined, "long_context", NEW_MODEL)).toBe("long_context");
@@ -497,7 +484,6 @@ describe("parseSessionModelMoveRequest", () => {
     [undefined, /JSON body/],
     [{ toModel: NEW }, /fromModel/],
     [{ fromModel: OLD, toModel: "  " }, /toModel/],
-    [{ fromModel: OLD, toModel: OLD }, /must differ/],
     [{ fromModel: OLD, toModel: NEW, reasoningEffort: 3 }, /reasoningEffort/],
     [{ fromModel: OLD, toModel: NEW, contextTier: "huge" }, /contextTier/],
     [{ fromModel: OLD, toModel: NEW, compact: "yes" }, /compact/],

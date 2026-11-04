@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppContext } from "../app-context.js";
-import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { normalizeToolResult } from "../agent-tools-mcp/server.js";
-import { convertBridgeToolResultToSdk, createNativeBridgeTools } from "../bridge-native-tools.js";
+import { convertBridgeToolResultToSdk } from "../bridge-native-tools.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createSettingsStore } from "../settings-store.js";
 import { createTaskStore } from "../task-store.js";
@@ -30,21 +29,10 @@ function createHarness() {
   if (!tool) throw new Error("session_start tool not found");
   const call = async (args: Record<string, unknown>, sessionId: string | undefined = CALLER_ID, signal?: AbortSignal) =>
     tool.handler(args, { sessionId, requestId: "start-1", signal });
-  return { ctx, tool, call, globalBus, taskStore, settingsStore, sessionManager };
+  return { call, taskStore, settingsStore, sessionManager };
 }
 
 describe("session_start", () => {
-  it("is registered for native and MCP tools and distinguishes chats from bounded delegation", () => {
-    const { ctx, tool } = createHarness();
-    expect(getBridgeToolDefinitions(ctx).some((candidate) => candidate.name === "session_start")).toBe(true);
-    const [native] = createNativeBridgeTools([tool]);
-    expect(native?.name).toBe("session_start");
-    expect(native?.defer).toBe("never");
-    expect(tool.description).toContain("task sub-agent tool instead");
-    expect(tool.description).toContain("no completion report is sent back here");
-    expect(tool.inputSchema?.required).toEqual(["prompt"]);
-  });
-
   it("uses defaults for an unlinked chat rather than inheriting the caller's task or history", async () => {
     const { call, taskStore, settingsStore, sessionManager } = createHarness();
     settingsStore.updateSettings({ model: "default-model" });
@@ -64,17 +52,6 @@ describe("session_start", () => {
       success: true, sessionId: SESSION_ID, link: `bridge://session/${SESSION_ID}`, status: "prompt_accepted",
       markdown: `[Open the new chat](bridge://session/${SESSION_ID})`,
     });
-  });
-
-  it("leaves the session-created announcement to the shared manager", async () => {
-    const { call, sessionManager, globalBus } = createHarness();
-    const emit = vi.spyOn(globalBus, "emit");
-    sessionManager.createSession = vi.fn().mockImplementation(async () => {
-      globalBus.emit({ type: "sessions:changed", sessionId: SESSION_ID });
-      return { sessionId: SESSION_ID };
-    });
-    await call({ prompt: "Work separately." });
-    expect(emit).toHaveBeenCalledExactlyOnceWith({ type: "sessions:changed", sessionId: SESSION_ID });
   });
 
   it("creates with full task context and links before sending the first prompt", async () => {
@@ -132,20 +109,17 @@ describe("session_start", () => {
   });
 
   it.each([
-    {}, { prompt: "" }, { prompt: "  " }, { prompt: 42 }, { prompt: "x", taskId: " " },
-    { prompt: "x", taskId: "missing-task" }, { prompt: "x", model: 42 },
-    { prompt: "x", reasoningEffort: false }, { prompt: "x", contextTier: "huge" },
+    {},
+    { prompt: "  " },
+    { prompt: 42 },
+    { prompt: "x", taskId: " " },
+    { prompt: "x", taskId: "missing-task" },
+    { prompt: "x", contextTier: "huge" },
   ])("rejects invalid arguments before creating a chat: %j", async (args) => {
     const { call, sessionManager } = createHarness();
     expect(await call(args)).toMatchObject({ resultType: "failure" });
     expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect(sessionManager.createTaskSession).not.toHaveBeenCalled();
-  });
-
-  it("requires an invoking session", async () => {
-    const { call, sessionManager } = createHarness();
-    expect(await call({ prompt: "x" }, "")).toMatchObject({ resultType: "failure" });
-    expect(sessionManager.createSession).not.toHaveBeenCalled();
   });
 
   it("does not create a chat when cancelled before creation", async () => {

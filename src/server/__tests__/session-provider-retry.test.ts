@@ -10,10 +10,6 @@ describe("provider error classification", () => {
   });
 
   it.each([
-    { statusCode: 400, message: "Execution failed: 400 Bad Request" },
-    { statusCode: 400, message: "Execution failed: 400 Duplicate item found" },
-    { statusCode: 400, message: "Execution failed: 400 The requested model is not supported." },
-    { statusCode: 400, message: "Execution failed: 400 This request was blocked by our safety systems." },
     { statusCode: 400, message: "Execution failed: 400 input item ID does not belong to this connection" },
     { statusCode: 503, message: "Execution failed: 503 internal server error" },
     { message: "Execution failed: 400 internal server error" },

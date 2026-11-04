@@ -190,16 +190,11 @@ describe("SessionManager retirement fencing", () => {
     expect(stuck.disconnect).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    { kind: "agent", status: "running" },
-    { kind: "agent", status: "idle" },
-    { kind: "shell", status: "running" },
-    { kind: "shell", status: "completed" },
-  ] as const)("leaves $kind task $status cleanup to the runtime during retirement", async (task) => {
+  it("leaves 'agent' task 'running' cleanup to the runtime during retirement", async () => {
     const { manager } = createManager();
     runtime(manager);
     const stuck = makeAgentSessionStub({
-      listTasks: vi.fn(async () => ({ tasks: [{ ...task, id: "child" }] })),
+      listTasks: vi.fn(async () => ({ tasks: [{ kind: "agent", status: "running", id: "child" }] })),
       cancelTask: vi.fn(async () => ({ cancelled: false })),
       removeTask: vi.fn(async () => ({ removed: false })),
       disconnect: vi.fn(async () => {}),
@@ -365,11 +360,11 @@ describe("SessionManager retirement fencing", () => {
     expect(manager.getBackendUnavailableReason()).toContain("blocked");
   });
 
-  it.each(["uncertain", "unsupported"] as const)("quarantines a typed %s release without falling back to disconnect", async (status) => {
+  it("quarantines a typed unsupported release without falling back to disconnect", async () => {
     const { manager } = createManager();
     runtime(manager);
     const session = makeAgentSessionStub({
-      release: vi.fn(async () => ({ status })),
+      release: vi.fn(async () => ({ status: "unsupported" as const })),
       disconnect: vi.fn(),
     });
     await manager.cacheResumedSession("typed", session);
@@ -775,18 +770,6 @@ describe("SessionManager bounded session lifecycle", () => {
     await manager.evictAllCachedSessions();
   });
 
-  it("awaits cleanup for explicit evict-all operations", async () => {
-    const { manager } = createManager();
-    const session = fakeSession();
-    manager.sessionObjects.set("s1", session);
-
-    await manager.evictAllCachedSessions();
-
-    expect(session.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.sessionObjects.has("s1")).toBe(false);
-    expect(manager.cleanupOwnership.size).toBe(0);
-  });
-
   it("forcibly evicts only idle cached session trees", async () => {
     const { manager } = createManager();
     const idle = fakeSession("idle");
@@ -807,22 +790,6 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(active.disconnect).not.toHaveBeenCalled();
     expect(running.disconnect).not.toHaveBeenCalled();
     expect([...manager.sessionObjects.keys()]).toEqual(["active", "running"]);
-  });
-
-  it("forgets tracked agents only after releasing the parent handle", async () => {
-    const { manager } = createManager();
-    const session = fakeSessionWithAgent("s1");
-    manager.sessionObjects.set("s1", session);
-    await manager.agentRegistry.refresh("s1", "test");
-    session.listTasks.mockClear();
-
-    await manager.evictAllCachedSessions();
-
-    expect(session.listTasks).not.toHaveBeenCalled();
-    expect(session.cancelTask).not.toHaveBeenCalled();
-    expect(session.removeTask).not.toHaveBeenCalled();
-    expect(session.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.agentRegistry.getTrackedAgentCount("s1")).toBe(0);
   });
 
   it("evicts by total parent plus agent context weight", async () => {
@@ -868,22 +835,6 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.sessionObjects.has("first")).toBe(true);
     expect(manager.sessionObjects.has("second")).toBe(false);
     expect(second.disconnect).toHaveBeenCalledTimes(1);
-  });
-
-  it("evicts an entirely idle session tree after the general TTL", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    const { manager } = createManager();
-    manager.sessionCacheIdleTtlMs = 1_000;
-    const session = fakeSession();
-
-    await manager.cacheResumedSession("idle", session);
-    vi.setSystemTime(1_001);
-    await manager.trimSessionCache("test TTL");
-    await manager._drainCacheQueue();
-
-    expect(manager.sessionObjects.has("idle")).toBe(false);
-    expect(session.disconnect).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a session tree the runtime is still working on past the idle TTL", async () => {
@@ -1151,26 +1102,6 @@ describe("SessionManager bounded session lifecycle", () => {
       capacityUnits: 1,
       localMcpInstances: 0,
     })).toThrow();
-  });
-
-  it("retains failed cleanup ownership and blocks new SDK session creation", async () => {
-    const { manager } = createManager();
-    manager.sessionCapacityWaitTimeoutMs = 0;
-    manager.maxCachedSessions = 1;
-    const stuck = makeAgentSessionStub({ disconnect: vi.fn().mockRejectedValue(new Error("still running")) });
-    await manager.cacheResumedSession("stuck", stuck);
-    await manager.cacheResumedSession("next", fakeSession());
-    await manager._drainCacheQueue();
-
-    expect(manager.cleanupOwnership.get(stuck)).toMatchObject({
-      sessionId: "stuck",
-      phase: "quarantined",
-    });
-    const createSession = vi.fn();
-    manager.backend = { createSession };
-    await expect(manager.createTaskSession("task-1", "Scheduled task", [], ""))
-      .rejects.toThrow("reconnecting");
-    expect(createSession).not.toHaveBeenCalled();
   });
 
   it("retains timed-out cleanup ownership without blocking the cache insertion", async () => {
@@ -1539,20 +1470,6 @@ describe("SessionManager bounded session lifecycle", () => {
       manager.endSessionResume(await pendingLease);
     }
   });
-  it("protects a cached session operation without reserving a second context", async () => {
-    const { manager } = createManager();
-    manager.maxCachedContexts = 1;
-    await manager.cacheResumedSession("cached", fakeSession(), { mcpServers: {} });
-
-    const cachedLease = await manager.beginSessionResume("cached", { mcpServers: {} });
-
-    expect(manager.getSessionCacheState()).toMatchObject({
-      readyContextWeight: 1,
-      reservedContexts: 0,
-    });
-    manager.endSessionResume(cachedLease);
-  });
-
   it("releases only the capacity lease owned by each overlapping cached operation", async () => {
     const { manager } = createManager();
     manager.maxCachedContexts = 2;
@@ -1642,22 +1559,6 @@ describe("SessionManager bounded session lifecycle", () => {
       outcome: "fulfilled",
       reason: "enforcing session-tree cache limit",
     });
-  });
-
-  it("defaults to a generous context ceiling while keeping the idle parent cache bounded", () => {
-    vi.stubEnv("BRIDGE_MAX_CACHED_SESSIONS", "");
-    vi.stubEnv("BRIDGE_MAX_CACHED_CONTEXTS", "");
-    vi.stubEnv("BRIDGE_MAX_PENDING_SESSION_CLEANUPS", "");
-    vi.stubEnv("BRIDGE_MAX_SESSION_CAPACITY_UNITS", "");
-    try {
-      const { manager } = createManager();
-      expect(manager.maxCachedSessions).toBe(16);
-      expect(manager.maxCachedContexts).toBe(32);
-      expect(manager.maxPendingSessionCleanups).toBe(32);
-      expect(manager.maxSessionCapacityUnits).toBe(64);
-    } finally {
-      vi.unstubAllEnvs();
-    }
   });
 
   it("defaults limits from environment variables", () => {

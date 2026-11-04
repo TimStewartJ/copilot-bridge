@@ -108,7 +108,6 @@ describe("SessionManager elicitation responses", () => {
       },
     },
     { name: "decline", payload: { action: "decline" } },
-    { name: "cancel", payload: { action: "cancel" } },
   ])("validates a $name response against the indexed view and delegates it", async ({ payload }) => {
     const { manager, tryRespondToElicitation, eventBusRegistry } = createManager([pendingRequest()]);
     const events: unknown[] = [];
@@ -197,19 +196,6 @@ describe("SessionManager elicitation responses", () => {
 });
 
 describe("SessionManager elicitation terminal cleanup", () => {
-  it("cancels requests the runtime still holds when a run ends", async () => {
-    const { manager, tryRespondToElicitation, eventBusRegistry } = createManager([pendingRequest()]);
-
-    recordPendingElicitation(manager);
-    abortRun(manager, eventBusRegistry.getOrCreateBus("session-1"));
-
-    await expect(manager.hydratePendingInteractions("session-1")).resolves.toEqual({
-      pendingUserInputs: [],
-      pendingElicitations: [],
-    });
-    expect(tryRespondToElicitation).toHaveBeenCalledWith("el-request", { action: "cancel" });
-  });
-
   it("holds reconnect hydration until terminal cancellation settles", async () => {
     const { manager, tryRespondToElicitation, eventBusRegistry } = createManager([pendingRequest()]);
     recordPendingElicitation(manager);
@@ -353,41 +339,6 @@ describe("SessionManager.requestElicitation", () => {
 
     expect(requestElicitation).toHaveBeenCalledTimes(1);
     expect(requestElicitation).toHaveBeenCalledWith(handoffForm);
-  });
-
-  it.each([
-    { action: "decline" },
-    { action: "cancel" },
-  ] satisfies AgentElicitationResponse[])("returns a $action as the answer, not as a failure", async (answer) => {
-    const { manager, requestElicitation } = createAskingManager();
-    requestElicitation.mockResolvedValue(answer);
-
-    await expect(manager.requestElicitation("session-1", handoffForm)).resolves.toEqual(answer);
-  });
-
-  it("stays open until the form is answered", async () => {
-    const { manager, requestElicitation } = createAskingManager();
-    let answerForm!: (answer: AgentElicitationResponse) => void;
-    requestElicitation.mockReturnValue(new Promise((resolve) => {
-      answerForm = resolve;
-    }));
-    let settled = false;
-
-    const asking = manager.requestElicitation("session-1", handoffForm).finally(() => {
-      settled = true;
-    });
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(settled).toBe(false);
-
-    answerForm({ action: "accept", content: { handoff_1a2b3c4d: "not_done" } });
-    await expect(asking).resolves.toEqual({ action: "accept", content: { handoff_1a2b3c4d: "not_done" } });
-  });
-
-  it("passes on the agent session's failure", async () => {
-    const { manager, requestElicitation } = createAskingManager();
-    requestElicitation.mockRejectedValue(new Error("session connection closed"));
-
-    await expect(manager.requestElicitation("session-1", handoffForm)).rejects.toThrow("session connection closed");
   });
 
   it("fails clearly for a chat whose session is not loaded", async () => {

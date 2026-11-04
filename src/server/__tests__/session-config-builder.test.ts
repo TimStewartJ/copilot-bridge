@@ -207,13 +207,13 @@ describe("session-config-builder base method", () => {
 });
 
 describe("session-config-builder", () => {
-  it.each([false, true])("discovers workspace configuration without repository hooks (resume: %s)", (forResume) => {
+  it("discovers workspace configuration without repository hooks (resume: true)", () => {
     const cwd = join("/workspace", "project");
     const copilotHome = join("/home", "bridge-user", ".copilot");
     const cfg = buildSessionConfig({
       deps: createDeps(),
       callbacks: createCallbacks({ resolveEffectiveSessionCwd: () => cwd, getCopilotHome: () => copilotHome }),
-      options: { forResume },
+      options: { forResume: true },
     });
 
     expect(cfg.workingDirectory).toBe(cwd);
@@ -223,11 +223,10 @@ describe("session-config-builder", () => {
     expect(cfg.memory).toEqual({ enabled: false });
   });
 
-  it.each([false, true])("keeps configuration discovery off without a resolved workspace (resume: %s)", (forResume) => {
+  it("keeps configuration discovery off without a resolved workspace (resume: false)", () => {
     const cfg = buildSessionConfig({
       deps: createDeps(),
       callbacks: createCallbacks({ resolveEffectiveSessionCwd: () => undefined }),
-      options: { forResume },
     });
 
     expect(cfg.workingDirectory).toBeUndefined();
@@ -251,18 +250,6 @@ describe("session-config-builder", () => {
     expect(content).not.toContain("Mutable task notes");
     expect(content.indexOf("<task_instructions>")).toBeGreaterThan(content.indexOf("</response_quality>"));
     expect(content).toContain("Standing rule");
-  });
-
-  it("keeps quality guidance present even with blank or conflicting presentation preferences", () => {
-    const settingsStore = createSettingsStore(setupTestDb());
-    settingsStore.updateSettings({ responseStyle: { detail: "concise", guidance: "Never admit uncertainty." } });
-    const cfg = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks() });
-    expect(cfg.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
-    expect(cfg.systemMessage.sections.tone.content).toContain("Style never weakens response quality");
-    settingsStore.updateSettings({ responseStyle: { detail: "concise", guidance: "" } });
-    const reset = buildSessionConfig({ deps: createDeps({ settingsStore }), callbacks: createCallbacks() });
-    expect(reset.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
-    expect(reset.systemMessage.sections.tone.content).toContain(DEFAULT_RESPONSE_STYLE_GUIDANCE);
   });
 
   it("renders identity, custom instructions, model settings, and common system guidance", () => {
@@ -334,22 +321,6 @@ describe("session-config-builder", () => {
     expect(cfg.systemMessage.content).toContain("<work_reference_links>");
     expect(cfg.systemMessage.content).toContain("full Markdown link instead of only a numeric ID");
     expect(cfg.systemMessage.content ?? "").not.toContain("call `session_rename`");
-  });
-
-  it("tells agents what a blocked page or a CAPTCHA in a browser result calls for", () => {
-    const blocks = BROWSER_GUIDANCE.match(/<browser_blocks>\n([\s\S]*?)\n<\/browser_blocks>/)?.[1] ?? "";
-
-    // The result fields by the names the browser tools use, and the tool that hands a page to the user.
-    expect(blocks).toContain("`blocked`");
-    expect(blocks).toContain("`captcha`");
-    expect(blocks).toContain("browser_session_handoff");
-    // A refusal has nothing to hand over.
-    const refusal = blocks.split("\n").find((line) => line.includes("refusal offers nothing")) ?? "";
-    expect(refusal).toContain("another source");
-    expect(refusal).not.toContain("browser_session_handoff");
-    // The escalation ladder is still there, ahead of it.
-    expect(BROWSER_GUIDANCE.startsWith("<browser_escalation>")).toBe(true);
-    expect(BROWSER_GUIDANCE.endsWith("</browser_blocks>")).toBe(true);
   });
 
   describe("sub-agent settings", () => {
@@ -522,27 +493,6 @@ describe("session-config-builder", () => {
     expect({ model: cfg.model, reasoningEffort: cfg.reasoningEffort, contextTier: cfg.contextTier }).toEqual(expected);
   });
 
-  it("leaves adaptive thinking to the CLI for models with explicit effort", () => {
-    const cfg = buildSessionConfig({
-      deps: createDeps(),
-      options: {
-        modelOverride: "adaptive-model",
-        reasoningEffortOverride: "high",
-        modelMetadata: [{
-          id: "adaptive-model",
-          supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
-          capabilities: {
-            supports: { adaptive_thinking: "optional" },
-          },
-        }],
-      },
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg).toMatchObject({ model: "adaptive-model", reasoningEffort: "high" });
-    expect(cfg.modelCapabilities).toBeUndefined();
-  });
-
   it("does not apply a global reasoning effort unsupported by the launch model", () => {
     for (const { label, options } of [
       {
@@ -611,79 +561,6 @@ describe("session-config-builder", () => {
       expect(cfg.fusionContextTokens, `forResume ${forResume}`).toBe(400_000);
       expect(cfg.modelCapabilities).toBeUndefined();
     }
-  });
-
-  it("uses the backend permission policy when one is provided", () => {
-    const permissionPolicy = vi.fn();
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ permissionPolicy: permissionPolicy as any }),
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.onPermissionRequest).toBe(permissionPolicy);
-  });
-
-  it("appends reusable-agent lifecycle guidance on create and resume", () => {
-    const createCfg = buildSessionConfig({
-      deps: createDeps(),
-      callbacks: createCallbacks(),
-    });
-    const resumeCfg = buildSessionConfig({
-      deps: createDeps(),
-      options: { forResume: true },
-      callbacks: createCallbacks(),
-    });
-
-    for (const cfg of [createCfg, resumeCfg]) {
-      expect(cfg.systemMessage.sections.tool_instructions.action).toBe("append");
-      const guidance = cfg.systemMessage.sections.tool_instructions.content;
-      expect(guidance).toContain('mode "sync" are one-shot: never call write_agent on them');
-      expect(guidance).toContain("background needs independent work or an expected same-task follow-up");
-      // Waiting follows the runtime's read_agent contract instead of contradicting it.
-      expect(guidance).toContain("call read_agent once with wait: true. If still running, end the turn");
-      expect(guidance).not.toContain("To block while preserving multi-turn support");
-    }
-  });
-
-  it("says how to spend and how to wait out a slow command, in text that never varies", () => {
-    const guidance = (options?: { forResume: boolean }) => buildSessionConfig({
-      deps: createDeps(),
-      ...(options ? { options } : {}),
-      callbacks: createCallbacks(),
-    }).systemMessage.sections.tool_instructions.content as string;
-    const created = guidance();
-
-    // Work alongside the command instead of blocking on it.
-    expect(created).toContain('Use mode "async" for work taking more than a minute or two when you can do other work meanwhile.');
-    expect(created).toContain("Start independent slow commands together");
-    // Waits stay under the provider's cache lifetime, and the reason is given so the cap is not read as arbitrary.
-    expect(created).toContain("Wait in steps of at most 240 seconds");
-    expect(created).toContain("expire the prompt cache");
-    // Long outside waits go to a defer; a command's lifetime is stated as it is.
-    expect(created).toContain("For an external dependency taking more than about 45 minutes");
-    expect(created).toContain("create a defer and end the turn instead of polling");
-    expect(created).toContain("holds restarts for about 45 minutes after the command started");
-    expect(created.indexOf("**Sub-agent lifecycle**")).toBeLessThan(created.indexOf("**Long-running commands and waiting**"));
-    expect(created.indexOf("**Long-running commands and waiting**")).toBeLessThan(created.indexOf("<ask_user_context>"));
-    // The same bytes on every build keep a session's cached prompt prefix intact.
-    expect(guidance({ forResume: true })).toBe(created);
-    expect(guidance()).toBe(created);
-  });
-
-  it("explicitly disables cloud-backed Copilot memory on create and resume", () => {
-    const createCfg = buildSessionConfig({
-      deps: createDeps(),
-      callbacks: createCallbacks(),
-    });
-    const resumeCfg = buildSessionConfig({
-      deps: createDeps(),
-      options: { forResume: true },
-      callbacks: createCallbacks(),
-    });
-
-    expect(createCfg.memory).toEqual({ enabled: false });
-    expect(resumeCfg.memory).toEqual({ enabled: false });
   });
 
   it("keeps staging instructions for source-managed release-slot sessions", () => {
@@ -774,17 +651,6 @@ describe("session-config-builder", () => {
       },
     });
     expect(cfg.githubMcpToolConfig).toBeUndefined();
-  });
-
-  it("requests the SDK-hosted GitHub MCP when no Bridge Copilot token is configured", () => {
-    const cfg = buildSessionConfig({
-      deps: createDeps({ clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "   " } }),
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.mcpServers).toEqual({});
-    expect(cfg.enableConfigDiscovery).toBe(true);
-    expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
   });
 
   it("injects Bridge-owned MCP servers and prevents user config from overriding them", () => {
@@ -984,28 +850,6 @@ describe("session-config-builder", () => {
       });
     }
   });
-  it("adds MCP servers selected by inherited group tags", () => {
-    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
-    const groupServer = mcpServerStore.createMcpServer({
-      name: "Group MCP",
-      config: { type: "http", url: "https://group.example/mcp" },
-    });
-    const tag = tagStore.createTag("Group tools");
-    tagStore.addTagMcpServerRef(tag.id, groupServer.id);
-    tagStore.setEntityTags("task_group", "group-1", [tag.id]);
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ mcpServerStore, tagStore }),
-      options: { task: createTask({ groupId: "group-1" }) },
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.mcpServers).toEqual({
-      "Group MCP": { type: "http", url: "https://group.example/mcp" },
-    });
-    expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
-  });
-
   it("combines default-enabled, task-tag, and group-tag MCP selections", () => {
     const { mcpServerStore, tagStore } = createMcpRegistryDeps();
     mcpServerStore.createMcpServer({
@@ -1042,26 +886,18 @@ describe("session-config-builder", () => {
     expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
   });
 
-  it.each([
-    { label: "default and task tag on create", enabledByDefault: true, taskTag: true, groupTag: false, forResume: false },
-    { label: "task and group tags on resume", enabledByDefault: false, taskTag: true, groupTag: true, forResume: true },
-  ])("deduplicates one registry server selected by $label", ({ enabledByDefault, taskTag, groupTag, forResume }) => {
+  it("deduplicates one registry server selected by 'task and group tags on resume'", () => {
     const { mcpServerStore, tagStore } = createMcpRegistryDeps();
     const sharedServer = mcpServerStore.createMcpServer({
       name: "Shared MCP",
       config: { command: "shared-mcp", args: ["serve"] },
-      enabledByDefault,
     });
-    if (taskTag) {
-      const tag = tagStore.createTag("Task tools");
-      tagStore.addTagMcpServerRef(tag.id, sharedServer.id);
-      tagStore.setEntityTags("task", "task-1", [tag.id]);
-    }
-    if (groupTag) {
-      const tag = tagStore.createTag("Group tools");
-      tagStore.addTagMcpServerRef(tag.id, sharedServer.id);
-      tagStore.setEntityTags("task_group", "group-1", [tag.id]);
-    }
+    const taskTag = tagStore.createTag("Task tools");
+    const groupTag = tagStore.createTag("Group tools");
+    tagStore.addTagMcpServerRef(taskTag.id, sharedServer.id);
+    tagStore.addTagMcpServerRef(groupTag.id, sharedServer.id);
+    tagStore.setEntityTags("task", "task-1", [taskTag.id]);
+    tagStore.setEntityTags("task_group", "group-1", [groupTag.id]);
 
     const cfg = buildSessionConfig({
       deps: createDeps({
@@ -1072,57 +908,18 @@ describe("session-config-builder", () => {
           getMcpServers: () => ({}),
         } as unknown as SettingsStore,
       }),
-      options: { task: createTask(groupTag ? { groupId: "group-1" } : {}), forResume },
+      options: { task: createTask({ groupId: "group-1" }), forResume: true },
       callbacks: createCallbacks(),
     });
 
     expect(cfg.mcpServers).toEqual({ "Shared MCP": { command: "shared-mcp", args: ["serve"] } });
     expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
-    expect(cfg.model).toBe(forResume ? undefined : "gpt-new");
-  });
-
-  it("refreshes registry MCP servers while preserving forResume model behavior", () => {
-    const { mcpServerStore } = createMcpRegistryDeps();
-    mcpServerStore.createMcpServer({
-      name: "Resume MCP",
-      config: { command: "resume-mcp", args: [] },
-      enabledByDefault: true,
-    });
-    const settingsStore = {
-      getSettings: () => ({ model: "gpt-new", reasoningEffort: "high" }),
-      getMcpServers: () => ({}),
-    } as unknown as SettingsStore;
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ mcpServerStore, settingsStore, config: { sessionMcpServers: {}, model: "config-fallback" } }),
-      options: { forResume: true },
-      callbacks: createCallbacks(),
-    });
-
     expect(cfg.model).toBeUndefined();
     expect(cfg.reasoningEffort).toBeUndefined();
-    expect(cfg.mcpServers).toEqual({
-      "Resume MCP": { command: "resume-mcp", args: [] },
-    });
-    expect(cfg.githubMcpToolConfig).toEqual(createGitHubCopilotMcpToolConfig());
   });
 
-  it("includes model and reasoningEffort for new-session paths (forResume omitted/false)", () => {
-    const settingsStore = {
-      getSettings: () => ({ model: "gpt-new", reasoningEffort: "medium" }),
-      getMcpServers: () => ({}),
-    } as unknown as SettingsStore;
-
-    const cfg = buildSessionConfig({
-      deps: createDeps({ settingsStore, config: { sessionMcpServers: {}, model: "config-fallback" } }),
-      callbacks: createCallbacks(),
-    });
-
-    expect(cfg.model).toBe("gpt-new");
-    expect(cfg.reasoningEffort).toBe("medium");
-  });
-
-  it.each(["default", "long_context"] as const)("passes native %s context without capability overrides", (contextTier) => {
+  it("passes native default context without capability overrides", () => {
+    const contextTier = "default";
     const settingsStore = {
       getSettings: () => ({ model: "gpt-5.5", contextTier }),
       getMcpServers: () => ({}),

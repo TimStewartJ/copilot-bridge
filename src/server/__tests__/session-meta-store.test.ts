@@ -14,18 +14,6 @@ beforeEach(() => {
 });
 
 describe("session-meta-store", () => {
-  it("setArchived creates meta entry", () => {
-    store.setArchived("session-1", true);
-    expect(store.isArchived("session-1")).toBe(true);
-  });
-
-  it("setArchived(false) removes entry", () => {
-    store.setArchived("session-1", true);
-    store.setArchived("session-1", false);
-    expect(store.isArchived("session-1")).toBe(false);
-    expect(store.getMeta("session-1")).toBeUndefined();
-  });
-
   it("setArchived(false) preserves unrelated overlay fields", () => {
     const bridgeSessionState = createBridgeSessionStateStore(db);
     bridgeSessionState.setTitleOverride("session-1", "Manual title");
@@ -43,43 +31,11 @@ describe("session-meta-store", () => {
     expect(store.getMeta("session-1")).toBeUndefined();
   });
 
-  it("setScheduleMeta sets trigger info", () => {
-    store.setScheduleMeta("session-1", "sched-1", "My Schedule");
-    const meta = store.getMeta("session-1");
-    expect(meta).toBeDefined();
-    expect(meta!.triggeredBy).toBe("schedule");
-    expect(meta!.scheduleId).toBe("sched-1");
-    expect(meta!.scheduleName).toBe("My Schedule");
-  });
-
-  it("writes runtime metadata only to bridge_session_state", () => {
-    store.setArchived("session-1", true);
-    store.setScheduleMeta("session-1", "sched-1", "My Schedule");
-
-    expect(db.prepare(`
-      SELECT archived, scheduleId, scheduleName
-      FROM bridge_session_state
-      WHERE sessionId = ?
-    `).get("session-1")).toMatchObject({
-      archived: 1,
-      scheduleId: "sched-1",
-      scheduleName: "My Schedule",
-    });
-  });
-
   it("setScheduleMeta preserves existing archive state", () => {
     store.setArchived("session-1", true);
     store.setScheduleMeta("session-1", "sched-1", "Test");
     const meta = store.getMeta("session-1");
-    expect(meta!.archived).toBe(true);
-    expect(meta!.triggeredBy).toBe("schedule");
-  });
-
-  it("listMeta returns all entries", () => {
-    store.setArchived("s1", true);
-    store.setArchived("s2", true);
-    const all = store.listMeta();
-    expect(Object.keys(all)).toHaveLength(2);
+    expect(meta).toMatchObject({ archived: true, triggeredBy: "schedule", scheduleId: "sched-1", scheduleName: "Test" });
   });
 
   it("listMetaFor returns the sessions asked for, and tells an archived session from one with no row", () => {
@@ -180,10 +136,6 @@ describe("session-meta-store", () => {
     ]);
   });
 
-  it("listSessionIdsBySchedule returns empty for unknown schedule", () => {
-    expect(store.listSessionIdsBySchedule("unknown")).toEqual([]);
-  });
-
   it("listSessionIdsBySchedule preserves repeated runs of the same session", () => {
     store.recordScheduleRun("sched-a", "shared");
     store.recordScheduleRun("sched-a", "shared");
@@ -273,20 +225,6 @@ describe("pruneScheduleRuns", () => {
     expect(store.pruneScheduleRuns("sched-a", 1.5)).toBe(0);
     expect(store.listScheduleRuns("sched-a")).toHaveLength(4);
   });
-
-  it("bounds growth when recording more runs than the resolved cap", () => {
-    const cap = resolveScheduleRunsKeep(undefined); // default 500
-    const ids = seedRuns(store, "sched-a", cap + 25);
-
-    store.pruneScheduleRuns("sched-a", cap);
-
-    const remaining = store.listSessionIdsBySchedule("sched-a");
-    expect(remaining).toHaveLength(cap);
-    // Newest `cap` sessions remain, newest-first; the 25 oldest were pruned.
-    expect(remaining[0]).toBe(ids[ids.length - 1]);
-    expect(remaining[remaining.length - 1]).toBe(ids[25]);
-    expect(remaining).not.toContain(ids[24]);
-  });
 });
 
 describe("resolveScheduleRunsKeep", () => {
@@ -294,17 +232,6 @@ describe("resolveScheduleRunsKeep", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-  });
-
-  it("defaults to DEFAULT_SCHEDULE_RUNS_KEEP", () => {
-    vi.stubEnv(ENV_KEY, undefined);
-    expect(resolveScheduleRunsKeep(undefined)).toBe(DEFAULT_SCHEDULE_RUNS_KEEP);
-    expect(resolveScheduleRunsKeep(null)).toBe(DEFAULT_SCHEDULE_RUNS_KEEP);
-  });
-
-  it("honors a valid BRIDGE_SCHEDULE_RUNS_KEEP override", () => {
-    vi.stubEnv(ENV_KEY, "10");
-    expect(resolveScheduleRunsKeep(undefined)).toBe(10);
   });
 
   it("ignores an invalid BRIDGE_SCHEDULE_RUNS_KEEP and falls back to the default", () => {

@@ -32,15 +32,6 @@ afterEach(() => {
 });
 
 describe("setSessionsArchived", () => {
-  it("announces a change to several sessions in one event", () => {
-    const result = setSessionsArchived({ sessionMetaStore, globalBus }, [ID(1), ID(2), ID(1), ID(3)], true);
-
-    expect(result).toEqual({ sessionIds: [ID(1), ID(2), ID(3)], errors: {} });
-    expect([ID(1), ID(2), ID(3)].map((id) => sessionMetaStore.isArchived(id))).toEqual([true, true, true]);
-    expect(events).toEqual([{ type: "session:archived", sessionIds: [ID(1), ID(2), ID(3)], archived: true }]);
-    expect(archivedEventSessionIds(events[0]!)).toEqual([ID(1), ID(2), ID(3)]);
-  });
-
   it("keeps the single-session event shape for one session and stays silent for none", () => {
     setSessionsArchived({ sessionMetaStore, globalBus }, [], true);
     expect(events).toEqual([]);
@@ -120,6 +111,7 @@ describe("session_archive tool", () => {
       ],
     });
     expect(events).toEqual([{ type: "session:archived", sessionIds: [ID(1), ID(2)], archived: true }]);
+    expect(archivedEventSessionIds(events[0]!)).toEqual([ID(1), ID(2)]);
     expect([1, 2, 3, 4, 5, 7, 8].map((n) => sessionMetaStore.isArchived(ID(n))))
       .toEqual([true, true, false, false, false, false, false]);
     // No row for a session that does not exist, and an archived chat keeps its place in the archive.

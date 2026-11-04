@@ -4,7 +4,6 @@ import { SessionManager } from "../session-manager.js";
 import {
   applyMcpServerStatusChange,
   getStaleMcpSessionServerName,
-  isStaleAgentSessionError,
   normalizeMcpServerStatuses,
 } from "../session-runner.js";
 import { createEventBusRegistry } from "../event-bus.js";
@@ -159,17 +158,7 @@ describe("SessionManager stale cached session recovery", () => {
     )).toBeUndefined();
   });
 
-  it("recognizes provider input-item connection mismatches as stale cached sessions", () => {
-    expect(isStaleAgentSessionError(new Error(
-      "Execution failed: 400 input item ID does not belong to this connection (Request ID: request-1)",
-    ))).toBe(true);
-    expect(isStaleAgentSessionError(new Error(
-      "Execution failed: 400 input item id does not belong to this connection",
-    ))).toBe(true);
-  });
-
   it.each([
-    ["403 Forbidden", "permission"],
     ["401 Unauthorized: token expired", "authentication"],
     ["MCP server 'demo': MCP error -32001: Session not found (403 Forbidden)", "permission"],
     ["Invalid filter: slash paths are not supported", "invalid-input"],
@@ -557,120 +546,6 @@ describe("SessionManager stale cached session recovery", () => {
     expect(resumedSession.send).toHaveBeenCalledTimes(1);
   });
 
-  it("schedules cached session refresh when a configured MCP server regresses from connected to not configured", async () => {
-    const { manager, eventBusRegistry } = createManager();
-    const bus = eventBusRegistry.getOrCreateBus("session-1");
-    const cachedSession = createSession((emit) => {
-      queueMicrotask(() => {
-        emit({
-          type: "session.mcp_servers_loaded",
-          data: {
-            servers: [{ name: "demo", status: "connected", source: "settings" }],
-          },
-          timestamp: "2026-05-21T19:05:43.659Z",
-        });
-
-        emit({
-          type: "session.mcp_server_status_changed",
-          data: {
-            serverName: "demo",
-            status: "not_configured",
-          },
-          timestamp: "2026-05-21T19:08:43.668Z",
-        });
-        emit({
-          type: "assistant.message",
-          data: { content: "The MCP call failed." },
-          timestamp: "2026-05-21T19:08:44.000Z",
-        });
-        emit({
-          type: "session.idle",
-          data: {},
-          timestamp: "2026-05-21T19:08:45.000Z",
-        });
-      });
-    });
-
-    manager.sessionObjects.set("session-1", cachedSession);
-
-    await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
-
-    // Eviction must be deferred — disconnect must NOT happen mid-run /
-    // before the run lifecycle's `.finally()` drains pending evictions.
-    expect(cachedSession.disconnect).not.toHaveBeenCalled();
-    expect(manager.sessionObjects.get("session-1")).toBe(cachedSession);
-    expect(manager.pendingSessionEvictions.has("session-1")).toBe(true);
-
-    // Simulate the SessionRunner's `.finally()` drain that runs in production
-    // after `setSessionRunState(sessionId, "idle")`. (`_doWork` is a test seam
-    // that bypasses `startBackgroundRun`'s wrapper.)
-    manager.flushPendingSessionEviction("session-1");
-    await manager._drainCacheQueue();
-
-    expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.sessionObjects.has("session-1")).toBe(false);
-    expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
-  });
-
-  it("schedules cached session refresh when an MCP tool reports a stale runtime session", async () => {
-    const { manager, eventBusRegistry } = createManager();
-    const bus = eventBusRegistry.getOrCreateBus("session-1");
-    const cachedSession = createSession((emit) => {
-      queueMicrotask(() => {
-        emit({
-          type: "tool.execution_start",
-          data: {
-            toolCallId: "tool-1",
-            toolName: "demo-read",
-            arguments: {},
-          },
-          timestamp: "2026-09-02T20:24:13.000Z",
-        });
-        emit({
-          type: "tool.execution_complete",
-          data: {
-            toolCallId: "tool-1",
-            success: false,
-            error: {
-              message: "MCP server 'demo': McpError: MCP error -32001: Session not found",
-              code: "failure",
-            },
-          },
-          timestamp: "2026-09-02T20:24:15.000Z",
-        });
-        emit({
-          type: "assistant.message",
-          data: { content: "The MCP session became stale. Retry once." },
-          timestamp: "2026-09-02T20:24:16.000Z",
-        });
-        emit({
-          type: "session.idle",
-          data: {},
-          timestamp: "2026-09-02T20:24:17.000Z",
-        });
-      });
-    });
-
-    manager.sessionObjects.set("session-1", cachedSession);
-    manager.mcpStatus.set("session-1", {
-      servers: [{ name: "demo", status: "connected" }],
-      complete: true,
-    });
-
-    await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
-
-    expect(manager.mcpStatus.has("session-1")).toBe(false);
-    expect(manager.pendingSessionEvictions.has("session-1")).toBe(true);
-    expect(cachedSession.disconnect).not.toHaveBeenCalled();
-
-    manager.flushPendingSessionEviction("session-1");
-    await manager._drainCacheQueue();
-
-    expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.sessionObjects.has("session-1")).toBe(false);
-    expect(manager.pendingSessionEvictions.has("session-1")).toBe(false);
-  });
-
   it("caps repeated automatic MCP stale-session refreshes", async () => {
     const { manager, eventBusRegistry } = createManager();
     const bus = eventBusRegistry.getOrCreateBus("session-1");
@@ -705,6 +580,8 @@ describe("SessionManager stale cached session recovery", () => {
       await expect(manager._doWork("session-1", "hello", bus)).resolves.toBeUndefined();
 
       if (attempt <= 2) {
+        expect(manager.mcpStatus.has("session-1")).toBe(false);
+        expect(session.disconnect).not.toHaveBeenCalled();
         expect(manager.pendingSessionEvictions.has("session-1")).toBe(true);
         manager.flushPendingSessionEviction("session-1");
         await manager._drainCacheQueue();

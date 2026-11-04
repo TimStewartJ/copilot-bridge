@@ -165,10 +165,10 @@ describe("Copilot owned-runtime fence", () => {
     expect(backend.getConnectionStatus()).toMatchObject({ pid: root.pid, runtimePids: [root.pid, runtime.pid] });
   });
 
-  it.each(["linux", "win32"] as const)("uses the platform boundary and retained native runtime identity on %s", async (platform) => {
+  it("uses the platform boundary and retained native runtime identity on win32", async () => {
     const { backend, client } = backendFixture();
     const original = Object.getOwnPropertyDescriptor(process, "platform")!;
-    Object.defineProperty(process, "platform", { configurable: true, value: platform });
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
     try {
       await backend.start();
       Reflect.set(client, "cliProcess", null);

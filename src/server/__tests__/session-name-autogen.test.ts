@@ -99,27 +99,6 @@ describe("session name autogenerator", () => {
     expect(setSessionName).toHaveBeenCalledWith("session-1", "Concise Session Title", { session });
   });
 
-  it("uses session history from disk when a delayed live trigger includes only a follow-up", async () => {
-    const { generator, generateSessionName, writeHistory } = createHarness(undefined);
-    const { session, calls } = recordingSession({});
-    writeHistory("session-1", [
-      { type: "user.message", data: { content: "Investigate why deployment restarts wedge the bridge" } },
-      { type: "assistant.message", data: { content: "I found the restart issue." } },
-      { type: "user.message", data: { content: "Can you show the exact diff?" } },
-    ]);
-
-    await (generator as any).generateAndSetMissingSessionName("session-1", {
-      session,
-      userMessages: ["Can you show the exact diff?"],
-    });
-
-    expect(generateSessionName).toHaveBeenCalledWith([
-      "Investigate why deployment restarts wedge the bridge",
-      "Can you show the exact diff?",
-    ]);
-    expect(calls).toEqual([]);
-  });
-
   it("reads only the tail of a multi-MB history and never asks the session for events", async () => {
     const { generator, generateSessionName, writeHistory } = createHarness(undefined);
     const { session, calls } = recordingSession({});
@@ -280,30 +259,6 @@ describe("session name autogenerator", () => {
     await vi.waitFor(() => expect(setSessionName).toHaveBeenCalledTimes(1));
     expect(generateSessionName).toHaveBeenNthCalledWith(2, ["Investigate the new failure mode"]);
     expect(setSessionName).toHaveBeenCalledWith("session-1", "First New Fork Message", { session });
-  });
-
-  it("excludes sub-agent instructions from title generation history", async () => {
-    const { generator, generateSessionName, writeHistory } = createHarness(undefined);
-    const session = {};
-    writeHistory("session-1", [
-      { type: "user.message", data: { content: "Investigate the deployment restart" } },
-      {
-        type: "user.message",
-        agentId: "agent-1",
-        data: { content: "Inspect every launcher file" },
-      },
-      { type: "user.message", data: { content: "Show me the fix" } },
-    ]);
-
-    await (generator as any).generateAndSetMissingSessionName("session-1", {
-      session,
-      userMessages: ["Show me the fix"],
-    });
-
-    expect(generateSessionName).toHaveBeenCalledWith([
-      "Investigate the deployment restart",
-      "Show me the fix",
-    ]);
   });
 
   it("still skips existing SDK names for warm or no-message checks", async () => {

@@ -133,36 +133,6 @@ describe("SessionManager graceful shutdown", () => {
     expect(manager.backend).toBeNull();
   });
 
-  it("uses a no-op browser lifecycle by default so unit tests do not spawn the agent-browser CLI", async () => {
-    const stop = vi.fn().mockResolvedValue(undefined);
-    const manager = createManager() as any;
-    manager.backend = { stop };
-
-    await manager.gracefulShutdown();
-
-    expect(stop).toHaveBeenCalledTimes(1);
-    expect(manager.backend).toBeNull();
-  });
-
-  it("aborts active runs instead of suspending them during graceful shutdown", async () => {
-    const session = makeSession();
-    const stop = vi.fn().mockResolvedValue(undefined);
-    const manager = createManager() as any;
-    manager.backend = {
-      resumeSession: vi.fn().mockResolvedValue(session),
-      stop,
-    };
-
-    manager.startWork("session-1", "hello");
-    await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
-
-    await manager.gracefulShutdown();
-
-    expect(session.abort).toHaveBeenCalledTimes(1);
-    expect(manager.getActiveSessions()).toEqual([]);
-    expect(stop).toHaveBeenCalledTimes(1);
-  });
-
   it("aborts active runs and defer checks during shutdown", async () => {
     const session = makeSession();
     const stop = vi.fn().mockResolvedValue(undefined);

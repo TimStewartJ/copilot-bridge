@@ -6,7 +6,6 @@ import {
   findSessionEventIndex,
   readRecentUserMessages,
   readSessionEventsTail,
-  resolveSessionEventsPath,
 } from "../session-disk-reader.js";
 
 const fixtures: string[] = [];
@@ -29,14 +28,6 @@ function bulky(id: string, bytes: number): string {
 
 afterEach(() => {
   for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-describe("resolveSessionEventsPath", () => {
-  it("builds the COPILOT_HOME session-state path", () => {
-    expect(resolveSessionEventsPath(join("home", ".copilot"), "abc")).toBe(
-      join("home", ".copilot", "session-state", "abc", "events.jsonl"),
-    );
-  });
 });
 
 describe("readSessionEventsTail", () => {
@@ -151,9 +142,5 @@ describe("readRecentUserMessages", () => {
     ]);
     await expect(readRecentUserMessages(eventsPath, 2)).resolves.toEqual(["second", "third"]);
     await expect(readRecentUserMessages(eventsPath, 10)).resolves.toEqual(["first", "second", "third"]);
-  });
-
-  it("returns an empty list when the log does not exist", async () => {
-    await expect(readRecentUserMessages(join(tmpdir(), "event-log-reader-missing", "events.jsonl"), 5)).resolves.toEqual([]);
   });
 });

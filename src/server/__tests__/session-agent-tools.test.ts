@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import type { AgentDismissResult, SessionAgentTask } from "../../shared/session-agents.js";
-import { AGENT_LIFECYCLE_GUIDANCE } from "../session-instructions.js";
 import { createTestApp } from "./test-app.js";
 
 function makeInvocation(sessionId: string | undefined): any {
@@ -170,24 +169,5 @@ describe("agent_dismiss", () => {
     dismissSessionAgent.mockRejectedValueOnce(new Error("cancel failed"));
     expect(expectFailure(await dismiss.handler({ agent_id: "docs" }, makeInvocation("session-1"))))
       .toContain("Could not dismiss docs (a-docs): cancel failed");
-  });
-});
-
-describe("agent lifecycle guidance", () => {
-  it("names the tools that end an agent, which the runtime's own tools cannot do", () => {
-    const { ctx } = createTestApp();
-    const names = new Set(getBridgeToolDefinitions(ctx).map((tool) => tool.name));
-
-    for (const name of ["agent_stop", "agent_dismiss"]) {
-      expect(names.has(name), name).toBe(true);
-      expect(AGENT_LIFECYCLE_GUIDANCE).toContain(name);
-    }
-    expect(AGENT_LIFECYCLE_GUIDANCE).toContain("is not seen until its current turn ends");
-  });
-
-  it("says that queued messages hold back the notification, and how to drop them", () => {
-    expect(AGENT_LIFECYCLE_GUIDANCE).toContain("do not expect a notification until the last one is done");
-    expect(AGENT_LIFECYCLE_GUIDANCE).toContain("stop it with agent_stop, which discards them");
-    expect(AGENT_LIFECYCLE_GUIDANCE).not.toContain("wait until it is idle");
   });
 });

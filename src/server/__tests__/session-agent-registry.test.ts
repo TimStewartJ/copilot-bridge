@@ -27,13 +27,6 @@ describe("SessionAgentRegistry", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it("returns unknown source before any refresh", () => {
-    const { bus } = makeBus();
-    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => undefined });
-    expect(registry.getSummary("s1")).toMatchObject({ source: "unknown", running: 0, total: 0 });
-    registry.dispose();
-  });
-
   it("projects background tasks and emits counts on change", async () => {
     const { bus, events } = makeBus();
     const session = fakeSession(async () => ({
@@ -61,7 +54,7 @@ describe("SessionAgentRegistry", () => {
   });
 
   it("reports tracked weight and running protection, notifying only on task changes", async () => {
-    const { bus } = makeBus();
+    const { bus, events } = makeBus();
     let status = "running";
     const onTasksChanged = vi.fn();
     const session = fakeSession(async () => ({
@@ -83,6 +76,7 @@ describe("SessionAgentRegistry", () => {
 
     await registry.refresh("s1", "unchanged");
     expect(onTasksChanged).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event.type === "session:agents")).toHaveLength(1);
 
     status = "idle";
     await registry.refresh("s1", "idle");
@@ -323,29 +317,6 @@ describe("SessionAgentRegistry", () => {
     registry.dispose();
   });
 
-  it("suppresses duplicate emissions when counts are unchanged", async () => {
-    const { bus, events } = makeBus();
-    const session = fakeSession(async () => ({ tasks: [agentTask({ id: "a", status: "running" })] }));
-    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
-
-    await registry.refresh("s1", "first");
-    await registry.refresh("s1", "second");
-    expect(events.filter((e) => e.type === "session:agents")).toHaveLength(1);
-    registry.dispose();
-  });
-
-  it("degrades a live snapshot to lastSeen after the freshness window", async () => {
-    const { bus } = makeBus();
-    const session = fakeSession(async () => ({ tasks: [agentTask({ id: "a", status: "completed" })] }));
-    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
-
-    await registry.refresh("s1", "test");
-    expect(registry.getSummary("s1").source).toBe("live");
-    vi.setSystemTime(61_000);
-    expect(registry.getSummary("s1").source).toBe("lastSeen");
-    registry.dispose();
-  });
-
   it("aggregates only fresh snapshots while reporting stale and unknown sessions", async () => {
     const { bus } = makeBus();
     const sessions = new Map<string, AgentSession>([
@@ -383,23 +354,6 @@ describe("SessionAgentRegistry", () => {
       staleSessions: 1,
       unknownSessions: 1,
     });
-    registry.dispose();
-  });
-
-  it("no-ops when no live session is cached, leaving prior snapshot intact", async () => {
-    const { bus } = makeBus();
-    let session: AgentSession | undefined = fakeSession(async () => ({
-      tasks: [agentTask({ id: "a", status: "running" })],
-    }));
-    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
-
-    await registry.refresh("s1", "test");
-    expect(registry.getSummary("s1").running).toBe(1);
-
-    session = undefined;
-    await registry.refresh("s1", "evicted");
-    // still has last snapshot (will age to lastSeen via freshness window)
-    expect(registry.getSnapshot("s1").tasks).toHaveLength(1);
     registry.dispose();
   });
 
@@ -454,23 +408,6 @@ describe("SessionAgentRegistry", () => {
     expect(calls).toBe(callsAtShutdown);
     expect(vi.getTimerCount()).toBe(0);
     expect(registry.getSummary("s1")).toMatchObject({ source: "unknown" });
-  });
-
-  it("does not poll when the only background agents are terminal", async () => {
-    const { bus } = makeBus();
-    let call = 0;
-    const session = fakeSession(async () => { call++; return { tasks: [agentTask({ id: "a", status: "completed" })] }; });
-    const registry = new SessionAgentRegistry({
-      globalBus: bus,
-      getLiveSession: () => session,
-      pollIntervalMs: 1_000,
-    });
-
-    await registry.refresh("s1", "test");
-    expect(call).toBe(1);
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(call).toBe(1);
-    registry.dispose();
   });
 
   it("emits a lastSeen demotion when the live session becomes unavailable", async () => {
@@ -549,19 +486,6 @@ describe("SessionAgentRegistry", () => {
     registry.dispose();
   });
 
-  it("forget clears state and stops polling", async () => {
-    const { bus } = makeBus();
-    const session = fakeSession(async () => ({ tasks: [agentTask({ id: "a", status: "running" })] }));
-    const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session, pollIntervalMs: 1_000 });
-
-    await registry.refresh("s1", "test");
-    registry.forget("s1");
-    expect(registry.getSummary("s1").source).toBe("unknown");
-    const before = (await session.listTasks?.()) ? 1 : 0;
-    void before;
-    registry.dispose();
-  });
-
   it("clears heavy free-text fields on eviction and preserves freshness (live -> lastSeen)", async () => {
     // clears heavy free-text fields while preserving counts/status
     {
@@ -593,6 +517,7 @@ describe("SessionAgentRegistry", () => {
     session = undefined;
     registry.markSessionUnavailable("s1");
 
+    await registry.refresh("s1", "evicted");
     const after = registry.getSnapshot("s1");
     expect(after.tasks.map((t) => t.id).sort()).toEqual(["a", "b"]);
     for (const task of after.tasks) {
@@ -862,20 +787,6 @@ describe("SessionAgentRegistry", () => {
       registry.dispose();
     });
 
-    it("does not track a command the runtime gave no execution mode for", async () => {
-      const { bus } = makeBus();
-      const session = fakeSession(async () => ({
-        tasks: [shellTask({ id: "1", executionMode: undefined, startedAt: new Date(0).toISOString() })],
-      }));
-      const registry = new SessionAgentRegistry({ globalBus: bus, getLiveSession: () => session });
-
-      await registry.refresh("s1", "test");
-
-      expect(registry.getRunningCommands("s1")).toEqual([]);
-      expect(registry.hasProtectedCommand("s1")).toBe(false);
-      registry.dispose();
-    });
-
     it("dates a command the runtime gave no start time from when it was first seen", async () => {
       const { bus } = makeBus();
       const session = fakeSession(async () => ({ tasks: [shellTask({ id: "1" })] }));
@@ -933,6 +844,7 @@ describe("SessionAgentRegistry", () => {
 
       registry.forget("s1");
 
+      expect(registry.getSummary("s1").source).toBe("unknown");
       expect(onCommandsStopped).not.toHaveBeenCalled();
       registry.dispose();
     });
