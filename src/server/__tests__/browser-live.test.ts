@@ -724,18 +724,6 @@ describe("BrowserLiveGateway.checkStream", () => {
     expect(stream.closed).toBe(true);
   });
 
-  it("fails, in words that say how to fix it, when the installed agent-browser has no streaming", async () => {
-    const check = createStreamCheck();
-    check.cli.answers.status = () => ({ ok: false, output: "error: unrecognized subcommand 'stream'" });
-
-    const result = await check.gateway.checkStream(check.target);
-
-    expect(result).toMatchObject({ ok: false, message: expect.stringContaining("npm install -g agent-browser") });
-    expect(check.gateway.getLastCheck()).toBe(result);
-    expect(check.cli.commands()).toEqual(["stream status"]);
-    expect(check.opened.size).toBe(0);
-  });
-
   it("counts as passed once a live view has relayed a picture, and is not recorded again for every picture after it", async () => {
     const h = await createHarness();
     const session = await h.createSession();

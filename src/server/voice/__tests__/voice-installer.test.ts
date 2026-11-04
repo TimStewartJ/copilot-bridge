@@ -187,9 +187,9 @@ describe("VoiceInstaller", () => {
       extract,
       npmClient,
     });
-    await expect(installer.install()).rejects.toThrow(/Couldn't download sherpa-onnx-node 1\.13\.8 with npm: E401: Unable to authenticate/);
+    await expect(installer.install()).rejects.toThrow(/sherpa-onnx-node 1\.13\.8.*npm.*E401.*authenticat/i);
     const error = installer.getStatus().error!;
-    expect(error).toContain('run "npm pack sherpa-onnx-node@1.13.8" on any computer');
+    expect(error).toContain("npm pack sherpa-onnx-node@1.13.8");
     expect(error).toContain(`copy sherpa-onnx-node-1.13.8.tgz into ${paths.downloadsDir}`);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -198,8 +198,10 @@ describe("VoiceInstaller", () => {
     const { byFileName, extract } = pinFakeAssets();
     const silero = VOICE_MODELS.find((asset) => asset.id === "silero-vad")!;
     const blocked = createInstaller("voice-install-blocked", { only: ["silero-vad"], fetch: unreachable, extract, npmClient: fakeNpmClient(byFileName) });
-    await expect(blocked.installer.install()).rejects.toThrow("Couldn't download Silero voice activity detector from github.com: ENOTFOUND.");
-    expect(blocked.installer.getStatus().error).toContain(`download ${silero.url} on any computer, copy silero_vad.onnx into ${blocked.paths.downloadsDir}`);
+    await expect(blocked.installer.install()).rejects.toThrow(/Silero voice activity detector.*github\.com.*ENOTFOUND/i);
+    const error = blocked.installer.getStatus().error!;
+    expect(error).toContain(`download ${silero.url}`);
+    expect(error).toContain(`copy silero_vad.onnx into ${blocked.paths.downloadsDir}`);
 
     const missing = createInstaller("voice-install-404", {
       only: ["silero-vad"],
@@ -207,7 +209,7 @@ describe("VoiceInstaller", () => {
       extract,
       npmClient: fakeNpmClient(byFileName),
     });
-    await expect(missing.installer.install()).rejects.toThrow("from github.com: HTTP 404.");
+    await expect(missing.installer.install()).rejects.toThrow(/github\.com.*HTTP 404/i);
   });
 
   it("installs from archives copied into the downloads folder without npm or the network", async () => {

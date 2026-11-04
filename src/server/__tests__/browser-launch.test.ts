@@ -403,19 +403,6 @@ describe("describeBrowserBuild", () => {
     expect(readBrowserVersion).not.toHaveBeenCalled();
   });
 
-  it.each<[string, string]>([
-    ["Chromium 1.2.3.4", "chromium"],
-    ["Vivaldi 1.2.3.4", "unknown"],
-  ])("reads \"%s\" as %s and reports the version", async (version, kind) => {
-    const executablePath = neutralBinary();
-    readModifiedAt.mockResolvedValue(NOW);
-    readBrowserVersion.mockResolvedValue(version);
-
-    await expect(launch.describeBrowserBuild({ path: executablePath, source: "system" }))
-      .resolves.toStrictEqual({ kind, version, installedDaysAgo: 0 });
-    expect(readBrowserVersion).toHaveBeenCalledWith(executablePath);
-  });
-
   it("recognises Chrome for Testing by its version even when it is installed as chrome", async () => {
     readModifiedAt.mockResolvedValue(NOW);
     readBrowserVersion.mockResolvedValue("Google Chrome for Testing 1.2.3.4");
@@ -424,17 +411,14 @@ describe("describeBrowserBuild", () => {
       .resolves.toMatchObject({ kind: "chrome-for-testing", version: "Google Chrome for Testing 1.2.3.4" });
   });
 
-  it.each<[string, string[]]>([
-    ["chrome", ["Google", "Chrome", "Application", "chrome.exe"]],
-    ["edge", ["Microsoft", "Edge", "Application", "msedge.exe"]],
-  ])("tells %s from the path when the version is only a number, as on Windows", async (kind, segments) => {
+  it("tells chrome from the path when the version is only a number, as on Windows", async () => {
     readModifiedAt.mockResolvedValue(NOW);
     readBrowserVersion.mockResolvedValue("154.0.8037.97");
 
     await expect(launch.describeBrowserBuild({
-      path: path.win32.join(testWindowsPath("Program Files"), ...segments),
+      path: path.win32.join(testWindowsPath("Program Files"), "Google", "Chrome", "Application", "chrome.exe"),
       source: "system",
-    })).resolves.toStrictEqual({ kind, version: "154.0.8037.97", installedDaysAgo: 0 });
+    })).resolves.toStrictEqual({ kind: "chrome", version: "154.0.8037.97", installedDaysAgo: 0 });
   });
 
   it("leaves the version out when the browser does not report one", async () => {
@@ -449,40 +433,42 @@ describe("describeBrowserBuild", () => {
 
     const build = await launch.describeBrowserBuild({ path: neutralBinary(), source: "system" });
 
-    expect(build.installedDaysAgo).toBe(0);
+    expect(build).toMatchObject({ kind: "unknown", installedDaysAgo: 0 });
   });
 
   it("reuses the version until the executable is replaced but calculates its age on every read", async () => {
     const executable = { path: neutralBinary(), source: "system" as const };
     readModifiedAt.mockResolvedValue(NOW - DAY);
-    readBrowserVersion.mockResolvedValue("Google Chrome 1.2.3.4");
+    readBrowserVersion.mockResolvedValue("Chromium 1.2.3.4");
 
     const first = await launch.describeBrowserBuild(executable);
     vi.setSystemTime(NOW + 2 * DAY);
     const second = await launch.describeBrowserBuild(executable);
 
     expect(readBrowserVersion).toHaveBeenCalledTimes(1);
-    expect(first).toStrictEqual({ kind: "chrome", version: "Google Chrome 1.2.3.4", installedDaysAgo: 1 });
+    expect(first).toStrictEqual({ kind: "chromium", version: "Chromium 1.2.3.4", installedDaysAgo: 1 });
     // The age is worked out on every call; only the version is remembered.
-    expect(second).toStrictEqual({ kind: "chrome", version: "Google Chrome 1.2.3.4", installedDaysAgo: 3 });
+    expect(second).toStrictEqual({ kind: "chromium", version: "Chromium 1.2.3.4", installedDaysAgo: 3 });
 
     readModifiedAt.mockResolvedValue(Date.now() - HOUR);
-    readBrowserVersion.mockResolvedValue("Google Chrome 1.2.3.5");
+    readBrowserVersion.mockResolvedValue("Chromium 1.2.3.5");
     await expect(launch.describeBrowserBuild(executable))
-      .resolves.toStrictEqual({ kind: "chrome", version: "Google Chrome 1.2.3.5", installedDaysAgo: 0 });
+      .resolves.toStrictEqual({ kind: "chromium", version: "Chromium 1.2.3.5", installedDaysAgo: 0 });
     expect(readBrowserVersion).toHaveBeenCalledTimes(2);
   });
 
   it("asks each executable for its own version", async () => {
-    const chrome = neutralBinary("first");
-    const edge = neutralBinary("second");
+    const other = neutralBinary("first");
+    const edge = path.win32.join(testWindowsPath("Program Files"), "Microsoft", "Edge", "Application", "msedge.exe");
     readModifiedAt.mockResolvedValue(NOW);
-    readBrowserVersion.mockImplementation(async (file) => (file === chrome ? "Google Chrome 1.2.3.4" : "Microsoft Edge 5.6.7.8"));
+    readBrowserVersion.mockImplementation(async (file) => (file === other ? "Vivaldi 1.2.3.4" : "5.6.7.8"));
 
-    await expect(launch.describeBrowserBuild({ path: chrome, source: "system" }))
-      .resolves.toMatchObject({ kind: "chrome", version: "Google Chrome 1.2.3.4" });
-    await expect(launch.describeBrowserBuild({ path: edge, source: "system" }))
-      .resolves.toMatchObject({ kind: "edge", version: "Microsoft Edge 5.6.7.8" });
+    const first = await launch.describeBrowserBuild({ path: other, source: "system" });
+    const second = await launch.describeBrowserBuild({ path: edge, source: "system" });
+    expect([first.version, second.version]).toEqual(["Vivaldi 1.2.3.4", "5.6.7.8"]);
+    // Neither standard installation should trigger the automation-build warning.
+    expect([first.kind, second.kind]).not.toContain("chromium");
+    expect([first.kind, second.kind]).not.toContain("chrome-for-testing");
   });
 
 });

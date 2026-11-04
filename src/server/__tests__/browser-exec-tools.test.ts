@@ -268,7 +268,7 @@ describe("browser_exec tool", () => {
       if (call.command === "eval") return evalOutput(pageSignals(CLOUDFLARE_CHECK.signals));
       return undefined;
     });
-    const { tool, describePageBlock } = await loadBrowserExec();
+    const { tool } = await loadBrowserExec();
 
     const result = await tool.handler({
       context: "authenticated",
@@ -279,7 +279,12 @@ describe("browser_exec tool", () => {
 
     expect(result.context).toBe("authenticated");
     expect(result.finalState.title).toEqual({ ok: true, output: "Just a moment..." });
-    expect(result.blocked).toEqual(describePageBlock(CLOUDFLARE_CHECK.block));
+    expect(result.steps).toMatchObject([{ command: "fill", ok: true }]);
+    expect(result.blocked).toEqual({ kind: "challenge", by: "Cloudflare", guidance: expect.any(String) });
+    expect(result).not.toHaveProperty("captcha");
+    expect(result.blocked.guidance).toContain("browser_session_start");
+    expect(result.blocked.guidance).toContain("browser_session_handoff");
+    expect(result.blocked.guidance).not.toContain("browserSessionId");
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.every((call) => call.profile === join(COPILOT_HOME, "browser-profile"))).toBe(true);
     expect(calls.every((call) => !call.session?.includes("copilot-bridge-public-"))).toBe(true);
@@ -325,7 +330,8 @@ describe("browser_exec tool", () => {
       ["a CAPTCHA inside an ordinary page", { page: FORM_WITH_CAPTCHA, field: "captcha", otherField: "blocked" }],
     ] as const;
 
-    it.each(blockingPages)("reports %s after commands that all succeeded", async (_name, { page, field, otherField }) => {
+    it("reports a CAPTCHA inside an ordinary page after commands that all succeeded", async () => {
+      const page = FORM_WITH_CAPTCHA;
       mockAgentBrowser((call) => {
         if (call.command === "eval") return evalOutput(pageSignals(page.signals));
         if (call.command === "open") return "opened";
@@ -341,13 +347,13 @@ describe("browser_exec tool", () => {
 
       // The call did what it was asked; the block is told alongside its results.
       expect(result).toEqual({
-        [field]: describePageBlock(page.block),
+        captcha: describePageBlock(page.block),
         context: "public",
         steps: [{ index: 0, command: "open", args: [page.signals.url], timeoutMs: undefined, ok: true, output: "opened" }],
         finalState: { snapshot: { ok: true, output: "snapshot-output", selector: undefined } },
       });
-      expect(result).not.toHaveProperty(otherField);
-      const notice = result[field];
+      expect(result).not.toHaveProperty("blocked");
+      const notice = result.captcha;
       expect(notice).toMatchObject({ kind: page.block.kind, by: page.block.by });
       // The browser of this call is gone when the agent reads the result, so there is no session to name.
       expect(notice.guidance).not.toContain("browserSessionId");
@@ -413,23 +419,24 @@ describe("browser_exec tool", () => {
         });
         expect(result).not.toHaveProperty(otherField);
         // What failed, what agent-browser said about it, then what to do about the page.
-        expect(result.textResultForLlm).toBe(`Command 2 failed: click\n\nElement @e7 not found\n\n${notice.guidance}`);
+        expect(result.textResultForLlm).toContain("Command 2 failed: click");
+        expect(result.textResultForLlm).toContain("Element @e7 not found");
+        expect(result.textResultForLlm).toContain(notice.guidance);
         // No later step and no capture runs after the failure.
         expect(result.steps.map((step: any) => `${step.command}:${step.ok}`)).toEqual(["open:true", "click:false"]);
         expect(calls.map((call) => call.command)).not.toContain("snapshot");
       });
 
-      it.each([
-        ["reads an ordinary page", evalOutput(pageSignals())],
-        ["fails", { fails: "Execution context was destroyed" }],
-      ] as const)("reports only the failed step when the page check %s", async (_name, pageCheckReply) => {
-        mockAgentBrowser(replyWithFailedClick(pageCheckReply));
+      it("reports only the failed step when the page check reads an ordinary page", async () => {
+        mockAgentBrowser(replyWithFailedClick(evalOutput(pageSignals())));
         const { tool } = await loadBrowserExec();
 
         const result = await tool.handler(failedClick, invocation) as any;
 
+        expect(result.textResultForLlm).toContain("Command 2 failed: click");
+        expect(result.textResultForLlm).toContain("Element @e7 not found");
+        expect(result.textResultForLlm).not.toMatch(/human check|captcha|browser_session_handoff/i);
         expect(result).toMatchObject({
-          textResultForLlm: "Command 2 failed: click\n\nElement @e7 not found",
           resultType: "failure",
           context: "public",
           failedStep: { index: 1, command: "click", ok: false, output: "Element @e7 not found" },

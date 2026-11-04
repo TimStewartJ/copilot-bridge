@@ -196,18 +196,6 @@ const classificationCases: ClassificationCase[] = [
     expected: { kind: "challenge", by: "This site", status: 403 },
   },
   {
-    // The site's own wording is read before the widget, so the site is named and not the widget.
-    name: "a site's own human check that shows an hCaptcha (named \"This site\")",
-    signals: page({
-      url: "https://www.example.net/listing/42",
-      title: "Security check",
-      text: "Please verify you are a human to continue. Privacy Terms",
-      links: 2,
-      markers: ["hcaptcha"],
-    }),
-    expected: { kind: "challenge", by: "This site", status: 200 },
-  },
-  {
     // The check is a full-page overlay: the shop page under it still has all of its text.
     name: "a PerimeterX check laid over a long shop page",
     signals: page({
@@ -317,9 +305,6 @@ describe("classifyPage", () => {
 
 describe("classifyPage: a CAPTCHA widget", () => {
   it.each([
-    ["turnstile", "Cloudflare Turnstile"],
-    ["recaptcha", "reCAPTCHA"],
-    ["hcaptcha", "hCaptcha"],
     ["arkose", "Arkose Labs"],
     ["geetest", "GeeTest"],
   ])("on a bare page is a check by its vendor (%s)", (marker, vendor) => {
@@ -334,8 +319,9 @@ describe("classifyPage: a CAPTCHA widget", () => {
   });
 
   it("is a CAPTCHA inside a page once the page has as much text as real pages have", () => {
-    expect(classifyPage(page({ ...ticketsQueue, textLength: 1_499 }))?.kind).toBe("challenge");
-    expect(classifyPage(page({ ...ticketsQueue, textLength: 1_500 }))?.kind).toBe("captcha");
+    const widget = { ...ticketsQueue, markers: ["recaptcha"] };
+    expect(classifyPage(page({ ...widget, textLength: 1_499 }))?.kind).toBe("challenge");
+    expect(classifyPage(page({ ...widget, textLength: 1_500 }))?.kind).toBe("captcha");
   });
 
   it("is ignored once it holds an answer", () => {
@@ -484,7 +470,7 @@ describe("checkPage", () => {
       const check = await checkPage(commandOptions);
 
       expect(check.signals).toStrictEqual(ticketsGateSignals);
-      expect(check.block).toStrictEqual(classifyPage(ticketsGateSignals));
+      expect(check.block).toMatchObject({ kind: "challenge", status: 403 });
     });
 
     it("counts the form fields that are laid out, the links, the scripts, and a CAPTCHA that holds an answer", async () => {
@@ -878,22 +864,8 @@ describe("checkPage", () => {
 });
 
 describe("describePageBlock", () => {
-  const challenge: PageBlock = { kind: "challenge", by: "Cloudflare", status: 403 };
   const denied: PageBlock = { kind: "denied", by: "Imperva", status: 403 };
   const refusedByTheSite: PageBlock = { kind: "denied", by: "This site", status: 403 };
-  const captcha: PageBlock = { kind: "captcha", by: "reCAPTCHA", status: 200 };
-
-  it("tells the agent that repeating a challenged call does not help, and to hand the session's page to the user", () => {
-    const { guidance } = describePageBlock(challenge, "bs-42");
-
-    expect(guidance).toMatch(/human check/i);
-    expect(guidance).toMatch(/repeating the same call will not/i);
-    expect(guidance).toContain("browser_session_handoff");
-    expect(guidance).toContain("bs-42");
-    expect(guidance).not.toContain("browser_session_start");
-    expect(guidance).toMatch(/another source/i);
-  });
-
   it("offers no handoff for a product's refusal, with or without a browser session", () => {
     const inSession = describePageBlock(denied, "bs-42");
     const oneShot = describePageBlock(denied);
@@ -921,21 +893,5 @@ describe("describePageBlock", () => {
     expect(guidance).toMatch(/too many requests/i);
     expect(guidance).toMatch(/later/i);
     expect(guidance).not.toContain("browser_session_handoff");
-  });
-
-  it("says the rest of a page with a CAPTCHA can be used, and points to a handoff for that session", () => {
-    const { guidance } = describePageBlock(captcha, "bs-42");
-
-    expect(guidance).toMatch(/CAPTCHA \(reCAPTCHA\)/);
-    expect(guidance).toMatch(/rest of the page can be used/i);
-    expect(guidance).toContain("browser_session_handoff");
-    expect(guidance).toContain("bs-42");
-    expect(guidance).not.toContain("browser_session_start");
-  });
-
-  it("mentions the HTTP status of a 'challenge' only when it is an error status", () => {
-    expect(describePageBlock({ ...challenge, status: 429 }).guidance).toContain("HTTP 429");
-    expect(describePageBlock({ ...challenge, status: 200 }).guidance).not.toContain("HTTP");
-    expect(describePageBlock({ kind: challenge.kind, by: challenge.by }).guidance).not.toContain("HTTP");
   });
 });

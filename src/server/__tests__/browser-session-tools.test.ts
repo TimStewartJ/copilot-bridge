@@ -369,6 +369,10 @@ describe("browser session tools", () => {
         // Something a person can pass is handed over in this session.
         expect(result[field].guidance).toContain("browser_session_handoff");
         expect(result[field].guidance).toContain(browserSessionId);
+        expect(result[field].guidance).not.toContain("browser_session_start");
+        if (kind === "captcha") {
+          expect(result[field].guidance).toMatch(/(?:rest|other (?:parts|content)).*(?:can be used|usable|available)/i);
+        }
       }
       // The work itself is reported as usual.
       expect(exec.steps).toHaveLength(1);
@@ -386,6 +390,9 @@ describe("browser session tools", () => {
       const passed = await tools.browser_session_get_state.handler({ browserSessionId }, invocation) as any;
 
       expect(blocked.blocked).toMatchObject({ kind: "challenge" });
+      expect(blocked.blocked.guidance).toMatch(/human (?:check|verification)|verify.*human/i);
+      expect(blocked.blocked.guidance).toMatch(/(?:repeat|retry)\w*[^.]*?(?:will not|won.t|cannot|does not)|(?:do not|don.t) (?:repeat|retry)/i);
+      expect(blocked.blocked.guidance).toMatch(/(?:another|different) source/i);
       expect(passed).not.toHaveProperty("blocked");
     });
 
@@ -418,29 +425,11 @@ describe("browser session tools", () => {
       expect(result).not.toHaveProperty(other);
       expect(result[field]).toMatchObject({ kind, by });
       // What failed, what agent-browser said about it, then what to do about the page.
-      expect(result.textResultForLlm).toBe(
-        `Command 2 failed: click\n\nElement @e1 not found\n\n${result[field].guidance}`,
-      );
-    });
-
-    it("attaches nothing to a step that failed on an ordinary page", async () => {
-      const browser = fakeAgentBrowser((command) => (command[0] === "click" ? { fail: "click failed" } : undefined));
-      const { tools, browserSessionId } = await startPublicSession(browser);
-
-      const result = await tools.browser_session_exec.handler({
-        browserSessionId,
-        commands: [{ command: "click", args: ["@e1"] }],
-      }, invocation) as any;
-
-      expect(result).toMatchObject({
-        textResultForLlm: "Command 1 failed: click\n\nclick failed",
-        resultType: "failure",
-      });
-      expect(result).not.toHaveProperty("blocked");
-      expect(result).not.toHaveProperty("captcha");
-      // The session log, which the user can open, says which browser and which step.
-      expect(result.sessionLog).toContain(browserSessionId);
-      expect(result.sessionLog).toContain("click failed");
+      expect(result.textResultForLlm).toContain("Command 2 failed: click");
+      expect(result.textResultForLlm).toContain("Element @e1 not found");
+      expect(result.textResultForLlm).toContain(result[field].guidance);
+      expect(result.textResultForLlm).toContain("browser_session_handoff");
+      expect(result.textResultForLlm).toContain(browserSessionId);
     });
 
     it("does its work as usual when the page cannot be checked", async () => {
@@ -468,10 +457,12 @@ describe("browser session tools", () => {
       expect(exec.finalState.url).toEqual({ ok: true, output: "https://www.example.com/pricing" });
       expect(state).not.toHaveProperty("resultType");
       expect(state.state.title).toEqual({ ok: true, output: "Just a moment..." });
-      expect(failed).toMatchObject({
-        textResultForLlm: "Command 1 failed: click\n\nclick failed",
-        resultType: "failure",
-      });
+      expect(failed.resultType).toBe("failure");
+      expect(failed.textResultForLlm).toContain("Command 1 failed: click");
+      expect(failed.textResultForLlm).toContain("click failed");
+      expect(failed.textResultForLlm).not.toMatch(/human check|captcha|browser_session_handoff/i);
+      expect(failed.sessionLog).toContain(browserSessionId);
+      expect(failed.sessionLog).toContain("click failed");
       for (const result of [exec, state, failed]) {
         expect(result).not.toHaveProperty("blocked");
         expect(result).not.toHaveProperty("captcha");

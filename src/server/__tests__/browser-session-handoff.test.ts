@@ -328,11 +328,17 @@ describe("browser_session_handoff", () => {
       const { normalizePendingElicitationRequest, validateElicitationResponse } = await import(
         "../pending-interaction-validation.js"
       );
-      const reason = "x".repeat(500);
-      const { form, fieldName, result, runtime, browserSessionId } = await openHandoff({ reason: `  ${reason}\n` });
+      const prefix = "Sign in to continue.";
+      const reason = `${prefix.padEnd(493, ".")}The end`;
+      const { form, fieldName, result, tools, runtime, browserSessionId } = await openHandoff({ reason: `  ${reason}\n` });
 
       const view = normalizePendingElicitationRequest({ requestId: "request-1", ...form.request });
 
+      const refused = await readAddress(tools, browserSessionId);
+      expect(refused.resultType).toBe("failure");
+      expect(refused.textResultForLlm).toContain(prefix);
+      expect(refused.textResultForLlm).not.toContain("The end");
+      expect(refused.textResultForLlm.length).toBeLessThan(reason.length / 2);
       expect(form.sessionId).toBe("copilot-a");
       expect(view.message.endsWith(`: ${reason}`)).toBe(true);
       expect(Object.keys(view.requestedSchema?.properties ?? {})).toEqual([fieldName]);
@@ -565,23 +571,6 @@ describe("browser_session_handoff", () => {
         browserSessionId,
         token: expect.any(String),
       });
-
-      form.respond({ action: "cancel" });
-      await result;
-    });
-
-    it("tells a refused call the beginning of a long reason, in a sentence that is not cut off", async () => {
-      const reason = `Sign in to the store with the shared account. ${"Then accept the new terms. ".repeat(16)}`.trim();
-      expect(reason.length).toBeGreaterThan(400);
-      const { form, result, tools, browserSessionId } = await openHandoff({ reason });
-
-      const refused = await readAddress(tools, browserSessionId);
-
-      expect(refused).toMatchObject({ resultType: "failure" });
-      expect(refused.textResultForLlm).toContain(userHasBrowser(reason.slice(0, 120)));
-      expect(refused.textResultForLlm).not.toContain(reason.slice(0, 121));
-      // The user is asked with the whole reason.
-      expect(form.request.message).toContain(reason);
 
       form.respond({ action: "cancel" });
       await result;

@@ -53,15 +53,12 @@ afterEach(() => {
 });
 
 describe("readBrowserVersion", () => {
-  it.each([
-    ["Google Chrome for Testing 141.0.7390.37 \n", "Google Chrome for Testing 141.0.7390.37"],
-    ["  Google Chrome 154.0.8037.97\r\n", "Google Chrome 154.0.8037.97"],
-  ])("reads the name and the number from %j", async (stdout, expected) => {
-    browserPrints(stdout);
+  it("reads the name and the number from a padded browser version banner", async () => {
+    browserPrints("  Google Chrome for Testing 141.0.7390.37 \r\n");
     const host = await importHost("linux");
     const executable = path.join(makeTestDir("browser-version"), "chrome");
 
-    await expect(host.readBrowserVersion(executable)).resolves.toBe(expected);
+    await expect(host.readBrowserVersion(executable)).resolves.toBe("Google Chrome for Testing 141.0.7390.37");
 
     expect(execFileMock).toHaveBeenCalledTimes(1);
     const [file, args, options] = execFileMock.mock.calls[0];

@@ -516,11 +516,8 @@ describe("agent-browser wrapper", () => {
       expect(versionRuns()).toBe(2);
     });
 
-    it.each([
-      ["fails", callbackFailure({ stderr: "agent-browser 0.38.2 crashed on start" })],
-      ["prints none", callbackSuccess("agent-browser (development build)\n")],
-    ])("has no version when the command %s", async (_name, reply) => {
-      execFileMock.mockImplementation(reply);
+    it("has no version when the command prints none", async () => {
+      execFileMock.mockImplementation(callbackSuccess("agent-browser (development build)\n"));
       const mod = await import("../agent-browser.js");
 
       await expect(mod.getAgentBrowserVersion()).resolves.toBeUndefined();
@@ -530,7 +527,7 @@ describe("agent-browser wrapper", () => {
     it("remembers for a minute that it could not read the version, too", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       const startedAt = Date.now();
-      execFileMock.mockImplementation(callbackFailure({ stderr: "agent-browser: not found" }));
+      execFileMock.mockImplementation(callbackFailure({ stderr: "agent-browser 0.38.2 crashed on start" }));
       const mod = await import("../agent-browser.js");
 
       await expect(mod.getAgentBrowserVersion()).resolves.toBeUndefined();

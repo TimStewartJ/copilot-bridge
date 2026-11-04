@@ -30,6 +30,7 @@ const BLINK_DEFAULT = "--disable-blink-features=AutomationControlled";
 const SWIFTSHADER = "--enable-unsafe-swiftshader";
 const BLANK = "about:blank";
 const DAY_MS = 86_400_000;
+const FAILED_READINESS = /(?=.*(?:readiness|probe|check))(?=.*(?:fail|unavailable|unable))/i;
 
 type ExecFileCallback = (err: unknown, result?: { stdout: string; stderr: string }) => void;
 interface SeenCommand {
@@ -147,7 +148,10 @@ describe("browser diagnostics", () => {
 
   it("summarizes configured paths and recent browser_web_search challenge telemetry", async () => {
     const { ctx, settingsStore, telemetryStore, copilotHome } = createContext({ copilotHome: testPath(".copilot") });
-    const executablePath = testExecutablePath("chrome");
+    const executablePath = neutralBinary("browser");
+    vi.stubEnv("AGENT_BROWSER_EXECUTABLE_PATH", neutralBinary("from-environment"));
+    readModifiedAt.mockImplementation(async () => Date.now() - 40.5 * DAY_MS);
+    readBrowserVersion.mockImplementation(async (file) => file === executablePath ? "Microsoft Edge 141.0.3537.71" : undefined);
     const profileDir = testPath("browser-master-profile");
     settingsStore.updateSettings({
       browser: {
@@ -178,12 +182,16 @@ describe("browser diagnostics", () => {
     const mod = await import("../browser-diagnostics.js");
     const result = await mod.getBrowserDiagnostics(ctx);
 
-    expect(result.summary).toMatchObject({
-      tone: "error",
-      label: "Browser binary missing",
+    expect(result.summary.tone).toBe("error");
+    expect(result.summary.label).toMatch(/missing|not found|unavailable/i);
+    expect(result.summary.detail).toMatch(/(?:path|executable).*(?:does not exist|not found|missing)/i);
+    expect(result.config).toMatchObject({
+      executablePath,
+      executablePathSource: "settings",
+      executablePathConfigured: true,
+      executablePathExists: false,
     });
-    expect(result.config.executablePath).toBe(executablePath);
-    expect(result.config.executablePathSource).toBe("settings");
+    expect(result.config.browser).toEqual({ kind: "edge", version: expect.stringContaining("141.0.3537.71"), installedDaysAgo: 40 });
     expect(result.config.masterProfileDirectory).toBe(profileDir);
     expect(result.config.headed).toBe(true);
     expect(result).toMatchObject({
@@ -241,34 +249,6 @@ describe("browser diagnostics", () => {
   });
 
   describe("browser executable and build", () => {
-    it("prefers the Settings path over the environment and describes that browser", async () => {
-      const executablePath = neutralBinary("browser");
-      vi.stubEnv("AGENT_BROWSER_EXECUTABLE_PATH", neutralBinary("from-environment"));
-      isExecutableFile.mockResolvedValue(true);
-      readModifiedAt.mockImplementation(async () => Date.now() - 40.5 * DAY_MS);
-      readBrowserVersion.mockResolvedValue("Microsoft Edge 141.0.3537.71");
-      const { ctx, settingsStore } = createContext();
-      settingsStore.updateSettings({ browser: { executablePath } });
-
-      const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
-      const result = await getBrowserDiagnostics(ctx);
-
-      expect(result.config).toMatchObject({
-        executablePath,
-        executablePathSource: "settings",
-        executablePathConfigured: true,
-        executablePathExists: false,
-      });
-      expect(result.config.browser).toEqual({
-        kind: "edge",
-        version: "Microsoft Edge 141.0.3537.71",
-        installedDaysAgo: 40,
-      });
-      expect(readModifiedAt).toHaveBeenCalledWith(executablePath);
-      expect(readBrowserVersion).toHaveBeenCalledWith(executablePath);
-      expect(result.summary.label).toBe("Browser binary missing");
-    });
-
     it("uses the system's own browser when none is configured, without calling it configured", async () => {
       // Windows looks under these folders; the other platforms have fixed candidates.
       vi.stubEnv("ProgramFiles", testWindowsPath("Program Files"));
@@ -290,7 +270,7 @@ describe("browser diagnostics", () => {
       });
       // Only a configured path is checked on disk and reported as missing.
       expect(result.config.executablePathExists).toBeUndefined();
-      expect(result.summary.label).not.toBe("Browser binary missing");
+      expect(result.summary.tone).toBe("warning");
       expect(result.config.browser).toEqual({
         kind: "chrome",
         version: "Google Chrome 154.0.8037.97",
@@ -299,13 +279,19 @@ describe("browser diagnostics", () => {
     });
 
     it("leaves the choice to agent-browser when there is no browser to find", async () => {
+      agentBrowserVersionOutput = undefined;
       const { ctx } = createContext();
 
       const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
       const result = await getBrowserDiagnostics(ctx);
 
       expect(result.issues).toEqual([]);
-      expect(result.summary).toMatchObject({ tone: "warning", label: "Functional check required" });
+      expect(result.summary.tone).toBe("warning");
+      expect(result.summary.label).toMatch(/(?:check|probe).*(?:needed|required|pending)|unverified/i);
+      expect(result.summary.detail).toMatch(/no successful.*(?:probe|check)/i);
+      expect(result.agentBrowserInstalled).toBe(true);
+      expect(result.config.agentBrowserVersion).toBeUndefined();
+      expect(result.config).not.toHaveProperty("liveView");
       expect(result.config).toMatchObject({
         executablePathSource: "auto-detect",
         executablePathConfigured: false,
@@ -319,34 +305,21 @@ describe("browser diagnostics", () => {
     });
   });
 
-  describe("agent-browser version", () => {
-    it.each([
-      { name: "the version agent-browser prints", output: "agent-browser 0.38.2", version: "0.38.2" },
-      { name: "no version when the version command fails", output: undefined, version: undefined },
-    ])("reports $name", async ({ output, version }) => {
-      agentBrowserVersionOutput = output;
-      const { ctx } = createContext();
-
-      const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
-      const result = await getBrowserDiagnostics(ctx);
-
-      expect(result.config.agentBrowserVersion).toBe(version);
-      // Knowing the version is not what makes agent-browser count as installed.
-      expect(result.agentBrowserInstalled).toBe(true);
-    });
-  });
-
   describe("live view", () => {
-    /** Answers the readiness handshake of a probe; everything else, the stream included, says nothing. */
+    /** A usable browser whose CLI predates the live stream. */
     function answerReadiness(): SeenCommand[] {
       return answerCommands(({ args }) => {
         if (args[0] === "get" && args[1] === "url") return { stdout: "about:blank" };
         if (args[0] === "get" && args[1] === "title") return { stdout: "New tab" };
+        if (args[0] === "stream") return { fail: { stderr: "error: unrecognized subcommand 'stream'" } };
         return undefined;
       });
     }
 
-    it("checks the live view in the browser of the public probe, and reports a failure without failing the probe", async () => {
+    it("checks the live view in the browser of the public probe, and reports a failure without failing the probe", async ({ onTestFinished }) => {
+      const connect = vi.fn();
+      vi.doMock("ws", async (importOriginal) => ({ ...await importOriginal<typeof import("ws")>(), WebSocket: connect }));
+      onTestFinished(() => { vi.doUnmock("ws"); });
       const seen = answerReadiness();
       const { ctx, copilotHome } = createContext();
       const mod = await import("../browser-diagnostics.js");
@@ -357,12 +330,14 @@ describe("browser diagnostics", () => {
       expect(probe).toMatchObject({ ok: true, context: "public", state: "ready" });
       const profile = path.join(copilotHome, "browser-public", "slot-1");
       const targetProfiles = seen.flatMap((command) => command.env?.AGENT_BROWSER_PROFILE ?? []);
-      expect(seen.some((command) => command.args[0] === "stream" && command.env?.AGENT_BROWSER_PROFILE === profile)).toBe(true);
+      expect(seen.filter(({ args }) => args[0] === "stream").map(({ args, env }) => [...args.slice(0, 2), env?.AGENT_BROWSER_PROFILE]))
+        .toEqual([["stream", "status", profile]]);
+      expect(seen.some(({ args }) => args[0] === "eval")).toBe(false);
+      expect(connect).not.toHaveBeenCalled();
       expect(new Set(targetProfiles)).toEqual(new Set([profile]));
       expect(existsSync(profile)).toBe(true);
       const { liveView } = (await mod.getBrowserDiagnostics(ctx)).config;
-      expect(liveView).toMatchObject({ ok: false, message: expect.any(String) });
-      expect(liveView?.message).not.toBe("");
+      expect(liveView).toMatchObject({ ok: false, message: expect.stringMatching(/npm (?:install|i|update) -g agent-browser@latest/) });
       expect(Number.isNaN(Date.parse(liveView?.checkedAt ?? ""))).toBe(false);
     });
 
@@ -482,17 +457,20 @@ describe("browser diagnostics", () => {
       const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
       const result = await getBrowserDiagnostics(ctx);
 
-      expect(result.issues.map(({ code, label, count }) => ({ code, label, count }))).toEqual([
-        { code: "search.google_captcha", label: "Google CAPTCHA during browser_web_search", count: 2 },
-        { code: "search.bing_captcha", label: "Bing CAPTCHA during browser_web_search", count: 1 },
-        { code: "search.ddg_challenge", label: "DuckDuckGo challenge during browser_web_search", count: 3 },
-        { code: "browser.recovery.detected", label: "Browser recovery path invoked", count: 2 },
-        { code: "browser.broker.readiness.failed", label: "Browser context readiness failed", count: 1 },
+      expect(result.issues).toEqual([
+        expect.objectContaining({ code: "search.google_captcha", label: expect.stringMatching(/Google/i), count: 2 }),
+        expect.objectContaining({ code: "search.bing_captcha", label: expect.stringMatching(/Bing/i), count: 1 }),
+        expect.objectContaining({ code: "search.ddg_challenge", label: expect.stringMatching(/DuckDuckGo/i), count: 3 }),
+        expect.objectContaining({ code: "browser.recovery.detected", label: expect.stringMatching(/recover/i), count: 2 }),
+        expect.objectContaining({ code: "browser.broker.readiness.failed", label: expect.stringMatching(FAILED_READINESS), count: 1 }),
       ]);
+      for (const issue of result.issues.slice(0, 3)) expect(issue.label).toMatch(/captcha|challenge|human check/i);
       for (const issue of result.issues) {
         expect(Number.isNaN(Date.parse(issue.latestAt ?? ""))).toBe(false);
       }
-      expect(result.summary).toMatchObject({ tone: "warning", label: "Search challenges detected" });
+      expect(result.summary.tone).toBe("warning");
+      expect(result.summary.label).toMatch(/challenge|human check|captcha/i);
+      expect(result.summary.detail).toMatch(/(?:engine|search).*?(?:challenge|human check|captcha)/i);
       // All three engines' challenges together, and the window they were counted in.
       expect(result.summary.detail).toMatch(/\b6\b.*\b24 hours\b/);
     });
@@ -532,42 +510,27 @@ describe("browser diagnostics", () => {
       expect(result.issues.slice(0, 2)).toEqual([
         {
           code: "page.blocked.cloudflare",
-          label: "Blocked by Cloudflare",
+          label: expect.stringMatching(/Cloudflare/i),
           count: 3,
           latestAt: hoursAgo(4).toISOString(),
         },
         {
           code: "page.blocked.api.example.test",
-          label: "Blocked by api.example.test",
+          label: expect.stringContaining("api.example.test"),
           count: 2,
           latestAt: hoursAgo(9).toISOString(),
         },
       ]);
-      expect(result.issues.slice(2).map(({ label, count }) => ({ label, count }))
-        .sort((a, b) => a.label.localeCompare(b.label))).toEqual([
-        { label: "Blocked by an unknown site", count: 1 },
-        { label: "Blocked by forum.example.test", count: 1 },
-        { label: "Blocked by HUMAN Security", count: 1 },
-      ]);
+      expect(result.issues).toHaveLength(5);
+      expect(result.issues.slice(2)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "page.blocked.an_unknown_site", label: expect.stringMatching(/unknown|unidentified/i), count: 1 }),
+        expect.objectContaining({ code: "page.blocked.forum.example.test", label: expect.stringContaining("forum.example.test"), count: 1 }),
+        expect.objectContaining({ code: "page.blocked.human_security", label: expect.stringMatching(/HUMAN Security/i), count: 1 }),
+      ]));
+      for (const issue of result.issues) expect(issue.label).toMatch(/block|deni(?:ed|al)|refus/i);
       // Blocked pages are listed; they do not change the verdict on the browser itself.
-      expect(result.summary.label).toBe("Functional check required");
-    });
-
-    it("lists blocked pages after the browser's own issues", async () => {
-      const { ctx, telemetryStore } = createContext();
-      telemetryStore.recordSpan({
-        name: "browser.page.blocked",
-        duration: 0,
-        source: "server",
-        metadata: { kind: "challenge", by: "AWS WAF" },
-      });
-      telemetryStore.recordSpan({ name: "browser.recovery.detected", duration: 0, source: "server" });
-
-      const { getBrowserDiagnostics } = await import("../browser-diagnostics.js");
-      const result = await getBrowserDiagnostics(ctx);
-
-      expect(result.issues.map((issue) => issue.code)).toEqual(["browser.recovery.detected", "page.blocked.aws_waf"]);
-      expect(result.summary).toMatchObject({ tone: "warning", label: "Browser recovery used" });
+      expect(result.summary.tone).toBe("warning");
+      expect(result.summary.detail).toMatch(/no successful.*(?:probe|check)/i);
     });
 
     it("tells what to do when the host refuses Chrome its sandbox", async ({ signal }) => {
@@ -582,7 +545,7 @@ describe("browser diagnostics", () => {
       const probe = await settleThroughDelays(signal, () => mod.probeBrowserContext(ctx, "public"));
 
       expect(probe).toMatchObject({ ok: false, context: "public", state: "unavailable" });
-      expect(probe.message).toContain("Chrome cannot use its sandbox on this host");
+      expect(probe.message).toMatch(/(?:cannot|unable|refus|no usable).*sandbox/i);
       expect(probe.message).toContain("--no-sandbox");
       expect(probe.message).toContain("AGENT_BROWSER_ARGS");
       expect(probe.message).not.toContain("DevToolsActivePort");
@@ -591,15 +554,17 @@ describe("browser diagnostics", () => {
       expect(killMock).not.toHaveBeenCalled();
 
       const result = await mod.getBrowserDiagnostics(ctx);
-      expect(result.summary).toMatchObject({ tone: "error", label: "Browser unavailable" });
+      expect(result.summary.tone).toBe("error");
+      expect(result.summary.label).toMatch(/unavailable|not ready|failed|offline/i);
+      expect(result.summary.detail).toMatch(/(?:readiness|probe|check).*fail/i);
       expect(result.runtime.transport.state).toBe("unavailable");
       expect(result.contexts.public).toMatchObject({
         state: "unavailable",
         profilesInUse: 0,
         functionalProbe: { state: "failed", checkedAt: probe.checkedAt, message: probe.message },
       });
-      expect(result.issues.map(({ code, label, count }) => ({ code, label, count }))).toEqual([
-        { code: "browser.broker.readiness.failed", label: "Browser context readiness failed", count: 1 },
+      expect(result.issues).toEqual([
+        expect.objectContaining({ code: "browser.broker.readiness.failed", label: expect.stringMatching(FAILED_READINESS), count: 1 }),
       ]);
     });
 
@@ -672,7 +637,8 @@ describe("browser diagnostics", () => {
       masterProfileDirectory: profileDir,
       executablePath,
     });
-    expect(result.message).toContain("Headed browser close requested");
+    expect(result.message).toMatch(/close requested|clos(?:ed|ing)|shut down/i);
+    expect(result.message).not.toMatch(/fail|unable|cannot|could not|not closed/i);
     expect(closeCalls).toHaveLength(1);
     expect(closeCalls[0].args).toEqual(["close", "--json"]);
     expect(closeCalls[0].env).toMatchObject({

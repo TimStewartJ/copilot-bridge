@@ -3,7 +3,6 @@ import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  browserFailureAdvice,
   type BrowserLaunchConfig,
   type BrowserShutdownResult,
   type BrowserTarget,
@@ -330,28 +329,26 @@ describe("browser broker", () => {
     expect(spansNamed("browser.broker.readiness")).toEqual([expect.objectContaining({ success: true })]);
   });
 
-  it.each([
-    { output: "connection refused", reason: "connection refused" },
-    // A browser that gave no reason still gets an explanation.
-    { output: " \n", reason: "agent-browser did not complete the readiness handshake" },
-  ])("records an unavailable state when readiness never succeeds ($reason)", async ({ output, reason }) => {
+  it("records an unavailable state when readiness fails without an explanation", async () => {
     const root = makeTestDir("browser-broker-unavailable");
     const { telemetryStore, spansNamed } = spanRecorder();
     const broker = new BrowserBroker({
       copilotHome: root,
-      runCommand: vi.fn(async () => ({ ok: false, output })),
+      runCommand: vi.fn(async () => ({ ok: false, output: " \n" })),
       telemetryStore,
     });
 
-    const failure = await withoutReadinessWaits(() => broker.withEphemeralContext("authenticated", OP, async () => undefined))
+    const operation = vi.fn(async () => undefined);
+    const failure = await withoutReadinessWaits(() => broker.withEphemeralContext("authenticated", OP, operation))
       .catch((error: unknown) => error);
 
     // Its own kind of error: the browser did not start, which says nothing about a page.
     expect(failure).toBeInstanceOf(BrowserUnavailableError);
     expect(failure).toMatchObject({
       name: "BrowserUnavailableError",
-      message: `Browser authenticated context is unavailable: ${reason}`,
+      message: expect.stringMatching(/authenticated.*unavailable.*(?:readiness|handshake|start)/i),
     });
+    expect(operation).not.toHaveBeenCalled();
     expect(broker.getSnapshot().authenticated).toMatchObject({
       status: "unavailable",
       lastError: expect.stringContaining("unavailable"),
@@ -449,35 +446,6 @@ describe("browser broker", () => {
     // With one place only, the next operation would wait for good had it not come back.
     await expect(broker.withEphemeralContext("public", QUIET, operation)).resolves.toBe(1);
     expect(broker.getSnapshot().public).toMatchObject({ activeOperations: 0, queuedOperations: 0 });
-  });
-
-  it("tells what to do when the host refuses the browser its sandbox", async () => {
-    const root = makeTestDir("browser-broker-no-sandbox");
-    const output = "Chrome exited early without writing DevToolsActivePort\n"
-      + "No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled "
-      + "unprivileged user namespaces with AppArmor, see the Chromium sandbox documentation.";
-    const advice = browserFailureAdvice(output);
-    const broker = new BrowserBroker({
-      copilotHome: root,
-      runCommand: mockBrowser(() => false, output),
-      shutdownTarget: mockShutdown(),
-    });
-    const operation = vi.fn(async () => undefined);
-
-    expect(advice).toEqual(expect.stringContaining("--no-sandbox"));
-    await expect(withoutReadinessWaits(() => broker.withEphemeralContext("public", OP, operation)))
-      .rejects.toThrow(`Browser public context is unavailable: ${advice}`);
-
-    expect(operation).not.toHaveBeenCalled();
-    const health = broker.getSnapshot().public;
-    expect(health.status).toBe("unavailable");
-    expect(health.lastError).toContain(advice);
-    // The advice stands in for the raw output, which names a symptom and not the cause.
-    expect(health.lastError).not.toContain("DevToolsActivePort");
-
-    const probed = await withoutReadinessWaits(() => broker.probe("authenticated"));
-    expect(probed.status).toBe("unavailable");
-    expect(probed.lastError).toContain(advice);
   });
 
   it("probes a context in a browser of its own, runs what it is given in that browser, and reports the health either way", async () => {

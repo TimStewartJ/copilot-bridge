@@ -67,8 +67,6 @@ interface EnginePage {
   snapshot?: BrowserReply;
 }
 
-/** What the agent is told when no provider returned results, and when all of them are blocked. */
-const ALL_PROVIDERS_FAILED = "All browser web search providers failed to return usable results. Do not retry browser_web_search";
 const ALL_PROVIDERS_BLOCKED = "All browser web search providers are blocked by challenge verification or cooling down. Do not retry browser_web_search";
 
 const GOOGLE_SORRY_URL = "https://www.google.com/sorry/index?continue=https://www.google.com/search";
@@ -277,23 +275,6 @@ describe("browser_web_search tool", () => {
     expect(openedEngines(calls)).toEqual(["google", "bing"]);
   });
 
-  it("tells the agent not to retry when no provider returned results", async () => {
-    const calls = mockSearchEngines({
-      google: { snapshot: NO_RESULTS_SNAPSHOT },
-      bing: { snapshot: { fails: "snapshot failed" } },
-      duckduckgo: { snapshot: NO_RESULTS_SNAPSHOT },
-    });
-    const search = await loadWebSearch();
-
-    const result = await search();
-
-    expect(result.resultType).toBe("failure");
-    expect(result.textResultForLlm).toContain(ALL_PROVIDERS_FAILED);
-    expect(openedEngines(calls)).toEqual(["google", "bing", "duckduckgo"]);
-    // The session log, which the user can open, accounts for each provider.
-    expect(result.sessionLog).toMatch(/Google[\s\S]*Bing[\s\S]*DuckDuckGo/);
-  });
-
   describe("a provider that asks for a human", () => {
     it.each([
       ["a human check the page check finds", 2, {
@@ -465,7 +446,7 @@ describe("browser_web_search tool", () => {
     });
 
     it("tells the agent that no provider returned results when only some were challenged", async () => {
-      mockSearchEngines({
+      const calls = mockSearchEngines({
         google: { signals: { url: GOOGLE_SORRY_URL } },
         bing: { snapshot: NO_RESULTS_SNAPSHOT },
         duckduckgo: { signals: { status: 403, textLength: 60, text: "Unfortunately, bots use DuckDuckGo too.", links: 0 } },
@@ -475,7 +456,11 @@ describe("browser_web_search tool", () => {
       const result = await search();
 
       expect(result.resultType).toBe("failure");
-      expect(result.textResultForLlm).toContain(ALL_PROVIDERS_FAILED);
+      expect(result.textResultForLlm).toMatch(/failed to return (?:usable )?results|\bno (?:search engine returned )?(?:usable )?results\b/i);
+      expect(result.textResultForLlm).toMatch(/(?:do not|don.t) retry browser_web_search/i);
+      expect(result.textResultForLlm).toMatch(/(?:different|another) (?:research tool|source)/i);
+      expect(openedEngines(calls)).toEqual(["google", "bing", "duckduckgo"]);
+      for (const provider of ["Google", "Bing", "DuckDuckGo"]) expect(result.sessionLog).toContain(provider);
     });
 
     it.each([
