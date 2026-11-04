@@ -17,8 +17,8 @@ function setup() {
 }
 
 describe("task history store", () => {
-  it("records trimmed entries with their author and lists them newest first", () => {
-    const { history, task } = setup();
+  it("reads the task’s attributed history newest first and drops it with the task", () => {
+    const { history, task, taskStore } = setup();
     history.addEntry(task.id, "  Toured the unit  ", { source: "user" }, "2026-09-25T10:00:00.000Z");
     history.addEntry(task.id, "Landlord replied", { source: "agent", sessionId: "session-1" }, "2026-09-26T10:00:00.000Z");
 
@@ -27,6 +27,8 @@ describe("task history store", () => {
     expect(entries[0]).toMatchObject({ taskId: task.id, source: "agent", sessionId: "session-1", at: "2026-09-26T10:00:00.000Z" });
     expect(entries[1]).not.toHaveProperty("sessionId");
     expect(history.countEntries(task.id)).toBe(2);
+    taskStore.deleteTask(task.id);
+    expect(history.countEntries(task.id)).toBe(0);
   });
 
   it("rejects empty, non-string and oversized text", () => {
@@ -76,10 +78,4 @@ describe("task history store", () => {
     expect(entries.find((entry) => entry.text === "Other run")).not.toHaveProperty("scheduleId");
   });
 
-  it("drops a task's history with the task", () => {
-    const { history, task, taskStore } = setup();
-    history.addEntry(task.id, "Gone soon", { source: "user" });
-    taskStore.deleteTask(task.id);
-    expect(history.countEntries(task.id)).toBe(0);
-  });
 });

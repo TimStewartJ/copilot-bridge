@@ -146,14 +146,6 @@ describe("voice-job-store composer recovery", () => {
     });
   });
 
-  it("still reports an in-flight job regardless of newer jobs", () => {
-    const voiceJobs = createVoiceJobStore(db);
-    createJob(voiceJobs, "active", "2026-09-27T19:03:00.000Z");
-    voiceJobs.updateVoiceJob("active", { status: "sending", transcript: "hi" });
-
-    expect(voiceJobs.findLatestRelevantForComposer("session-1")?.id).toBe("active");
-  });
-
   it("recovers only failed jobs so an in-flight job stays resumable", () => {
     const voiceJobs = createVoiceJobStore(db);
     createJob(voiceJobs, "active", "2026-09-27T19:03:00.000Z");
@@ -164,5 +156,7 @@ describe("voice-job-store composer recovery", () => {
     expect(voiceJobs.listPendingVoiceJobs().map((job) => job.id)).toEqual(["active"]);
     expect(voiceJobs.markRecovered("failed")).toMatchObject({ status: "recovered", error: undefined });
     expect(voiceJobs.markRecovered("missing")).toBeUndefined();
+    voiceJobs.updateVoiceJob("active", { status: "sending", transcript: "hi" });
+    expect(voiceJobs.findLatestRelevantForComposer("session-1")?.id).toBe("active");
   });
 });

@@ -453,22 +453,7 @@ describe("readGitWorktreeStatus", () => {
 });
 
 describe("readCachedGitWorktreeStatus", () => {
-  it("reuses fresh cached status for the same cwd", async () => {
-    mockLinkedWorktreeGitCommands();
-    let nowMs = 0;
-
-    const { readCachedGitWorktreeStatus } = await loadGitWorktreeStatusModule();
-    const first = await readCachedGitWorktreeStatus("/workspace/feature-worktree", { now: () => nowMs });
-    expect(execFileMock).toHaveBeenCalledTimes(4);
-
-    nowMs = 30_000;
-    const second = await readCachedGitWorktreeStatus("/workspace/feature-worktree", { now: () => nowMs });
-
-    expect(second).toEqual(first);
-    expect(execFileMock).toHaveBeenCalledTimes(4);
-  });
-
-  it("coalesces concurrent cache misses for the same cwd", async () => {
+  it("coalesces a cold status read and serves its cached result while still fresh", async () => {
     mockLinkedWorktreeGitCommands();
 
     const { readCachedGitWorktreeStatus } = await loadGitWorktreeStatusModule();
@@ -477,6 +462,10 @@ describe("readCachedGitWorktreeStatus", () => {
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
     expect(secondResult).toEqual(firstResult);
+    expect(execFileMock).toHaveBeenCalledTimes(4);
+    // Do not let stale-while-revalidate mask a fetch inside the fresh window.
+    const cached = await readCachedGitWorktreeStatus("/workspace/feature-worktree", { now: () => 30_000, maxStaleMs: 0 });
+    expect(cached).toEqual(firstResult);
     expect(execFileMock).toHaveBeenCalledTimes(4);
   });
 

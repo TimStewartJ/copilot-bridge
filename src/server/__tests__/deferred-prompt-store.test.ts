@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { makeTestDir, setupTestDb } from "./helpers.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import type { DeferredPromptStore } from "../deferred-prompt-store.js";
+import { parseDeferId, toOnceDeferId } from "../defer-ids.js";
 import { openDatabase, type DatabaseSync } from "../db.js";
 import {
   createReturnedDeferDelivery,
@@ -31,6 +32,8 @@ describe("deferred-prompt-store", () => {
       expect(results[0]).toEqual(first);
       expect(first).toMatchObject({ prompt: "First", sessionId: "session-A", runAt: t1, status: "pending", attempts: 0 });
       expect(first.claimToken).toBeUndefined();
+      expect(first.deferId).toBe(toOnceDeferId(first.id));
+      expect(parseDeferId(first.deferId)).toEqual({ kind: "once", id: first.id });
       expect(results[1].prompt).toBe("Second");
     });
 
@@ -87,15 +90,6 @@ describe("deferred-prompt-store", () => {
   });
 
   describe("listDue", () => {
-    it("returns only pending rows with runAt <= now", () => {
-      const past = new Date(Date.now() - 1000).toISOString();
-      const future = new Date(Date.now() + 60_000).toISOString();
-      const dp1 = store.create("s1", "Past", past);
-      store.create("s1", "Future", future);
-      const due = store.listDue();
-      expect(due.map((d) => d.id)).toContain(dp1.id);
-      expect(due.every((d) => d.runAt <= new Date().toISOString())).toBe(true);
-    });
 
     describe("deferred delivery migration", () => {
       it("moves the deployed outbox table into the shared deferred prompt queue", () => {
@@ -217,16 +211,16 @@ describe("deferred-prompt-store", () => {
         reopened.close();
       });
     });
-
   });
 
   describe("getNextWakeAt", () => {
-    it("returns the earliest future due time, ignoring rows already due", () => {
+    it("returns the due work now and the earliest wake for the remaining prompts", () => {
       const now = "2030-01-01T00:00:00.000Z";
       expect(store.getNextWakeAt(now)).toBeUndefined();
-      store.create("s1", "Due", "2029-12-31T23:59:00.000Z");
+      const due = store.create("s1", "Due", "2029-12-31T23:59:00.000Z");
       store.create("s1", "B", "2030-01-01T00:02:00.000Z");
       store.create("s1", "A", "2030-01-01T00:01:00.000Z");
+      expect(store.listDue(now).map((prompt) => prompt.id)).toEqual([due.id]);
       expect(store.getNextWakeAt(now)).toBe("2030-01-01T00:01:00.000Z");
     });
 
@@ -265,13 +259,16 @@ describe("deferred-prompt-store", () => {
   });
 
   describe("claimDue / CAS semantics", () => {
-    it("second claim on same row fails (CAS)", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      const claimed = store.claimDue(dp.id, 60_000);
-      expect(claimed?.claimToken).toBeTruthy();
-      expect(claimed?.prompt).toMatchObject({ status: "running", attempts: 1 });
-      const second = store.claimDue(dp.id, 60_000);
-      expect(second).toBeUndefined();
+    it("holds one claim, renews its lease and cancels the running prompt", () => {
+      const prompt = store.create("s1", "Prompt", new Date().toISOString());
+      const claim = store.claimDue(prompt.id, 60_000)!;
+      expect(claim.claimToken).toBeTruthy();
+      expect(claim.prompt).toMatchObject({ status: "running", attempts: 1 });
+      expect(store.claimDue(prompt.id, 60_000)).toBeUndefined();
+      expect(store.renewClaim(prompt.id, claim.claimToken, 120_000)).toBe(true);
+      expect(Date.parse(store.get(prompt.id)!.leaseExpiresAt!)).toBeGreaterThan(Date.parse(claim.prompt.leaseExpiresAt!));
+      expect(store.cancelById(prompt.id)).toBe(true);
+      expect(store.get(prompt.id)?.status).toBe("cancelled");
     });
   });
 
@@ -428,28 +425,6 @@ describe("deferred-prompt-store", () => {
     });
   });
 
-  describe("renewClaim", () => {
-    it("extends a running prompt lease with the matching token", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      const claimed = store.claimDue(dp.id, 60_000)!;
-      const firstLease = Date.parse(store.get(dp.id)!.leaseExpiresAt!);
-
-      expect(store.renewClaim(dp.id, claimed.claimToken, 120_000)).toBe(true);
-      expect(Date.parse(store.get(dp.id)!.leaseExpiresAt!)).toBeGreaterThan(firstLease);
-    });
-
-  });
-
-  describe("cancelById", () => {
-    it("cancels a running prompt", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      store.claimDue(dp.id, 60_000);
-      expect(store.cancelById(dp.id)).toBe(true);
-      expect(store.get(dp.id)!.status).toBe("cancelled");
-    });
-
-  });
-
   describe("cancelForSession", () => {
     it("cancels all pending and running deferrals for a session", () => {
       const dp1 = store.create("s1", "A", new Date().toISOString());
@@ -463,7 +438,6 @@ describe("deferred-prompt-store", () => {
       expect(store.get(dp2.id)!.status).toBe("cancelled");
       expect(store.get(running.id)!.status).toBe("cancelled");
     });
-
   });
 
   describe("reclaimExpiredRunning", () => {
@@ -484,6 +458,5 @@ describe("deferred-prompt-store", () => {
       // suppress unused variable warning
       void claimed;
     });
-
   });
 });

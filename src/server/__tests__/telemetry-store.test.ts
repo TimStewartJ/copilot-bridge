@@ -13,7 +13,7 @@ beforeEach(() => {
 });
 
 describe("telemetry-store", () => {
-  it("selects the newest server span deterministically when timestamps tie", () => {
+  it("filters and limits spans, with insertion order breaking timestamp ties", () => {
     const span = {
       name: "session.prompt.applied", sessionId: "same-time", duration: 0,
       source: "server" as const, createdAt: "2026-09-09T00:00:00Z",
@@ -23,6 +23,9 @@ describe("telemetry-store", () => {
     store.recordSpan({ ...span, source: "client", metadata: { sequence: 3 } });
     expect(store.querySpans({ name: span.name, sessionId: span.sessionId, source: "server", limit: 1 })[0].metadata)
       .toEqual({ sequence: 2 });
+    expect(store.querySpans({ source: "client" }).map((row) => row.metadata)).toEqual([{ sequence: 3 }]);
+    expect(store.querySpans({ source: "server" }).map((row) => row.metadata)).toEqual([{ sequence: 2 }, { sequence: 1 }]);
+    expect(store.querySpans({ limit: 2 }).map((row) => row.metadata)).toEqual([{ sequence: 3 }, { sequence: 2 }]);
   });
 
   it("records single and bulk spans with optional session, metadata, and dedupe keys", () => {
@@ -58,17 +61,6 @@ describe("telemetry-store", () => {
       "api.task-groups",
       "api.tasks",
     ]);
-  });
-
-  it("filters queries by source and honours the limit", () => {
-    store.recordSpan({ name: "api.sessions", duration: 50, source: "client" });
-    for (let i = 0; i < 10; i++) {
-      store.recordSpan({ name: "test", duration: i * 10, source: "server" });
-    }
-
-    expect(store.querySpans({ source: "client" })).toHaveLength(1);
-    expect(store.querySpans({ source: "server" })).toHaveLength(10);
-    expect(store.querySpans({ limit: 3 })).toHaveLength(3);
   });
 
   it("filters spans by JSON metadata before applying the limit", () => {

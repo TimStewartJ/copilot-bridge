@@ -82,15 +82,6 @@ describe("transcription service", () => {
     }
   });
 
-  it("logs how each recording arrived, so a browser that stopped compressing shows up", async () => {
-    const { engine } = createEngine();
-    const logger = { log: vi.fn() };
-    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {}, logger });
-
-    await service.transcribe({ filePath: "clip.ogg" });
-    expect(logger.log).toHaveBeenCalledWith("[transcription] 2s clip (opus, 8 KB; 1.5s speech, 1 chunk) in 40ms");
-  });
-
   it("names the recording and lists each chunk's span and word count", async () => {
     const { engine } = createEngine({
       audioSeconds: 23.81,
@@ -120,14 +111,16 @@ describe("transcription service", () => {
     expect(service.getStatus().maxDurationSeconds).toBe(600);
   });
 
-  it("keeps the engine alive while transcribing and trims the transcript", async () => {
+  it("holds the engine through transcription, trims its result and logs the recording details", async () => {
     const { engine, release } = createEngine();
-    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {} });
+    const logger = { log: vi.fn() };
+    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {}, logger });
 
-    await expect(service.transcribe({ filePath: "clip.wav" })).resolves.toEqual({ text: "Hello bridge", provider: "speech-engine" });
+    await expect(service.transcribe({ filePath: "clip.ogg" })).resolves.toEqual({ text: "Hello bridge", provider: "speech-engine" });
     expect(engine.retain).toHaveBeenCalledOnce();
-    expect(engine.transcribeFile).toHaveBeenCalledWith("clip.wav", { timeoutMs: 1_500_000 });
+    expect(engine.transcribeFile).toHaveBeenCalledWith("clip.ogg", { timeoutMs: 1_500_000 });
     expect(release).toHaveBeenCalledOnce();
+    expect(logger.log).toHaveBeenCalledWith("[transcription] 2s clip (opus, 8 KB; 1.5s speech, 1 chunk) in 40ms");
   });
 
   it("fails clearly when the recording has no speech and still releases the engine", async () => {

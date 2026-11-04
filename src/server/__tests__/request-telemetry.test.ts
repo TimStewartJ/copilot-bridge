@@ -89,29 +89,6 @@ describe("request telemetry middleware", () => {
     });
   });
 
-  it("logs slow successful requests above the threshold", () => {
-    let currentTime = 10;
-    const middleware = createRequestTelemetryMiddleware(store, {
-      now: () => currentTime,
-      slowRequestMs: 100,
-      requestIdFactory: () => "slow-id",
-    });
-    const req = createMockRequest("/api/dashboard");
-    const res = createMockResponse();
-
-    middleware(req, res, vi.fn());
-    currentTime = 150;
-    res.emit("finish");
-
-    const spans = store.querySpans({ name: "http.request.slow" });
-    expect(spans).toHaveLength(1);
-    expect(spans[0].metadata).toMatchObject({
-      requestId: "slow-id",
-      path: "/api/dashboard",
-      statusCode: 200,
-    });
-  });
-
   it("logs closes before finish as aborted requests", () => {
     let currentTime = 100;
     const middleware = createRequestTelemetryMiddleware(store, {
@@ -135,10 +112,11 @@ describe("request telemetry middleware", () => {
     expect(getActiveRequestTelemetrySnapshots({ now: () => currentTime })).toEqual([]);
   });
 
-  it("records request operations and exposes the current operation while in flight", async () => {
+  it("tracks slow requests from the in-flight operation to the completed request span", async () => {
     let currentTime = 1_000;
     const middleware = createRequestTelemetryMiddleware(store, {
       now: () => currentTime,
+      slowRequestMs: 100,
       requestIdFactory: () => "operation-id",
     });
     const req = createMockRequest("/api/sessions?includeArchived=true");
@@ -173,6 +151,9 @@ describe("request telemetry middleware", () => {
     await expect(operation).resolves.toBe("ok");
     res.emit("finish");
 
+    expect(store.querySpans({ name: "http.request.slow" })).toMatchObject([{
+      duration: 750, metadata: { requestId: "operation-id", path: "/api/sessions", statusCode: 200 },
+    }]);
     const spans = store.querySpans({ name: "http.request.operation" });
     expect(spans).toHaveLength(1);
     expect(spans[0].duration).toBe(750);

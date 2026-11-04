@@ -44,38 +44,29 @@ describe("event-bus", () => {
       expect(registry.getBus("deleted-session")).toBeUndefined();
     });
 
-    it("clears intent on terminal events", () => {
-      const terminalEvents: StreamEvent[] = [
-        { type: "done", content: "Done" },
-        { type: "aborted", content: "Stopped" },
-        { type: "error", message: "Boom" },
-      ];
-
-      terminalEvents.forEach((event, index) => {
-        const bus = getOrCreateBus(`test-terminal-intent-${index}`);
-        bus.emit({ type: "intent", intent: "Exploring codebase" });
-        expect(bus.getIntentText()).toBe("Exploring codebase");
-        bus.emit(event);
-        expect(bus.getSnapshot().intentText).toBe("");
-        expect(bus.getIntentText()).toBe("");
-      });
-    });
-
-    it("finalizes pending user messages on terminal events", () => {
+    it("finalizes the prompt, clears intent and keeps the actual terminal outcome", () => {
       const terminalEvents: StreamEvent[] = [
         { type: "done", content: "Done" },
         { type: "error", message: "Boom" },
-        { type: "aborted", content: "Stopped" },
-        { type: "shutdown", content: "Interrupted" },
+        { type: "aborted", content: "Stopped", timestamp: "2026-04-24T00:00:01.000Z" },
+        { type: "shutdown", content: "Interrupted", timestamp: "2026-04-24T00:00:02.000Z" },
       ];
 
       terminalEvents.forEach((event, index) => {
         const bus = getOrCreateBus(`test-terminal-pending-message-${index}`);
         bus.setPendingPrompt("in flight");
+        bus.emit({ type: "intent", intent: "Exploring codebase" });
+        expect(bus.getIntentText()).toBe("Exploring codebase");
 
         bus.emit(event);
 
-        expect(bus.getSnapshot().pendingUserMessages).toEqual([
+        const snapshot = bus.getSnapshot();
+        expect(snapshot).toMatchObject({ complete: true, terminalType: event.type, intentText: "" });
+        expect(bus.getIntentText()).toBe("");
+        if (event.type === "error") expect(bus.getTerminalState().errorMessage).toBe(event.message);
+        else expect(bus.getTerminalState().finalContent).toBe(event.content);
+        if (event.timestamp) expect(snapshot.terminalTimestamp).toBe(event.timestamp);
+        expect(snapshot.pendingUserMessages).toEqual([
           expect.objectContaining({ content: "in flight", pending: false }),
         ]);
       });
@@ -417,25 +408,7 @@ describe("event-bus", () => {
       });
     });
 
-    it("keeps indexed pending interactions across turn boundaries", () => {
-      const bus = getOrCreateBus("test-interactions-turn-boundary");
-      bus.emitElicitationRequested({
-        requestId: "el-live",
-        message: "Configure deployment",
-        mode: "form",
-        requestedSchema: { type: "object", properties: {} },
-      });
-
-      // `thinking` starts a turn, which resets ephemeral run state. An `ask_user`
-      // prompt blocks inside its tool call while the run keeps streaming, so the
-      // request must survive.
-      bus.emit({ type: "thinking" });
-
-      expect(bus.getSnapshot().pendingElicitations.map((request) => request.requestId))
-        .toEqual(["el-live"]);
-    });
-
-    it("stops replaying indexed pending interactions once the run is terminal", () => {
+    it("replays a pending elicitation across turns but reserves it for cleanup after termination", () => {
       const bus = getOrCreateBus("test-interactions-terminal");
       bus.emitElicitationRequested({
         requestId: "el-terminal",
@@ -444,6 +417,8 @@ describe("event-bus", () => {
         requestedSchema: { type: "object", properties: {} },
       });
 
+      bus.emit({ type: "thinking" });
+      expect(bus.getSnapshot().pendingElicitations.map((request) => request.requestId)).toEqual(["el-terminal"]);
       bus.emit({ type: "done", content: "" });
 
       expect(bus.getSnapshot().pendingElicitations).toEqual([]);
@@ -505,8 +480,9 @@ describe("event-bus", () => {
       subscription.unsubscribe();
     });
 
-    it("tracks tool lifecycle", () => {
+    it("keeps the tool’s progress and completed result through the next turn", () => {
       const bus = getOrCreateBus("test-tool-1");
+      bus.emit({ type: "thinking", turnId: "turn-1" });
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep", timestamp: "2026-04-22T20:00:00.000Z" });
       bus.emit({ type: "tool_start", toolCallId: "tc2", name: "view" });
       bus.emit({ type: "tool_progress", toolCallId: "tc1", message: "Searching..." });
@@ -528,6 +504,11 @@ describe("event-bus", () => {
       });
       expect(afterDone.find((tool) => tool.toolCallId === "tc1")?.completedAt).toBeDefined();
       expect(afterDone.find((tool) => tool.toolCallId === "tc2")?.completedAt).toBeUndefined();
+
+      bus.emit({ type: "thinking", turnId: "turn-2" });
+      expect(bus.getSnapshot().liveTools).toMatchObject([{ toolCallId: "tc1", success: true, result: "found it" }]);
+      bus.emit({ type: "thinking", turnId: "turn-3" });
+      expect(bus.getSnapshot().liveTools).toEqual([]);
     });
 
     it("stamps live turn and instance ids on turn-scoped stream events", () => {
@@ -591,7 +572,7 @@ describe("event-bus", () => {
       expect(bus.getSnapshot().liveAssistantSegments).toEqual([]);
     });
 
-    it("done marks complete and clears state", () => {
+    it("finishes the bus, clears the stream and gives late subscribers only the final snapshot", () => {
       const bus = getOrCreateBus("test-done-1");
       bus.emit({ type: "delta", content: "some text" });
       bus.emit({ type: "tool_start", toolCallId: "tc1", name: "grep" });
@@ -606,33 +587,11 @@ describe("event-bus", () => {
       expect(snap.streamingContent).toBe("");
       expect(snap.pendingUserInputs).toEqual([]);
       expect(bus.complete).toBe(true);
-    });
 
-    it("error, aborted, and shutdown each mark complete with the matching terminal type", () => {
-      // error carries an error message
-      const errBus = getOrCreateBus("test-error-1");
-      errBus.emit({ type: "error", message: "Something broke" });
-      expect(errBus.getSnapshot().complete, "error complete").toBe(true);
-      expect(errBus.getSnapshot().terminalType, "error terminalType").toBe("error");
-      expect(errBus.getTerminalState().errorMessage, "error message").toBe("Something broke");
-
-      // aborted carries final content and timestamp
-      const abortBus = getOrCreateBus("test-aborted-1");
-      abortBus.emit({ type: "aborted", content: "Partial answer", timestamp: "2026-04-24T00:00:01.000Z" });
-      expect(abortBus.getSnapshot().complete, "aborted complete").toBe(true);
-      expect(abortBus.getSnapshot().terminalType, "aborted terminalType").toBe("aborted");
-      expect(abortBus.getSnapshot().terminalTimestamp, "aborted timestamp").toBe("2026-04-24T00:00:01.000Z");
-      expect(abortBus.getTerminalState().finalContent, "aborted finalContent").toBe("Partial answer");
-
-      // shutdown clears intent
-      const shutBus = getOrCreateBus("test-shutdown-1");
-      shutBus.emit({ type: "intent", intent: "Exploring codebase" });
-      shutBus.emit({ type: "shutdown", content: "Partial answer", timestamp: "2026-04-24T00:00:02.000Z" });
-      expect(shutBus.getSnapshot().complete, "shutdown complete").toBe(true);
-      expect(shutBus.getSnapshot().terminalType, "shutdown terminalType").toBe("shutdown");
-      expect(shutBus.getSnapshot().terminalTimestamp, "shutdown timestamp").toBe("2026-04-24T00:00:02.000Z");
-      expect(shutBus.getTerminalState().finalContent, "shutdown finalContent").toBe("Partial answer");
-      expect(shutBus.getSnapshot().intentText, "shutdown clears intent").toBe("");
+      const late = vi.fn();
+      bus.subscribe(late);
+      bus.emit({ type: "delta", content: "after" });
+      expect(late).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "snapshot" }));
     });
 
     it("never stamps streamed text with an event id that disk history will not contain", () => {
@@ -818,30 +777,20 @@ describe("event-bus", () => {
       bus.emit({ type: "thinking", turnId: "turn-3" });
       expect(bus.getSnapshot().liveAssistantSegments).toMatchObject([{ content: "local only" }]);
     });
-
-    it("keeps a finished tool across the next turn start so it cannot fall back to running", () => {
-      const bus = getOrCreateBus("test-tool-turn-boundary");
-      bus.emit({ type: "thinking", turnId: "turn-1" });
-      bus.emit({ type: "tool_start", toolCallId: "tc-done", name: "view" });
-      bus.emit({ type: "tool_start", toolCallId: "tc-open", name: "bash" });
-      bus.emit({ type: "tool_done", toolCallId: "tc-done", success: true, result: "ok" });
-
-      bus.emit({ type: "thinking", turnId: "turn-2" });
-      // A reconnecting client must receive the completion its disk read may not show yet.
-      expect(bus.getSnapshot().liveTools).toMatchObject([{ toolCallId: "tc-done", success: true, result: "ok" }]);
-
-      bus.emit({ type: "thinking", turnId: "turn-3" });
-      expect(bus.getSnapshot().liveTools).toEqual([]);
-    });
   });
 
   describe("model thinking", () => {
-    it("accumulates streamed thinking so a reconnecting client receives it in the snapshot", () => {
+    it("publishes turn-scoped thinking deltas and accumulates them for reconnects", () => {
       const bus = getOrCreateBus("test-reasoning-stream");
+      const received: StreamEvent[] = [];
+      bus.subscribe((event) => received.push(event));
       bus.emit({ type: "thinking", turnId: "turn-1", turnInstanceId: "turn-start-1" });
       bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "The scanner " });
       bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "must agree." });
 
+      expect(received.find((event) => event.type === "reasoning_delta")).toMatchObject({
+        turnId: "turn-1", turnInstanceId: "turn-start-1",
+      });
       expect(bus.getSnapshot().liveReasoning).toMatchObject([{
         id: "r-1",
         content: "The scanner must agree.",
@@ -849,20 +798,6 @@ describe("event-bus", () => {
         turnInstanceId: "turn-start-1",
       }]);
       expect(bus.getSnapshot().liveReasoning[0]?.completedAt).toBeUndefined();
-    });
-
-    it("stamps thinking events with the current turn for subscribers", () => {
-      const bus = getOrCreateBus("test-reasoning-turn-scope");
-      const received: StreamEvent[] = [];
-      bus.subscribe((event) => received.push(event));
-
-      bus.emit({ type: "thinking", turnId: "turn-1", turnInstanceId: "turn-start-1" });
-      bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "hm" });
-
-      expect(received.find((event) => event.type === "reasoning_delta")).toMatchObject({
-        turnId: "turn-1",
-        turnInstanceId: "turn-start-1",
-      });
     });
 
     it("closes thinking when visible text or a tool call starts", () => {
@@ -877,7 +812,7 @@ describe("event-bus", () => {
       expect(toolBus.getSnapshot().liveReasoning[0]?.completedAt).toBe("2026-09-20T08:00:03.000Z");
     });
 
-    it("commits thinking under the assistant message that persisted it and announces the advance", () => {
+    it("commits streamed thinking once even if the SDK then sends the complete block", () => {
       const bus = getOrCreateBus("test-reasoning-commit");
       const received: StreamEvent[] = [];
       bus.subscribe((event) => received.push(event));
@@ -897,18 +832,8 @@ describe("event-bus", () => {
         committedAt: "2026-09-20T08:00:05.000Z",
       }]);
       expect(received.filter((event) => event.type === "history_advanced")).toHaveLength(1);
-    });
-
-    it("folds the complete block the SDK sends after its commit without resending it", () => {
-      const bus = getOrCreateBus("test-reasoning-late-complete");
-      const received: StreamEvent[] = [];
-      bus.subscribe((event) => received.push(event));
-      bus.emit({ type: "reasoning_delta", reasoningId: "r-1", content: "the thought" });
-      bus.emit({ type: "reasoning_committed", content: "the thought", sourceEventId: "assistant-message-1" });
-      bus.emit({ type: "reasoning", reasoningId: "r-1", content: "the thought" });
-
+      bus.emit({ type: "reasoning", reasoningId: "r-1", content: "persisted" });
       expect(bus.getSnapshot().liveReasoning).toHaveLength(1);
-      // Subscribers already hold this text; the whole block is not sent a third time.
       expect(received.some((event) => event.type === "reasoning")).toBe(false);
     });
 
@@ -951,22 +876,6 @@ describe("event-bus", () => {
   });
 
   describe("subscribe", () => {
-    it("completed bus sends snapshot but does not subscribe", () => {
-      const bus = getOrCreateBus("test-complete-sub-1");
-      bus.emit({ type: "done", content: "done" });
-
-      const events: StreamEvent[] = [];
-      const unsub = bus.subscribe((e) => events.push(e));
-
-      // Should get snapshot only
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe("snapshot");
-
-      // Further emits should not reach listener (it wasn't added)
-      bus.emit({ type: "delta", content: "after" });
-      expect(events).toHaveLength(1);
-    });
-
     it("listener errors do not break other listeners", () => {
       const bus = getOrCreateBus("test-error-listener-1");
       const events: StreamEvent[] = [];

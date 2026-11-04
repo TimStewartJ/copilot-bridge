@@ -23,13 +23,17 @@ function serverRefCount(serverId: string): number {
 }
 
 describe("tag-store MCP server references", () => {
-  it("sets selected registry server IDs and returns registry identity", () => {
+  it("replaces a tag’s old registry references and removes individual selected servers", () => {
     const tag = tagStore.createTag("AI");
     const local = mcpStore.createMcpServer({ name: "Local", config: { command: "local-mcp", args: ["serve"] } });
     const remote = mcpStore.createMcpServer({
       name: "Remote",
       config: { type: "http", url: "https://remote.example/mcp" },
     });
+
+    const old = mcpStore.createMcpServer({ name: "Old", config: { command: "old-mcp", args: [] } });
+    expect(tagStore.addTagMcpServerRef(tag.id, old.id).serverId).toBe(old.id);
+    expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([old.id]);
 
     const selected = tagStore.replaceTagMcpServerRefs(tag.id, [remote.id, local.id, local.id]);
 
@@ -43,21 +47,9 @@ describe("tag-store MCP server references", () => {
     tagStore.setEntityTags("task", "task-1", [tag.id]);
     expect(tagStore.resolveEffectiveTags("task-1").mcpServerIds).toEqual([local.id, remote.id]);
     expect(tagRefCount(tag.id)).toBe(2);
-  });
-
-  it("adds, removes, and replaces registry refs", () => {
-    const tag = tagStore.createTag("Tools");
-    const alpha = mcpStore.createMcpServer({ name: "Alpha", config: { command: "alpha", args: [] } });
-    const beta = mcpStore.createMcpServer({ name: "Beta", config: { command: "beta", args: [] } });
-
-    expect(tagStore.addTagMcpServerRef(tag.id, alpha.id).serverId).toBe(alpha.id);
-    expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([alpha.id]);
-
-    const replaced = tagStore.replaceTagMcpServerRefs(tag.id, [beta.id]);
-    expect(replaced.map((server) => server.serverId)).toEqual([beta.id]);
-    expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([beta.id]);
-
-    tagStore.removeTagMcpServerRef(tag.id, beta.id);
+    tagStore.removeTagMcpServerRef(tag.id, remote.id);
+    expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([local.id]);
+    tagStore.removeTagMcpServerRef(tag.id, local.id);
     expect(tagStore.getTagMcpServerIds(tag.id)).toEqual([]);
     expect(tagRefCount(tag.id)).toBe(0);
   });

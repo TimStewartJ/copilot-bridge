@@ -60,24 +60,6 @@ describe("send_attachment tool", () => {
       .resolves.toEqual(toolFailure("displayName is required when content is provided"));
   });
 
-  it("publishes inline content when displayName is provided", async () => {
-    const copilotHome = mkdtempSync(join(tmpdir(), "bridge-tool-home-"));
-    tempDirs.push(copilotHome);
-
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "send_attachment");
-    if (!tool) throw new Error("send_attachment tool not found");
-
-    const result = await tool.handler({ content: "# Hi\n", displayName: "note.md" }, createInvocation());
-
-    expect(result).toMatchObject({
-      success: true,
-      attachmentId: "note.md",
-      displayName: "note.md",
-      markdown: "[note.md](/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md)",
-    });
-  });
-
   it("renders canonical public markdown for tricky inline image filenames", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-tool-home-"));
     tempDirs.push(copilotHome);
@@ -105,7 +87,7 @@ describe("send_attachment tool", () => {
     });
   });
 
-  it("uses the context apiBasePath when generating attachment links", async () => {
+  it("publishes named inline content with links rooted at the context API", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-tool-home-"));
     tempDirs.push(copilotHome);
 
@@ -117,6 +99,8 @@ describe("send_attachment tool", () => {
 
     expect(result).toMatchObject({
       success: true,
+      attachmentId: "note.md",
+      displayName: "note.md",
       url: "/staging/preview-123/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md",
       markdown: "[note.md](/staging/preview-123/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/attachments/note.md)",
     });

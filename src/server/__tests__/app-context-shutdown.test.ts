@@ -92,18 +92,6 @@ function createFakeContext(spies: ReturnType<typeof createShutdownSpies>): AppCo
 }
 
 describe("shutdownAppContextServices", () => {
-  it("closes admission synchronously before awaiting service cleanup", async () => {
-    const spies = createShutdownSpies();
-    let release!: () => void;
-    const pending = new Promise<void>((resolve) => { release = resolve; });
-    spies.voiceGatewayShutdown.mockImplementation(() => pending);
-    const operation = shutdownAppContextServices(createFakeContext(spies));
-    try {
-      expect(spies.sessionManagerStopAdmitting).toHaveBeenCalledOnce();
-      expect(spies.setGlobalPause).toHaveBeenCalledWith(true);
-      expect(spies.sessionManagerShutdown).not.toHaveBeenCalled();
-    } finally { release(); await operation; }
-  });
   it("terminates all previews by captured identity before returning, preserving preview data", async () => {
     const backends = [createBackend(41001), createBackend(41002)];
     for (const backend of backends) {
@@ -204,14 +192,24 @@ describe("shutdownAppContextServices", () => {
     expect(spies.usageReaderShutdown).toHaveBeenCalledTimes(1);
   });
 
-  it("shuts every context-owned service down once", async () => {
+  it("closes admission immediately and shares one shutdown across repeated requests", async () => {
     const spies = createShutdownSpies();
     const ctx = createFakeContext(spies);
     const deadline = createDeadline(1_000);
 
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    spies.voiceGatewayShutdown.mockImplementation(() => pending);
+    const operation = shutdownAppContextServices(ctx, deadline);
+    try {
+      expect(spies.sessionManagerStopAdmitting).toHaveBeenCalledOnce();
+      expect(spies.setGlobalPause).toHaveBeenCalledWith(true);
+      expect(spies.sessionManagerShutdown).not.toHaveBeenCalled();
+      expect(shutdownAppContextServices(ctx, deadline)).toBe(operation);
+    } finally { release(); await operation; }
     await shutdownAppContextServices(ctx, deadline);
 
-    expect(spies.setGlobalPause).toHaveBeenCalledWith(true);
+    expect(spies.sessionManagerShutdown).toHaveBeenCalledOnce();
     expect(spies.overlayStop).toHaveBeenCalledTimes(1);
     expect(spies.deferredPromptShutdown).toHaveBeenCalledTimes(1);
     expect(spies.deferLoopShutdown).toHaveBeenCalledTimes(1);
@@ -237,22 +235,6 @@ describe("shutdownAppContextServices", () => {
     expect(deadline).toBeDefined();
     expect(deadline!.expiresAtUnixMs).toBeGreaterThanOrEqual(before + SERVER_SHUTDOWN_BUDGET_MS - 50);
     expect(deadline!.expiresAtUnixMs).toBeLessThanOrEqual(Date.now() + SERVER_SHUTDOWN_BUDGET_MS);
-  });
-
-  it("is idempotent per context and reuses the in-flight operation", async () => {
-    const spies = createShutdownSpies();
-    const ctx = createFakeContext(spies);
-
-    const first = shutdownAppContextServices(ctx, createDeadline(1_000));
-    const second = shutdownAppContextServices(ctx, createDeadline(1_000));
-    expect(second).toBe(first);
-
-    await first;
-    await shutdownAppContextServices(ctx, createDeadline(1_000));
-
-    expect(spies.sessionManagerShutdown).toHaveBeenCalledTimes(1);
-    expect(spies.voiceShutdown).toHaveBeenCalledTimes(1);
-    expect(spies.schedulerShutdown).toHaveBeenCalledTimes(1);
   });
 
   it("keeps shutting services down when one of them rejects", async () => {

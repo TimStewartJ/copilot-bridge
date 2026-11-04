@@ -46,35 +46,7 @@ async function waitForSummary(
 }
 
 describe("createIncrementalCopilotUsageReader", () => {
-  it("returns immediately with indexing status and publishes results progressively", async () => {
-    const db = openMemoryDatabase();
-    const copilotHome = createCopilotHome();
-    writeUsage(copilotHome, "session-1", 10);
-    const reader = createIncrementalCopilotUsageReader({
-      copilotHome,
-      store: createCopilotUsageStore(db),
-      refreshIntervalMs: 60_000,
-      batchSize: 1,
-      concurrency: 1,
-    });
-
-    const initial = await reader.readSummary();
-    expect(initial.index?.state).toBe("scanning");
-    expect(initial.totals.inputTokens).toBe(0);
-
-    const complete = await waitForSummary(reader, (summary) => summary.index?.state === "idle");
-    expect(complete.totals.inputTokens).toBe(10);
-    expect(complete.index).toMatchObject({
-      sessionsTotal: 1,
-      sessionsProcessed: 1,
-      sessionsUpdated: 1,
-      cachedSessions: 1,
-    });
-
-    db.close();
-  });
-
-  it("reuses persisted results across readers and only reparses changed files", async () => {
+  it("publishes a first scan and reuses it until the underlying usage file changes", async () => {
     const db = openMemoryDatabase();
     const copilotHome = createCopilotHome();
     writeUsage(copilotHome, "session-1", 10);
@@ -87,8 +59,12 @@ describe("createIncrementalCopilotUsageReader", () => {
       refreshIntervalMs: 60_000,
     });
 
-    await firstReader.readSummary({ refresh: true });
-    await waitForSummary(firstReader, (summary) => summary.index?.state === "idle");
+    const initial = await firstReader.readSummary();
+    expect(initial.index?.state).toBe("scanning");
+    expect(initial.totals.inputTokens).toBe(0);
+    const complete = await waitForSummary(firstReader, (summary) => summary.index?.state === "idle");
+    expect(complete.totals.inputTokens).toBe(10);
+    expect(complete.index).toMatchObject({ sessionsTotal: 1, sessionsProcessed: 1, sessionsUpdated: 1, cachedSessions: 1 });
     expect(firstScanner).toHaveBeenCalledTimes(1);
 
     const secondScanner = vi.fn(scanCopilotUsageSession);

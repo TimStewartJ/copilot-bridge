@@ -284,37 +284,7 @@ describe("event-transform visible activity", () => {
 });
 
 describe("event-transform stable identity", () => {
-  it("preserves provider turn identity while deriving a unique turn instance from the start event", () => {
-    const entries = transformEventsToMessages([
-      {
-        id: "turn-start-event",
-        type: "assistant.turn_start",
-        data: { turnId: "provider-turn-1" },
-      },
-      {
-        id: "assistant-event",
-        type: "assistant.message",
-        data: { content: "Hello" },
-      },
-      {
-        id: "terminal-event",
-        type: "session.idle",
-        data: {},
-      },
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        type: "message",
-        content: "Hello",
-        turnId: "provider-turn-1",
-        turnInstanceId: "turn-start-event",
-        sourceEventId: "assistant-event",
-      },
-    ]);
-  });
-
-  it("keeps repeated provider turn ids in distinct turn instances", () => {
+  it("keeps persisted message and tool identities under their own instances of a reused provider turn", () => {
     const entries = transformEventsToMessages([
       {
         id: "turn-start-first",
@@ -326,6 +296,7 @@ describe("event-transform stable identity", () => {
         type: "tool.execution_start",
         data: { toolCallId: "tool-first", toolName: "bash" },
       },
+      { id: "assistant-event", type: "assistant.message", data: { content: "Hello" } },
       {
         id: "terminal-first",
         type: "session.idle",
@@ -350,6 +321,7 @@ describe("event-transform stable identity", () => {
         turnInstanceId: "turn-start-first",
         toolCall: { toolCallId: "tool-first" },
       },
+      { type: "message", content: "Hello", sourceEventId: "assistant-event", turnId: "0", turnInstanceId: "turn-start-first" },
       {
         type: "tool",
         turnId: "0",
@@ -1494,40 +1466,32 @@ describe("event-transform tool calls that outlive someone else's turn", () => {
       .map((entry) => [entry.toolCall!.toolCallId, { success: entry.toolCall!.success, completedAt: entry.toolCall!.completedAt }]),
   );
 
-  // Two sub-agents launched side by side, read while both are still running: agent one has just
-  // finished a turn of its own. This is the log as it stood at that moment in a real run.
-  const midRun = [
-    { id: "main-turn", type: "assistant.turn_start", timestamp: "2026-09-20T16:29:06.670Z", data: { turnId: "1" } },
-    start("task-one", "task", "2026-09-20T16:29:17.578Z", { arguments: { description: "Count tests" } }),
-    start("task-two", "task", "2026-09-20T16:29:17.581Z", { arguments: { description: "Find constant" } }),
-    { type: "subagent.started", agentId: "agent-one", timestamp: "2026-09-20T16:29:17.600Z", data: { toolCallId: "task-one", agentName: "explore" } },
-    { type: "subagent.started", agentId: "agent-two", timestamp: "2026-09-20T16:29:17.598Z", data: { toolCallId: "task-two", agentName: "explore" } },
-    { type: "assistant.turn_start", agentId: "agent-one", timestamp: "2026-09-20T16:29:19.074Z", data: {} },
-    { type: "assistant.turn_start", agentId: "agent-two", timestamp: "2026-09-20T16:29:19.096Z", data: {} },
-    start("one-glob", "glob", "2026-09-20T16:29:20.753Z", { parentToolCallId: "task-one" }, "agent-one"),
-    complete("one-glob", "2026-09-20T16:29:20.789Z", "agent-one"),
-    start("two-rg", "rg", "2026-09-20T16:29:20.780Z", { parentToolCallId: "task-two" }, "agent-two"),
-    { type: "assistant.turn_end", agentId: "agent-one", timestamp: "2026-09-20T16:29:20.791Z", data: {} },
-  ];
+  it("ends only the unfinished calls owned by the sub-agent whose turn ended", () => {
+    // Two sub-agents launched side by side, read while both are still running: agent one has just
+    // finished a turn of its own. This is the log as it stood at that moment in a real run.
+    const midRun = [
+      { id: "main-turn", type: "assistant.turn_start", timestamp: "2026-09-20T16:29:06.670Z", data: { turnId: "1" } },
+      start("task-one", "task", "2026-09-20T16:29:17.578Z", { arguments: { description: "Count tests" } }),
+      start("task-two", "task", "2026-09-20T16:29:17.581Z", { arguments: { description: "Find constant" } }),
+      { type: "subagent.started", agentId: "agent-one", timestamp: "2026-09-20T16:29:17.600Z", data: { toolCallId: "task-one", agentName: "explore" } },
+      { type: "subagent.started", agentId: "agent-two", timestamp: "2026-09-20T16:29:17.598Z", data: { toolCallId: "task-two", agentName: "explore" } },
+      { type: "assistant.turn_start", agentId: "agent-one", timestamp: "2026-09-20T16:29:19.074Z", data: {} },
+      { type: "assistant.turn_start", agentId: "agent-two", timestamp: "2026-09-20T16:29:19.096Z", data: {} },
+      start("one-glob", "glob", "2026-09-20T16:29:20.753Z", { parentToolCallId: "task-one" }, "agent-one"),
+      complete("one-glob", "2026-09-20T16:29:20.789Z", "agent-one"),
+      start("two-rg", "rg", "2026-09-20T16:29:20.780Z", { parentToolCallId: "task-two" }, "agent-two"),
+      start("one-open", "view", "2026-09-20T16:29:20.790Z", { parentToolCallId: "task-one" }, "agent-one"),
+      { type: "assistant.turn_end", agentId: "agent-one", timestamp: "2026-09-20T16:29:20.791Z", data: {} },
+    ];
 
-  it("does not report a launching call, or a neighbouring agent's call, as failed when a sub-agent ends a turn", () => {
     expect(toolStates(midRun)).toEqual({
       // Still running: nothing has completed them, and nothing that ended owned them.
       "task-one": { success: undefined, completedAt: undefined },
       "task-two": { success: undefined, completedAt: undefined },
       "two-rg": { success: undefined, completedAt: undefined },
+      "one-open": { success: false, completedAt: "2026-09-20T16:29:20.791Z" },
       "one-glob": { success: true, completedAt: "2026-09-20T16:29:20.789Z" },
     });
-  });
-
-  it("still closes an agent's own unfinished call when that agent's turn ends", () => {
-    const events = [
-      ...midRun,
-      { type: "assistant.turn_end", agentId: "agent-two", timestamp: "2026-09-20T16:29:22.042Z", data: {} },
-    ];
-
-    expect(toolStates(events)["two-rg"]).toEqual({ success: false, completedAt: "2026-09-20T16:29:22.042Z" });
-    expect(toolStates(events)["task-two"]).toEqual({ success: undefined, completedAt: undefined });
   });
 
   it("leaves a background agent's call open when the main agent's turn ends, and closes everything on a hard stop", () => {

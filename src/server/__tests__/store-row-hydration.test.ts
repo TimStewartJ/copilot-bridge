@@ -27,13 +27,18 @@ function insertRawMcpServer(id: string, name: string, config: string, enabledByD
 
 describe("store row hydration resilience", () => {
   describe("mcp-server-store", () => {
-    it("returns the readable servers when a row's config is not valid JSON", () => {
+    it("lists and resolves readable default servers, including a broken one once repaired", () => {
       const store = createMcpServerStore(db);
       store.createMcpServer({ name: "Good", config: { command: "echo", args: [] }, enabledByDefault: true });
       insertRawMcpServer("broken-json", "Broken", "{not json");
 
       expect(store.listMcpServers().map((server) => server.name)).toEqual(["Good"]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("broken-json"));
+      expect(store.resolveMcpServers()).toEqual({ Good: { command: "echo", args: [] } });
+
+      const repaired = store.updateMcpServer("broken-json", { config: { command: "echo", args: ["ok"] } });
+      expect(repaired.config).toEqual({ command: "echo", args: ["ok"] });
+      expect(store.listMcpServers().map((server) => server.name).sort()).toEqual(["Broken", "Good"]);
     });
 
     it("returns the readable servers when a row parses but fails validation", () => {
@@ -46,29 +51,12 @@ describe("store row hydration resilience", () => {
       expect(store.getMcpServerByName("Invalid")).toBeUndefined();
     });
 
-    it("keeps default resolution working when an enabled-by-default row is unreadable", () => {
-      const store = createMcpServerStore(db);
-      store.createMcpServer({ name: "Good", config: { command: "echo", args: [] }, enabledByDefault: true });
-      insertRawMcpServer("broken-default", "BrokenDefault", "{not json", 1);
-
-      expect(store.resolveMcpServers()).toEqual({ Good: { command: "echo", args: [] } });
-    });
-
     it("still rejects a duplicate name held by an unreadable row", () => {
       const store = createMcpServerStore(db);
       insertRawMcpServer("broken-name", "Taken", "{not json");
 
       expect(() => store.createMcpServer({ name: "Taken", config: { command: "echo", args: [] } }))
         .toThrow(/already exists/);
-    });
-
-    it("lets an unreadable row be repaired by writing a valid config", () => {
-      const store = createMcpServerStore(db);
-      insertRawMcpServer("repairable", "Repairable", "{not json");
-
-      const repaired = store.updateMcpServer("repairable", { config: { command: "echo", args: ["ok"] } });
-      expect(repaired.config).toEqual({ command: "echo", args: ["ok"] });
-      expect(store.listMcpServers().map((server) => server.name)).toEqual(["Repairable"]);
     });
 
     it("rolls back a rename that leaves the row unreadable", () => {

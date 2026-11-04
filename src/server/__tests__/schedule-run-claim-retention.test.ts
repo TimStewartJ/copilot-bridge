@@ -63,7 +63,7 @@ describe("schedule_run_claims retention", () => {
     expect(countClaims(schedule.id)).toBe(20);
   });
 
-  it("never prunes a run still inside the catch-up safety window", () => {
+  it("prunes only old finished slots for the requested schedule, including skipped slots", () => {
     const schedule = store.createSchedule(baseCron);
     const now = new Date("2026-06-01T08:00:00.000Z");
     const justFinished = new Date(now.getTime() - 60 * 1000);
@@ -73,9 +73,17 @@ describe("schedule_run_claims retention", () => {
     runAt(schedule.id, longAgo);
     runAt(schedule.id, yesterday);
     runAt(schedule.id, justFinished);
+    const other = store.createSchedule({ ...baseCron, name: "Other" });
+    runAt(other.id, longAgo);
+    const skippedAt = new Date(longAgo.getTime() - DAY_MS).toISOString();
+    const skipped = store.claimAutomaticRun(schedule.id, skippedAt, "cron", skippedAt);
+    if (!skipped.acquired) throw new Error("expected claim");
+    expect(store.skipAutomaticRun(schedule.id, skipped.claim)).toBe(true);
 
     // keep = 0 removes everything the age floor allows, and nothing more.
-    expect(store.pruneFinishedRunClaims(schedule.id, 0, now)).toBe(1);
+    expect(store.pruneFinishedRunClaims(schedule.id, 0, now)).toBe(2);
+    expect(countClaims(other.id)).toBe(1);
+    expect(countClaims(schedule.id)).toBe(2);
 
     // Both in-window runs are still deduplicated.
     expect(store.claimAutomaticRun(schedule.id, justFinished.toISOString(), "catchup", now.toISOString()))
@@ -96,33 +104,6 @@ describe("schedule_run_claims retention", () => {
 
     expect(store.pruneFinishedRunClaims(schedule.id, 0, now)).toBe(0);
     expect(countClaims(schedule.id)).toBe(2);
-  });
-
-  it("prunes skipped runs as well as triggered ones", () => {
-    const schedule = store.createSchedule(baseCron);
-    const now = new Date("2026-06-01T08:00:00.000Z");
-    const longAgo = new Date(now.getTime() - 30 * DAY_MS).toISOString();
-
-    const claimed = store.claimAutomaticRun(schedule.id, longAgo, "cron", longAgo);
-    if (!claimed.acquired) throw new Error("expected claim");
-    expect(store.skipAutomaticRun(schedule.id, claimed.claim)).toBe(true);
-
-    expect(store.pruneFinishedRunClaims(schedule.id, 0, now)).toBe(1);
-    expect(countClaims(schedule.id)).toBe(0);
-  });
-
-  it("only prunes the requested schedule", () => {
-    const first = store.createSchedule(baseCron);
-    const second = store.createSchedule({ ...baseCron, name: "Other" });
-    const now = new Date("2026-06-01T08:00:00.000Z");
-    const longAgo = new Date(now.getTime() - 30 * DAY_MS);
-
-    runAt(first.id, longAgo);
-    runAt(second.id, longAgo);
-
-    store.pruneFinishedRunClaims(first.id, 0, now);
-    expect(countClaims(first.id)).toBe(0);
-    expect(countClaims(second.id)).toBe(1);
   });
 
   it("sweeps claims left behind by schedules that no longer exist", () => {

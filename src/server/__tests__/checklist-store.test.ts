@@ -34,29 +34,15 @@ describe("checklist-store", () => {
         .toThrow('Unknown field: "extra"');
     });
 
-    it("updateChecklistItem changes text", () => {
+    it("edits, completes, reopens and deletes the same dated item", () => {
       const task = taskStore.createTask("Test");
-      const checklistItem = checklistStore.createChecklistItem(task.id, "Original");
-      const updated = checklistStore.updateChecklistItem(checklistItem.id, { text: "Updated" });
-      expect(updated.text).toBe("Updated");
-    });
-
-    it("updateChecklistItem marks done with completedAt and undone clears it", () => {
-      const task = taskStore.createTask("Test");
-      const checklistItem = checklistStore.createChecklistItem(task.id, "Do this");
-      const done = checklistStore.updateChecklistItem(checklistItem.id, { done: true });
-      expect(done.done).toBe(true);
-      expect(done.completedAt).toBeTruthy();
-      const undone = checklistStore.updateChecklistItem(checklistItem.id, { done: false });
-      expect(undone.done).toBe(false);
-      expect(undone.completedAt).toBeUndefined();
-    });
-
-    it("updateChecklistItem clears deadline with null", () => {
-      const task = taskStore.createTask("Test");
-      const checklistItem = checklistStore.createChecklistItem(task.id, "Do this", "2026-04-01");
-      const updated = checklistStore.updateChecklistItem(checklistItem.id, { deadline: null });
-      expect(updated.deadline).toBeUndefined();
+      const item = checklistStore.createChecklistItem(task.id, "Original", "2026-04-01");
+      const done = checklistStore.updateChecklistItem(item.id, { text: "Updated", done: true, deadline: null });
+      expect(done).toMatchObject({ text: "Updated", done: true, completedAt: expect.any(String), deadline: undefined });
+      const reopened = checklistStore.updateChecklistItem(done.id, { done: false });
+      expect(reopened).toMatchObject({ done: false, completedAt: undefined });
+      checklistStore.deleteChecklistItem(reopened.id);
+      expect(checklistStore.getChecklistItem(item.id)).toBeUndefined();
     });
 
     it("updateChecklistItem rejects invalid mutation fields", () => {
@@ -79,13 +65,6 @@ describe("checklist-store", () => {
       expect(unchanged).toMatchObject({ id: checklistItem.id, taskId: task.id, text: "Original", done: false });
       expect(unchanged?.deadline).toBeUndefined();
     });
-
-    it("deleteChecklistItem removes the checklist item", () => {
-      const task = taskStore.createTask("Test");
-      const checklistItem = checklistStore.createChecklistItem(task.id, "Delete me");
-      checklistStore.deleteChecklistItem(checklistItem.id);
-      expect(checklistStore.getChecklistItem(checklistItem.id)).toBeUndefined();
-    });
   });
 
   describe("reorderChecklistItems", () => {
@@ -102,28 +81,19 @@ describe("checklist-store", () => {
   });
 
   describe("listAllOpenChecklistItems", () => {
-    it("returns unchecked checklist items from active tasks only", () => {
+    it("lists only unchecked items belonging to active tasks", () => {
       const active = taskStore.createTask("Active");
       const done = taskStore.createTask("Done");
       taskStore.updateTask(done.id, { completionAction: "complete-and-archive" });
 
+      const checked = checklistStore.createChecklistItem(active.id, "Checked item");
+      checklistStore.updateChecklistItem(checked.id, { done: true });
       checklistStore.createChecklistItem(active.id, "Open item");
       checklistStore.createChecklistItem(done.id, "Done task item");
 
       const open = checklistStore.listAllOpenChecklistItems();
       expect(open).toHaveLength(1);
       expect(open[0].text).toBe("Open item");
-    });
-
-    it("excludes checked checklist items", () => {
-      const task = taskStore.createTask("Test");
-      const checklistItem = checklistStore.createChecklistItem(task.id, "Check me");
-      checklistStore.updateChecklistItem(checklistItem.id, { done: true });
-      checklistStore.createChecklistItem(task.id, "Still open");
-
-      const open = checklistStore.listAllOpenChecklistItems();
-      expect(open).toHaveLength(1);
-      expect(open[0].text).toBe("Still open");
     });
   });
 
@@ -147,28 +117,15 @@ describe("checklist-store", () => {
       expect(g2.order).toBe(1);
     });
 
-    it("global checklist items appear first in listAllOpenChecklistItems when created first", () => {
-      const globalChecklistItem = checklistStore.createChecklistItem(null, "Global item");
+    it("moves a dated global action from the open list to recently completed", () => {
+      const global = checklistStore.createChecklistItem(null, "Global item", "2026-04-01");
+      expect(global).toMatchObject({ taskId: null, text: "Global item", deadline: "2026-04-01", done: false });
       const task = taskStore.createTask("Active");
-      checklistStore.createChecklistItem(task.id, "Task item");
-      const open = checklistStore.listAllOpenChecklistItems();
-      // Server sorts by createdAt DESC, so the task item (created last) comes first
-      expect(open[0].taskId).toBe(task.id);
-      expect(open[1].taskId).toBeNull();
-      expect(globalChecklistItem).toMatchObject({ taskId: null, text: "Global item", done: false });
+      const local = checklistStore.createChecklistItem(task.id, "Task item");
+      expect(checklistStore.listAllOpenChecklistItems().map((item) => item.id)).toEqual([local.id, global.id]);
+      checklistStore.updateChecklistItem(global.id, { done: true });
+      expect(checklistStore.listRecentlyCompletedChecklistItems()).toMatchObject([{ id: global.id, taskId: null }]);
     });
 
-    it("completed global checklist items appear in listRecentlyCompletedChecklistItems", () => {
-      const checklistItem = checklistStore.createChecklistItem(null, "Done global");
-      checklistStore.updateChecklistItem(checklistItem.id, { done: true });
-      const completed = checklistStore.listRecentlyCompletedChecklistItems();
-      expect(completed).toHaveLength(1);
-      expect(completed[0].taskId).toBeNull();
-    });
-
-    it("global checklist item supports deadline", () => {
-      const checklistItem = checklistStore.createChecklistItem(null, "With deadline", "2026-04-01");
-      expect(checklistItem.deadline).toBe("2026-04-01");
-    });
   });
 });

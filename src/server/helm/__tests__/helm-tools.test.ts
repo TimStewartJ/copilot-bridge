@@ -130,20 +130,7 @@ describe("resolveSession", () => {
 });
 
 describe("Helm tools", () => {
-  it("summarizes Bridge state without archived sessions and links what it names", async () => {
-    const { ctx } = createContext();
-    const result = await tool(ctx, createFacade(), "bridge_overview").run({});
-    expect(result.counts).toEqual({ waitingOnYou: 1, running: 1, unread: 1, activeTasks: 1 });
-    expect(result.waitingOnYou[0]).toMatchObject({ title: "Deploy check", questions: ["Deploy now?"], link: "bridge://session/cccccccc-3333-4000-8000-000000000003" });
-    expect(result.unreadReplies[0]).toMatchObject({
-      title: "Tellus worldgen transition fix",
-      task: "Tellus Expeditions",
-      taskLink: "bridge://task/task-1",
-    });
-    expect(result.activeTasks[0]).toMatchObject({ title: "Tellus Expeditions", nextAction: "Review biome blend", link: "bridge://task/task-1" });
-  });
-
-  it("shows each task's last activity the way the task rail does, most recently active first", async () => {
+  it("summarizes attention and links to the most recently active tasks", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(now);
     try {
@@ -159,6 +146,10 @@ describe("Helm tools", () => {
         ...Array.from({ length: 8 }, (_, index) => task(`old-${index}`, `Older task ${index}`, `2026-09-0${index + 1}T00:00:00.000Z`)),
       ];
       const result = await tool(ctx, createFacade(), "bridge_overview").run({});
+      expect(result.counts).toEqual({ waitingOnYou: 1, running: 1, unread: 1, activeTasks: 10 });
+      expect(result.waitingOnYou[0]).toMatchObject({ title: "Deploy check", questions: ["Deploy now?"], link: "bridge://session/cccccccc-3333-4000-8000-000000000003" });
+      expect(result.unreadReplies[0]).toMatchObject({ title: "Tellus worldgen transition fix", task: "Tellus Expeditions", taskLink: "bridge://task/task-1" });
+      expect(result.activeTasks[0]).toMatchObject({ nextAction: "Review biome blend", link: "bridge://task/task-1" });
       expect(result.activeTasks.slice(0, 3).map((entry: any) => [entry.title, entry.lastActivity])).toEqual([
         ["Tellus Expeditions", "3m ago"],
         ["Circles Journaling App", "1h ago"],
@@ -166,7 +157,7 @@ describe("Helm tools", () => {
       ]);
       // Eight are listed; the count says how many there really are, so a partial list is never mistaken for all of them.
       expect(result.activeTasks).toHaveLength(8);
-      expect(result.counts.activeTasks).toBe(10);
+
     } finally {
       vi.useRealTimers();
     }

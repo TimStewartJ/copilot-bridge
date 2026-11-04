@@ -263,7 +263,8 @@ describe("defer worker", () => {
     expect(lifecycle.completeLifecycle).toHaveBeenCalledOnce();
   });
 
-  it("returns validation failures to the worker so it can correct them in the same attempt", async () => {
+  it("accepts a corrected submission once and keeps it when the worker tries to replace it", async () => {
+    let lateStatus: unknown;
     await expect(runWorkerScript(async (config) => {
       const invalid = await submitDeferResult(config, {
         action: "notify",
@@ -284,11 +285,13 @@ describe("defer worker", () => {
         checkpoint: { status: "running" },
       }, "valid-result");
       expect(valid.resultType).toBe("success");
+      lateStatus = (await submitDeferResult(config, { action: "return", message: "Too late." }, "second-result")).resultType;
     }, "defer-worker-corrected-result")).resolves.toMatchObject({
       action: "notify",
       message: "Build still running.",
       checkpoint: { status: "running" },
     });
+    expect(lateStatus).toBe("failure");
   });
 
   it("retains tool-call diagnostics without arguments, results, or assistant text", async () => {
@@ -564,25 +567,6 @@ describe("defer worker", () => {
     expect(metadata?.toolCalls).not.toContainEqual(expect.objectContaining({ toolCallId: "slow-call" }));
     expect(recordSpan.mock.calls.filter(([name]) => name === "tool.failure")).toHaveLength(1);
     expect(JSON.stringify(recordSpan.mock.calls)).not.toContain("private-tool-payload");
-  });
-
-  it("keeps the first valid result immutable", async () => {
-    await expect(runWorkerScript(async (config) => {
-      const first = await submitDeferResult(config, {
-        action: "continue",
-        checkpoint: { status: "first" },
-      });
-      expect(first.resultType).toBe("success");
-
-      const second = await submitDeferResult(config, {
-        action: "return",
-        message: "Too late.",
-      }, "second-result");
-      expect(second.resultType).toBe("failure");
-    }, "defer-worker-first-result")).resolves.toEqual({
-      action: "continue",
-      checkpoint: { status: "first" },
-    });
   });
 
   it("rejects a worker that naturally completes without submitting a native result", async () => {

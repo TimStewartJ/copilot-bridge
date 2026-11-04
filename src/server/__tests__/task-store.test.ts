@@ -45,6 +45,9 @@ describe("task-store", () => {
       for (const completion of [false, true]) {
         const task = store.createTask("Set aside");
         expect(store.updateTask(task.id, { deferred: true, nextTouchAt: null })).toMatchObject({ deferred: true, nextTouchAt: undefined });
+        const [event] = store.listMomentumEvents(task.id);
+        expect(event).toMatchObject({ source: "system", changes: [{ field: "deferred", before: false, after: true }] });
+        expect(event.sessionId).toBeUndefined();
         expect(store.updateTask(task.id, completion ? { completionAction: "complete-and-archive" } : { status: "archived" }))
           .toMatchObject({ status: "archived", deferred: false, nextTouchAt: undefined });
         expect(() => store.updateTask(task.id, { deferred: true })).toThrow("Only active tasks can be deferred");
@@ -305,30 +308,21 @@ describe("task-store", () => {
       expect(() => store.updateTask("nope", { title: "x" })).toThrow("not found");
     });
 
-    it("updateTask complete-and-archive places the task at the top of the archived group", () => {
-      const t1 = store.createTask("Task 1");
-      store.createTask("Task 2");
-      const archived = store.updateTask(t1.id, { completionAction: "complete-and-archive" });
-      expect(archived.status).toBe("archived");
-      expect(store.listTasks().filter((t) => t.status === "archived")).toEqual([
-        expect.objectContaining({ id: t1.id, order: 0 }),
-      ]);
-      const raw = db.prepare("SELECT status FROM tasks WHERE id = ?").get(t1.id) as any;
-      expect(raw.status).toBe("archived");
-    });
-
-    it("updateTask complete-and-archive sets completedAt and reopening clears it", () => {
-      vi.useFakeTimers();
+    it("completes a task at the top of its archive and preserves completion until reopening", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
       const task = store.createTask("Complete me");
-
+      store.createTask("Still active");
       vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
       const archived = store.updateTask(task.id, { completionAction: "complete-and-archive" });
-      expect(archived.status).toBe("archived");
-      expect(archived.completedAt).toBe("2026-04-01T10:00:00.000Z");
+      expect(archived).toMatchObject({ status: "archived", completedAt: "2026-04-01T10:00:00.000Z" });
+      expect(store.listTasks().filter((candidate) => candidate.status === "archived")).toMatchObject([{ id: task.id, order: 0 }]);
 
       vi.setSystemTime(new Date("2026-04-01T11:00:00.000Z"));
-      const active = store.updateTask(task.id, { status: "active" });
-      expect(active.completedAt).toBeUndefined();
+      expect(store.updateTask(task.id, { status: "archived" }).completedAt).toBe(archived.completedAt);
+      expect(store.updateTask(task.id, { notes: "Still done" }).completedAt).toBe(archived.completedAt);
+      expect(db.prepare("SELECT status, completedAt FROM tasks WHERE id = ?").get(task.id))
+        .toEqual({ status: "archived", completedAt: archived.completedAt });
+      expect(store.updateTask(task.id, { status: "active" }).completedAt).toBeUndefined();
     });
 
     it("updateTask rejects completion for archived tasks", () => {
@@ -337,34 +331,6 @@ describe("task-store", () => {
 
       expect(() => store.updateTask(task.id, { completionAction: "complete-and-archive" }))
         .toThrow("Archived tasks cannot be completed again; reopen the task first");
-    });
-
-    it("updateTask archiving a completed task preserves completedAt", () => {
-      vi.useFakeTimers();
-      const task = store.createTask("Already complete");
-
-      vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
-      store.updateTask(task.id, { completionAction: "complete-and-archive" });
-
-      vi.setSystemTime(new Date("2026-04-01T11:00:00.000Z"));
-      const archived = store.updateTask(task.id, { status: "archived" });
-      expect(archived.status).toBe("archived");
-      expect(archived.completedAt).toBe("2026-04-01T10:00:00.000Z");
-    });
-
-    it("updateTask preserves completedAt across non-status updates", () => {
-      vi.useFakeTimers();
-      const task = store.createTask("Preserve completion");
-
-      vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
-      const done = store.updateTask(task.id, { completionAction: "complete-and-archive" });
-
-      vi.setSystemTime(new Date("2026-04-01T11:00:00.000Z"));
-      const updated = store.updateTask(task.id, { notes: "Still done" });
-
-      expect(updated.completedAt).toBe(done.completedAt);
-      const raw = db.prepare("SELECT completedAt FROM tasks WHERE id = ?").get(task.id) as any;
-      expect(raw.completedAt).toBe("2026-04-01T10:00:00.000Z");
     });
 
     it("updateTask rejects unknown status values", () => {
@@ -541,27 +507,19 @@ describe("task-store", () => {
         .all(taskId) as Array<{ source: string; sessionId: string | null; text: string }>);
     }
 
-    it("records renames with who made them, but not naming a placeholder task or an unchanged title", () => {
+    it("records attributed renames on bounded lines, ignoring initial and unchanged names", () => {
       const task = store.createTask(PLACEHOLDER_TASK_TITLE);
       store.updateTask(task.id, { title: "Fix the gate" }, { source: "agent", sessionId: "session-1" });
       store.updateTask(task.id, { title: "Fix the gate", notes: "same title" }, { source: "agent", sessionId: "session-1" });
       store.updateTask(task.id, { title: "Fix the E2E gate" }, { source: "agent", sessionId: "session-2" });
-      store.updateTask(task.id, { title: "Gate fix" }, { source: "user" });
+      store.updateTask(task.id, { title: `Gate fix\n${"x".repeat(1000)}` }, { source: "user" });
 
-      expect(historyTexts(task.id)).toEqual([
+      const history = historyTexts(task.id);
+      expect(history).toEqual([
         { source: "agent", sessionId: "session-2", text: 'Renamed by an agent from "Fix the gate" to "Fix the E2E gate".' },
-        { source: "user", sessionId: null, text: 'Renamed by the user from "Fix the E2E gate" to "Gate fix".' },
+        { source: "user", sessionId: null, text: expect.stringMatching(/^Renamed by the user from "Fix the E2E gate" to "Gate fix x+…"\.$/) },
       ]);
-    });
-
-    it("keeps long titles on one bounded line", () => {
-      const task = store.createTask("Short");
-      store.updateTask(task.id, { title: `Long\n${"x".repeat(1000)}` }, { source: "agent" });
-
-      const [entry] = historyTexts(task.id);
-      expect(entry!.text).not.toContain("\n");
-      expect(entry!.text.length).toBeLessThan(400);
-      expect(entry!.text).toContain("…");
+      expect(history[1].text.length).toBeLessThan(400);
     });
   });
 
@@ -597,15 +555,6 @@ describe("task-store", () => {
         { field: "nextAction", before: "Step", after: null },
         { field: "waitingOn", before: "Reply", after: null },
       ]);
-    });
-
-    it("records deferral and defaults an unattributed change to system", () => {
-      const task = store.createTask("Defer");
-      store.updateTask(task.id, { deferred: true });
-      expect(store.listMomentumEvents(task.id)[0]).toMatchObject({
-        source: "system", changes: [{ field: "deferred", before: false, after: true }],
-      });
-      expect(store.listMomentumEvents(task.id)[0].sessionId).toBeUndefined();
     });
 
     it("stores bounded previews of long values with their original length", () => {
@@ -670,20 +619,15 @@ describe("task-store", () => {
   });
 
   describe("link/unlink sessions", () => {
-    it("linkSession is idempotent", () => {
-      const task = store.createTask("Linkable");
-      expect(store.linkSession(task.id, "session-1").sessionIds).toContain("session-1");
-      store.linkSession(task.id, "session-1");
-      const found = store.getTask(task.id)!;
-      expect(found.sessionIds.filter((s) => s === "session-1")).toHaveLength(1);
-    });
-
-    it("unlinkSession removes session id", () => {
-      const task = store.createTask("Unlinkable");
-      store.linkSession(task.id, "session-1");
-      store.unlinkSession(task.id, "session-1");
-      const found = store.getTask(task.id)!;
-      expect(found.sessionIds).not.toContain("session-1");
+    it("resolves a linked session once and forgets it after unlinking", () => {
+      const { id } = store.createTask("Linked conversation");
+      expect(store.linkSession(id, "session-1").sessionIds).toEqual(["session-1"]);
+      store.linkSession(id, "session-1");
+      expect(store.getTask(id)?.sessionIds).toEqual(["session-1"]);
+      expect(store.findTaskBySessionId("session-1")?.id).toBe(id);
+      store.unlinkSession(id, "session-1");
+      expect(store.getTask(id)?.sessionIds).toEqual([]);
+      expect(store.findTaskBySessionId("session-1")).toBeUndefined();
     });
 
     it("linkSession throws for missing task", () => {
@@ -752,31 +696,15 @@ describe("task-store", () => {
     });  });
 
   describe("link/unlink PRs", () => {
-    it("linkPR is idempotent for same repo+pr+provider", () => {
+    it("links a PR only once and unlinks it by repository and provider", () => {
       const task = store.createTask("PR task");
       const pr = { repoId: "repo-1", prId: 42, provider: "ado" as const };
       store.linkPR(task.id, pr);
       store.linkPR(task.id, pr);
       expect(store.getTask(task.id)!.pullRequests).toEqual([expect.objectContaining(pr)]);
+      store.unlinkPR(task.id, [pr.repoId], pr.prId, pr.provider);
+      expect(store.getTask(task.id)!.pullRequests).toEqual([]);
     });
-
-    it("unlinkPR removes PR ref", () => {
-      const task = store.createTask("PR task");
-      store.linkPR(task.id, { repoId: "repo-1", prId: 42, provider: "ado" });
-      store.unlinkPR(task.id, ["repo-1"], 42, "ado");
-      expect(store.getTask(task.id)!.pullRequests).toHaveLength(0);
-    });
-  });
-
-  describe("findTaskBySessionId", () => {
-    it("finds task linked to a session", () => {
-      const task = store.createTask("Findable");
-      store.linkSession(task.id, "target-session");
-      const found = store.findTaskBySessionId("target-session");
-      expect(found).toBeDefined();
-      expect(found!.id).toBe(task.id);
-    });
-
   });
 
   describe("session links read by session and by page", () => {

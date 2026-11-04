@@ -13,7 +13,7 @@ beforeEach(() => {
 });
 
 describe("read-state-store", () => {
-  it("markReadMany settles a batch at one moment and keeps any later cursor", () => {
+  it("settles a batch without regressing read cursors and projects just the requested sessions", () => {
     store.markRead("ahead", "2999-01-01T00:00:00.000Z");
     store.markRead("behind", "2020-01-01T00:00:00.000Z");
     store.markReadMany(["ahead", "behind", "new"], "2026-05-07T21:00:00Z");
@@ -23,6 +23,8 @@ describe("read-state-store", () => {
       behind: "2026-05-07T21:00:00.000Z",
       new: "2026-05-07T21:00:00.000Z",
     });
+    expect(store.getReadStateFor(["new", "never-read"])).toEqual({ new: "2026-05-07T21:00:00.000Z" });
+    expect(store.getReadStateFor([])).toEqual({});
     expect(() => store.markReadMany(["new"], "not a date")).toThrow("Invalid read timestamp");
   });
 
@@ -33,11 +35,4 @@ describe("read-state-store", () => {
     expect(store.getReadState()["session-1"]).toBe("2026-05-07T21:00:00.000Z");
   });
 
-  it("getReadStateFor reads only the sessions asked for", () => {
-    store.markRead("session-1", "2026-05-07T21:00:00.000Z");
-    store.markRead("session-2", "2026-05-07T22:00:00.000Z");
-
-    expect(store.getReadStateFor(["session-2", "never-read"])).toEqual({ "session-2": "2026-05-07T22:00:00.000Z" });
-    expect(store.getReadStateFor([])).toEqual({});
-  });
 });

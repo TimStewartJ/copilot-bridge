@@ -48,7 +48,7 @@ afterEach(() => {
 });
 
 describe("defer-loop-runner", () => {
-  it("runs one due check in a worker with its run context and advances from acceptance time", async () => {
+  it("runs each due check in its worker, passing the saved checkpoint into the next occurrence", async () => {
     const store = createDeferLoopStore(db);
     const bus = createGlobalBus();
     const summaryEvents: any[] = [];
@@ -62,10 +62,12 @@ describe("defer-loop-runner", () => {
       prompt: "Poll deployment",
       intervalSeconds: 300,
       nextRunAt: dueAt,
-      maxRuns: 2,
+      maxRuns: 3,
     });
     const sm = makeMockSessionManager({ sessions: ["session-1"] });
-    sm.runDeferWorker = vi.fn(async () => ({ action: "continue" }));
+    sm.runDeferWorker = vi.fn()
+      .mockResolvedValueOnce({ action: "continue", checkpoint: { status: "running", buildId: 42 } })
+      .mockResolvedValueOnce({ action: "finish" });
     const runner = createDeferLoopRunner(store, sm as any, bus);
 
     runner.start();
@@ -77,8 +79,8 @@ describe("defer-loop-runner", () => {
       parentSessionId: "session-1",
       prompt: "Poll deployment",
       runCount: 1,
-      maxRuns: 2,
-      remainingRunsAfterThis: 1,
+      maxRuns: 3,
+      remainingRunsAfterThis: 2,
       isFinalRun: false,
       intervalSeconds: 300,
     });
@@ -93,47 +95,9 @@ describe("defer-loop-runner", () => {
       { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 1, runningCount: 0, nextRunAt: updated.nextRunAt } },
     ]);
     expect(sm._attention).toEqual([]);
-    runner.shutdown();
-  });
-
-  it("uses an isolated worker and continues without waking the parent", async () => {
-    const store = createDeferLoopStore(db);
-    const bus = createGlobalBus();
-    const loop = store.create({
-      sessionId: "session-1",
-      prompt: "Poll deployment",
-      intervalSeconds: 300,
-      nextRunAt: new Date(Date.now() - 1_000).toISOString(),
-    });
-    const sm = makeMockSessionManager({ sessions: ["session-1"] }) as any;
-    sm.runDeferWorker = vi.fn()
-      .mockResolvedValueOnce({
-        action: "continue",
-        checkpoint: { status: "running", buildId: 42 },
-      })
-      .mockResolvedValueOnce({ action: "finish" });
-    const runner = createDeferLoopRunner(store, sm, bus);
-
-    runner.start();
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(sm.runDeferWorker).toHaveBeenCalledWith(expect.objectContaining({
-      deferId: loop.deferId,
-      kind: "interval",
-      parentSessionId: "session-1",
-      intervalSeconds: 300,
-    }));
-    expect(sm._started).toEqual([]);
-    expect(store.get(loop.id)).toMatchObject({
-      status: "active",
-      runCount: 1,
-      checkpoint: { status: "running", buildId: 42 },
-    });
-
+    expect(updated.checkpoint).toEqual({ status: "running", buildId: 42 });
     await vi.advanceTimersByTimeAsync(300_000);
-    expect(sm.runDeferWorker).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      checkpoint: { status: "running", buildId: 42 },
-    }));
+    expect(sm.runDeferWorker).toHaveBeenNthCalledWith(2, expect.objectContaining({ checkpoint: updated.checkpoint }));
     expect(store.get(loop.id)).toMatchObject({ status: "completed", runCount: 2 });
     runner.shutdown();
   });

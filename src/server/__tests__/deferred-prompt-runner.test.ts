@@ -34,7 +34,6 @@ import type { DatabaseSync } from "../db.js";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-
 /**
  * Lets a hand-built session manager run one-shot checks: its worker does what the manager's own
  * delivery does and then finishes silently. A check ends when that delivery resolves and fails when it throws.
@@ -630,7 +629,6 @@ describe("deferred-prompt-runner", () => {
       expect(dp.status).toBe("pending");
       runner.shutdown();
     });
-
   });
 
   describe("waiting for the Bridge", () => {
@@ -1116,29 +1114,6 @@ describe("deferred-prompt-runner", () => {
   });
 
   describe("future prompt timer", () => {
-    it("arms a timer for a future pending prompt and fires it", async () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const future = new Date(Date.now() + 5_000).toISOString();
-      store.create("session-1", "Delayed", future);
-
-      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
-      const runner = createDeferredPromptRunner(store, sm as any, bus);
-      runner.start();
-
-      // Nothing due yet
-      await vi.advanceTimersByTimeAsync(0);
-      let dp = store.listForSession("session-1")[0];
-
-      if (dp.status === "pending") {
-        await vi.advanceTimersByTimeAsync(5_000);
-        dp = store.listForSession("session-1")[0];
-      }
-
-      expect(dp.status).toBe("completed");
-      runner.shutdown();
-    });
-
     it("caps far-future timer delays below Node's timeout overflow limit", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
@@ -1367,7 +1342,7 @@ describe("deferred-prompt-runner", () => {
         runner.shutdown();
       });
 
-      it("records exact timer wake drift telemetry", async () => {
+      it("fires a pending prompt at its deadline and records the exact timer wake", async () => {
         const store = createDeferredPromptStore(db);
         const telemetryStore = createTelemetryStore(db);
         const bus = createGlobalBus();
@@ -1387,7 +1362,11 @@ describe("deferred-prompt-runner", () => {
         );
 
         runner.start();
-        await vi.advanceTimersByTimeAsync(5_000);
+        await vi.advanceTimersByTimeAsync(4_999);
+        expect(store.get(deferred.id)?.status).toBe("pending");
+        expect(sm._started).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(store.get(deferred.id)?.status).toBe("completed");
 
         expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "Exact wake" }]);
         expect(telemetryStore.querySpans({ name: "defer.runner.timer_wake" })[0]).toMatchObject({

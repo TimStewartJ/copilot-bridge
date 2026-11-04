@@ -315,13 +315,16 @@ describe("scheduler restart gating", () => {
     });
   });
 
-  it("attributes momentum written before prompt delivery finished to the schedule", async () => {
+  it("links before the scheduled turn runs and attributes its early work and announcement", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Scheduled Task");
+    const triggered = vi.fn();
+    const unsubscribe = ctx.globalBus.subscribe((event) => { if (event.type === "schedule:triggered") triggered(event); });
     const sessionManager = {
       isSessionBusy: vi.fn().mockReturnValue(false),
       createTaskSession: vi.fn().mockResolvedValue({ sessionId: "fast-session" }),
       startWorkAndWaitForDelivery: vi.fn().mockImplementation(async () => {
+        expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("fast-session");
         ctx.taskStore.updateTask(task.id, { nextAction: "Early step" }, { source: "agent", sessionId: "fast-session" });
       }),
       deleteSession: vi.fn().mockResolvedValue(undefined),
@@ -338,58 +341,14 @@ describe("scheduler restart gating", () => {
 
     await expect(scheduler.triggerSchedule(schedule.id)).resolves.toEqual({ sessionId: "fast-session" });
 
+    unsubscribe();
+    expect(triggered).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      type: "schedule:triggered", scheduleId: schedule.id, sessionId: "fast-session", taskId: task.id,
+    }));
+    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("fast-session");
     expect(ctx.taskStore.listMomentumEvents(task.id)[0]).toMatchObject({
       source: "agent", sessionId: "fast-session", scheduleId: schedule.id, scheduleName: "Fast schedule",
     });
-  });
-
-  it("emits the linked task id when a schedule triggers", async () => {
-    const { ctx } = createTestApp();
-    const events: Array<{ type: string; scheduleId?: string; sessionId?: string; taskId?: string }> = [];
-    const unsubscribe = ctx.globalBus.subscribe((event) => {
-      if (event.type === "schedule:triggered") {
-        events.push({
-          type: event.type,
-          scheduleId: event.scheduleId,
-          sessionId: event.sessionId,
-          taskId: event.taskId,
-        });
-      }
-    });
-    const sessionManager = {
-      isSessionBusy: vi.fn().mockReturnValue(false),
-      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWorkAndWaitForDelivery: vi.fn(),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    } as any;
-
-    try {
-      scheduler.initialize(sessionManager, {
-        scheduleStore: ctx.scheduleStore,
-        taskStore: ctx.taskStore,
-        sessionMetaStore: ctx.sessionMetaStore,
-        globalBus: ctx.globalBus,
-      });
-
-      const task = ctx.taskStore.createTask("Scheduled Task");
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId: task.id,
-        name: "Task event schedule",
-        prompt: "continue work",
-        type: "cron",
-        cron: "0 0 * * *",
-      });
-
-      expect(await scheduler.triggerSchedule(schedule.id)).toEqual({ sessionId: "sched-session" });
-      expect(events).toContainEqual({
-        type: "schedule:triggered",
-        scheduleId: schedule.id,
-        sessionId: "sched-session",
-        taskId: task.id,
-      });
-    } finally {
-      unsubscribe();
-    }
   });
 
   it("prunes run history after retention, preserving retryable sessions", async () => {
@@ -1069,41 +1028,6 @@ describe("scheduler restart gating", () => {
       /Failed to roll back session .*after launch rejection/,
     );
     expect(failCtx.taskStore.getTask(failTask.id)?.sessionIds).toContain("sched-session");
-  });
-
-  it("links a newly created scheduled session before startWorkAndWaitForDelivery runs", async () => {
-    const { ctx } = createTestApp();
-    const linkStateAtLaunch: boolean[] = [];
-    const task = ctx.taskStore.createTask("Scheduled Task");
-    const sessionManager = {
-      isSessionBusy: vi.fn().mockReturnValue(false),
-      createTaskSession: vi.fn().mockResolvedValue({ sessionId: "sched-session" }),
-      startWorkAndWaitForDelivery: vi.fn((sessionId: string) => {
-        linkStateAtLaunch.push(ctx.taskStore.getTask(task.id)?.sessionIds.includes(sessionId) ?? false);
-      }),
-      deleteSession: vi.fn().mockResolvedValue(undefined),
-    } as any;
-
-    scheduler.initialize(sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Launch ordering",
-      prompt: "run now",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-
-    const result = await scheduler.triggerSchedule(schedule.id);
-
-    expect(result).toEqual({ sessionId: "sched-session" });
-    expect(linkStateAtLaunch).toEqual([true]);
-    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toContain("sched-session");
   });
 
   it("aborts and deletes a newly created session if an automatic claim is lost after launch", async () => {

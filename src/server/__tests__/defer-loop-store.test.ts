@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { setupTestDb } from "./helpers.js";
 import { createDeferLoopStore } from "../defer-loop-store.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
-import { createDeferSummaryLookup, getDeferSummaryForSession, mergeDeferSummaries } from "../defer-summary.js";
-import { parseDeferId, toIntervalDeferId, toOnceDeferId } from "../defer-ids.js";
+import { createDeferSummaryLookup, getDeferSummaryForSession } from "../defer-summary.js";
+import { parseDeferId, toIntervalDeferId } from "../defer-ids.js";
 import type { DeferLoopStore } from "../defer-loop-store.js";
 import type { DatabaseSync } from "../db.js";
 
@@ -26,28 +26,27 @@ describe("defer-loop-store", () => {
     expiresAt: "2030-01-02T00:00:00.000Z",
   };
 
-  it("creates loops with prefixed public defer ids", () => {
-    const loop = store.create(baseLoop);
+  it("claims only due loops and schedules the next wake from the resulting lease", () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const later = "2026-01-01T00:10:00.000Z";
+    expect(store.getNextWakeAt(now)).toBeUndefined();
+    const loop = store.create({ ...baseLoop, nextRunAt: now });
+    store.create({ ...baseLoop, prompt: "later", nextRunAt: later });
+    expect(loop).toMatchObject({ status: "active", attempts: 0, runCount: 0 });
     expect(loop.id).toBeTruthy();
     expect(loop.deferId).toBe(toIntervalDeferId(loop.id));
     expect(parseDeferId(loop.deferId)).toEqual({ kind: "interval", id: loop.id });
-    expect(parseDeferId(toOnceDeferId("one-shot"))).toEqual({ kind: "once", id: "one-shot" });
-    expect(loop.status).toBe("active");
-    expect(loop.runCount).toBe(0);
-    expect(loop.attempts).toBe(0);
-  });
+    expect(store.listDue(now).map((row) => row.id)).toEqual([loop.id]);
+    expect(store.getNextWakeAt(now)).toBe(later);
 
-  it("lists and claims due active loops only", () => {
-    const due = store.create({ ...baseLoop, nextRunAt: "2026-01-01T00:00:00.000Z" });
-    store.create({ ...baseLoop, prompt: "future", nextRunAt: "2030-01-01T00:00:00.000Z" });
-
-    expect(store.listDue("2026-01-01T00:00:00.000Z").map((loop) => loop.id)).toEqual([due.id]);
-
-    const claimed = store.claimDue(due.id, 60_000, "2026-01-01T00:00:00.000Z");
-    expect(claimed).toBeDefined();
-    expect(claimed!.loop.status).toBe("running");
-    expect(claimed!.loop.attempts).toBe(1);
-    expect(store.claimDue(due.id, 60_000, "2026-01-01T00:00:00.000Z")).toBeUndefined();
+    const claimed = store.claimDue(loop.id, 60_000, now)!;
+    expect(claimed.loop).toMatchObject({ status: "running", attempts: 1 });
+    expect(store.claimDue(loop.id, 60_000, now)).toBeUndefined();
+    expect(store.getNextWakeAt(now)).toBe(claimed.loop.leaseExpiresAt);
+    expect(store.listExpiredRunning("2026-01-01T00:00:30.000Z")).toEqual([]);
+    expect(store.listExpiredRunning("2026-01-01T00:01:00.000Z")).toEqual([
+      expect.objectContaining({ id: loop.id, status: "running", claimToken: claimed.claimToken }),
+    ]);
   });
 
   it("renews and releases claims with token checks", () => {
@@ -83,16 +82,6 @@ describe("defer-loop-store", () => {
       "2026-01-01T00:00:30.000Z",
     )!;
     expect(settled.lastError).toBeUndefined();
-  });
-
-  it("returns the earliest future run or running lease expiry as the next wake time", () => {
-    expect(store.getNextWakeAt("2026-01-01T00:00:00.000Z")).toBeUndefined();
-    const due = store.create({ ...baseLoop, nextRunAt: "2026-01-01T00:00:00.000Z" });
-    store.create({ ...baseLoop, prompt: "later", nextRunAt: "2026-01-01T00:10:00.000Z" });
-    expect(store.getNextWakeAt("2026-01-01T00:00:00.000Z")).toBe("2026-01-01T00:10:00.000Z");
-
-    const claimed = store.claimDue(due.id, 60_000, "2026-01-01T00:00:00.000Z")!;
-    expect(store.getNextWakeAt("2026-01-01T00:00:00.000Z")).toBe(claimed.loop.leaseExpiresAt);
   });
 
   it("summarizes active and running loops with the earliest queued run time", () => {
@@ -270,55 +259,15 @@ describe("defer-loop-store", () => {
     expect(store.listForSession("session-2")[0]?.status).toBe("active");
   });
 
-  it("lists running loops whose lease has expired", () => {
-    const loop = store.create({ ...baseLoop, nextRunAt: "2026-01-01T00:00:00.000Z" });
-    store.create({ ...baseLoop, prompt: "idle", nextRunAt: "2026-01-01T00:00:00.000Z" });
-    const claimed = store.claimDue(loop.id, 60_000, "2026-01-01T00:00:00.000Z")!;
-
-    expect(store.listExpiredRunning("2026-01-01T00:00:30.000Z")).toEqual([]);
-    expect(store.listExpiredRunning("2026-01-01T00:01:00.000Z")).toEqual([
-      expect.objectContaining({ id: loop.id, status: "running", claimToken: claimed.claimToken }),
-    ]);
-  });
 });
 
 // ── Merged from defer-summary.test.ts ────────────────────────────────────────
 describe("defer summary (merged)", () => {
-  it("combines one-shot and interval summaries with the earliest next run time", () => {
-    const deferredPromptStore = createDeferredPromptStore(db);
-    deferredPromptStore.create("session-1", "One shot later", "2030-01-01T00:10:00.000Z");
-    deferredPromptStore.create("session-1", "One shot latest", "2030-01-01T00:20:00.000Z");
-    store.create({
-      sessionId: "session-1",
-      name: "interval",
-      prompt: "Interval earlier",
-      intervalSeconds: 60,
-      nextRunAt: "2030-01-01T00:05:00.000Z",
-    });
-    store.create({
-      sessionId: "session-2",
-      name: "other",
-      prompt: "Other",
-      intervalSeconds: 60,
-      nextRunAt: "2030-01-01T00:01:00.000Z",
-    });
-
-    const summary = mergeDeferSummaries(
-      deferredPromptStore.getSummaryForSession("session-1"),
-      store.getSummaryForSession("session-1"),
-    );
-
-    expect(summary).toEqual({
-      count: 3,
-      runningCount: 0,
-      nextRunAt: "2030-01-01T00:05:00.000Z",
-    });
-  });
-
-  it("bulk lookup resolves every session identically to per-session queries", () => {
+  it("combines both kinds of defer consistently in bulk and per-session summaries", () => {
     const deferredPromptStore = createDeferredPromptStore(db);
     const baseLoop = { prompt: "Check the thing", intervalSeconds: 300 };
     deferredPromptStore.create("session-1", "One shot later", "2030-01-01T00:10:00.000Z");
+    deferredPromptStore.create("session-1", "One shot latest", "2030-01-01T00:20:00.000Z");
     deferredPromptStore.create("session-3", "Only one-shot", "2030-01-01T00:00:00.000Z");
     store.create({ ...baseLoop, sessionId: "session-1", nextRunAt: "2030-01-01T00:05:00.000Z" });
     store.create({ ...baseLoop, sessionId: "session-2", nextRunAt: "2030-01-01T00:01:00.000Z" });
@@ -329,7 +278,7 @@ describe("defer summary (merged)", () => {
     for (const sessionId of ["session-1", "session-2", "session-3", "session-4", "missing"]) {
       expect(lookup(sessionId)).toEqual(getDeferSummaryForSession(sessionId, { deferredPromptStore, deferLoopStore: store }));
     }
-    expect(lookup("session-1")).toEqual({ count: 2, runningCount: 0, nextRunAt: "2030-01-01T00:05:00.000Z" });
+    expect(lookup("session-1")).toEqual({ count: 3, runningCount: 0, nextRunAt: "2030-01-01T00:05:00.000Z" });
     expect(lookup("session-4")).toEqual({ count: 0, runningCount: 0, nextRunAt: null });
     expect(store.listSummariesBySession().has("session-4")).toBe(false);
     expect(createDeferSummaryLookup({})("session-1")).toEqual({ count: 0, runningCount: 0, nextRunAt: null });

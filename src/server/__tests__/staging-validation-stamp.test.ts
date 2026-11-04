@@ -21,13 +21,14 @@ const STAMP = {
 };
 
 describe("staging validation stamps", () => {
-  it("round-trips and validates a current staging validation stamp", () => {
+  it("reads and validates a saved staging stamp until it is deleted", () => {
     const dataDir = makeTestDir("staging-stamp");
 
     writeStagingValidationStamp(dataDir, STAMP);
 
-    expect(readStagingValidationStamp(dataDir, STAMP.stagingPrefix)).toEqual(STAMP);
-    expect(validateStagingValidationStamp(readStagingValidationStamp(dataDir, STAMP.stagingPrefix), {
+    const saved = readStagingValidationStamp(dataDir, STAMP.stagingPrefix);
+    expect(saved).toEqual(STAMP);
+    expect(validateStagingValidationStamp(saved, {
       stagingPrefix: STAMP.stagingPrefix,
       stagingCommitSha: STAMP.stagingCommitSha,
       dependencyHash: STAMP.dependencyHash,
@@ -35,6 +36,8 @@ describe("staging validation stamps", () => {
       gateVersion: STAMP.gateVersion,
       command: STAMP.command,
     })).toEqual({ valid: true, stamp: STAMP });
+    deleteStagingValidationStamp(dataDir, STAMP.stagingPrefix);
+    expect(readStagingValidationStamp(dataDir, STAMP.stagingPrefix)).toBeNull();
   });
 
   it("rejects malformed and mismatched staging validation stamps", () => {
@@ -60,15 +63,6 @@ describe("staging validation stamps", () => {
       gateVersion: STAMP.gateVersion,
       command: STAMP.command,
     })).toMatchObject({ valid: false, reason: expect.stringContaining("dependency") });
-  });
-
-  it("deletes stale staging validation stamps", () => {
-    const dataDir = makeTestDir("staging-stamp-delete");
-    writeStagingValidationStamp(dataDir, STAMP);
-
-    deleteStagingValidationStamp(dataDir, STAMP.stagingPrefix);
-
-    expect(readStagingValidationStamp(dataDir, STAMP.stagingPrefix)).toBeNull();
   });
 
   it("ignores unreadable stamp content", () => {

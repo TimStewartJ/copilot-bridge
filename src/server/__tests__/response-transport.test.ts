@@ -42,17 +42,6 @@ function createApp() {
 }
 
 describe("response transport", () => {
-  it("compresses large JSON responses when the client accepts it", async () => {
-    const res = await request(createApp())
-      .get("/api/sessions")
-      .set("Accept-Encoding", "br, gzip");
-
-    expect(res.status).toBe(200);
-    expect(res.headers["content-encoding"]).toMatch(/^(br|gzip)$/);
-    expect(res.headers.vary).toContain("Accept-Encoding");
-    expect(res.body.sessions).toHaveLength(200);
-  });
-
   it("leaves small responses and clients without Accept-Encoding alone", async () => {
     const app = createApp();
     const small = await request(app).get("/api/health").set("Accept-Encoding", "gzip");
@@ -86,9 +75,13 @@ describe("response transport", () => {
     expect(res.headers["cache-control"]).toBe(API_MUTATION_CACHE_CONTROL);
   });
 
-  it("still answers 304 when a browser adds Cache-Control: no-cache to a script-set conditional request", async () => {
+  it("serves a compressed response that the browser can revalidate by its ETag", async () => {
     const app = createApp();
     const first = await request(app).get("/api/sessions").set("Accept-Encoding", "br, gzip");
+    expect(first.status).toBe(200);
+    expect(first.headers["content-encoding"]).toMatch(/^(br|gzip)$/);
+    expect(first.headers.vary).toContain("Accept-Encoding");
+    expect(first.body.sessions).toHaveLength(200);
     expect(first.headers["cache-control"]).toBe(API_GET_CACHE_CONTROL);
     const etag = first.headers.etag;
     expect(etag).toBeTruthy();

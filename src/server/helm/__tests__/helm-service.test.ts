@@ -160,8 +160,8 @@ describe("HelmService conversations", () => {
     helm.dispose();
   });
 
-  it("creates a conversation on Helm's model with the Helm profile registered first", async () => {
-    const { helm, store, sessionManager } = createHarness();
+  it("creates a profiled Helm conversation and returns to it after starting fresh", async () => {
+    const { helm, store, sessionManager, deleted } = createHarness();
     sessionManager.createSession.mockImplementationOnce(async (options: { expectedSessionId?: string }) => {
       // The profile resolver must already recognize the id while the session is being built.
       expect(store.isHelmSession(options.expectedSessionId)).toBe(true);
@@ -176,6 +176,15 @@ describe("HelmService conversations", () => {
     });
     expect(conversation).toMatchObject({ turnCount: 0, kept: false, busy: false, handsFree: false, title: null });
     expect((await helm.getState()).current?.sessionId).toBe(conversation.sessionId);
+    helm.recordTurn(conversation.sessionId);
+    const fresh = await helm.startFresh();
+    expect(fresh.current).toBeNull();
+    expect(fresh.resumable?.sessionId).toBe(conversation.sessionId);
+    expect(fresh.recent.map((entry) => entry.sessionId)).toEqual([conversation.sessionId]);
+    expect(deleted).toEqual([]);
+    expect((await helm.resumeConversation(conversation.sessionId)).sessionId).toBe(conversation.sessionId);
+    expect((await helm.getState()).current?.sessionId).toBe(conversation.sessionId);
+    await expect(helm.resumeConversation("missing")).rejects.toBeInstanceOf(HelmError);
   });
 
   it("honors a requested model and rolls back when creation fails", async () => {
@@ -192,23 +201,6 @@ describe("HelmService conversations", () => {
     await expect(helm.createConversation()).rejects.toThrow("Session capacity reached");
     expect(store.list().map((record) => record.sessionId)).toEqual([first.sessionId]);
     expect(store.getCurrent()?.sessionId).toBe(first.sessionId);
-  });
-
-  it("resets without deleting and offers the way back", async () => {
-    const { helm, deleted } = createHarness();
-    const first = await helm.createConversation();
-    helm.recordTurn(first.sessionId);
-
-    const fresh = await helm.startFresh();
-    expect(fresh.current).toBeNull();
-    expect(fresh.resumable?.sessionId).toBe(first.sessionId);
-    expect(fresh.recent.map((entry) => entry.sessionId)).toEqual([first.sessionId]);
-    expect(deleted).toEqual([]);
-
-    const resumed = await helm.resumeConversation(first.sessionId);
-    expect(resumed.sessionId).toBe(first.sessionId);
-    expect((await helm.getState()).current?.sessionId).toBe(first.sessionId);
-    await expect(helm.resumeConversation("missing")).rejects.toBeInstanceOf(HelmError);
   });
 
   it("drops a conversation nobody spoke in when it is replaced", async () => {
@@ -241,29 +233,18 @@ describe("HelmService conversations", () => {
     expect(state.resumable?.sessionId).toBe(conversation.sessionId);
   });
 
-  it("treats a finished reply as activity", async () => {
-    const { helm, globalBus, advance, store } = createHarness();
-    const conversation = await helm.createConversation();
-    advance(HOUR);
-    globalBus.emit({ type: "session:idle", sessionId: conversation.sessionId });
-    expect(store.get(conversation.sessionId)?.lastActiveAt).toBe("2026-09-18T10:00:00.000Z");
-    globalBus.emit({ type: "session:idle", sessionId: "some-other-session" });
-    helm.dispose();
-    advance(HOUR);
-    globalBus.emit({ type: "session:idle", sessionId: conversation.sessionId });
-    expect(store.get(conversation.sessionId)?.lastActiveAt).toBe("2026-09-18T10:00:00.000Z");
-  });
-
-  it("records when Helm replied, timed by the chat's visible activity, and tells clients", async () => {
-    const { helm, globalBus, store, visibleActivity } = createHarness();
+  it("tracks activity and reply time separately when Helm’s turn ends", async () => {
+    const { helm, globalBus, store, visibleActivity, advance } = createHarness();
     const conversation = await helm.createConversation();
     const announced: unknown[] = [];
     globalBus.subscribe((event) => { if (event.type === "helm:changed") announced.push(event); });
 
     // A turn that ended without a reply (aborted, or only Tim's own message) is not a reply.
+    advance(HOUR);
     visibleActivity.set(conversation.sessionId, "2026-09-18T09:05:00.000Z");
     globalBus.emit({ type: "session:idle", sessionId: conversation.sessionId });
     expect((await helm.getConversation(conversation.sessionId))?.lastReplyAt).toBeNull();
+    expect(store.get(conversation.sessionId)?.lastActiveAt).toBe("2026-09-18T10:00:00.000Z");
 
     visibleActivity.set(conversation.sessionId, "2026-09-18T09:10:00.000Z");
     globalBus.emit({ type: "session:idle", sessionId: conversation.sessionId, assistantPreview: "Done." });
@@ -279,6 +260,12 @@ describe("HelmService conversations", () => {
     globalBus.emit({ type: "session:history-truncated", sessionId: conversation.sessionId });
     expect(store.get(conversation.sessionId)?.lastReplyAt).toBe("2026-09-18T09:05:00.000Z");
     expect(announced).toHaveLength(2);
+
+    globalBus.emit({ type: "session:idle", sessionId: "some-other-session" });
+    helm.dispose();
+    advance(HOUR);
+    globalBus.emit({ type: "session:idle", sessionId: conversation.sessionId });
+    expect(store.get(conversation.sessionId)?.lastActiveAt).toBe("2026-09-18T10:00:00.000Z");
   });
 
   it("reads the session's own name and follows renames", async () => {

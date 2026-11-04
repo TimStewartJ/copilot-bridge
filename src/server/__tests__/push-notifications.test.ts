@@ -20,7 +20,7 @@ function createPushTestApp(sessionNames: Record<string, string> = {}) {
 }
 
 describe("push subscription store", () => {
-  it("upserts browser subscriptions by endpoint", () => {
+  it("updates one browser subscription by endpoint and removes it when unsubscribed", () => {
     const db = setupTestDb();
     const store = createPushSubscriptionStore(db);
 
@@ -38,17 +38,12 @@ describe("push subscription store", () => {
     expect(second.auth).toBe("updated-auth");
     expect(second.userAgent).toBe("Updated Agent");
     expect(store.countSubscriptions()).toBe(1);
-  });
 
-  it("deletes subscriptions by endpoint", () => {
-    const db = setupTestDb();
-    const store = createPushSubscriptionStore(db);
-    store.upsertSubscription(TEST_SUBSCRIPTION);
-
-    expect(store.deleteSubscription(TEST_SUBSCRIPTION.endpoint)).toBe(true);
-    expect(store.deleteSubscription(TEST_SUBSCRIPTION.endpoint)).toBe(false);
+    expect(store.deleteSubscription(second.endpoint)).toBe(true);
+    expect(store.deleteSubscription(second.endpoint)).toBe(false);
     expect(store.countSubscriptions()).toBe(0);
   });
+
 });
 
 describe("push notification service", () => {

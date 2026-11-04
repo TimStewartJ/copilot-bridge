@@ -50,7 +50,7 @@ describe("background command store", () => {
     expect(runningCount("s1")).toBe(0);
   });
 
-  it("turns a session's running commands into a loss its agent has not heard about", () => {
+  it("keeps an unreported stop when the same shell runs and finishes a later command", () => {
     store.syncRunning("s1", [build]);
     store.syncRunning("s2", [server]);
 
@@ -60,18 +60,10 @@ describe("background command store", () => {
     expect(store.listStopped("s1")).toEqual([{ ...build, stoppedAt: at(10).toISOString(), stoppedBy: "unloaded" }]);
     expect(store.listStopped("s2")).toEqual([]);
     expect(runningCount("s2")).toBe(1);
-  });
 
-  it("keeps a reported loss when the same shell id runs a new command", () => {
-    store.syncRunning("s1", [build]);
-    store.markSessionStopped("s1", "unloaded", at(10));
-    const rerun = { ...build, startedAt: at(12).toISOString() };
-
-    store.syncRunning("s1", [rerun]);
+    store.syncRunning("s1", [{ ...build, startedAt: at(12).toISOString() }]);
     store.syncRunning("s1", []);
-
-    expect(store.listStopped("s1")).toHaveLength(1);
-    expect(store.listStopped("s1")[0]?.startedAt).toBe(build.startedAt);
+    expect(store.listStopped("s1")).toEqual([{ ...build, stoppedAt: at(10).toISOString(), stoppedBy: "unloaded" }]);
   });
 
   it("clears only the commands the agent was told about", () => {

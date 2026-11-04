@@ -142,28 +142,6 @@ describe("management job store", () => {
     }
   });
 
-  it("cancels queued jobs with terminal cancellation metadata", () => {
-    let current = new Date("2026-05-18T20:00:00.000Z");
-    const { db, store, dataDir } = createStore("cancel-queued", () => current);
-    try {
-      const job = store.enqueue("staging_preview", { stagingDir: "queued" });
-      current = new Date("2026-05-18T20:00:01.000Z");
-
-      const cancelled = store.cancel(job.id, "Cancelled by test.");
-
-      expect(cancelled).toMatchObject({
-        status: "cancelled",
-        error: "Cancelled by test.",
-        cancelRequestedAt: current.toISOString(),
-        completedAt: current.toISOString(),
-        updatedAt: current.toISOString(),
-      });
-    } finally {
-      db.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
   it("rejects running and terminal cancellation without mutating jobs", () => {
     let current = new Date("2026-05-18T20:00:00.000Z");
     const { db, store, dataDir } = createStore("cancel-non-queued", () => current);

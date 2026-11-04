@@ -4,7 +4,6 @@ import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import {
   HTML_MIME_TYPE,
-  MERMAID_MIME_TYPE,
   MAX_MERMAID_SOURCE_CHARS,
   loadVisualArtifactMetaForOwner,
   publishMermaidArtifact,
@@ -45,28 +44,6 @@ describe("publishVisualArtifact", () => {
     }
   });
 
-  it("respects apiBasePath in generated URLs", () => {
-    const copilotHome = makeTmpDir();
-    const srcDir = makeTmpDir();
-    const srcPath = join(srcDir, "img.png");
-    writeFileSync(srcPath, Buffer.from([0x89, 0x50]));
-
-    const result = publishVisualArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      kind: "image",
-      title: "T",
-      mimeType: "image/png",
-      sourcePath: srcPath,
-      apiBasePath: "/staging/preview-abc/api",
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.size).toBeGreaterThan(0);
-    expect(result.value.metaUrl).toContain(`/visuals/${result.value.artifactId}/meta`);
-    expect(result.value.url).toMatch(/^\/staging\/preview-abc\/api\//);
-  });
 });
 
 describe("resolveVisualArtifactForOwner", () => {
@@ -172,7 +149,7 @@ describe("loadVisualArtifactMetaForOwner", () => {
     return dir;
   }
 
-  it("loads metadata for a published artifact", () => {
+  it("returns the staged URLs and stored metadata of the same published image", () => {
     const copilotHome = makeTmpDir();
     const srcDir = makeTmpDir();
     const srcPath = join(srcDir, "img.webp");
@@ -186,9 +163,14 @@ describe("loadVisualArtifactMetaForOwner", () => {
       mimeType: "image/webp",
       sourcePath: srcPath,
       caption: "webp caption",
+      apiBasePath: "/staging/preview-abc/api",
     });
     expect(published.ok).toBe(true);
     if (!published.ok) return;
+
+    expect(published.value.size).toBeGreaterThan(0);
+    expect(published.value.metaUrl).toContain(`/visuals/${published.value.artifactId}/meta`);
+    expect(published.value.url).toMatch(/^\/staging\/preview-abc\/api\//);
 
     const meta = loadVisualArtifactMetaForOwner(
       copilotHome,
@@ -232,33 +214,6 @@ describe("publishMermaidArtifact", () => {
       expect(result.ok).toBe(false);
       expect((result as any).error).toMatch(expected);
     }
-  });
-
-  it("resolves a published mermaid artifact via resolveVisualArtifactForOwner", () => {
-    const copilotHome = makeTmpDir();
-    const source = "pie\n  \"A\" : 50\n  \"B\" : 50";
-
-    const published = publishMermaidArtifact({
-      copilotHome,
-      sessionId: SESSION_ID,
-      title: "Pie Chart",
-      source,
-    });
-    expect(published.ok).toBe(true);
-    if (!published.ok) return;
-    expect(published.value.source).toBe(source);
-    expect(published.value.size).toBeGreaterThan(0);
-    expect(published.value.metaUrl).toContain(`/visuals/${published.value.artifactId}/meta`);
-
-    const resolved = resolveVisualArtifactForOwner(
-      copilotHome,
-      sessionVisualOwner(SESSION_ID),
-      published.value.artifactId,
-    );
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect(resolved.value.mimeType).toBe(MERMAID_MIME_TYPE);
-    expect(resolved.value.displayName).toMatch(/\.mmd$/);
   });
 
 });

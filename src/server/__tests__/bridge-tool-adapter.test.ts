@@ -41,24 +41,19 @@ describe("defineBridgeTool invocation identity", () => {
     expect(seen?.toolName).toBe("probe");
   });
 
-  it("reports a missing session as undefined rather than an empty string", async () => {
+  it("normalizes missing SDK invocation identities without inventing a session", async () => {
     let seen: BridgeToolInvocation | undefined;
     const tool = defineBridgeTool("probe", { handler: async (_args, invocation) => { seen = invocation; return "ok"; } });
 
-    await expect(tool.handler({}, extra({ sessionId: undefined }))).resolves.toBe("ok");
+    await expect(tool.handler({}, extra({ sessionId: undefined, requestId: undefined }))).resolves.toBe("ok");
     expect(seen?.sessionId).toBeUndefined();
+
+    expect(seen?.toolCallId).toBe("");
 
     await tool.handler({}, extra({ sessionId: "   " }));
     expect(seen?.sessionId).toBeUndefined();
   });
 
-  it("never yields an empty toolCallId string of 'undefined'", async () => {
-    let seen: BridgeToolInvocation | undefined;
-    const tool = defineBridgeTool("probe", { handler: async (_args, invocation) => { seen = invocation; return "ok"; } });
-
-    await tool.handler({}, extra({ requestId: undefined }));
-    expect(seen?.toolCallId).toBe("");
-  });
 });
 
 describe("defineBridgeTool schema enforcement", () => {

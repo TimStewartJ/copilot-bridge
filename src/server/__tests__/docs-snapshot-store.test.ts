@@ -21,7 +21,7 @@ function makeSnapshotStore(options: { maxSnapshots?: number } = {}) {
 }
 
 describe("docs snapshot store", () => {
-  it("creates a filesystem-safe snapshot with metadata and copied docs", () => {
+  it("restores the saved snapshot and keeps a backup of the docs it replaces", () => {
     const { docsDir, snapshotsDir, store } = makeSnapshotStore();
     mkdirSync(join(docsDir, "projects"), { recursive: true });
     writeFileSync(join(docsDir, "projects", "alpha.md"), "# Alpha\n", "utf-8");
@@ -43,6 +43,14 @@ describe("docs snapshot store", () => {
     expect(readFileSync(join(snapshotsDir, snapshotId, "docs", "projects", "alpha.md"), "utf-8")).toBe("# Alpha\n");
     const metadata = JSON.parse(readFileSync(join(snapshotsDir, snapshotId, "metadata.json"), "utf-8"));
     expect(metadata.contentHash).toBe(result.snapshot?.contentHash);
+
+    writeFileSync(join(docsDir, "projects", "alpha.md"), "# Current\n");
+    writeFileSync(join(docsDir, "extra.md"), "# Extra\n");
+    const restore = store.restoreSnapshot(snapshotId);
+    expect(restore).toMatchObject({ restoredFrom: { id: snapshotId }, fileCount: 1, totalBytes: 8 });
+    expect(readFileSync(join(docsDir, "projects", "alpha.md"), "utf-8")).toBe("# Alpha\n");
+    expect(existsSync(join(docsDir, "extra.md"))).toBe(false);
+    expect(store.listSnapshots()).toContainEqual(expect.objectContaining({ id: restore.preRestoreSnapshotId, reason: "pre-restore" }));
   });
 
   it("rejects overlapping docs and snapshot directories", () => {
@@ -84,26 +92,6 @@ describe("docs snapshot store", () => {
 
     expect(third.created).toBe(true);
     expect(third.snapshot?.id).not.toBe(first.snapshot?.id);
-  });
-
-  it("restores a snapshot through a staged swap and creates a pre-restore snapshot", () => {
-    const { docsDir, store } = makeSnapshotStore();
-    writeFileSync(join(docsDir, "note.md"), "# Original\n", "utf-8");
-    const snapshot = store.createSnapshot({ reason: "manual" }).snapshot!;
-
-    writeFileSync(join(docsDir, "note.md"), "# Current\n", "utf-8");
-    writeFileSync(join(docsDir, "extra.md"), "# Extra\n", "utf-8");
-
-    const restore = store.restoreSnapshot(snapshot.id);
-
-    expect(restore).toMatchObject({
-      restoredFrom: { id: snapshot.id },
-      fileCount: 1,
-      totalBytes: 11,
-    });
-    expect(readFileSync(join(docsDir, "note.md"), "utf-8")).toBe("# Original\n");
-    expect(existsSync(join(docsDir, "extra.md"))).toBe(false);
-    expect(store.listSnapshots().some((entry) => entry.id === restore.preRestoreSnapshotId && entry.reason === "pre-restore")).toBe(true);
   });
 
   it("leaves live docs untouched when snapshot integrity validation fails", () => {

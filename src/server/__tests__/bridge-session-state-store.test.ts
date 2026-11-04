@@ -3,24 +3,15 @@ import { setupTestDb } from "./helpers.js";
 import { createBridgeSessionStateStore } from "../bridge-session-state-store.js";
 
 describe("bridge session state store", () => {
-  it("keeps independent fields when clearing archive state", () => {
+  it("preserves independent chat overrides until the last one is cleared", () => {
     const store = createBridgeSessionStateStore(setupTestDb());
 
     store.setTitleOverride("session-1", "Manual title");
     store.setArchived("session-1", true);
     store.setArchived("session-1", false);
-
-    const state = store.getState("session-1");
-    expect(state?.archived).toBe(false);
-    expect(state?.archivedAt).toBeUndefined();
-    expect(state?.titleOverride).toBe("Manual title");
-  });
-
-  it("keeps a chat's playbook through other clears and prunes the row once it is the last field", () => {
-    const store = createBridgeSessionStateStore(setupTestDb());
+    expect(store.getState("session-1")).toMatchObject({ archived: false, archivedAt: undefined, titleOverride: "Manual title" });
 
     store.setPlaybook("session-1", "watch", "schedule");
-    store.setTitleOverride("session-1", "Manual title");
     store.clearAllTitleOverrides();
     store.setPinnedCwd("session-1", "/repo");
     store.clearPinnedCwd("session-1");
@@ -48,60 +39,31 @@ describe("bridge session state store", () => {
     expect(Object.keys(store.listStates()).sort()).toEqual(["archived-only", "pinned-1", "pinned-2", "titled-only"]);
   });
 
-  it("preserves the latest visible and attention timestamps", () => {
-    // visible activity
-    {
+  it("keeps the latest visible activity until a rewind replaces or clears it", () => {
     const store = createBridgeSessionStateStore(setupTestDb());
-
-    store.setLastVisibleActivityAt("session-1", "2026-05-07T10:00:00.000Z");
-    store.setLastVisibleActivityAt("session-1", "2026-05-07T09:00:00.000Z");
-
-    expect(store.getState("session-1")?.lastVisibleActivityAt).toBe("2026-05-07T10:00:00.000Z");
-    }
-
-    // attention
-    {
-    const store = createBridgeSessionStateStore(setupTestDb());
-
-    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
-    store.setLastAttentionAt("session-1", "2026-05-07T09:00:00.000Z");
-
-    expect(store.getState("session-1")?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
-    }
-  });
-  it("can replace or clear visible and attention activity after history is rewound", () => {
-    // visible activity
-    {
-    const store = createBridgeSessionStateStore(setupTestDb());
-
-    store.setLastVisibleActivityAt("session-1", "2026-05-07T10:00:00.000Z");
-    store.replaceLastVisibleActivityAt("session-1", "2026-05-07T09:00:00.000Z");
-    expect(store.getState("session-1")?.lastVisibleActivityAt).toBe("2026-05-07T09:00:00.000Z");
-
+    const latest = "2026-05-07T10:00:00.000Z";
+    const older = "2026-05-07T09:00:00.000Z";
+    store.setLastVisibleActivityAt("session-1", latest);
+    store.setLastVisibleActivityAt("session-1", older);
+    expect(store.getState("session-1")?.lastVisibleActivityAt).toBe(latest);
+    store.replaceLastVisibleActivityAt("session-1", older);
+    expect(store.getState("session-1")?.lastVisibleActivityAt).toBe(older);
     store.replaceLastVisibleActivityAt("session-1", undefined);
     expect(store.getState("session-1")).toBeUndefined();
-    }
-
-    // attention
-    {
-    const store = createBridgeSessionStateStore(setupTestDb());
-
-    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
-    store.replaceLastAttentionAt("session-1", "2026-05-07T09:00:00.000Z");
-    expect(store.getState("session-1")?.lastAttentionAt).toBe("2026-05-07T09:00:00.000Z");
-
-    store.replaceLastAttentionAt("session-1", undefined);
-    expect(store.getState("session-1")).toBeUndefined();
-    }
   });
-  it("keeps attention-only rows when other fields are cleared", () => {
+  it("keeps attention through older events and other clears until history is rewound", () => {
     const store = createBridgeSessionStateStore(setupTestDb());
-
-    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
+    const latest = "2026-05-07T10:00:00.000Z";
+    const older = "2026-05-07T09:00:00.000Z";
+    store.setLastAttentionAt("session-1", latest);
+    store.setLastAttentionAt("session-1", older);
     store.setPinnedCwd("session-1", "D:\\repo");
     store.clearPinnedCwd("session-1");
-
-    expect(store.getState("session-1")?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
+    expect(store.getState("session-1")?.lastAttentionAt).toBe(latest);
+    store.replaceLastAttentionAt("session-1", older);
+    expect(store.getState("session-1")?.lastAttentionAt).toBe(older);
+    store.replaceLastAttentionAt("session-1", undefined);
+    expect(store.getState("session-1")).toBeUndefined();
   });
 
   it("persists and clears pending fork auto-name state independently", () => {

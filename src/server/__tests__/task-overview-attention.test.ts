@@ -40,16 +40,9 @@ describe("task continuation evidence", () => {
     return { ctx, task, read, manager };
   }
 
-  it("is read-only and keeps manual task/group order separate from its evidence", () => {
+  it("shows a task’s pending results without changing the task or counting finished deliveries", () => {
     const { ctx, task, read } = setup();
     const before = ctx.taskStore.getTask(task.id);
-    const activity = read().activity;
-    expect(activity).toMatchObject({ known: true, runCount: 0, deferredCount: 0, pendingDeliveryCount: 0 });
-    expect(ctx.taskStore.getTask(task.id)).toEqual(before);
-  });
-
-  it("counts queued result deliveries even when no defer remains, excluding failed and completed results", () => {
-    const { ctx, read } = setup();
     const result = ctx.deferredPromptStore.enqueueDelivery(createReturnedDeferDelivery(
       { deferId: "once_result", kind: "once", parentSessionId: "conversation" }, "Result", { deliveryId: "result-1" },
     ));
@@ -59,7 +52,8 @@ describe("task continuation evidence", () => {
     expect(claim).toBeDefined();
     expect(read().activity?.pendingDeliveryCount).toBe(1);
     ctx.deferredPromptStore.complete(result.id, { claimToken: claim!.claimToken });
-    expect(read().activity?.pendingDeliveryCount).toBe(0);
+    expect(read().activity).toMatchObject({ known: true, runCount: 0, deferredCount: 0, pendingDeliveryCount: 0 });
+    expect(ctx.taskStore.getTask(task.id)).toEqual(before);
     const failed = ctx.deferredPromptStore.enqueueDelivery(createReturnedDeferDelivery(
       { deferId: "once_failed", kind: "once", parentSessionId: "conversation" }, "Result", { deliveryId: "result-2" },
     ));

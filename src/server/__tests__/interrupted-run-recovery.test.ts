@@ -35,10 +35,12 @@ function pendingRecoveryPrompts(sessionId: string): number {
 }
 
 describe("interrupted-run-store", () => {
-  it("keeps the resume stamp when the resumed run is accepted again", () => {
+  it("clears a deferred retry on immediate resume and keeps that resume stamp on acceptance", () => {
     markers.markAccepted("session-1", "normal", new Date("2026-01-01T00:00:00.000Z"));
     expect(markers.list()[0]).toMatchObject({ acceptedAt: "2026-01-01T00:00:00.000Z", lastResumedAt: null, retryScheduled: false });
+    markers.markRetryScheduled("session-1", new Date("2026-01-01T00:03:00.000Z"));
     markers.markResumed("session-1", new Date("2026-01-01T00:05:00.000Z"));
+    expect(markers.list()[0]).toMatchObject({ lastResumedAt: "2026-01-01T00:05:00.000Z", retryScheduled: false });
     markers.markAccepted("session-1", "normal", new Date("2026-01-01T00:05:01.000Z"));
 
     expect(markers.list()).toEqual([{
@@ -66,14 +68,6 @@ describe("interrupted-run-store", () => {
     markers.markAccepted("session-1", "quiet");
 
     expect(markers.clear("session-1")).toBe(false);
-  });
-
-  it("a resume made at once takes the put-off mark away", () => {
-    markers.markAccepted("session-1", "normal");
-    markers.markRetryScheduled("session-1", new Date("2026-01-01T00:10:00.000Z"));
-    markers.markResumed("session-1", new Date("2026-01-01T00:30:00.000Z"));
-
-    expect(markers.list()[0]).toMatchObject({ lastResumedAt: "2026-01-01T00:30:00.000Z", retryScheduled: false });
   });
 
   it("adds the column to a database from before it existed", () => {

@@ -26,22 +26,25 @@ describe("schedule-store", () => {
   };
 
   describe("CRUD", () => {
-    it("createSchedule returns a valid schedule", () => {
-      const s = store.createSchedule({
-        ...baseCron,
-        modelTier: "preset1",
-        autoArchiveKeep: 8,
+    it("creates, changes, preserves and clears a schedule’s run options", () => {
+      const schedule = store.createSchedule({ ...baseCron, modelTier: "preset1", playbook: "watch", autoArchiveKeep: 8 });
+      expect(schedule).toMatchObject({
+        id: expect.stringMatching(/.+/), name: "Daily standup", enabled: true, runCount: 0,
+        modelTier: "preset1", playbook: "watch", autoArchiveKeep: 8,
       });
-      expect(s.id).toBeTruthy();
-      expect(s.name).toBe("Daily standup");
-      expect(s.enabled).toBe(true);
-      expect(s.runCount).toBe(0);
-      expect(s.modelTier).toBe("preset1");
-      expect(s.autoArchiveKeep).toBe(8);
+      const changes = { playbook: "sweep", modelTier: "preset3", autoArchiveKeep: 4 } as const;
+      expect(store.updateSchedule(schedule.id, changes)).toMatchObject(changes);
+      expect(store.updateSchedule(schedule.id, { name: "Renamed" })).toMatchObject({ name: "Renamed", ...changes });
+      expect(store.updateSchedule(schedule.id, { playbook: null, modelTier: null, autoArchiveKeep: null })).toMatchObject({
+        playbook: undefined, modelTier: undefined, autoArchiveKeep: undefined,
+      });
+      expect(store.updateSchedule(schedule.id, { modelTier: "preset3", autoArchiveKeep: 4 })).toMatchObject({
+        modelTier: "preset3", autoArchiveKeep: 4, playbook: undefined,
+      });
     });
 
     it("listSchedules filters by taskId", () => {
-      store.createSchedule(baseCron);
+      expect(store.createSchedule(baseCron).playbook).toBeUndefined();
       store.createSchedule({ ...baseCron, taskId: "task-2", name: "Other" });
       expect(store.listSchedules("task-1")).toHaveLength(1);
       expect(store.listSchedules("task-2")).toHaveLength(1);
@@ -67,28 +70,6 @@ describe("schedule-store", () => {
       ]);
       expect(store.getSchedule(dueLate.id)?.nextRunAt).toBe("2026-01-01T08:00:00.000Z");
       expect(store.listDueSchedules("2026-01-01T08:30:00.000Z").map((item) => item.id)).not.toContain(missingNextRun.id);
-    });
-
-    it("stores, changes and clears a schedule's playbook", () => {
-      const created = store.createSchedule({ ...baseCron, playbook: "watch" });
-      expect(created.playbook).toBe("watch");
-      expect(store.updateSchedule(created.id, { playbook: "sweep" }).playbook).toBe("sweep");
-      expect(store.updateSchedule(created.id, { name: "Renamed" })).toMatchObject({ name: "Renamed", playbook: "sweep" });
-      expect(store.updateSchedule(created.id, { playbook: null }).playbook).toBeUndefined();
-      expect(store.createSchedule(baseCron).playbook).toBeUndefined();
-    });
-
-    it("updateSchedule changes and clears autoArchiveKeep", () => {
-      const s = store.createSchedule(baseCron);
-      expect(store.updateSchedule(s.id, { autoArchiveKeep: 4 }).autoArchiveKeep).toBe(4);
-      expect(store.updateSchedule(s.id, { autoArchiveKeep: null }).autoArchiveKeep).toBeUndefined();
-    });
-
-    it("updateSchedule changes and clears the model tier", () => {
-      const s = store.createSchedule(baseCron);
-      expect(store.updateSchedule(s.id, { modelTier: "preset3" }).modelTier).toBe("preset3");
-      expect(store.updateSchedule(s.id, { name: "Renamed" }).modelTier).toBe("preset3");
-      expect(store.updateSchedule(s.id, { modelTier: null }).modelTier).toBeUndefined();
     });
 
     it("updateSchedule throws for missing id", () => {
@@ -119,49 +100,12 @@ describe("schedule-store", () => {
   });
 
   describe("automatic run claims", () => {
-    it("dedupes automatic runs by scheduled slot and reclaims stale claims", () => {
-      const s = store.createSchedule(baseCron);
-      const runKey = "2026-01-01T08:00:00.000Z";
 
-      expect(store.claimAutomaticRun(s.id, runKey, "cron", "2026-01-01T08:00:00.000Z")).toMatchObject({
-        acquired: true,
-        claim: { runKey },
-      });
-      expect(store.claimAutomaticRun(s.id, runKey, "cron", "2026-01-01T08:01:00.000Z")).toMatchObject({
-        acquired: false,
-      });
-      expect(store.claimAutomaticRun(s.id, runKey, "cron", "2026-01-01T08:03:00.000Z")).toMatchObject({
-        acquired: true,
-        claim: { runKey },
-      });
-    });
-
-    it("completeAutomaticRun records the run and finalizes the claim", () => {
-      const s = store.createSchedule(baseCron);
-      const runKey = "2026-01-01T08:00:00.000Z";
-
-      const claimed = store.claimAutomaticRun(s.id, runKey, "cron", runKey);
-      expect(claimed.acquired).toBe(true);
-      if (!claimed.acquired) {
-        throw new Error("expected claim to be acquired");
-      }
-      expect(store.completeAutomaticRun(s.id, claimed.claim, "session-abc")).toBe(true);
-
-      expect(store.getSchedule(s.id)).toMatchObject({
-        runCount: 1,
-        lastSessionId: "session-abc",
-        lastRunAt: expect.any(String),
-      });
-      const claim = db.prepare(
-        "SELECT status, sessionId FROM schedule_run_claims WHERE scheduleId = ? AND runKey = ?",
-      ).get(s.id, runKey) as { status: string; sessionId: string | null };
-      expect(claim).toEqual({ status: "triggered", sessionId: "session-abc" });
-    });
-
-    it("ignores stale finalization from a reclaimed automatic claim", () => {
+    it("deduplicates a slot, then records only the owner that reclaimed it", () => {
       const s = store.createSchedule(baseCron);
       const runKey = "2026-01-01T08:00:00.000Z";
       const firstClaim = store.claimAutomaticRun(s.id, runKey, "cron", "2026-01-01T08:00:00.000Z");
+      expect(store.claimAutomaticRun(s.id, runKey, "cron", "2026-01-01T08:01:00.000Z")).toMatchObject({ acquired: false });
       const secondClaim = store.claimAutomaticRun(s.id, runKey, "cron", "2026-01-01T08:03:00.000Z");
       expect(firstClaim.acquired).toBe(true);
       expect(secondClaim.acquired).toBe(true);
@@ -169,6 +113,8 @@ describe("schedule-store", () => {
         throw new Error("expected both claims to be acquired");
       }
 
+      expect(firstClaim.claim.runKey).toBe(runKey);
+      expect(secondClaim.claim.runKey).toBe(runKey);
       expect(store.completeAutomaticRun(s.id, firstClaim.claim, "session-a")).toBe(false);
       expect(store.getSchedule(s.id)).toMatchObject({
         runCount: 0,
@@ -179,6 +125,7 @@ describe("schedule-store", () => {
       expect(store.getSchedule(s.id)).toMatchObject({
         runCount: 1,
         lastSessionId: "session-b",
+        lastRunAt: expect.any(String),
       });
       const claim = db.prepare(
         "SELECT status, sessionId FROM schedule_run_claims WHERE scheduleId = ? AND runKey = ?",
@@ -247,7 +194,6 @@ describe("schedule-store", () => {
         acquired: false,
       });
     });
-
   });
 
 });

@@ -53,27 +53,6 @@ function makePublishVisualEvents(opts: {
 }
 
 describe("event-transform: visual entries", () => {
-  it("emits a visual entry after a successful publish_visual tool completion", () => {
-    const entries = transformEventsToMessages(makePublishVisualEvents(), SESSION_ID);
-
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(1);
-
-    const v = visualEntries[0];
-    const tool = entries.find((entry) => entry.type === "tool");
-    expect(tool?.toolCall).toMatchObject({ name: "publish_visual", success: true });
-    expect(entries.indexOf(v)).toBeGreaterThan(entries.indexOf(tool!));
-    expect(v.visual?.artifactId).toBe("550e8400-e29b-41d4-a716-446655440000");
-    expect(v.visual?.kind).toBe("image");
-    expect(v.visual?.source).toBeUndefined();
-    expect(v.visual?.title).toBe("My Chart");
-    expect(v.visual?.mimeType).toBe("image/png");
-    expect(v.visual?.url).toMatch(/\/visuals\//);
-    expect(v.visual?.downloadUrl).toMatch(/\/download/);
-    expect(v.visual?.caption).toBe("Chart caption");
-    expect(v.visual?.altText).toBe("chart alt");
-  });
-
   it("emits a visual entry when the persisted tool result is a JSON string or wraps JSON in content", () => {
     // JSON string form (persisted as serialized result)
     const entriesStr = transformEventsToMessages(
@@ -166,7 +145,7 @@ describe("event-transform: visual entries", () => {
     expect(visualEntries).toHaveLength(0);
   });
 
-  it("handles multiple publish_visual calls in one turn", () => {
+  it("replays each published card after its tool without losing the surrounding conversation", () => {
     const events = [
       ...makePublishVisualEvents({ toolCallId: "tc-1" }),
       {
@@ -197,34 +176,21 @@ describe("event-transform: visual entries", () => {
           },
         },
       },
+      { type: "assistant.message", timestamp: "2026-04-10T10:00:05.000Z", data: { content: "Here are your charts." } },
     ];
     const entries = transformEventsToMessages(events, SESSION_ID);
     const visualEntries = entries.filter((e) => e.type === "visual");
     expect(visualEntries).toHaveLength(2);
-    expect(visualEntries[0].visual?.artifactId).toBe("550e8400-e29b-41d4-a716-446655440000");
+    expect(entries.map((entry) => entry.type)).toEqual(["message", "tool", "visual", "tool", "visual", "message"]);
+    expect(entries[1].toolCall).toMatchObject({ name: "publish_visual", success: true });
+    expect(visualEntries[0].visual).toMatchObject({
+      artifactId: "550e8400-e29b-41d4-a716-446655440000", kind: "image", title: "My Chart", mimeType: "image/png",
+      url: expect.stringMatching(/\/visuals\//), downloadUrl: expect.stringMatching(/\/download/), caption: "Chart caption", altText: "chart alt",
+    });
+    expect(visualEntries[0].visual?.source).toBeUndefined();
     expect(visualEntries[1].visual?.artifactId).toBe("660e8400-e29b-41d4-a716-446655440000");
   });
 
-  it("preserves other entry types alongside visual entries", () => {
-    const events = [
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { content: "Show chart", timestamp: "2026-04-10T10:00:00.000Z" },
-      },
-      ...makePublishVisualEvents().slice(1),
-      {
-        type: "assistant.message",
-        timestamp: "2026-04-10T10:00:05.000Z",
-        data: { content: "Here is your chart." },
-      },
-    ];
-    const entries = transformEventsToMessages(events, SESSION_ID);
-    const types = entries.map((e) => e.type);
-    expect(types).toContain("message");
-    expect(types).toContain("tool");
-    expect(types).toContain("visual");
-  });
 });
 
 describe("event-transform: mermaid visual entries", () => {

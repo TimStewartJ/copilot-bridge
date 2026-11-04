@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
+import { resolveVisualArtifactForOwner, sessionVisualOwner } from "../visual-artifacts.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./test-app.js";
 
@@ -40,18 +41,18 @@ describe("publish_visual tool", () => {
     return dir;
   }
 
-  it("publishes an image from a path and returns structured visual result", async () => {
+  it("publishes a file-backed image card with its inferred media type", async () => {
     const copilotHome = makeTmpDir();
     const srcDir = makeTmpDir();
-    const srcPath = join(srcDir, "chart.png");
-    writeFileSync(srcPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]));
+    const srcPath = join(srcDir, "chart.jpg");
+    writeFileSync(srcPath, Buffer.from([0xff, 0xd8, 0xff]));
 
     const { ctx } = createTestApp({ copilotHome });
     const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
     const result: any = await tool.handler(
-      { kind: "image", title: "My Chart", path: srcPath, mimeType: "image/png" },
+      { kind: "image", title: "My Chart", path: srcPath },
       createInvocation(),
     );
 
@@ -59,7 +60,7 @@ describe("publish_visual tool", () => {
     expect(result.__kind).toBe("visual.published");
     expect(result.kind).toBe("image");
     expect(result.title).toBe("My Chart");
-    expect(result.mimeType).toBe("image/png");
+    expect(result.mimeType).toBe("image/jpeg");
     expect(result.url).toMatch(/\/visuals\//);
     expect(result.downloadUrl).toMatch(/\/download/);
     expect(typeof result.artifactId).toBe("string");
@@ -94,25 +95,6 @@ describe("publish_visual tool", () => {
     expect(result.size).toBe(pngBytes.length);
   });
 
-  it("infers mimeType from path extension when not provided", async () => {
-    const copilotHome = makeTmpDir();
-    const srcDir = makeTmpDir();
-    const srcPath = join(srcDir, "photo.jpg");
-    writeFileSync(srcPath, Buffer.from([0xff, 0xd8, 0xff]));
-
-    const { ctx } = createTestApp({ copilotHome });
-    const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
-    if (!tool) throw new Error("publish_visual tool not found");
-
-    const result: any = await tool.handler(
-      { kind: "image", title: "Photo", path: srcPath },
-      createInvocation(),
-    );
-
-    expect(result.success).toBe(true);
-    expect(result.mimeType).toBe("image/jpeg");
-  });
-
   it("returns toolFailure when kind is unsupported", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
@@ -125,14 +107,16 @@ describe("publish_visual tool", () => {
     }
   });
 
-  it("publishes a mermaid diagram and returns structured visual result", async () => {
+  it("publishes a Mermaid card backed by the saved diagram", async () => {
     const copilotHome = makeTmpDir();
     const { ctx } = createTestApp({ copilotHome });
     const tool = getBridgeToolDefinitions(ctx).find((t) => t.name === "publish_visual");
     if (!tool) throw new Error("publish_visual tool not found");
 
+    const source = "graph TD\n  A-->B";
+    const bus = ctx.eventBusRegistry.getOrCreateBus(createInvocation().sessionId);
     const result: any = await tool.handler(
-      { kind: "mermaid", title: "My Flow", content: "graph TD\n  A-->B" },
+      { kind: "mermaid", title: "My Flow", content: source },
       createInvocation(),
     );
 
@@ -148,6 +132,13 @@ describe("publish_visual tool", () => {
     expect(result.downloadUrl).toMatch(/\/download/);
     expect(typeof result.artifactId).toBe("string");
     expect(result.artifactId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(bus.getSnapshot().liveVisuals).toMatchObject([{ artifactId: result.artifactId, source }]);
+    expect(result.size).toBe(Buffer.byteLength(source));
+    const resolved = resolveVisualArtifactForOwner(copilotHome, sessionVisualOwner(createInvocation().sessionId), result.artifactId);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.value).toMatchObject({ mimeType: result.mimeType, displayName: expect.stringMatching(/\.mmd$/) });
+    expect(readFileSync(resolved.value.filePath, "utf8")).toBe(source);
   });
 
   it("publishes a vega-lite spec and returns structured visual result", async () => {

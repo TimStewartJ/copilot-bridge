@@ -365,7 +365,7 @@ describe("readCopilotUsageSummary", () => {
     });
   });
 
-  it("calculates estimated cost and AI credits from SDK token prices", async () => {
+  it("prices cached input and output without billing the reasoning subset twice", async () => {
     const copilotHome = createCopilotHome();
     writeEvents(copilotHome, "session-1", [
       {
@@ -380,6 +380,7 @@ describe("readCopilotUsageSummary", () => {
                 // only 1M of this is uncached and billed at the input rate.
                 inputTokens: 3_000_000,
                 outputTokens: 1_000_000,
+                reasoningTokens: 500_000,
                 cacheReadTokens: 1_000_000,
                 cacheWriteTokens: 1_000_000,
               },
@@ -399,6 +400,7 @@ describe("readCopilotUsageSummary", () => {
     // Cache writes bill at 1.25x the input rate even though the SDK price card
     // carries no explicit cache-write field.
     expect(summary.totals.estimatedCostUsd).toBeCloseTo(22.05);
+    expect(summary.totals.costBreakdownUsd.reasoning).toBe(0);
     expect(summary.totals.estimatedAiCredits).toBeCloseTo(2_205);
     expect(summary.totals.unpricedModelCount).toBe(0);
     expect(summary.unpricedModels).toEqual([]);
@@ -409,6 +411,7 @@ describe("readCopilotUsageSummary", () => {
       pricedAs: "claude-sonnet-4.6",
       uncachedInputTokens: 1_000_000,
       totalTokens: 4_000_000,
+      outputTokens: 1_000_000, reasoningTokens: 500_000,
       billableOutputTokens: 1_000_000,
       reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
     });
@@ -805,44 +808,6 @@ describe("readCopilotUsageSummary", () => {
       }),
     ]);
     expect(summary.sessions[0].unpricedModels).toEqual(summary.unpricedModels);
-  });
-
-  it("does not bill reasoning tokens again because they are already inside output tokens", async () => {
-    const copilotHome = createCopilotHome();
-    writeEvents(copilotHome, "session-1", [
-      {
-        type: "session.shutdown",
-        timestamp: "2026-01-08T10:00:00.000Z",
-        data: {
-          modelMetrics: {
-            "gpt-5.5": {
-              requests: { count: 1 },
-              // Reasoning is a subset of output, not an additional bucket.
-              usage: { outputTokens: 3_000_000, reasoningTokens: 2_000_000 },
-            },
-          },
-        },
-      },
-    ]);
-
-    const summary = await readCopilotUsageSummary({
-      copilotHome,
-      sdkModels: [sdkPriceableModel("gpt-5.5", { input: 5, output: 30, cache: 0.5 }, "GPT-5.5")],
-    });
-    const model = summary.models[0];
-
-    expect(model).toMatchObject({
-      outputTokens: 3_000_000,
-      reasoningTokens: 2_000_000,
-      totalTokens: 3_000_000,
-      billableOutputTokens: 3_000_000,
-      reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
-    });
-    expect(model.costBreakdownUsd.output).toBeCloseTo(90);
-    expect(model.costBreakdownUsd.reasoning).toBe(0);
-    expect(model.costBreakdownUsd.total).toBeCloseTo(90);
-    expect(summary.totals.costBreakdownUsd.reasoning).toBe(0);
-    expect(summary.totals.estimatedCostUsd).toBeCloseTo(90);
   });
 
   it("tracks skipped sessions and shutdown-based skipped coverage metadata", async () => {
@@ -1562,9 +1527,10 @@ describe("copilot usage time ranges", () => {
     ]);
   }
 
-  it("splits a long-lived session across windows by the day usage was recorded", async () => {
+  it("reports each usage window with the tokens and sessions that fall inside it", async () => {
     const copilotHome = createCopilotHome();
     writeRangeSession(copilotHome);
+    writeEvents(copilotHome, "stale-session", [shutdown(localIso(2025, 6, 1), 500)]);
 
     const windows = await Promise.all(
       (["all", "ytd", "mtd", "28d", "7d"] as const).map(
@@ -1573,45 +1539,21 @@ describe("copilot usage time ranges", () => {
     );
     const [all, ytd, mtd, past28, past7] = windows;
 
-    expect(all.totals.inputTokens).toBe(1_500);
+    expect(all.totals.inputTokens).toBe(2_000);
+    expect(all.sessions.find((row) => row.sessionId === "ranged-session")?.inputTokens).toBe(1_500);
+    expect(all.coverage.sessionsIncluded).toBe(2);
+    expect(ytd.coverage).toMatchObject({ sessionsIncluded: 1, sessionsSeen: 1,
+      earliestIncludedAt: localIso(2026, 1, 10), latestIncludedAt: localIso(2026, 4, 12),
+    });
+    const defaulted = await readCopilotUsageSummary({ copilotHome, now });
+    expect(defaulted.range).toEqual({ key: "all", label: "All time", startAt: null, startDate: null });
+    expect(mtd.range).toMatchObject({ key: "mtd", startDate: "2026-05-01", startAt: new Date(2026, 4, 1).toISOString() });
+    expect(past7.range.startDate).toBe("2026-05-09");
     expect(ytd.totals.inputTokens).toBe(1_400);
     expect(mtd.totals.inputTokens).toBe(800);
     expect(past28.totals.inputTokens).toBe(1_200);
     expect(past7.totals.inputTokens).toBe(800);
     expect(past7.models).toEqual([expect.objectContaining({ model: "gpt-5.4", sessions: 1, inputTokens: 800 })]);
-  });
-
-  it("reports the resolved window and defaults to all time", async () => {
-    const copilotHome = createCopilotHome();
-    writeRangeSession(copilotHome);
-
-    const defaulted = await readCopilotUsageSummary({ copilotHome, now });
-    expect(defaulted.range).toEqual({ key: "all", label: "All time", startAt: null, startDate: null });
-
-    const mtd = await readCopilotUsageSummary({ copilotHome, now, range: "mtd" });
-    expect(mtd.range.key).toBe("mtd");
-    expect(mtd.range.startDate).toBe("2026-05-01");
-    expect(mtd.range.startAt).toBe(new Date(2026, 4, 1, 0, 0, 0, 0).toISOString());
-
-    const past7 = await readCopilotUsageSummary({ copilotHome, now, range: "7d" });
-    expect(past7.range.startDate).toBe("2026-05-09");
-  });
-
-  it("drops sessions with no usage inside the window from coverage", async () => {
-    const copilotHome = createCopilotHome();
-    writeRangeSession(copilotHome);
-    writeEvents(copilotHome, "stale-session", [shutdown(localIso(2025, 6, 1), 500)]);
-
-    const all = await readCopilotUsageSummary({ copilotHome, now, range: "all" });
-    expect(all.coverage.sessionsIncluded).toBe(2);
-    expect(all.totals.inputTokens).toBe(2_000);
-
-    const ytd = await readCopilotUsageSummary({ copilotHome, now, range: "ytd" });
-    expect(ytd.coverage.sessionsIncluded).toBe(1);
-    expect(ytd.coverage.sessionsSeen).toBe(1);
-    expect(ytd.totals.inputTokens).toBe(1_400);
-    expect(ytd.coverage.earliestIncludedAt).toBe(localIso(2026, 1, 10));
-    expect(ytd.coverage.latestIncludedAt).toBe(localIso(2026, 4, 12));
   });
 
   it("buckets live assistant usage by day when no shutdown summary exists yet", async () => {

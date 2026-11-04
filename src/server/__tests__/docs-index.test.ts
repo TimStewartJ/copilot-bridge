@@ -439,10 +439,13 @@ Stonecutter handles the release.
     return { docsIndex, docsStore };
   }
 
-  it("decorates the filesystem tree with titles, summaries, tags and dates", () => {
+  it("decorates indexed tree nodes without hiding files the index has not seen", () => {
     const { docsIndex, docsStore } = createNavigationFixture();
+    const fresh = docsStore.writePage("written-outside-the-index", `---\ntitle: Fresh\ndescription: ${"word ".repeat(120)}\n---\n`);
     const tree = docsIndex.decorateTree(docsStore.listTree());
 
+    expect(tree.find((node) => node.path === "written-outside-the-index"))
+      .toEqual({ name: "written-outside-the-index", type: "file", path: "written-outside-the-index" });
     const guides = tree.find((node) => node.path === "guides");
     expect(guides).toMatchObject({ type: "folder", hasIndex: true, title: "Guides" });
     const deploy = guides?.children?.find((node) => node.path === "guides/deploy");
@@ -460,20 +463,9 @@ Stonecutter handles the release.
 
     // A page without a title keeps its slug as the label.
     expect(tree.find((node) => node.path === "untitled-note")).toMatchObject({ title: "untitled-note" });
-  });
 
-  it("keeps a tree node usable when the index has not caught up with the file yet", () => {
-    const { docsIndex, docsStore } = createNavigationFixture();
-    docsStore.writePage("written-outside-the-index", "---\ntitle: Fresh\n---\n");
-    const node = docsIndex.decorateTree(docsStore.listTree()).find((candidate) => candidate.path === "written-outside-the-index");
-    expect(node).toEqual({ name: "written-outside-the-index", type: "file", path: "written-outside-the-index" });
-  });
-
-  it("truncates long descriptions in summaries", () => {
-    const { docsIndex, docsStore } = createNavigationFixture();
-    const page = docsStore.writePage("long", `---\ntitle: Long\ndescription: ${"word ".repeat(120)}\n---\n`);
-    docsIndex.indexPage(page);
-    const summary = docsIndex.listPageSummaries().find((candidate) => candidate.path === "long");
+    docsIndex.indexPage(fresh);
+    const summary = docsIndex.listPageSummaries().find((page) => page.path === fresh.path);
     expect(summary?.description?.length).toBeLessThanOrEqual(280);
     expect(summary?.description?.endsWith("…")).toBe(true);
   });

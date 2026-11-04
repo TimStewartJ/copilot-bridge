@@ -25,28 +25,21 @@ describe("helm store", () => {
     expect(store.getCurrent()).toBeUndefined();
   });
 
-  it("records turns and activity without moving activity backwards", () => {
-    const store = createHelmStore(setupTestDb());
-    store.create(A, "2026-09-18T10:00:00.000Z");
-    store.recordTurn(A, "2026-09-18T10:05:00.000Z");
-    store.recordTurn(A, "2026-09-18T10:06:00.000Z");
-    expect(store.get(A)).toMatchObject({ turnCount: 2, lastActiveAt: "2026-09-18T10:06:00.000Z" });
-    store.touch(A, "2026-09-18T10:01:00.000Z");
-    expect(store.get(A)?.lastActiveAt).toBe("2026-09-18T10:06:00.000Z");
-    store.touch(A, "2026-09-18T10:09:00.000Z");
-    expect(store.get(A)?.lastActiveAt).toBe("2026-09-18T10:09:00.000Z");
-  });
-
-  it("keeps, removes and survives a new store over the same database", () => {
+  it("keeps a conversation’s turn count and monotonic activity across a new store until removal", () => {
     const db = setupTestDb();
     const store = createHelmStore(db);
     store.create(A, "2026-09-18T10:00:00.000Z");
+    store.recordTurn(A, "2026-09-18T10:05:00.000Z");
+    store.recordTurn(A, "2026-09-18T10:06:00.000Z");
+    store.touch(A, "2026-09-18T10:01:00.000Z");
+    expect(store.get(A)).toMatchObject({ turnCount: 2, lastActiveAt: "2026-09-18T10:06:00.000Z" });
+    store.touch(A, "2026-09-18T10:09:00.000Z");
     expect(store.setKept(A, true)?.kept).toBe(true);
     expect(store.setKept(B, true)).toBeUndefined();
 
     const reopened = createHelmStore(db);
     expect(reopened.isHelmSession(A)).toBe(true);
-    expect(reopened.get(A)).toMatchObject({ kept: true, isCurrent: true });
+    expect(reopened.get(A)).toMatchObject({ kept: true, isCurrent: true, turnCount: 2, lastActiveAt: "2026-09-18T10:09:00.000Z" });
 
     expect(store.remove(A)).toBe(true);
     expect(store.remove(A)).toBe(false);

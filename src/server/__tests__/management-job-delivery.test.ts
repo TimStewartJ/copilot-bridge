@@ -79,28 +79,19 @@ describe("management job result delivery", () => {
     expect(rows[0].prompt).toContain(`management_job_status with jobId "${job.id}"`);
   });
 
-  it("rewrites an unsent result when a later write corrects the final status", () => {
+  it("replaces an unsent success with a bounded failure that preserves both ends of the log", () => {
     const { db, store } = setup("correct");
     const job = store.enqueue("staging_preview", { stagingDir: "wt" }, { originSessionId: SESSION });
     store.succeed(job.id, { success: true, previewUrl: "https://bridge.example/staging/x/" });
     expect(deliveryRows(db)[0].prompt).toContain("succeeded");
-    store.fail(job.id, "Logging the success failed.");
+    store.fail(job.id, `Logging the success failed. HEAD-${"x".repeat(20_000)}-TAIL`);
     const rows = deliveryRows(db);
     expect(rows).toHaveLength(1);
     expect(rows[0].prompt).toContain("(staging_preview) failed.");
-    expect(rows[0].prompt).toContain("Logging the success failed.");
+    expect(rows[0].prompt).toContain("Logging the success failed. HEAD-");
+    expect(rows[0].prompt).toContain("-TAIL");
+    expect(rows[0].prompt.length).toBeLessThan(6_000);
     expect(rows[0].prompt).not.toContain("https://bridge.example/staging/x/");
-  });
-
-  it("keeps a long failure readable by sending its start and end", () => {
-    const { db, store } = setup("truncate");
-    const job = store.enqueue("staging_preview", { stagingDir: "wt" }, { originSessionId: SESSION });
-    const error = `HEAD-${"x".repeat(20_000)}-TAIL`;
-    store.fail(job.id, error);
-    const prompt = deliveryRows(db)[0].prompt;
-    expect(prompt).toContain("HEAD-");
-    expect(prompt).toContain("-TAIL");
-    expect(prompt.length).toBeLessThan(6_000);
   });
 
   it("sends nothing for jobs without an origin session or for an archived session", () => {
@@ -118,10 +109,15 @@ describe("management job result delivery", () => {
     expect(deliveryRows(db)).toEqual([]);
   });
 
-  it("sends a cancelled job's result", () => {
-    const { db, store } = setup("cancel");
+  it("records cancellation metadata and notifies the job’s origin session", () => {
+    let current = new Date("2026-05-18T20:00:00.000Z");
+    const { db, store } = setup("cancel", () => current);
     const job = store.enqueue("staging_preview", { stagingDir: "c" }, { originSessionId: SESSION });
-    store.cancel(job.id, "Cancelled after an earlier deploy failed.");
+    current = new Date("2026-05-18T20:00:01.000Z");
+    expect(store.cancel(job.id, "Cancelled after an earlier deploy failed.")).toMatchObject({
+      status: "cancelled", error: "Cancelled after an earlier deploy failed.",
+      cancelRequestedAt: current.toISOString(), completedAt: current.toISOString(), updatedAt: current.toISOString(),
+    });
     const rows = deliveryRows(db);
     expect(rows).toHaveLength(1);
     expect(rows[0].prompt).toContain("was cancelled");
@@ -231,20 +227,6 @@ describe("management job result delivery", () => {
 });
 
 describe("management job tools and result delivery", () => {
-  it("records the calling session on staging jobs and tells it the result will come back", async () => {
-    const { store, dataDir } = setup("staging-tools");
-    const stagingDir = join(dataDir, "worktree");
-    mkdirSync(stagingDir, { recursive: true });
-    const tools = createStagingToolDefinitions({ managementJobStore: store } as any);
-    const preview = tools.find((tool) => tool.name === "staging_preview")!;
-
-    const result = await preview.handler!({ stagingDir, validate: false }, { sessionId: SESSION } as any) as any;
-    expect(store.get(result.jobId)?.originSessionId).toBe(SESSION);
-    expect(result.message).toContain("management_job_wait");
-    expect(result.message).not.toContain("same-session defer");
-    expect(result.message).not.toContain("management_job_status");
-  });
-
   it("records no origin for a disposable defer worker and keeps the defer guidance", async () => {
     const { store, dataDir } = setup("worker");
     const stagingDir = join(dataDir, "worktree");
@@ -258,10 +240,17 @@ describe("management job tools and result delivery", () => {
     expect(result.message).toContain("same-session defer");
   });
 
-  it("withdraws the unsent result when the origin session reads the final status itself", async () => {
+  it("routes the queued preview and its final result back to the invoking session", async () => {
     const { db, store, prompts, dataDir } = setup("seen");
     const status = statusTool(store, prompts, dataDir);
-    const job = store.enqueue("staging_preview", { stagingDir: "x" }, { originSessionId: SESSION });
+    const stagingDir = join(dataDir, "worktree");
+    mkdirSync(stagingDir, { recursive: true });
+    const preview = createStagingToolDefinitions({ managementJobStore: store } as any).find((tool) => tool.name === "staging_preview")!;
+    const queued = await preview.handler!({ stagingDir, validate: false }, { sessionId: SESSION } as any) as any;
+    const job = store.get(queued.jobId)!;
+    expect(job.originSessionId).toBe(SESSION);
+    expect(queued.message).toContain("management_job_wait");
+    expect(queued.message).not.toMatch(/same-session defer|management_job_status/);
 
     const running = await status(job.id, SESSION);
     expect(running.content[0].text).toContain("management_job_wait");
