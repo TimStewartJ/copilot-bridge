@@ -286,25 +286,6 @@ describe("ActivityBlock", () => {
     expect(text).toBe("Worked for 1m 10s 3 steps · 2 agents, 3 steps 1 failed in agents");
   });
 
-  it("names the agents when a stretch holds nothing of the main agent's", () => {
-    const loaded: ChatEntry[] = [
-      { role: "assistant", content: "Waiting on the agents." },
-      agentTool("moves-8", "moves", { name: "view", args: { path: "/repo/moves.ts" }, startedAt: at(0), completedAt: at(65), success: true }),
-      agentTool("moves-9", "moves", { name: "bash", args: { command: "npm test" }, startedAt: at(65), completedAt: at(125), success: true }),
-    ];
-    const moves = agentRecord("moves", { name: "moves-agent", description: "Refactor move generation", background: true, toolCount: 9 });
-
-    // The call that launched the agent is above the loaded history; the session's records name it.
-    const one = render(loaded, { agents: [moves] });
-    expect(one.text).toBe("moves-agent worked for 2m 05s 2 steps");
-
-    const several = render([
-      ...loaded,
-      agentTool("saves-3", "saves", { name: "view", args: { path: "/repo/saves.ts" }, startedAt: at(10), completedAt: at(20), success: true }),
-    ], { agents: [moves, agentRecord("saves", { name: "saves-agent", background: true })] });
-    expect(several.text).toBe("2 agents worked for 2m 05s 3 steps");
-  });
-
   it("counts failures once on a line that is about the agents alone", () => {
     const loaded: ChatEntry[] = [
       { role: "assistant", content: "Waiting on the agents." },

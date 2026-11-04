@@ -117,24 +117,13 @@ describe("PullRequestList - summary variant", () => {
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
 
       await clickFirstSummaryButton(harness);
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
+      const anchors = findAllByTag(harness.dom.container, "A");
+      expect(anchors.map((anchor) => anchor.getAttribute("href"))).toEqual([prA.url, prB.url]);
+      expect(anchors[0].getAttribute("target")).toBe("_blank");
+      expect(anchors[0].getAttribute("rel")).toBe("noopener");
 
       await clickFirstSummaryButton(harness);
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-    });
-  });
-
-  it("expanded rows contain external anchor links", async () => {
-    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "summary" }, async (harness) => {
-      await clickFirstSummaryButton(harness);
-
-      const anchors = findAllByTag(harness.dom.container, "A");
-      expect(anchors).toHaveLength(2);
-      for (const anchor of anchors) {
-        expect(anchor.getAttribute("target")).toBe("_blank");
-        expect(anchor.getAttribute("rel")).toBe("noopener");
-        expect(anchor.getAttribute("href")).toMatch(/^https?:\/\//);
-      }
     });
   });
 
@@ -155,30 +144,12 @@ describe("PullRequestList - summary variant", () => {
     });
   });
 
-  it("single PR with url '#' (raw fallback) does not navigate", async () => {
-    await withPullRequestList({ enrichedPRs: [], rawPRs: rawPROnly, variant: "summary" }, async (harness) => {
-      const mockOpen = vi.fn();
-      (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
-      try {
-        await clickFirstSummaryButton(harness);
-
-        expect(mockOpen).not.toHaveBeenCalled();
-      } finally {
-        delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
-      }
-    });
-  });
-
   it("expanded rows with missing URL do not render href='#' anchors", async () => {
     await withPullRequestList({ enrichedPRs: [], rawPRs: rawPROnly, variant: "summary" }, async (harness) => {
       await clickFirstSummaryButton(harness);
 
-      const anchors = findAllByTag(harness.dom.container, "A");
-      for (const anchor of anchors) {
-        const href = anchor.getAttribute("href") ?? "";
-        expect(href).not.toBe("#");
-        expect(href).toMatch(/^https?:\/\//);
-      }
+      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
+      expect(findCopyButtons(harness)).toHaveLength(0);
     });
   });
 });
@@ -189,47 +160,19 @@ describe("PullRequestList - copy affordance", () => {
     clipboardMocks.writeClipboardText.mockResolvedValue(undefined);
   });
 
-  it("renders a hover copy action for every PR with a real URL", async () => {
-    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "compact" }, (harness) => {
-      const buttons = findCopyButtons(harness);
-      expect(buttons).toHaveLength(2);
-      expect(buttons[0]?.getAttribute("class")).toContain("linked-resource-copy-button");
-    });
-  });
-
   it("copies the exact PR URL without following the row link", async () => {
-    await withPullRequestList({ enrichedPRs: [prA], rawPRs: [], variant: "compact" }, async (harness) => {
-      const { button, preventDefault, stopPropagation } = await clickCopy(harness);
+    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "compact" }, async (harness) => {
+      expect(findCopyButtons(harness)).toHaveLength(2);
+      expect(findUnlinkButtons(harness)).toHaveLength(0);
+      const { button, preventDefault, stopPropagation } = await clickCopy(harness, 1);
 
-      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(prA.url);
+      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(prB.url);
       expect(preventDefault).toHaveBeenCalledOnce();
       expect(stopPropagation).toHaveBeenCalledOnce();
-      expect(button.getAttribute("aria-label")).toBe("Copied pull request #1 URL");
+      expect(button.getAttribute("aria-label")).toBe("Copied pull request #2 URL");
     });
   });
 
-  it("keeps copy in the opened row of a single-PR summary without opening the PR", async () => {
-    await withPullRequestList({ enrichedPRs: [prReal], rawPRs: [], variant: "summary" }, async (harness) => {
-      const mockOpen = vi.fn();
-      (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
-      try {
-        expect(findCopyButtons(harness)).toHaveLength(0);
-        await clickFirstSummaryButton(harness);
-        await clickCopy(harness);
-
-        expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(prReal.url);
-        expect(mockOpen).not.toHaveBeenCalled();
-      } finally {
-        delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
-      }
-    });
-  });
-
-  it("does not render a copy action when enrichment has no URL", async () => {
-    await withPullRequestList({ enrichedPRs: [], rawPRs: rawPROnly, variant: "compact" }, (harness) => {
-      expect(findCopyButtons(harness)).toHaveLength(0);
-    });
-  });
 });
 
 describe("PullRequestList - unlink affordance", () => {
@@ -240,19 +183,6 @@ describe("PullRequestList - unlink affordance", () => {
     apiMocks.linkResource.mockResolvedValue({});
     toastMocks.showToast.mockClear();
     toastMocks.dismissToast.mockClear();
-  });
-
-  it("renders no unlink button when taskId is omitted", async () => {
-    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "compact" }, (harness) => {
-      expect(findUnlinkButtons(harness)).toHaveLength(0);
-    });
-  });
-
-  it("renders one unlink button per row when taskId is provided", async () => {
-    await withPullRequestList({ enrichedPRs: [prA, prB], rawPRs: [], variant: "compact", taskId: "task-1" }, (harness) => {
-      expect(findUnlinkButtons(harness)).toHaveLength(2);
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
-    });
   });
 
   it("requires an in-place second click without a browser confirmation prompt", async () => {
@@ -305,32 +235,18 @@ describe("PullRequestList - unlink affordance", () => {
   it("unlinks with the row provider/repo/PR id and notifies the parent", async () => {
     const onTasksChanged = vi.fn();
     await withPullRequestList(
-      { enrichedPRs: [prA], rawPRs: [], variant: "compact", taskId: "task-1", onTasksChanged },
+      { enrichedPRs: [prA, prB], rawPRs: [], variant: "compact", taskId: "task-1", onTasksChanged },
       async (harness) => {
-        await clickUnlink(harness);
+        expect(findUnlinkButtons(harness)).toHaveLength(2);
+        await clickUnlink(harness, 1);
 
         expect(apiMocks.unlinkResource).toHaveBeenCalledWith("task-1", {
           type: "pr",
           repoId: "repo-1",
-          prId: 1,
+          prId: 2,
           provider: "github",
         });
         expect(onTasksChanged).toHaveBeenCalledOnce();
-      },
-    );
-  });
-
-  it("shows a success toast offering undo", async () => {
-    await withPullRequestList(
-      { enrichedPRs: [prA], rawPRs: [], variant: "compact", taskId: "task-1" },
-      async (harness) => {
-        await clickUnlink(harness);
-
-        const toast = lastToast();
-        expect(toast?.tone).toBe("success");
-        expect(toast?.title).toBe("Unlinked pull request #1");
-        expect(toast?.description).toBe("org/repo");
-        expect(toast?.action?.label).toBe("Undo");
       },
     );
   });
@@ -341,10 +257,13 @@ describe("PullRequestList - unlink affordance", () => {
       { enrichedPRs: [prA], rawPRs: [], variant: "compact", taskId: "task-1", onTasksChanged },
       async (harness) => {
         await clickUnlink(harness);
+        const toast = lastToast();
+        expect(toast?.tone).toBe("success");
+        expect(toast?.action?.label).toBe("Undo");
         onTasksChanged.mockClear();
 
         await harness.act(async () => {
-          await lastToast()?.action?.onAction();
+          await toast?.action?.onAction();
         });
         await flushAct(harness.act);
 
@@ -413,19 +332,6 @@ describe("PullRequestList - unlink affordance", () => {
     );
   });
 
-  it("forwards unlink props through the summary disclosure", async () => {
-    await withPullRequestList(
-      { enrichedPRs: [prA, prB], rawPRs: [], variant: "summary", taskId: "task-1" },
-      async (harness) => {
-        expect(findUnlinkButtons(harness)).toHaveLength(0);
-
-        await clickFirstSummaryButton(harness);
-
-        expect(findUnlinkButtons(harness)).toHaveLength(2);
-      },
-    );
-  });
-
   it("keeps unlink in the opened row of a single-PR summary", async () => {
     await withPullRequestList(
       { enrichedPRs: [prReal], rawPRs: [], variant: "summary", taskId: "task-single-summary" },
@@ -446,16 +352,4 @@ describe("PullRequestList - unlink affordance", () => {
     );
   });
 
-  it("does not duplicate the unlink button when a single PR expands inline", async () => {
-    await withPullRequestList(
-      { enrichedPRs: [], rawPRs: rawPROnly, variant: "summary", taskId: "task-1" },
-      async (harness) => {
-        expect(findUnlinkButtons(harness)).toHaveLength(0);
-
-        await clickFirstSummaryButton(harness);
-
-        expect(findUnlinkButtons(harness)).toHaveLength(1);
-      },
-    );
-  });
 });

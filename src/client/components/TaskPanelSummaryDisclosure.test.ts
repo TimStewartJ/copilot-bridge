@@ -82,21 +82,6 @@ describe("TaskPanelSummaryDisclosure persistence", () => {
     }
   });
 
-  it("restores saved expansion in a fresh component mount", async () => {
-    stubLocalStorage({
-      [TASK_PANEL_DISCLOSURE_STORAGE_KEY]: JSON.stringify({
-        "task-1": { docs: true },
-      }),
-    });
-    const harness = await createReactDomHarness();
-    try {
-      await renderDisclosure(harness, { taskId: "task-1", disclosureId: "docs" });
-      expect(harness.dom.container.textContent).toContain("Expanded content");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("collapsing removes only that task section from saved state", async () => {
     const storage = stubLocalStorage({
       [TASK_PANEL_DISCLOSURE_STORAGE_KEY]: JSON.stringify({
@@ -107,6 +92,7 @@ describe("TaskPanelSummaryDisclosure persistence", () => {
     const harness = await createReactDomHarness();
     try {
       await renderDisclosure(harness, { taskId: "task-1", disclosureId: "work-items" });
+      expect(harness.dom.container.textContent).toContain("Expanded content");
       await clickDisclosure(harness);
 
       expect(harness.dom.container.textContent).not.toContain("Expanded content");

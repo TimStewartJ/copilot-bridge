@@ -104,15 +104,6 @@ describe("ProvidersSection GitHub defaults badge", () => {
     return harness.dom.container.textContent ?? "";
   }
 
-  it("says defaults are missing without claiming GitHub is unusable", async () => {
-    const text = await renderProviders(undefined);
-
-    expect(text).toContain("no defaults");
-    expect(text).not.toContain("defaults set");
-    // Only the ADO and Linear cards use the configured/not-configured badge.
-    expect(text.match(/not configured/g)?.length).toBe(2);
-  });
-
   it("says defaults are set once an owner is configured", async () => {
     const text = await renderProviders({
       github: { owner: "microsoft", defaultRepo: "vscode" },
@@ -134,6 +125,7 @@ describe("ProvidersSection GitHub defaults badge", () => {
       }),
     );
 
+    expect(harness.dom.container.textContent).toContain("no defaults");
     const githubEditButton = findEditButtons(harness.dom.container)[1];
     if (!githubEditButton) throw new Error("GitHub edit button not found");
     await harness.act(async () => {

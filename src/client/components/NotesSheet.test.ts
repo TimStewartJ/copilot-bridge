@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { findDialogElements, resolveAccessibleName } from "../test-modal-dialog-dom";
 import { createReactDomHarness, findAllByTag, getReactProps, type ReactDomHarness } from "../test-react-harness";
 import { installDomShim } from "../test-dom-shim";
 import NotesSheet from "./NotesSheet";
@@ -54,6 +55,9 @@ describe("NotesSheet", () => {
   it("leaves edit mode once the save succeeds", async () => {
     const onSave = vi.fn(async () => {});
     const container = await renderEditing(onSave);
+    expect(findDialogElements(container).map((dialog) => [
+      dialog.getAttribute("aria-modal"), resolveAccessibleName(container, dialog),
+    ])).toEqual([["true", "Instructions"]]);
     expect(onSave).toHaveBeenCalledWith("New rules");
     expect(findAllByTag(container, "TEXTAREA")).toHaveLength(0);
     expect(container.textContent).not.toContain("Editing Instructions");

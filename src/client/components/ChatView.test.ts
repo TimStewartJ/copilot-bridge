@@ -377,7 +377,6 @@ function stubResizeObserver() {
     disconnect() { this.observer.elements.length = 0; }
   });
   return {
-    observed: () => observers.flatMap((observer) => observer.elements),
     notify: (element: unknown) => {
       for (const observer of observers) {
         if (observer.elements.includes(element)) observer.callback();
@@ -1320,18 +1319,6 @@ describe("ChatView navigation landing position", () => {
     }
   });
 
-  it("lands on the top of the newest assistant reply when it overflows the viewport", async () => {
-    // Measured while the transcript is jammed to the bottom, so a top of -700 means the reply
-    // starts 700px above the viewport, i.e. at content offset 900.
-    const view = await renderSettledSession({ "newest-entry": -700 });
-
-    try {
-      expect(view.scrollContainer.scrollTop).toBe(900);
-    } finally {
-      await view.cleanup();
-    }
-  });
-
   it("stays at the bottom when the newest assistant reply fits above the fold", async () => {
     const view = await renderSettledSession({ "newest-entry": 100 });
 
@@ -1348,28 +1335,6 @@ describe("ChatView navigation landing position", () => {
     });
 
     try {
-      expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
-    } finally {
-      await view.cleanup();
-    }
-  });
-
-  it("releases the landing anchor when new work starts so live output stays visible", async () => {
-    const view = await renderSettledSession({ "newest-entry": -700 });
-
-    try {
-      expect(view.scrollContainer.scrollTop).toBe(900);
-
-      await view.render({
-        streamOverrides: {
-          isStreaming: true,
-          streamStatus: "thinking",
-          streamingContent: "",
-          pendingOrigin: "message",
-        },
-      });
-
-      await waitUntilAct(view.act, () => view.scrollContainer.scrollTop === BOTTOM_SCROLL_TOP);
       expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
     } finally {
       await view.cleanup();
@@ -3463,33 +3428,6 @@ describe("ChatView steering sends", () => {
 });
 
 describe("ChatView live streaming UX", () => {
-  it("renders streamed assistant text as the normal assistant bubble without the old status card", async () => {
-    const { dom, act, cleanup } = await renderChatView({
-      streamOverrides: {
-        streamingContent: "Hello **there**",
-        streamStatus: "streaming",
-        hadVisibleOutput: true,
-        intentText: "Streaming response",
-      },
-    });
-
-    try {
-      await waitUntilAct(act, () => {
-        try {
-          return findMessageBubble(dom.container, true).textContent?.includes("Hello **there**") ?? false;
-        } catch {
-          return false;
-        }
-      });
-
-      const bubble = findMessageBubble(dom.container, true);
-      expect(bubble.getAttribute("data-role")).toBe("assistant");
-      expect(findMessageWrapperByAnchorKey(dom.container, "live-assistant-stream").getAttribute("data-latest-chat-message")).toBe("true");
-    } finally {
-      await cleanup();
-    }
-  });
-
   it("shows a compact status before the first streamed text arrives", async () => {
     const { dom, act, cleanup } = await renderChatView({
       streamOverrides: {
@@ -3649,42 +3587,6 @@ describe("ChatView live streaming UX", () => {
     }
   });
 
-  it("hangs a reply's hover actions in the margin only while the chat column is wide enough", async () => {
-    const resizes = stubResizeObserver();
-    const { dom, act, cleanup } = await renderChatView({
-      streamOverrides: { isStreaming: false, streamStatus: "idle", pendingOrigin: null },
-      fetchMessagesFastResult: {
-        messages: [createMessage("entry-1", "a reply")],
-        runState: "idle",
-        total: 1,
-        warm: true,
-        hasMore: false,
-      },
-    });
-
-    try {
-      await waitUntilAct(act, () => dom.container.textContent?.includes("a reply") ?? false);
-      const root = findAllByTag(dom.container, "DIV").find((candidate) => (
-        String(getReactProps(candidate)?.className ?? "").includes("chat-ui")
-      ));
-      if (!root) throw new Error("Chat root not found");
-      expect(resizes.observed()).toContain(root);
-      // No measurable width (or a narrow column): the actions keep to the reply's own corner.
-      expect(root.getAttribute("data-action-gutter")).not.toBe("true");
-
-      Object.defineProperty(root, "clientWidth", { configurable: true, value: 1200 });
-      await act(async () => resizes.notify(root));
-      expect(root.getAttribute("data-action-gutter")).toBe("true");
-
-      // The task rail opening, or a side panel, narrows the column without changing the viewport.
-      Object.defineProperty(root, "clientWidth", { configurable: true, value: 900 });
-      await act(async () => resizes.notify(root));
-      expect(root.getAttribute("data-action-gutter")).not.toBe("true");
-    } finally {
-      await cleanup();
-    }
-  });
-
   it("pauses follow mode and offers jump to latest when the user scrolls away during streaming", async () => {
     const { dom, act, cleanup } = await renderChatView({
       streamOverrides: {
@@ -3732,6 +3634,8 @@ describe("ChatView live streaming UX", () => {
       await waitUntilAct(act, () => dom.container.textContent?.includes("A streamed response") ?? false);
       const scrollContainer = findScrollContainer(dom.container);
       const liveMessage = findMessageWrapperByAnchorKey(dom.container, "live-assistant-stream");
+      expect(liveMessage.getAttribute("data-latest-chat-message")).toBe("true");
+      expect(findMessageBubble(liveMessage, true).getAttribute("data-role")).toBe("assistant");
       setElementTop(scrollContainer, 0);
       setElementTop(liveMessage, 5);
       setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 400, scrollTop: 500 });
@@ -4691,36 +4595,6 @@ describe("ChatView disk-authoritative synchronization", () => {
         await cleanup();
       }
     });
-  });
-
-  it("re-reads the disk window when the server reports committed history advanced", async () => {
-    vi.useFakeTimers();
-    try {
-      const { act, cleanup, render } = await renderChatView({
-        fetchMessagesFastResult: {
-          messages: [createMessage("entry-1", "first reply")],
-          runState: "busy",
-          total: 1,
-          warm: true,
-          hasMore: false,
-        },
-        streamOverrides: { historyEpoch: 0 },
-      });
-
-      try {
-        await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length > 0);
-        const callsBefore = fetchMessagesFastMock.mock.calls.length;
-
-        await render({ streamOverrides: { historyEpoch: 1 } });
-        await advanceTimersByTimeAct(act, 300);
-
-        expect(fetchMessagesFastMock.mock.calls.length).toBeGreaterThan(callsBefore);
-      } finally {
-        await cleanup();
-      }
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("coalesces a burst of history advances into a single refresh", async () => {

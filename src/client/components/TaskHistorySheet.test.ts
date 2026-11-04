@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { findDialogElements, resolveAccessibleName } from "../test-modal-dialog-dom";
 import type { TaskHistoryEntry } from "../api";
 import { createReactDomHarness, findAllByTag, getReactProps, waitUntilAct, type ReactDomHarness } from "../test-react-harness";
 import TaskHistorySheet, { describeHistoryActor } from "./TaskHistorySheet";
@@ -58,6 +59,9 @@ describe("TaskHistorySheet", () => {
     await waitUntilAct(act, () => (container.textContent ?? "").includes("Toured 2040 Main"));
 
     expect(fetchTaskHistoryMock).toHaveBeenCalledWith("task-1", expect.objectContaining({ limit: 50 }));
+    expect(findDialogElements(container).map((dialog) => [
+      dialog.getAttribute("aria-modal"), resolveAccessibleName(container, dialog),
+    ])).toEqual([["true", expect.stringMatching(/^History/)]]);
     const text = container.textContent ?? "";
     expect(text.indexOf("Toured 2040 Main")).toBeLessThan(text.indexOf("Dropped the Elm St listing"));
     expect(text).toContain("Daily rental search");

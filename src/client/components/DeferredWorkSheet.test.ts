@@ -1,5 +1,6 @@
 import { createElement, useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { findDialogElements, resolveAccessibleName } from "../test-modal-dialog-dom";
 import {
   createReactDomHarness,
   findAllByTag,
@@ -326,6 +327,9 @@ describe("DeferredWorkSheet", () => {
     await harness.act(async () => {
       getReactProps(opener)?.onClick?.();
     });
+    expect(findDialogElements(harness.dom.container).map((dialog) => [
+      dialog.getAttribute("aria-modal"), resolveAccessibleName(harness.dom.container, dialog),
+    ])).toEqual([["true", "Deferred Work"]]);
     const closeButton = findAllByTag(harness.dom.container, "BUTTON").find(
       (button) => getReactProps(button)?.title === "Close",
     );

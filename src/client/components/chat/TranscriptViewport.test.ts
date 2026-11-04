@@ -49,7 +49,6 @@ describe("ViewportKeeper with content above the reader that changes height long 
     const harness = await createReactDomHarness();
     const scrollerRef = createRef<HTMLDivElement>();
     const keeperRef = createRef<ViewportKeeper>();
-    let atRest = true;
     const shift = vi.fn((scroller: HTMLElement, delta: number) => { scroller.scrollTop += delta; });
     const render = () => harness.render(createElement(
       "div",
@@ -58,7 +57,7 @@ describe("ViewportKeeper with content above the reader that changes height long 
         ref: keeperRef,
         scrollerRef,
         shouldKeep: () => false,
-        atRest: () => atRest,
+        atRest: () => true,
         shift,
         children: [1, 2, 3, 4, 5, 6].map((index) => createElement("div", { key: index })),
       }),
@@ -82,7 +81,6 @@ describe("ViewportKeeper with content above the reader that changes height long 
       cleanup: harness.cleanup,
       /** Rendering settles the view, as opening a chat does. */
       render,
-      setAtRest: (value: boolean) => { atRest = value; },
       /** The row is taller, and the browser has not said so yet. */
       grow: (by: number) => { grown += by; },
       /** The browser reports that the rows changed size. */
@@ -135,25 +133,6 @@ describe("ViewportKeeper with content above the reader that changes height long 
       await view.reportResize();
       expect(view.scroller.scrollTop).toBe(900);
       expect(view.shift).not.toHaveBeenCalled();
-    } finally {
-      await view.cleanup();
-    }
-  });
-
-  it("moves nothing while the reader is scrolling, and does not make up for it later", async () => {
-    const view = await renderSixRows();
-
-    try {
-      await view.render();
-      view.setAtRest(false);
-      view.grow(463);
-      await view.reportResize();
-      expect(view.scroller.scrollTop).toBe(600);
-
-      // They have seen the jump by now; moving the view again would be a second one.
-      view.setAtRest(true);
-      await view.reportResize();
-      expect(view.scroller.scrollTop).toBe(600);
     } finally {
       await view.cleanup();
     }

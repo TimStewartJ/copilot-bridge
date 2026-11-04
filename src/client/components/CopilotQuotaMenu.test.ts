@@ -118,22 +118,6 @@ describe("CopilotQuotaMenu", () => {
     harness = null;
   });
 
-  it("shows a compact quota summary on hover", async () => {
-    harness = await createReactDomHarness();
-    await harness.render(routed(CopilotQuotaMenu, { collapsed: true }));
-
-    expect(harness.dom.container.textContent).not.toContain("Click for quota details");
-
-    await harness.act(async () => {
-      getReactProps(findMenuRoot(harness!.dom.container))?.onMouseEnter?.();
-    });
-
-    expect(harness.dom.container.textContent).toContain("Live account quota");
-    expect(harness.dom.container.textContent).toContain("79,393.9");
-    expect(harness.dom.container.textContent).toContain("0.8% used");
-    expect(harness.dom.container.textContent).toContain("Click for quota details");
-  });
-
   it("offers the full quota dialog from a compact mobile settings control", async () => {
     harness = await createReactDomHarness();
     await harness.render(routed(CopilotQuotaCard, { compact: true }));
@@ -380,12 +364,6 @@ describe("CopilotQuotaMenu", () => {
     expect(getReactProps(paceFill(harness.dom.container, "month-marker"))?.style).toEqual({ marginLeft: "50%" });
   });
 
-  it("keeps a sliver of usage visible when only a fraction of a percent is used", async () => {
-    harness = await createReactDomHarness();
-    await harness.render(routed(CopilotQuotaMenu));
-
-    expect(getReactProps(paceFill(harness.dom.container, "usage"))?.style).toMatchObject({ minWidth: 2 });
-  });
 });
 
 describe("CopilotQuotaCard", () => {

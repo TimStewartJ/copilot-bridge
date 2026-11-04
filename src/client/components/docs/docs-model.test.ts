@@ -87,13 +87,10 @@ describe("tree index", () => {
     expect(index.pages.map((page) => page.path)).toEqual([
       "guides", "guides/setup/windows", "guides/deploy", "guides/rollback", "recipes/ramen", "recipes/pho", "plan",
     ]);
+    expect(index.pageByPath.get("plan")?.title).toBe("plan");
     expect(index.stats).toEqual({ pages: 5, folders: 2, collections: 1, entries: 2 });
     expect(index.pageByPath.get("recipes/ramen")?.isEntry).toBe(true);
     expect(index.pageByPath.get("guides")?.folder).toBe("guides");
-  });
-
-  it("falls back to the slug when the index has no title for a page", () => {
-    expect(index.pageByPath.get("plan")?.title).toBe("plan");
   });
 
   it("treats collections as leaves so their entries never flood the tree", () => {

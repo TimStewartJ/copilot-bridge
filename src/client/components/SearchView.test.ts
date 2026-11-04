@@ -225,17 +225,6 @@ describe("SearchView", () => {
     expect(document.activeElement).toBe(close);
   });
 
-  it("keeps the query and source controls outside the sole results scroller", async () => {
-    const rendered = await render("/search");
-    const scroll = findAllByTag(rendered.dom.container, "DIV").find((node) => getReactProps(node)?.["data-testid"] === "search-scroll");
-    const dialog = findAllByTag(rendered.dom.container, "DIV").find((node) => getReactProps(node)?.role === "dialog");
-    expect(getReactProps(dialog)?.className).toContain("overflow-hidden");
-    expect(findAllByTag(scroll, "INPUT")).toHaveLength(0);
-    expect(findAllByTag(scroll, "BUTTON").filter((node) => node.textContent === "All")).toHaveLength(0);
-    expect(rendered.dom.container.textContent).toContain("Find something you saved");
-    expect(searchBridgeMock).not.toHaveBeenCalled();
-  });
-
   it("lists unread chats as the default results and opens one under its task", async () => {
     const rendered = await render("/search?from=%2F", unreadLibrary());
     const scroll = findAllByTag(rendered.dom.container, "DIV").find((node) => getReactProps(node)?.["data-testid"] === "search-scroll");

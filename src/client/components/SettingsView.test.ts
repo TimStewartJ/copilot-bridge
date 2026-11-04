@@ -245,14 +245,6 @@ afterEach(() => {
 });
 
 describe("SettingsView categories", () => {
-  it("restores the last category when settings is reopened without a group", async () => {
-    localStorage.setItem(LAST_SETTINGS_CATEGORY_KEY, "voice");
-
-    await renderSettingsView("/settings");
-
-    expect(settingsMocks.settingsCategoryNav.mock.calls.at(-1)?.[0].activeCategory).toBe("voice");
-  });
-
   it("opens a remembered retired category on the page that replaced it", async () => {
     localStorage.setItem(LAST_SETTINGS_CATEGORY_KEY, "general");
 
@@ -326,6 +318,7 @@ describe("SettingsView categories", () => {
 
 describe("SettingsView autosave", () => {
   it("saves a change at once without a page Save or Discard", async () => {
+    createWriter({ ...savedSettings, mcpServers: { teams: { command: "node", args: ["teams.js"] } } });
     const harness = await renderSettingsView();
     expect(buttonsWithText(harness.dom.container, "Save")).toHaveLength(0);
     expect(buttonsWithText(harness.dom.container, "Discard")).toHaveLength(0);
@@ -341,14 +334,6 @@ describe("SettingsView autosave", () => {
     await harness.act(async () => { pending.resolve(); });
     await waitUntilAct(harness.act, () => feedbackWithRole(harness.dom.container, "status").textContent?.includes("Saved") === true);
     expect(buttonsWithText(harness.dom.container, "Save")).toHaveLength(0);
-  });
-
-  it("does not write MCP servers back from the settings it shows", async () => {
-    createWriter({ ...savedSettings, mcpServers: { teams: { command: "node", args: ["teams.js"] } } });
-    const harness = await renderSettingsView();
-    await changeSettings(harness);
-    await waitUntilAct(harness.act, () => settingsMocks.patch.mock.calls.length > 0);
-    expect(settingsMocks.patch.mock.calls[0][0]).not.toHaveProperty("mcpServers");
   });
 
   it("undoes the last save from the header", async () => {

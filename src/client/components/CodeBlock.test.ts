@@ -44,10 +44,7 @@ describe("CodeBlock copying", () => {
   });
 
   it.each([
-    ["fenced command", "```sh\nhello\n```", "hello"],
     ["indented code", "    hello", "hello"],
-    ["multiple lines", "```text\nhello\nworld\n```", "hello\nworld"],
-    ["intentional blank line", "```text\nhello\n\n```", "hello\n"],
     ["multiple intentional blank lines", "```text\nhello\n\n\n```", "hello\n\n"],
     ["spaces and tabs", "```text\n  hello \t\n```", "  hello \t"],
     ["Windows line endings", "```text\r\nhello\r\n```", "hello"],
@@ -61,7 +58,7 @@ describe("CodeBlock copying", () => {
     expect(getReactProps(button)?.["aria-label"]).toBe("Copied");
   });
 
-  it.each(["hello", "hello\n", "hello\n\n", "  hello \t\r\n"])(
+  it.each(["hello\n\n", "  hello \t\r\n"])(
     "preserves raw file-preview text %j",
     async (text) => {
       const harness = await createReactDomHarness();

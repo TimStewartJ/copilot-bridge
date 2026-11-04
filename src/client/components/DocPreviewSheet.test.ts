@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { findDialogElements, resolveAccessibleName } from "../test-modal-dialog-dom";
 import { createReactDomHarness, findAllByTag, getReactProps, waitUntilAct } from "../test-react-harness";
 import { resetConditionalGetCacheForTests, type DocPage } from "../api";
 import DocPreviewSheet from "./DocPreviewSheet";
@@ -44,6 +45,9 @@ async function renderPreview(path: string) {
 describe("DocPreviewSheet", () => {
   it("uses one scrim behind the dialog and dismisses only clicks on that background", async () => {
     const harness = await renderPreview("guides/parent");
+    expect(findDialogElements(harness.dom.container).map((dialog) => [
+      dialog.getAttribute("aria-modal"), resolveAccessibleName(harness.dom.container, dialog),
+    ])).toEqual([["true", "guides/parent"]]);
     const scrims = findAllByTag(harness.dom.container, "DIV").filter((node) => (
       getReactProps(node)?.className?.includes("fixed inset-0 z-50")
     ));

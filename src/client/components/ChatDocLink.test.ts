@@ -49,8 +49,10 @@ describe("Chat doc links", () => {
   });
 
   it("opens existing bridge doc links through the same preview action", async () => {
-    const harness = await renderContent("[Guide](bridge://doc/guides/deploy)");
+    const harness = await renderContent("[](bridge://doc/guides/deploy)");
     const link = findAllByTag(harness.dom.container, "A")[0];
+    expect(getReactProps(link)?.["aria-label"]).toBe("Doc, deploy");
+    expect(getReactProps(link)?.href).toBe("/docs/guides/deploy");
     expect(getReactProps(link)?.["data-bridge-reference-card"]).toBe("true");
     await harness.act(() => getReactProps(link)?.onClick({ button: 0, preventDefault: vi.fn() }));
     expect(harness.onOpenDoc).toHaveBeenCalledWith("guides/deploy");

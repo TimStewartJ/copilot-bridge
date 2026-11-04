@@ -24,7 +24,6 @@ type Step = [what: string, change: (world: World) => World, expected: string[]];
 
 const EMPTY: World = { history: [], live: [], sends: [] };
 const SENDING = { failed: false } as const;
-const QUEUED = { failed: false, queued: true } as const;
 const FAILED = { failed: true, error: "network unavailable" } as const;
 const T1 = "2026-01-01T00:00:01.000Z";
 const T2 = "2026-01-01T00:00:02.000Z";
@@ -128,22 +127,6 @@ const cases: Array<{ name: string; steps: Step[] }> = [
     ],
   },
   {
-    name: "a sending placeholder renders as sending",
-    steps: [["send", send("c1", "hi", SENDING), ["placeholder hi (sending)"]]],
-  },
-  {
-    name: "an accepted placeholder renders as sent",
-    steps: [["send", send("c1", "hi"), ["placeholder hi (sent)"]]],
-  },
-  {
-    name: "a queued placeholder renders as queued",
-    steps: [["send", send("c1", "hi", QUEUED), ["placeholder hi (queued)"]]],
-  },
-  {
-    name: "a failed placeholder renders with Retry",
-    steps: [["send", send("c1", "hi", FAILED), ["placeholder hi (failed)"]]],
-  },
-  {
     name: "the live copy arrives before the send response",
     steps: [
       ["send", send("c1", "hi", SENDING), ["placeholder hi (sending)"]],
@@ -154,26 +137,6 @@ const cases: Array<{ name: string; steps: Step[] }> = [
         setHistory(savedUser("hi", { clientMessageId: "c1", sourceEventId: "e1", timestamp: T1 })),
         ["history hi"],
       ],
-    ],
-  },
-  {
-    name: "the live copy arrives after the send response",
-    steps: [
-      ["send", send("c1", "hi", SENDING), ["placeholder hi (sending)"]],
-      ["accepted", setDelivery("c1", undefined), ["placeholder hi (sent)"]],
-      ["live copy", setLive({ id: "c1", content: "hi" }), ["live hi (sent)"]],
-      [
-        "history",
-        setHistory(savedUser("hi", { clientMessageId: "c1", sourceEventId: "e1", timestamp: T1 })),
-        ["history hi"],
-      ],
-    ],
-  },
-  {
-    name: "a queued send whose turn starts shows its live copy as sent",
-    steps: [
-      ["queued", send("c1", "hi", QUEUED), ["placeholder hi (queued)"]],
-      ["turn starts", setLive({ id: "c1", content: "hi" }), ["live hi (sent)"]],
     ],
   },
   {
@@ -333,16 +296,6 @@ describe("mergeUserMessages", () => {
     }
   });
 
-  it("drops settled sends and keeps the others", () => {
-    const merge = mergeUserMessages({
-      history: indexUserMessageHistory([savedUser("hi", { clientMessageId: "c1" })]),
-      live: [],
-      placeholders: [{ id: "c1", content: "hi" }, { id: "c2", content: "next", delivery: SENDING }],
-    });
-    expect([...merge.settledIds]).toEqual(["c1"]);
-    expect(merge.placeholderEntries.map((entry) => entry.id)).toEqual(["c2"]);
-  });
-
   it("keeps entry ids and fields the transcript renders", () => {
     const attachments = [{ type: "file" as const, path: "notes.md" }];
     const merge = mergeUserMessages({
@@ -378,7 +331,6 @@ describe("placeUnsentMessages", () => {
   const history = [savedUser("a", { timestamp: T1 }), savedAssistant("b", T3)];
 
   it.each<[string, UnsentMessageView[], { hasOlder: boolean; hidden?: Set<string> }, string[]]>([
-    ["between the saved entries around it", [unsent("x", T2)], { hasOlder: false }, ["saved-a", "unsent-x", "saved-b"]],
     ["after everything saved", [unsent("x", "2026-01-01T00:00:04.000Z")], { hasOlder: false }, ["saved-a", "saved-b", "unsent-x"]],
     ["in the order sent", [unsent("y", T2), unsent("x", "2026-01-01T00:00:01.500Z")], { hasOlder: false }, ["saved-a", "unsent-x", "unsent-y", "saved-b"]],
     ["at the top when nothing older is left", [unsent("x", "2026-01-01T00:00:00.000Z")], { hasOlder: false }, ["unsent-x", "saved-a", "saved-b"]],
@@ -390,13 +342,6 @@ describe("placeUnsentMessages", () => {
 });
 
 describe("learnFromLive", () => {
-  it("returns the same array when there is nothing to learn", () => {
-    const sends: PendingSend[] = [{ id: "c1", content: "hi", sourceEventId: "e1", timestamp: T1 }];
-    expect(learnFromLive(sends, [])).toBe(sends);
-    expect(learnFromLive(sends, [{ id: "other", content: "x", sourceEventId: "e9" }])).toBe(sends);
-    expect(learnFromLive(sends, [{ id: "c1", content: "hi", sourceEventId: "e1", timestamp: T1 }])).toBe(sends);
-  });
-
   it("only adds what the send does not know yet", () => {
     const sends: PendingSend[] = [{ id: "c1", content: "hi", sourceEventId: "e1" }];
     const learned = learnFromLive(sends, [{

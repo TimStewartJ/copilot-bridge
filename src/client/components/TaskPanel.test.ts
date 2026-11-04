@@ -280,7 +280,9 @@ async function renderTaskPanelHtml(task: Task, workspaceOverrides: Record<string
 describe("TaskPanel", () => {
   it("marks review and explicit input in the header but keeps routine continuation as plain context", async () => {
     const data = taskOverviewMock().data!;
-    expect(await renderTaskPanelHtml(createTask())).toContain("Needs a look");
+    const undated = await renderTaskPanelHtml(createTask());
+    expect(undated).toContain("Needs a look");
+    expect(undated).not.toContain("Time to revisit");
     taskOverviewMock.mockReturnValue({ isError: false, data: { tasks: [{
       ...data.tasks[0], activity: createTaskActivity({ scheduledCount: 1 }),
     }] } });

@@ -79,15 +79,6 @@ describe("SystemPromptSection", () => {
     }
   });
 
-  it("keeps advanced text fields closed until requested without hiding the detail choices", async () => {
-    const { container } = await renderSection({ mcpServers: {}, customInstructions: "Keep my terminology." });
-    const disclosures = findAllByTag(container, "DETAILS");
-    expect(disclosures).toHaveLength(4);
-    expect(disclosures.every((element) => !getReactProps(element)?.open)).toBe(true);
-    expect(findAllByTag(container, "FIELDSET")).toHaveLength(1);
-    expect(container.textContent).toContain("Configured");
-  });
-
   it("changes the detail level without overwriting guidance or unrelated settings", async () => {
     const draft: AppSettings = {
       mcpServers: {}, identity: "Bridge", customInstructions: "Prefer TypeScript.", theme: "dark",

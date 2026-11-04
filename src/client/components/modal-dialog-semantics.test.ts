@@ -16,10 +16,6 @@ import {
   resolveAccessibleName,
 } from "../test-modal-dialog-dom";
 import type { Schedule, Task, VisualArtifact } from "../api";
-import DocPreviewSheet from "./DocPreviewSheet";
-import DeferredWorkSheet from "./DeferredWorkSheet";
-import NotesSheet from "./NotesSheet";
-import TaskHistorySheet from "./TaskHistorySheet";
 import PlanSheet from "./PlanSheet";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import SessionList from "./SessionList";
@@ -99,49 +95,6 @@ const overlayCases: OverlayCase[] = [
     }),
   },
   {
-    name: "NotesSheet",
-    accessibleName: "Notes",
-    element: (onClose) => createElement(NotesSheet, {
-      notes: "Some notes",
-      onSave: vi.fn(),
-      onClose,
-    }),
-  },
-  {
-    name: "NotesSheet as task instructions",
-    accessibleName: "Instructions",
-    element: (onClose) => createElement(NotesSheet, {
-      notes: "Never email the landlord.",
-      title: "Instructions",
-      onSave: vi.fn(),
-      onClose,
-    }),
-  },
-  {
-    name: "TaskHistorySheet",
-    accessibleName: "History",
-    element: (onClose) => createElement(TaskHistorySheet, { taskId: "task-1", onClose }),
-  },
-  {
-    name: "DocPreviewSheet",
-    accessibleName: "areas/cooking/recipes",
-    element: (onClose) => createElement(DocPreviewSheet, {
-      docPath: "areas/cooking/recipes",
-      onClose,
-    }),
-  },
-  {
-    name: "DeferredWorkSheet",
-    accessibleName: "Deferred Work",
-    element: (onClose) => createElement(DeferredWorkSheet, {
-      session: {
-        sessionId: "11111111-1111-4111-8111-111111111111",
-        summary: "Deferred session",
-      },
-      onClose,
-    }),
-  },
-  {
     name: "WorkspaceDetailsSheet",
     accessibleName: "Workspace details",
     element: (onClose) => createElement(WorkspaceDetailsSheet, {
@@ -149,22 +102,6 @@ const overlayCases: OverlayCase[] = [
       session: null,
       taskGitStatus: null,
       onClose,
-    }),
-  },
-  {
-    name: "ScheduleDetailSheet (view mode)",
-    accessibleName: "Daily sync",
-    element: (onClose) => createElement(ScheduleDetailSheet, {
-      schedule: makeSchedule(),
-      taskId: "task-1",
-      mode: "view",
-      onClose,
-      onSwitchToEdit: vi.fn(),
-      onSwitchToView: vi.fn(),
-      onTrigger: vi.fn(),
-      onToggle: vi.fn(),
-      onDelete: vi.fn(),
-      onSaved: vi.fn(),
     }),
   },
   {
@@ -261,6 +198,9 @@ describe("ScheduleDetailSheet stacked dialogs", () => {
       onSaved: vi.fn(),
     }));
     try {
+      const [scheduleDialog] = findDialogElements(harness.dom.container);
+      expect(scheduleDialog.getAttribute("aria-modal")).toBe("true");
+      expect(resolveAccessibleName(harness.dom.container, scheduleDialog)).toBe("Daily sync");
       await clickButton(harness, (props) => props["aria-label"] === "More actions");
       await clickButton(harness, (_props, node) => node.textContent?.trim() === "Delete");
 

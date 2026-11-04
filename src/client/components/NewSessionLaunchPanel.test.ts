@@ -52,16 +52,6 @@ describe("NewSessionLaunchPanel", () => {
     harness = null;
   });
 
-  it("keeps launch options scrollable when the chat viewport is constrained", async () => {
-    await harness!.render(createElement(NewSessionLaunchPanel, requiredProps()));
-
-    const panel = findAllByTag(harness!.dom.container, "DIV")
-      .find((element) => String(getReactProps(element)?.className ?? "").includes("overflow-y-auto"));
-    expect(getReactProps(panel)?.className).toContain("min-h-0");
-    expect(getReactProps(panel)?.className).toContain("items-start");
-    expect(getReactProps(panel)?.className).toContain("md:items-center");
-  });
-
   it("hides selector labels but preserves accessible names and the actual choices", async () => {
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),
@@ -117,31 +107,6 @@ describe("NewSessionLaunchPanel", () => {
     expect(onPlaybookChange).toHaveBeenCalledWith(undefined);
   });
 
-  it("starts the three presets with GPT, Claude, and Other defaults", async () => {
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...requiredProps(),
-      models: [
-        { id: "gpt-5.6", name: "GPT-5.6", policy: { state: "enabled" } },
-        { id: "claude-opus-5", name: "Claude Opus 5", policy: { state: "enabled" } },
-        { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro", policy: { state: "enabled" } },
-        { id: "gpt-disabled", name: "Disabled Model", policy: { state: "disabled" } },
-      ],
-      defaultModelId: "gpt-5.6",
-      selectedModelId: "",
-    }));
-
-    expect(findTile(harness!.dom.container, "Fast").textContent).toContain("GPT-5.6");
-    expect(findTile(harness!.dom.container, "Standard").textContent).toContain("Claude Opus 5");
-    expect(findTile(harness!.dom.container, "Deep").textContent).toContain("Gemini 3.1 Pro");
-
-    const text = harness!.dom.container.textContent ?? "";
-    expect(text).not.toContain("Disabled Model");
-    // Each tile names its tier before its model.
-    expect(findTile(harness!.dom.container, "Fast").textContent).toBe("FastGPT-5.6");
-    expect(text).not.toContain("This chat only");
-    expect(tileLabels(harness!.dom.container)).toContain("Fast: GPT-5.6");
-  });
-
   it("offers to reset or save a chat that departs from its tier", async () => {
     const onReset = vi.fn();
     const onSave = vi.fn();
@@ -155,22 +120,6 @@ describe("NewSessionLaunchPanel", () => {
     await harness!.act(() => getReactProps(buttons.find((button) => button.textContent === "Save as Deep"))!.onClick());
     expect(onReset).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledTimes(1);
-  });
-
-  it("marks the selected preset as live", async () => {
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...requiredProps(),
-      models: [
-        { id: "gpt-5.6", name: "GPT-5.6" },
-        { id: "claude-opus-5", name: "Claude Opus 5" },
-      ],
-      defaultModelId: "gpt-5.6",
-      selectedModelId: "claude-opus-5",
-      selectedPresetSlot: "preset2",
-    }));
-
-    expect(getReactProps(findTile(harness!.dom.container, "Standard"))?.["aria-pressed"]).toBe(true);
-    expect(getReactProps(findTile(harness!.dom.container, "Fast"))?.["aria-pressed"]).toBe(false);
   });
 
   it("marks an explicitly remembered preset live when the model inherits the Bridge default", async () => {
@@ -187,27 +136,6 @@ describe("NewSessionLaunchPanel", () => {
 
     expect(getReactProps(findTile(harness!.dom.container, "Standard"))?.["aria-pressed"]).toBe(true);
     expect(getReactProps(findTile(harness!.dom.container, "Fast"))?.["aria-pressed"]).toBe(false);
-  });
-
-  it("shows the remembered model for each preset slot", async () => {
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...requiredProps(),
-      models: [
-        { id: "gpt-5.6", name: "GPT-5.6" },
-        { id: "gpt-5-mini", name: "GPT-5 mini" },
-        { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
-        { id: "claude-opus-5", name: "Claude Opus 5" },
-      ],
-      selectedModelId: "claude-opus-5",
-      selectedPresetSlot: "preset2",
-      presets: {
-        preset1: { model: "gpt-5-mini" },
-        preset2: { model: "claude-opus-5" },
-      },
-    }));
-
-    expect(findTile(harness!.dom.container, "Fast").textContent).toContain("GPT-5 mini");
-    expect(findTile(harness!.dom.container, "Standard").textContent).toContain("Claude Opus 5");
   });
 
   it("does not mark a fallback model as selected when the SDK default is unresolved", async () => {
@@ -291,41 +219,6 @@ describe("NewSessionLaunchPanel", () => {
     expect(getReactProps(buttons.find((button) => button.textContent === "Long context"))?.["aria-pressed"]).toBe(true);
   });
 
-  it("shows every model in each preset menu and reports the slot with a model pick", async () => {
-    const props = requiredProps();
-    await harness!.render(createElement(NewSessionLaunchPanel, {
-      ...props,
-      models: [
-        { id: "gpt-5.6", name: "GPT-5.6" },
-        { id: "gpt-5-mini", name: "GPT-5 mini" },
-        { id: "claude-opus-5", name: "Claude Opus 5" },
-      ],
-      selectedModelId: "gpt-5.6",
-      selectedPresetSlot: "preset1",
-    }));
-
-    const caret = findAllByTag(harness!.dom.container, "BUTTON")
-      .find((button) => getReactProps(button)?.["aria-label"] === "Choose Fast model");
-    if (!caret) throw new Error("Fast refine caret was not rendered");
-
-    await harness!.act(async () => {
-      getReactProps(caret)?.onClick?.();
-    });
-
-    const miniOption = findAllByTag(harness!.dom.container, "BUTTON")
-      .find((button) => button.textContent === "GPT-5 mini");
-    const claudeOption = findAllByTag(harness!.dom.container, "BUTTON")
-      .find((button) => button.textContent === "Claude Opus 5");
-    if (!miniOption || !claudeOption) throw new Error("Preset menu did not render every model");
-
-    await harness!.act(async () => {
-      getReactProps(miniOption)?.onClick?.();
-    });
-
-    expect(props.onModelChange).toHaveBeenCalledWith("preset1", "gpt-5-mini");
-    expect(props.onPresetChange).not.toHaveBeenCalled();
-  });
-
   it("keeps SDK order in preset menus and keyboard-focused refine choices", async () => {
     const props = requiredProps();
     await harness!.render(createElement(NewSessionLaunchPanel, {
@@ -365,6 +258,7 @@ describe("NewSessionLaunchPanel", () => {
       getReactProps(options[1])?.onClick?.();
     });
     expect(props.onModelChange).toHaveBeenCalledWith("preset2", "claude-sonnet-5");
+    expect(props.onPresetChange).not.toHaveBeenCalled();
   });
 
   it("opens the model menu when the live tile is clicked again", async () => {

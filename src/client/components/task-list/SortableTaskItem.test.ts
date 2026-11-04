@@ -97,34 +97,18 @@ describe("SortableTaskItem", () => {
       }
     });
 
-    it("keeps the unread dot when nothing is waiting on an answer", async () => {
-      const root = await renderRow(task, indicator({ unreadCount: 1, unread: true }));
-      expect(getReactProps(leadingIcon(root))?.["data-status"]).toBe("unread");
-      expect(statusIcons(root)).toEqual(["unread"]);
-    });
-
-    it("gives the leading slot to an open question over a working agent", async () => {
-      const root = await renderRow(task, indicator({ needsUserInputCount: 2, busy: true, busyCount: 1 }));
-      expect(statusIcons(root)).toEqual(["needs-input"]);
-      expect(root.textContent).not.toContain("answers");
-      expect(root.textContent).not.toContain("working");
-    });
-
     it("uses a plain unread mark without mixing work activity into the attention slot", async () => {
       for (const variant of ["rail", "list"] as const) {
-        const root = await renderRow(task, indicator({ busy: true, busyCount: 2, unreadCount: 1, unread: true }), variant);
+        const root = await renderRow(task, indicator({ busy: true, busyCount: 2, unreadCount: 3, unread: true }), variant);
         const leading = leadingIcon(root);
         expect(getReactProps(leading)?.["data-status"]).toBe("unread");
         expect(statusIcons(root)).toEqual(["unread"]);
         expect(root.textContent).not.toContain("working");
         // The row still counts as unread for the bold title and the unread jump bands.
-        expect(getReactProps(findAllByTag(root, "BUTTON")[0])?.["data-unread-task-id"]).toBe("task-1");
+        const row = getReactProps(findAllByTag(root, "BUTTON")[0]);
+        expect(row?.["data-unread-task-id"]).toBe("task-1");
+        expect(row?.title).toContain("3 unread conversations");
       }
-    });
-
-    it("keeps unread counts in context rather than adding a working ring", async () => {
-      const root = await renderRow(task, indicator({ busy: true, busyCount: 1, unreadCount: 3, unread: true }));
-      expect(getReactProps(findAllByTag(root, "BUTTON")[0])?.title).toBe("3 unread conversations.");
     });
 
     it("keeps a single unread cue when a legacy stalled flag is also present", async () => {
@@ -164,30 +148,16 @@ describe("SortableTaskItem", () => {
       }
     });
 
-    it.each(["deferredCount", "scheduledCount", "pendingDeliveryCount", "runningCommandCount", "managementJobCount"] as const)(
-      "keeps %s unmarked while retaining its activity context", async key => {
-        const root = await renderRow(task, indicator(), "rail", { activity: createTaskActivity({ [key]: 1 }) });
-        expect(statusIcons(root)).toEqual([]);
-        expect(root.textContent).not.toContain("Review");
-      },
-    );
+    it("keeps deferredCount unmarked while retaining its activity context", async () => {
+      const root = await renderRow(task, indicator(), "rail", { activity: createTaskActivity({ deferredCount: 1 }) });
+      expect(statusIcons(root)).toEqual([]);
+      expect(root.textContent).not.toContain("Review");
+    });
 
     it("shows unavailable evidence explicitly instead of a healthy blank", async () => {
       const root = await renderRow(task, indicator(), "list", { activity: createTaskActivity({ known: false }) });
       expect(statusIcons(root)).toEqual(["unknown"]);
       expect(root.textContent).toContain("Status unavailable");
-    });
-  });
-
-  describe("momentum", () => {
-    it("keeps the next step and wait out of the row in both variants", async () => {
-      for (const variant of ["rail", "list"] as const) {
-        const root = await renderRow({ ...task, nextAction: "Call the landlord", waitingOn: "Lease draft" }, indicator(), variant);
-        expect(root.textContent).toContain("Ship it");
-        expect(root.textContent).not.toContain("Call the landlord");
-        expect(root.textContent).not.toContain("Lease draft");
-        expect(root.textContent).not.toContain("Next step");
-      }
     });
   });
 

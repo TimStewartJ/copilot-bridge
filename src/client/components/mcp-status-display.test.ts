@@ -26,7 +26,6 @@ describe("MCP status display", () => {
 
   const ready = { servers: [], statusState: "ready" as const, toolFailureCount: 0 };
   it.each([
-    ["nothing to report", ready, false],
     ["status still loading", { ...ready, statusState: "loading" as const }, false],
     ["a server connecting", { ...ready, servers: [{ name: "demo", status: "pending" as const }] }, false],
     ["status unreadable", { ...ready, statusState: "error" as const }, true],

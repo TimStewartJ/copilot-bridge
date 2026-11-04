@@ -39,7 +39,7 @@ describe("TaskMomentumFields design migration", () => {
   }
 
   it("starts collapsed with one context summary and leaves Defer to the task menu", async () => {
-    const container = await render(createTask({ nextAction: "Review the quotes", waitingOn: "The dealer" }), vi.fn(), false);
+    const container = await render(createTask({ nextAction: "Review\n the quotes", waitingOn: "The dealer" }), vi.fn(), false);
     expect(container.textContent).toContain("Where things stand");
     expect(container.textContent).toContain("Next: Review the quotes");
     expect(container.textContent).not.toContain("The dealer");
@@ -52,8 +52,6 @@ describe("TaskMomentumFields design migration", () => {
   });
 
   it.each([
-    [{ deferred: true, nextAction: "Hidden next step" }, "Deferred"],
-    [{ nextAction: "Read\n the reply", waitingOn: "Approval" }, "Next: Read the reply"],
     [{ waitingOn: "A reply" }, "Waiting for: A reply"],
     [{ doneWhen: "Changes approved" }, "Done when: Changes approved"],
     [{ kind: "ongoing" as const, doneWhen: "Never show this" }, "No next step set"],
@@ -63,14 +61,8 @@ describe("TaskMomentumFields design migration", () => {
     expect(getTaskContextSummary(createTask(overrides))).toBe(summary);
   });
 
-  it("includes the recorded revisit date in a deferred summary", () => {
-    const nextTouchAt = "2030-05-02T10:30:00.000Z";
-    const date = new Date(nextTouchAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-    expect(getTaskContextSummary(createTask({ deferred: true, nextTouchAt }))).toBe(`Deferred · Revisit ${date}`);
-  });
-
   it("updates the revisit summary after saving without requiring a parent rerender", async () => {
-    const task = createTask({ deferred: true });
+    const task = createTask({ deferred: true, nextAction: "Hidden step" });
     const nextTouchAt = "2030-05-02T10:30:00.000Z";
     patchTaskMock.mockResolvedValue({ ...task, nextTouchAt });
     const container = await render(task);
@@ -80,7 +72,8 @@ describe("TaskMomentumFields design migration", () => {
     expect(getReactProps(input)?.["aria-describedby"]).toBe(`revisit-help-${task.id}`);
     await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: toDateTimeInputValue(nextTouchAt) } }));
     await harness!.act(async () => getReactProps(input)!.onBlur());
-    expect(disclosure(container)?.textContent).toBe(getTaskContextSummary({ ...task, nextTouchAt }));
+    const date = new Date(nextTouchAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    expect(disclosure(container)?.textContent).toBe(`Deferred · Revisit ${date}`);
     expect(container.textContent).toContain("Nothing starts by itself");
   });
 
@@ -160,22 +153,6 @@ describe("TaskMomentumFields design migration", () => {
     expect(patchTaskMock).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Keep checking");
     expect(container.textContent).not.toContain("Discard this edit");
-  });
-
-  it("surfaces a failed context write and retains its editable draft", async () => {
-    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      patchTaskMock.mockRejectedValue(new Error("Save failed"));
-      const container = await render(createTask());
-      const add = findAllByTag(container, "BUTTON").find(button => button.textContent === "Add a wait");
-      await harness!.act(async () => getReactProps(add)!.onClick());
-      const input = findAllByTag(container, "INPUT")[0];
-      expect(getReactProps(input)?.["aria-describedby"]).toBeUndefined();
-      await harness!.act(async () => getReactProps(input)!.onChange({ target: { value: "Delivery confirmation" } }));
-      await harness!.act(async () => getReactProps(input)!.onBlur());
-      expect(container.textContent).toContain("The change was not saved");
-      expect(getReactProps(findAllByTag(container, "INPUT")[0])!.value).toBe("Delivery confirmation");
-    } finally { errorLog.mockRestore(); }
   });
 
   it("keeps a save failure visible when collapsed and restores its draft on reopening", async () => {

@@ -12,7 +12,7 @@ const { ServerEditor } = await import("./ServerEditor");
 describe("ServerEditor save", () => {
   it("keeps stored config fields the form does not show", async () => {
     const onSave = vi.fn();
-    const stored = { command: "node", args: ["teams.js"], tools: ["*"], deferTools: "never" };
+    const stored = { command: "node", args: ["teams.js"], tools: ["*"], workingDirectory: "workspace", deferTools: "never" };
     const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
     await harness.render(createElement(ServerEditor, {
       name: "teams",
@@ -30,7 +30,7 @@ describe("ServerEditor save", () => {
     });
 
     expect(onSave).toHaveBeenCalledWith(
-      { command: "node", args: ["teams.js"], tools: ["*"], executionScope: "auto", deferTools: "never" },
+      { command: "node", args: ["teams.js"], tools: ["*"], executionScope: "auto", workingDirectory: "workspace", deferTools: "never" },
       "teams",
     );
   });

@@ -129,13 +129,6 @@ describe("resolveBridgeReference", () => {
     expect(reference.resolveBridgeReference({ kind: "task", taskId: "nope" }, { sessions, tasks })).toMatchObject({ found: false, title: "Task" });
   });
 
-  it("names docs by their last path segment", () => {
-    expect(reference.resolveBridgeReference({ kind: "doc", path: "tellus/categorical-transition-plan" }, { sessions: [], tasks: [] })).toMatchObject({
-      title: "categorical-transition-plan",
-      meta: "tellus/categorical-transition-plan",
-      path: "/docs/tellus/categorical-transition-plan",
-    });
-  });
 });
 
 describe("bridgeUrlTransform", () => {

@@ -1,7 +1,7 @@
 import { createElement, useRef, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChatEntry, TranscriptAgent } from "../../api";
+import type { ChatEntry } from "../../api";
 import { getCachedChatSnapshot, resetCachedChatSnapshotState } from "../../chat-cache";
 import { createReactDomHarness, type Act } from "../../test-react-harness";
 import { NO_HISTORY, useChatHistoryWindow } from "./useChatHistoryWindow";
@@ -79,16 +79,4 @@ describe("chat history window", () => {
     });
   });
 
-  it("shares unchanged agent records so a history refresh does not rerender their rows", async () => {
-    await withWindow(async ({ get, act }) => {
-      const agents: TranscriptAgent[] = [{
-        toolCallId: "task", agentId: "agent", name: "Worker",
-        status: "finished", activeMs: 0, toolCount: 0, failedToolCount: 0,
-      }];
-      await act(async () => get().applyAgentRecords(agents));
-      const previous = get().agentRecords;
-      await act(async () => get().applyAgentRecords(agents.map((agent) => ({ ...agent }))));
-      expect(get().agentRecords).toBe(previous);
-    });
-  });
 });

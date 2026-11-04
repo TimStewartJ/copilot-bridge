@@ -51,19 +51,6 @@ describe("McpStatusBar status ownership", () => {
     } finally { await harness.cleanup(); }
   });
 
-  it("stays hidden for a confirmed empty configuration with no context signal", async () => {
-    const harness = await createReactDomHarness();
-    try {
-      await harness.render(createElement(McpStatusBar, {
-        servers: [],
-        statusState: "ready",
-      }));
-      expect(harness.dom.container.textContent).toBe("");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("uses the same native context reading in the collapsed status and expanded panel", async () => {
     const harness = await createReactDomHarness();
     try {

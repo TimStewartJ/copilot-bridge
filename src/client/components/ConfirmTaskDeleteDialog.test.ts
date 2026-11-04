@@ -62,26 +62,6 @@ function isDisabled(el: any): boolean {
 }
 
 describe("ConfirmTaskDeleteDialog", () => {
-  it("shows the linked session count and both dispositions", async () => {
-    const harness = await createReactDomHarness();
-    try {
-      await harness.render(createElement(ConfirmTaskDeleteDialog, {
-        task,
-        preview: makePreview(),
-        onConfirm: vi.fn(),
-        onClose: vi.fn(),
-      }));
-
-      const text = harness.dom.container.textContent ?? "";
-      expect(text).toContain("3 linked sessions");
-      expect(text).toContain("1 already archived");
-      expect(findButton(harness.dom.container, "Archive sessions & delete task")).toBeDefined();
-      expect(findButton(harness.dom.container, "Delete sessions & delete task")).toBeDefined();
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("dispatches the chosen disposition", async () => {
     const harness = await createReactDomHarness();
     const onConfirm = vi.fn();
@@ -93,6 +73,9 @@ describe("ConfirmTaskDeleteDialog", () => {
         onClose: vi.fn(),
       }));
 
+      const text = harness.dom.container.textContent ?? "";
+      expect(text).toContain("3 linked sessions");
+      expect(text).toContain("1 already archived");
       await harness.act(async () => {
         getReactProps(findButton(harness.dom.container, "Archive sessions"))?.onClick();
       });

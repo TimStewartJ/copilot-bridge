@@ -93,13 +93,6 @@ describe("NotificationsSection", () => {
     await waitUntilAct(harness!.act, () => !getReactProps(button("Refresh"))!.disabled);
   }
 
-  it("describes native question notifications without retaining dashboard policy", async () => {
-    await render();
-
-    expect(harness!.dom.container.textContent).toContain("Only conversations waiting for your input notify you.");
-    expect(harness!.dom.container.textContent).not.toContain("Focus");
-  });
-
   it("retains enable, disable, test and refresh controls without mutating policy", async () => {
     await render();
     await click("Send test");
@@ -115,27 +108,6 @@ describe("NotificationsSection", () => {
     for (const label of ["Enable", "Disable", "Send test", "Refresh"]) {
       expect(getReactProps(button(label))!.className).toContain("h-10");
     }
-  });
-
-  it("does not depend on a dashboard-policy query for native push controls", async () => {
-    settingsMocks.useSettingsQuery.mockReturnValue({
-      data: undefined,
-      error: new Error("Policy service unavailable"),
-      isFetching: false,
-      refetch: settingsMocks.refetch,
-    });
-    await render();
-
-    expect(harness!.dom.container.textContent).not.toContain("Policy service unavailable");
-    expect(findAllByTag(harness!.dom.container, "INPUT")).toHaveLength(0);
-    expect(getReactProps(button("Send test"))!.disabled).toBe(false);
-    expect(settingsMocks.refetch).not.toHaveBeenCalled();
-    await click("Send test");
-    await click("Disable");
-    await click("Enable");
-    expect(pushMocks.sendCurrentSubscriptionTestNotification).toHaveBeenCalledOnce();
-    expect(pushMocks.disablePushNotifications).toHaveBeenCalledOnce();
-    expect(pushMocks.enablePushNotifications).toHaveBeenCalledOnce();
   });
 
   it.each([

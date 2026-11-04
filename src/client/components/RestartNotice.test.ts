@@ -13,24 +13,11 @@ async function renderNotice(props: Parameters<typeof RestartNotice>[0]) {
 }
 
 describe("RestartNotice", () => {
-  it("shows one quiet waiting line rather than a warning or a work lock", async () => {
-    const text = await renderNotice({ notice: { kind: "waiting", sessions: 2, jobs: 1, sessionIds: [] } });
-    expect(text).toContain("Restart pending");
-    expect(text).toContain("after 2 sessions and 1 job finish");
-    expect(text).not.toMatch(/paused|imminent|abort/i);
-    const root = harness!.dom.container.childNodes[0];
-    expect(getReactProps(root)?.className).toContain("py-1");
-    expect(getReactProps(root)?.className).toContain("text-text-secondary");
-    expect(getReactProps(root)?.className).not.toContain("text-text-muted");
-    expect(getReactProps(root)?.className).not.toMatch(/warning|error/);
-    expect(findAllByTag(harness!.dom.container, "svg").some((node) =>
-      String(getReactProps(node)?.className).includes("animate-spin"))).toBe(false);
-  });
-
   it("reports the sessions it waits for and allows an explicit restart-now action", async () => {
     const restart = vi.fn();
-    await renderNotice({ notice: { kind: "waiting", sessions: 1, jobs: 0, sessionIds: ["a"] },
+    const text = await renderNotice({ notice: { kind: "waiting", sessions: 2, jobs: 1, sessionIds: ["a"] },
       waitingSessionTitles: ["Current work"], onRestartNow: restart });
+    expect(text).toContain("after 2 sessions and 1 job finish");
     expect(getReactProps(harness!.dom.container.childNodes[0])?.title).toBe("Waiting for: Current work");
     const button = findAllByTag(harness!.dom.container, "button")[0];
     expect(button.textContent).toBe("Restart now");

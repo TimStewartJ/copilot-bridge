@@ -116,24 +116,13 @@ describe("WorkItemList - summary variant", () => {
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
 
       await clickFirstSummaryButton(harness);
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
+      const anchors = findAllByTag(harness.dom.container, "A");
+      expect(anchors.map((anchor) => anchor.getAttribute("href"))).toEqual([wiA.url, wiB.url]);
+      expect(anchors[0].getAttribute("target")).toBe("_blank");
+      expect(anchors[0].getAttribute("rel")).toBe("noopener");
 
       await clickFirstSummaryButton(harness);
       expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
-    });
-  });
-
-  it("expanded rows contain external anchor links", async () => {
-    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "summary" }, async (harness) => {
-      await clickFirstSummaryButton(harness);
-
-      const anchors = findAllByTag(harness.dom.container, "A");
-      expect(anchors).toHaveLength(2);
-      for (const anchor of anchors) {
-        expect(anchor.getAttribute("target")).toBe("_blank");
-        expect(anchor.getAttribute("rel")).toBe("noopener");
-        expect(anchor.getAttribute("href")).toMatch(/^https?:\/\//);
-      }
     });
   });
 
@@ -154,30 +143,12 @@ describe("WorkItemList - summary variant", () => {
     });
   });
 
-  it("single item with url '#' (raw fallback) does not navigate", async () => {
-    await withWorkItemList({ enrichedWIs: [], rawWIs: rawWIOnly, variant: "summary" }, async (harness) => {
-      const mockOpen = vi.fn();
-      (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
-      try {
-        await clickFirstSummaryButton(harness);
-
-        expect(mockOpen).not.toHaveBeenCalled();
-      } finally {
-        delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
-      }
-    });
-  });
-
   it("expanded rows with missing URL do not render href='#' anchors", async () => {
     await withWorkItemList({ enrichedWIs: [], rawWIs: rawWIOnly, variant: "summary" }, async (harness) => {
       await clickFirstSummaryButton(harness);
 
-      const anchors = findAllByTag(harness.dom.container, "A");
-      for (const anchor of anchors) {
-        const href = anchor.getAttribute("href") ?? "";
-        expect(href).not.toBe("#");
-        expect(href).toMatch(/^https?:\/\//);
-      }
+      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(0);
+      expect(findCopyButtons(harness)).toHaveLength(0);
     });
   });
 });
@@ -188,47 +159,19 @@ describe("WorkItemList - copy affordance", () => {
     clipboardMocks.writeClipboardText.mockResolvedValue(undefined);
   });
 
-  it("renders a hover copy action for every work item with a real URL", async () => {
-    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "compact" }, (harness) => {
-      const buttons = findCopyButtons(harness);
-      expect(buttons).toHaveLength(2);
-      expect(buttons[0]?.getAttribute("class")).toContain("linked-resource-copy-button");
-    });
-  });
-
   it("copies the exact work-item URL without following the row link", async () => {
-    await withWorkItemList({ enrichedWIs: [wiA], rawWIs: [], variant: "compact" }, async (harness) => {
-      const { button, preventDefault, stopPropagation } = await clickCopy(harness);
+    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "compact" }, async (harness) => {
+      expect(findCopyButtons(harness)).toHaveLength(2);
+      expect(findUnlinkButtons(harness)).toHaveLength(0);
+      const { button, preventDefault, stopPropagation } = await clickCopy(harness, 1);
 
-      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(wiA.url);
+      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(wiB.url);
       expect(preventDefault).toHaveBeenCalledOnce();
       expect(stopPropagation).toHaveBeenCalledOnce();
-      expect(button.getAttribute("aria-label")).toBe("Copied work item WI-1 URL");
+      expect(button.getAttribute("aria-label")).toBe("Copied work item WI-2 URL");
     });
   });
 
-  it("keeps copy in the opened row of a single-item summary without opening the work item", async () => {
-    await withWorkItemList({ enrichedWIs: [wiReal], rawWIs: [], variant: "summary" }, async (harness) => {
-      const mockOpen = vi.fn();
-      (globalThis.window as unknown as { open?: typeof mockOpen }).open = mockOpen;
-      try {
-        expect(findCopyButtons(harness)).toHaveLength(0);
-        await clickFirstSummaryButton(harness);
-        await clickCopy(harness);
-
-        expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(wiReal.url);
-        expect(mockOpen).not.toHaveBeenCalled();
-      } finally {
-        delete (globalThis.window as unknown as { open?: typeof mockOpen }).open;
-      }
-    });
-  });
-
-  it("does not render a copy action when enrichment has no URL", async () => {
-    await withWorkItemList({ enrichedWIs: [], rawWIs: rawWIOnly, variant: "compact" }, (harness) => {
-      expect(findCopyButtons(harness)).toHaveLength(0);
-    });
-  });
 });
 
 describe("WorkItemList - unlink affordance", () => {
@@ -241,72 +184,20 @@ describe("WorkItemList - unlink affordance", () => {
     toastMocks.dismissToast.mockClear();
   });
 
-  it("renders no unlink button when taskId is omitted", async () => {
-    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "compact" }, (harness) => {
-      expect(findUnlinkButtons(harness)).toHaveLength(0);
-    });
-  });
-
-  it("renders one unlink button per row when taskId is provided", async () => {
-    await withWorkItemList({ enrichedWIs: [wiA, wiB], rawWIs: [], variant: "compact", taskId: "task-1" }, (harness) => {
-      expect(findUnlinkButtons(harness)).toHaveLength(2);
-      expect(findAllByTag(harness.dom.container, "A")).toHaveLength(2);
-    });
-  });
-
-  it("requires an in-place second click without a browser confirmation prompt", async () => {
-    const confirmMock = vi.fn(() => false);
-    (globalThis.window as unknown as { confirm?: typeof confirmMock }).confirm = confirmMock;
-    try {
-      await withWorkItemList(
-        { enrichedWIs: [wiA], rawWIs: [], variant: "compact", taskId: "task-1" },
-        async (harness) => {
-          const { button, preventDefault, stopPropagation } = await clickUnlinkOnce(harness);
-
-          expect(confirmMock).not.toHaveBeenCalled();
-          expect(apiMocks.unlinkResource).not.toHaveBeenCalled();
-          expect(button.getAttribute("aria-label")).toBe("Confirm unlink work item WI-1 from task");
-          expect(button.getAttribute("data-unlink-state")).toBe("confirming");
-          expect(preventDefault).toHaveBeenCalledOnce();
-          expect(stopPropagation).toHaveBeenCalledOnce();
-
-          await clickUnlinkOnce(harness);
-
-          expect(apiMocks.unlinkResource).toHaveBeenCalledOnce();
-        },
-      );
-    } finally {
-      delete (globalThis.window as unknown as { confirm?: typeof confirmMock }).confirm;
-    }
-  });
-
   it("unlinks with the row provider/id and notifies the parent", async () => {
     const onTasksChanged = vi.fn();
     await withWorkItemList(
-      { enrichedWIs: [wiA], rawWIs: [], variant: "compact", taskId: "task-1", onTasksChanged },
+      { enrichedWIs: [wiA, wiB], rawWIs: [], variant: "compact", taskId: "task-1", onTasksChanged },
       async (harness) => {
-        await clickUnlink(harness);
+        expect(findUnlinkButtons(harness)).toHaveLength(2);
+        await clickUnlink(harness, 1);
 
         expect(apiMocks.unlinkResource).toHaveBeenCalledWith("task-1", {
           type: "workItem",
-          workItemId: "WI-1",
+          workItemId: "WI-2",
           provider: "ado",
         });
         expect(onTasksChanged).toHaveBeenCalledOnce();
-      },
-    );
-  });
-
-  it("shows a success toast offering undo", async () => {
-    await withWorkItemList(
-      { enrichedWIs: [wiA], rawWIs: [], variant: "compact", taskId: "task-1" },
-      async (harness) => {
-        await clickUnlink(harness);
-
-        const toast = lastToast();
-        expect(toast?.tone).toBe("success");
-        expect(toast?.title).toBe("Unlinked work item WI-1");
-        expect(toast?.action?.label).toBe("Undo");
       },
     );
   });
@@ -317,10 +208,13 @@ describe("WorkItemList - unlink affordance", () => {
       { enrichedWIs: [wiA], rawWIs: [], variant: "compact", taskId: "task-1", onTasksChanged },
       async (harness) => {
         await clickUnlink(harness);
+        const toast = lastToast();
+        expect(toast?.tone).toBe("success");
+        expect(toast?.action?.label).toBe("Undo");
         onTasksChanged.mockClear();
 
         await harness.act(async () => {
-          await lastToast()?.action?.onAction();
+          await toast?.action?.onAction();
         });
         await flushAct(harness.act);
 

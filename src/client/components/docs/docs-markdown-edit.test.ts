@@ -55,7 +55,7 @@ describe("inline formatting", () => {
 
 describe("block formatting", () => {
   it("turns whole lines into list items and back", () => {
-    expect(run("[one\ntwo]", "bulletList")).toBe("[- one\n- two]");
+    expect(run("[one\n\n  two]", "bulletList")).toBe("[- one\n\n  - two]");
     expect(run("[- one\n- two]", "bulletList")).toBe("[one\ntwo]");
     expect(run("[one\ntwo\nthree]", "numberedList")).toBe("[1. one\n2. two\n3. three]");
     expect(run("[- one\n- two]", "taskList")).toBe("[- [ ] one\n- [ ] two]");
@@ -70,10 +70,6 @@ describe("block formatting", () => {
   it("toggles headings on the caret's line without moving the caret off its character", () => {
     expect(run("Tit|le", "heading2")).toBe("## Tit|le");
     expect(run("## Tit|le", "heading2")).toBe("Tit|le");
-  });
-
-  it("skips blank lines inside a multi-line selection and keeps indentation", () => {
-    expect(run("[one\n\n  two]", "bulletList")).toBe("[- one\n\n  - two]");
   });
 
   it("quotes and unquotes every selected line", () => {

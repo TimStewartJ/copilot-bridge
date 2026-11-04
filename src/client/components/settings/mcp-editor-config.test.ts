@@ -3,27 +3,6 @@ import type { McpServerConfig } from "../../api";
 import { withUneditedMcpServerFields } from "./mcp-editor-config";
 
 describe("withUneditedMcpServerFields", () => {
-  it("keeps stored fields the editor does not show", () => {
-    const stored = {
-      command: "node",
-      args: ["old.js"],
-      workingDirectory: "workspace",
-      deferTools: "never",
-    };
-
-    expect(withUneditedMcpServerFields(stored, {
-      command: "node",
-      args: ["new.js"],
-      executionScope: "auto",
-    })).toEqual({
-      command: "node",
-      args: ["new.js"],
-      executionScope: "auto",
-      workingDirectory: "workspace",
-      deferTools: "never",
-    });
-  });
-
   it("lets the form clear the fields it owns", () => {
     const stored: McpServerConfig = {
       command: "node",

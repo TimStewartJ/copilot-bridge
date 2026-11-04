@@ -163,28 +163,6 @@ afterEach(() => {
 });
 
 describe("BrowserDiagnosticsSection", () => {
-  it("renders public and authenticated browser contexts", async () => {
-    const harness = await createReactDomHarness();
-    try {
-      await harness.render(createElement(BrowserDiagnosticsSection, {
-        draft: { mcpServers: {}, browser: { headed: true } },
-        setDraft: vi.fn(),
-      }));
-      await waitUntilAct(harness.act, () =>
-        (harness.dom.container.textContent ?? "").includes("Public browser"),
-      );
-
-      const text = harness.dom.container.textContent ?? "";
-      expect(text).toContain("Public browser");
-      expect(text).toContain("Authenticated browser");
-      expect(text).toContain("copilot-bridge");
-      expect(text).toContain("ADO: verified");
-      expect(text).toContain("Run browsers with a window");
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("says which browser runs, where it comes from and how old it is", async () => {
     const harness = await renderSection();
     const text = harness.dom.container.textContent ?? "";
@@ -295,10 +273,8 @@ describe("BrowserDiagnosticsSection", () => {
     }
   });
 
-  it.each([
-    { name: "has not been checked", liveView: undefined },
-    { name: "passed its check", liveView: { ok: true, checkedAt: "2026-09-08T15:58:00.000Z" } },
-  ])("says that agent-browser needs an update when it is older than the Bridge works with and the live view $name", async ({ liveView }) => {
+  it("says that agent-browser needs an update when it is older than the Bridge works with and the live view 'passed its check'", async () => {
+    const liveView = { ok: true, checkedAt: "2026-09-08T15:58:00.000Z" };
     // An old agent-browser shows a page and passes the check; a popup is what it does not show.
     apiMocks.fetchBrowserDiagnostics.mockResolvedValue(diagnostics({ config: { liveView, agentBrowserVersion: "0.33.2" } }));
     const harness = await renderSection();
@@ -409,6 +385,8 @@ describe("BrowserDiagnosticsSection", () => {
         (harness.dom.container.textContent ?? "").includes("Check public browser"),
       );
 
+      expect(harness.dom.container.textContent).toContain("copilot-bridge");
+      expect(harness.dom.container.textContent).toContain("ADO: verified");
       await clickButton(harness, "Check public browser");
       expect(apiMocks.probeBrowserContext).toHaveBeenCalledWith("public");
 

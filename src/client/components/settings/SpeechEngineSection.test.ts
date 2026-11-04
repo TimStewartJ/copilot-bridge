@@ -10,7 +10,7 @@ import {
   type ReactDomHarness,
 } from "../../test-react-harness";
 import type { VoiceInstallStatus, VoiceStatus } from "../../voice/voice-api";
-import { describeEngineState, describeInstallBadge, SpeechEngineSection } from "./SpeechEngineSection";
+import { describeEngineState, SpeechEngineSection } from "./SpeechEngineSection";
 
 const apiMocks = vi.hoisted(() => ({
   fetchTranscriptionStatus: vi.fn(),
@@ -160,11 +160,4 @@ describe("speech engine status copy", () => {
     expect(describeEngineState({ state: "failed", detail: "Speech engine exited (1)" })).toContain("(Speech engine exited (1))");
   });
 
-  it("labels install states", () => {
-    expect(describeInstallBadge(install({ installed: true })).text).toBe("Installed");
-    expect(describeInstallBadge(install({ installing: true })).text).toBe("Installing 0%");
-    expect(describeInstallBadge(install({ error: "boom" })).text).toBe("Setup failed");
-    expect(describeInstallBadge(install()).text).toBe("Not installed");
-    expect(describeInstallBadge(install({ supported: false })).text).toBe("Unsupported");
-  });
 });

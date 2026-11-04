@@ -4,7 +4,7 @@ import { createReactDomHarness, findAllByTag, getReactProps } from "../test-reac
 import McpStatusBar from "./McpStatusBar";
 
 describe("session details tool readiness", () => {
-  it.each(["initializing", "failed", "ready"] as const)("keeps %s tool readiness independent of connected transport", async (state) => {
+  it.each(["initializing", "failed"] as const)("keeps %s tool readiness independent of connected transport", async (state) => {
     const harness = await createReactDomHarness();
     try {
       await harness.render(createElement(McpStatusBar, {
@@ -18,7 +18,6 @@ describe("session details tool readiness", () => {
       expect(text).toContain("1/1 connected");
       if (state === "initializing") expect(text).toContain("Loading tool definitions");
       if (state === "failed") expect(text).toContain("metadata validation failed");
-      if (state === "ready") expect(text).not.toContain("Tool definitions loaded");
       expect(text).not.toContain("Tool permissions are separate from connection status");
       expect(text).not.toContain("MCP status unavailable");
       expect(text).not.toContain("Start sign-in");

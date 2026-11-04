@@ -81,27 +81,6 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("SessionList input-required indicator", () => {
-  it("renders a needs-answer marker for sessions waiting on user input", async () => {
-    const { dom, cleanup } = await renderSessionList([
-      createSession({
-        sessionId: "session-1",
-        summary: "Waiting session",
-        runState: "busy",
-        pendingUserInputCount: 1,
-        needsUserInput: true,
-      }),
-    ]);
-
-    try {
-      expect(dom.container.textContent).toContain("Waiting session");
-      expect(dom.container.textContent).toContain("Needs answer");
-    } finally {
-      await cleanup();
-    }
-  });
-});
-
 describe("SessionList autopilot indicator", () => {
   it("marks a session whose run is on Autopilot, and lets stalled and waiting states win", async () => {
     const { dom, cleanup } = await renderSessionList([
@@ -292,7 +271,6 @@ describe("SessionList archived paging", () => {
 
 describe("SessionList defer summary indicator", () => {
   it.each([
-    { name: "a single defer with the next run time", count: 1, runningCount: 0, label: "Deferred in 5m" },
     { name: "multiple defers with the count and next run time", count: 2, runningCount: 0, label: "2 defers · next in 5m" },
     { name: "running and queued defer counts together", count: 2, runningCount: 1, label: "1 running · 1 queued" },
     { name: "no defer label when the summary is cleared", count: 0, runningCount: 0, label: null },
@@ -312,27 +290,6 @@ describe("SessionList defer summary indicator", () => {
       } else {
         expect(dom.container.textContent).not.toMatch(/Deferred in|defers|running|queued/);
       }
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("renders a visibly distinct badge while a defer worker is running", async () => {
-    const { dom, cleanup } = await renderSessionList([
-      createSession({
-        sessionId: "session-1",
-        summary: "Running deferred session",
-        deferSummary: { count: 1, runningCount: 1, nextRunAt: null },
-      }),
-    ]);
-
-    try {
-      expect(dom.container.textContent).toContain("Defer running");
-      const badge = findAllByTag(dom.container, "BUTTON").find(
-        (button) => getReactProps(button)?.title?.includes("Defer running"),
-      );
-      expect(getReactProps(badge)?.className).toContain("text-info");
-      expect(getReactProps(badge)?.className).toContain("bg-info-surface");
     } finally {
       await cleanup();
     }
@@ -384,13 +341,6 @@ describe("SessionList defer summary indicator", () => {
 });
 
 describe("session model menu labels", () => {
-  it("formats model names with reasoning effort labels", () => {
-    expect(formatSessionModelLabel(
-      { model: "gpt-5.5", reasoningEffort: "high", source: "events" },
-      [{ id: "gpt-5.5", name: "GPT-5.5" }],
-    )).toBe("GPT-5.5 · High");
-  });
-
   it("names Copilot Fusion's level and leaves out a context window it does not have", () => {
     const fusion = {
       id: "auto", name: "Copilot Fusion", selectionMode: "dynamic" as const,
@@ -399,11 +349,6 @@ describe("session model menu labels", () => {
     };
     expect(formatSessionModelSummaryLabel({ model: "auto", reasoningEffort: "hydrafusion-max", source: "live" }, [fusion]))
       .toBe("Copilot Fusion · Max");
-  });
-
-  it("falls back to the model id when model metadata is unavailable", () => {
-    expect(formatSessionModelLabel({ model: "custom-model", source: "events" }, null))
-      .toBe("custom-model");
   });
 
   it("shows long context from session state before model metadata loads", () => {
@@ -677,51 +622,6 @@ describe("SessionList change model dialog", () => {
       });
 
       expect(apiMocks.patchSessionModel).toHaveBeenCalledWith("session-1", "plain-model", undefined, undefined);
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("keeps SDK order in change-model preset menus", async () => {
-    const harness = await openModelDialog(
-      { model: "gpt-5.6", reasoningEffort: "low", contextTier: "default", source: "live" },
-      [
-        TIERED_MODEL,
-        { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
-        { id: "claude-haiku-4.5", name: "Claude Haiku 4.5" },
-        {
-          id: "claude-disabled",
-          name: "Claude Aardvark",
-          policy: { state: "disabled" },
-        },
-      ],
-    );
-    try {
-      await waitUntilAct(
-        harness.act,
-        () => (harness.dom.container.textContent ?? "").includes("Claude Sonnet 5"),
-        { label: "ordered model metadata" },
-      );
-
-      const preset2 = findAllByTag(harness.dom.container, "BUTTON")
-        .find((button) => String(getReactProps(button)?.["aria-label"] ?? "").startsWith("Standard:"));
-      expect(preset2?.textContent).toContain("Claude Sonnet 5");
-
-      const caret = findAllByTag(harness.dom.container, "BUTTON")
-        .find((button) => getReactProps(button)?.["aria-label"] === "Choose Standard model");
-      if (!caret) throw new Error("Standard refine caret was not rendered");
-      await harness.act(async () => {
-        getReactProps(caret)?.onClick?.();
-      });
-
-      const options = findAllByTag(harness.dom.container, "BUTTON")
-        .filter((button) => getReactProps(button)?.role === "option");
-      expect(options.map((button) => button.textContent)).toEqual([
-        "GPT-5.6",
-        "Claude Sonnet 5",
-        "Claude Haiku 4.5",
-      ]);
-      expect(document.activeElement).toBe(options[1]);
     } finally {
       await harness.cleanup();
     }

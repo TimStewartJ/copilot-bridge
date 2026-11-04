@@ -176,14 +176,6 @@ describe("Home within native Bridge", () => {
     expect(harness.dom.container.textContent).toContain("Home is unavailable. Try refreshing.");
     expect(harness.dom.container.textContent).not.toContain("No questions on this page");
   });
-  it("completes the original checklist item through its existing endpoint", async () => {
-    const snapshot = empty();
-    snapshot.actions = { items: [{ id: "original-action", taskId: null, text: "Accepted global item" }], total: 1, offset: 0, hasMore: false };
-    snapshot.actionCounts = { open: 1, overdue: 0, dueToday: 0 };
-    api.fetchHome.mockResolvedValue(snapshot); api.patchChecklistItem.mockResolvedValue({});
-    await render(); await click("Complete Accepted global item");
-    expect(api.patchChecklistItem).toHaveBeenCalledExactlyOnceWith("original-action", { done: true });
-  });
   it("keeps a completed item in place with an Undo that reopens it, then lets it go", async () => {
     const snapshot = empty();
     snapshot.actions = { items: [{ id: "first", taskId: "task", taskTitle: "Shared task", text: "First step", deadline: "2026-09-21" },
@@ -200,6 +192,7 @@ describe("Home within native Bridge", () => {
     const without = { ...snapshot, actions: { ...snapshot.actions, items: snapshot.actions.items.slice(1), total: 1 } };
     api.fetchHome.mockResolvedValue(without);
     await click("Complete First step");
+    expect(api.patchChecklistItem).toHaveBeenCalledExactlyOnceWith("first", { done: true });
     expect(text()).toContain("First step");
     expect(text()).toContain("Undo");
     api.fetchHome.mockResolvedValue(snapshot);

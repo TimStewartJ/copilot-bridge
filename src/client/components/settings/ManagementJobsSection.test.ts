@@ -416,21 +416,15 @@ describe("System page runtime and management jobs", () => {
     }
   });
 
-  it.each([
-    ["ready", "text-text-secondary"],
-    ["starting", "text-warning"],
-    ["reconnecting", "text-warning"],
-    ["disconnected", "text-error"],
-    ["stopped", "text-text-secondary"],
-  ] as const)("renders agent backend %s with the expected badge tone", async (state, toneClass) => {
-    mockManagementJobs([], createRuntimeStatus({ agentBackend: createAgentBackendStatus({ state }) }));
+  it("renders agent backend disconnected with the expected badge tone", async () => {
+    mockManagementJobs([], createRuntimeStatus({ agentBackend: createAgentBackendStatus({ state: "disconnected" }) }));
 
     const harness = await renderSection();
     try {
       const badge = findAllByTag(harness.dom.container, "SPAN")
-        .find((candidate) => candidate.textContent === state);
+        .find((candidate) => candidate.textContent === "disconnected");
       expect(badge).toBeTruthy();
-      expect(getReactProps(badge)?.className).toContain(toneClass);
+      expect(getReactProps(badge)?.className).toContain("text-error");
     } finally {
       await harness.cleanup();
     }

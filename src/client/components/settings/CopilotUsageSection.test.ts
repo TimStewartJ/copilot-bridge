@@ -406,15 +406,6 @@ describe("CopilotUsageSection", () => {
     expect(html).not.toContain("No GitHub metering in this range");
   });
 
-  it("renders every range button with all time selected by default", () => {
-    const html = renderSection(createUsageSummary());
-
-    const buttons = [...html.matchAll(/<button\b[^>]*aria-pressed="(true|false)"[^>]*>([\s\S]*?)<\/button>/g)];
-    expect(buttons.map((match) => match[2].replace(/<[^>]+>/g, ""))).toEqual(["7 days", "28 days", "MTD", "YTD", "All time"]);
-    expect(buttons.map((match) => match[1])).toEqual(["false", "false", "false", "false", "true"]);
-    expect(html).toContain("All local history");
-  });
-
   it("labels the active window when a bounded range is returned", () => {
     const html = renderSection(createUsageSummary({
       range: {
@@ -444,12 +435,6 @@ describe("CopilotUsageSection", () => {
     expect(html).toContain("Since ");
   });
 
-  it("keeps the live account quota out of local usage settings", () => {
-    const text = renderSection(createUsageSummary()).replace(/<!-- -->/g, "");
-
-    expect(text).toContain("Local Copilot usage");
-    expect(text).not.toContain("Live account quota");
-  });
 });
 
 describe("CopilotUsageSection range buttons", () => {
@@ -502,6 +487,8 @@ describe("CopilotUsageSection range buttons", () => {
       range: "all",
     });
 
+    const allTime = findAllByTag(harness?.dom.container, "BUTTON").find((node) => node.textContent === "All time");
+    expect(allTime?.getAttribute("aria-pressed")).toBe("true");
     const button = findAllByTag(harness?.dom.container, "BUTTON")
       .find((candidate: any) => candidate.textContent === "28 days");
     expect(button).toBeTruthy();

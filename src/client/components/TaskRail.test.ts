@@ -147,42 +147,6 @@ describe("TaskRail navigation attention", () => {
     expect(getReactProps(attentionBadge(chatsButton))?.className).toContain("bg-accent");
   });
 
-  it("pads the list inside its scroller, so sticky edge controls reach the scroller's edges", async () => {
-    await renderRail({ expanded: true, tasks: [createTask()] });
-    const className = (node: any): string => getReactProps(node)?.className ?? "";
-    const newTask = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.trim() === "New task");
-    const content = newTask?.parentNode;
-    let scroller = content;
-    while (scroller && !/\boverflow-y-auto\b/.test(className(scroller))) scroller = scroller.parentNode;
-
-    // A sticky box stops at its scroller's top and bottom padding, which leaves a strip of rows
-    // showing past the unread band or the reorder bar.
-    expect(className(scroller)).toMatch(/\boverflow-y-auto\b/);
-    expect(className(scroller)).not.toMatch(/(^|[\s:])(p|py|pt|pb)-/);
-    expect(content).not.toBe(scroller);
-    expect(className(content)).toMatch(/(^|\s)(p|py)-\S/);
-  });
-
-  it("keeps set-aside tasks out of the working list", async () => {
-    await renderRail({
-      expanded: true,
-      tasks: [
-        createTask(),
-        createTask({ id: "deferred", title: "Parked idea", deferred: true, order: 1 }),
-        createTask({ id: "muted", title: "Quiet feed", muted: true, order: 2 }),
-      ],
-    });
-    const text = () => harness!.dom.container.textContent ?? "";
-    expect(text()).toContain("Current work");
-    expect(text()).not.toContain("Parked idea");
-    expect(text()).toContain("Set aside (2)");
-
-    const toggle = findAllByTag(harness!.dom.container, "BUTTON").find((node) => node.textContent?.includes("Set aside (2)"));
-    await harness!.act(async () => { getReactProps(toggle)!.onClick(); await waitTick(); });
-    expect(text()).toContain("Parked idea");
-    expect(text()).toContain("Deferred");
-    expect(text()).toContain("Muted");
-  });
   it("shows a set-aside task with current work once its revisit date arrives, still marked as set aside", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     try {

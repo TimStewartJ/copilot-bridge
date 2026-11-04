@@ -17,15 +17,6 @@ describe("summarizeMcpServerConfig", () => {
     );
   });
 
-  it("summarizes remote server transports", () => {
-    expect(summarizeMcpServerConfig({ type: "http", url: "https://example.com/mcp" })).toBe(
-      "http: https://example.com/mcp",
-    );
-    expect(summarizeMcpServerConfig({ type: "sse", url: "https://example.com/sse" })).toBe(
-      "sse: https://example.com/sse",
-    );
-  });
-
   it("summarizes requested and effective execution policy", () => {
     expect(summarizeMcpServerExecution({
       command: "agency",

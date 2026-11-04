@@ -267,19 +267,10 @@ afterEach(() => {
 });
 
 describe("ScheduleDetailSheet one-time run-at guard", () => {
-  it("sets the run-at input min to the current minute", async () => {
-    const { harness } = await renderCreateSheet();
-    try {
-      const input = findRunAtInput(harness);
-      expect(getReactProps(input)?.min).toBe(toDatetimeLocalValue(NOW));
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("rejects a past run-at with an inline error and does not save", async () => {
     const { harness, onSaved } = await renderCreateSheet();
     try {
+      expect(getReactProps(findRunAtInput(harness))?.min).toBe(toDatetimeLocalValue(NOW));
       await fillNameAndPrompt(harness);
       const past = toDatetimeLocalValue(new Date(NOW.getTime() - 24 * 60 * 60_000));
       await setRunAt(harness, past);
@@ -369,25 +360,11 @@ describe("ScheduleDetailSheet one-time run-at editing", () => {
     vi.unstubAllEnvs();
   });
 
-  it("initializes the run-at input from the stored UTC time in local time", async () => {
-    const runAt = "2026-06-20T13:30:00.000Z";
-    const { harness } = await renderEditSheet(makeOnceSchedule(runAt));
-    try {
-      const value = getReactProps(findRunAtInput(harness))?.value;
-      expect(value).toBe(toDatetimeLocalValue(new Date(runAt)));
-      // A naive UTC slice would not match local time in this timezone.
-      expect(value).not.toBe(runAt.slice(0, 16));
-      // The displayed local value round-trips back to the original UTC instant.
-      expect(new Date(value).toISOString()).toBe(runAt);
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("preserves the stored UTC run time when saving an unchanged once-schedule", async () => {
     const runAt = "2026-06-20T13:30:00.000Z";
     const { harness, onSaved } = await renderEditSheet(makeOnceSchedule(runAt));
     try {
+      expect(getReactProps(findRunAtInput(harness))?.value).toBe(toDatetimeLocalValue(new Date(runAt)));
       await clickButton(harness, "Save Changes");
 
       await waitUntilAct(harness.act, () => apiMocks.patchSchedule.mock.calls.length > 0);

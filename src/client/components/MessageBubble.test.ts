@@ -128,22 +128,6 @@ describe("MessageBubble failed user messages", () => {
     }
   });
 
-  it("marks an accepted user message as sent", async () => {
-    const harness = await createReactDomHarness();
-    const message = { role: "user", content: "Accepted" } satisfies ChatMessage;
-
-    try {
-      await harness.render(createElement(MessageBubble, { message }));
-
-      const bubble = findAllByTag(harness.dom.container, "DIV").find((candidate) => (
-        candidate.getAttribute?.("data-delivery-state") === "sent"
-      ));
-      expect(bubble).toBeDefined();
-      expect(harness.dom.container.textContent).not.toContain("Failed to send");
-    } finally {
-      await harness.cleanup();
-    }
-  });
 });
 
 describe("MessageBubble text selection mode", () => {
@@ -241,8 +225,9 @@ describe("MessageBubble Azure DevOps references", () => {
     } satisfies ChatMessage;
 
     try {
-      await harness.render(createElement(MessageBubble, { message }));
+      await harness.render(createElement(MessageBubble, { message, messageKey: "entry-1" }));
 
+      expect(findAllByTag(harness.dom.container, "BUTTON")).toHaveLength(0);
       expect(apiMocks.fetchWorkReferencePreview).not.toHaveBeenCalled();
       expect(findAllByTag(harness.dom.container, "P")).toHaveLength(1);
       const [link] = findAllByTag(harness.dom.container, "A");
@@ -280,6 +265,7 @@ describe("MessageBubble images", () => {
     try {
       await harness.render(createElement(MessageBubble, { message, sessionId }));
       const img = findAllByTag(harness.dom.container, "IMG")[0];
+      expect(findAllByTag(harness.dom.container, "DIV").some((node) => node.getAttribute?.("data-delivery-state") === "sent")).toBe(true);
       expect(img?.getAttribute("src")).toBe(`/api/sessions/${sessionId}/files/shot.png`);
     } finally {
       await harness.cleanup();
@@ -374,15 +360,4 @@ describe("MessageBubble actions", () => {
     }
   });
 
-  it("offers none while it has no actions", async () => {
-    const harness = await createReactDomHarness();
-    const message = { role: "assistant", content: "Hello" } satisfies ChatMessage;
-
-    try {
-      await harness.render(createElement(MessageBubble, { message, messageKey: "entry-1" }));
-      expect(findAllByTag(harness.dom.container, "BUTTON")).toHaveLength(0);
-    } finally {
-      await harness.cleanup();
-    }
-  });
 });

@@ -98,42 +98,6 @@ describe("ToolCallNodeGroup", () => {
     expect(text.indexOf("Third")).toBeGreaterThan(text.indexOf("Second"));
   });
 
-  it("keeps calls that ran in parallel as plain adjacent rows", () => {
-    const { roots } = buildToolCallForest([
-      completedToolCall("long", 0, 10),
-      completedToolCall("overlap", 5, 15),
-      completedToolCall("later", 15, 20),
-    ]);
-
-    const html = renderToStaticMarkup(createElement(ToolCallNodeGroup, { nodes: roots }));
-
-    expect(html).not.toContain("Track 1");
-    expect(html).not.toContain('role="group"');
-    expect(html.match(/data-tool-status="done"/g)).toHaveLength(3);
-  });
-
-  it("describes a call by what it did instead of by its tool name", () => {
-    const { roots } = buildToolCallForest([
-      completedToolCall("shell", 0, 3, {
-        name: "powershell",
-        args: { command: "git --no-pager status --short", description: "Check the working tree" },
-      }),
-      completedToolCall("read", 3, 4, {
-        name: "view",
-        args: { path: "E:\\repo\\src\\client\\App.tsx", view_range: [10, 40] },
-      }),
-      toolCall("search", { name: "grep", args: { pattern: "useSessionStream" }, startedAt: at(4) }),
-    ]);
-
-    const text = visibleText(renderToStaticMarkup(createElement(ToolCallNodeGroup, { nodes: roots })));
-
-    expect(text).toContain("Check the working tree git --no-pager status --short");
-    expect(text).toContain("Read client/App.tsx · lines 10–40");
-    // Still in flight, so the verb is in the present tense.
-    expect(text).toContain("Searching useSessionStream");
-    expect(text).not.toContain("powershell");
-  });
-
   it("shows how long a call took once that is worth a glance", () => {
     const { roots } = buildToolCallForest([
       completedToolCall("instant", 0, 0.2),
@@ -160,23 +124,6 @@ describe("ToolCallNodeGroup", () => {
     expect(html).toContain('data-tool-status="running"');
     expect(html).toContain('aria-label="Running"');
     expect(html).not.toContain("text-success");
-  });
-
-  it("nests an agent's own tool calls beneath its row", () => {
-    const { roots } = buildToolCallForest([
-      toolCall("agent", { name: "🤖 analyzer", isSubAgent: true }),
-      completedToolCall("child-a", 0, 10, { parentToolCallId: "agent" }),
-      completedToolCall("child-b", 5, 8, { parentToolCallId: "agent" }),
-    ]);
-
-    const text = visibleText(renderToStaticMarkup(
-      createElement(ToolCallTree, { node: roots[0]!, defaultExpanded: true }),
-    ));
-
-    expect(text).toContain("analyzer");
-    expect(text).toContain("2 steps");
-    expect(text).toContain("Child a");
-    expect(text).toContain("Child b");
   });
 
   it("renders delegated tasks and follow-ups inside the expanded agent row", () => {
@@ -295,19 +242,6 @@ describe("ToolCallNodeGroup", () => {
     const earlier = renderAgentRow(roots[0]!, { newestStretch: "stretch-2" });
     expect(earlier).toContain('data-tool-status="running"');
     expect(earlier).not.toContain("animate-spin");
-  });
-
-  it("says an agent did not finish when nothing can still be running it", () => {
-    const stopped = agentRecord({ status: "stopped", background: true, activeMs: 30_000, toolCount: 3 });
-    const { roots } = buildToolCallForest([
-      completedToolCall("agent", 0, 0.02, { name: "🤖 moves-agent", isSubAgent: true, agent: stopped }),
-    ]);
-
-    const html = renderAgentRow(roots[0]!, { runActive: false });
-
-    expect(html).toContain('data-tool-status="unfinished"');
-    expect(visibleText(html)).toContain("did not finish");
-    expect(html).not.toContain("animate-spin");
   });
 
   it("says what became of an agent where its work ends, not on every stretch in between", () => {

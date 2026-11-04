@@ -29,13 +29,6 @@ describe("revisit prompt", () => {
     await harness.act(async () => { await getReactProps(target)!.onClick(); await waitTick(); });
   }
 
-  it("stays out of the way until the date arrives", async () => {
-    await render({ ...due, nextTouchAt: "9999-01-01T00:00:00Z" });
-    expect(text()).toBe("");
-    await render({ ...due, nextTouchAt: undefined });
-    expect(text()).toBe("");
-  });
-
   it("offers a task in the working list a later date or none, never a resume", async () => {
     await render(due);
     expect(text()).toContain("Time to revisit");

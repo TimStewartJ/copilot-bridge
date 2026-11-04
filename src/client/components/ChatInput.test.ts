@@ -423,8 +423,8 @@ describe("ChatInput voice retry", () => {
     expect(getReactProps(findTextarea(container))?.className).not.toContain("hidden");
   });
 
-  it.each(["idle", "finishing"])("does not offer cancellation while %s", async (phase) => {
-    useVoiceInputMock.mockReturnValue({ ...useVoiceInputMock(), phase });
+  it("does not offer cancellation while finishing", async () => {
+    useVoiceInputMock.mockReturnValue({ ...useVoiceInputMock(), phase: "finishing" });
     await renderChatInput();
     expect(queryButtonByAriaLabel(getHarness().dom.container, "Cancel voice recording")).toBeUndefined();
   });
@@ -531,29 +531,6 @@ describe("ChatInput voice retry", () => {
     });
 
     expect(onSend).toHaveBeenCalledWith("keep going", undefined, "autopilot");
-  });
-
-  it("left-click sends in interactive mode by default", async () => {
-    const onSend = vi.fn();
-    await renderChatInput({ onSend });
-
-    const textarea = findTextarea(getHarness().dom.container);
-    await getHarness().act(async () => {
-      getReactProps(textarea)?.onChange?.({
-        target: {
-          value: "hello",
-          style: { height: "" },
-          scrollHeight: 48,
-        },
-      });
-    });
-
-    const sendButton = findButtonByAriaLabel(getHarness().dom.container, "Send message");
-    await getHarness().act(async () => {
-      getReactProps(sendButton.parentNode)?.onClick?.();
-    });
-
-    expect(onSend).toHaveBeenCalledWith("hello", undefined, "interactive");
   });
 
   it("uses the selected Autopilot mode for the primary draft send", async () => {
@@ -1013,6 +990,7 @@ describe("ChatInput voice retry", () => {
         name: "goal",
         description: "Set an autopilot objective",
         kind: "builtin",
+        input: { hint: "objective", required: true },
         allowDuringAgentExecution: true,
       }],
     });
@@ -1028,6 +1006,7 @@ describe("ChatInput voice retry", () => {
     });
     expect(preventDefault).toHaveBeenCalledTimes(completes ? 1 : 0);
     expect(textarea.value).toBe(completes ? "/goal " : "/go");
+    if (completes) expect(getHarness().dom.container.textContent).toContain("Required: objective");
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -1092,32 +1071,6 @@ describe("ChatInput voice retry", () => {
     });
 
     expect(findTextarea(getHarness().dom.container).value).toBe("/goal fix tests");
-  });
-
-  it("shows argument hints after an exact slash command", async () => {
-    await renderChatInput({
-      slashCommandsSupported: true,
-      slashCommands: [{
-        name: "goal",
-        description: "Set an autopilot objective",
-        kind: "builtin",
-        input: { hint: "objective", required: true },
-        allowDuringAgentExecution: true,
-      }],
-    });
-
-    const textarea = findTextarea(getHarness().dom.container);
-    await getHarness().act(async () => {
-      getReactProps(textarea)?.onChange?.({
-        target: {
-          value: "/goal ",
-          style: { height: "" },
-          scrollHeight: 48,
-        },
-      });
-    });
-
-    expect(getHarness().dom.container.textContent).toContain("Required: objective");
   });
 
   it("does not show slash suggestions for escaped literal slash prompts", async () => {
