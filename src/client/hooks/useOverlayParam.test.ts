@@ -6,6 +6,7 @@ import { getSearchWithParam, getSearchWithoutParam, useOverlayParam } from "./us
 
 type OverlayHarnessApi = {
   location: string;
+  state: unknown;
   open: (paramValue?: string, options?: { replace?: boolean }) => void;
   close: () => void;
   back: () => void;
@@ -18,6 +19,7 @@ function OverlayHarness({ setApi }: { setApi: (api: OverlayHarnessApi) => void }
 
   setApi({
     location: `${location.pathname}${location.search}${location.hash}`,
+    state: location.state,
     open: overlay.open,
     close: overlay.close,
     back: () => { void navigate(-1); },
@@ -27,11 +29,12 @@ function OverlayHarness({ setApi }: { setApi: (api: OverlayHarnessApi) => void }
 }
 
 async function withOverlayHarness(
-  initialEntries: string[],
+  initialEntries: (string | { pathname: string; search?: string; state: unknown })[],
   initialIndex: number,
   run: (
     getApi: () => OverlayHarnessApi,
     act: Act,
+    remount: () => Promise<void>,
   ) => Promise<void>,
 ) {
   const harness = await createReactDomHarness();
@@ -42,13 +45,14 @@ async function withOverlayHarness(
   };
 
   try {
-    await harness.render(createElement(
+    let mount = 0;
+    const remount = () => harness.render(createElement(
       MemoryRouter,
       { initialEntries, initialIndex },
-      createElement(OverlayHarness, { setApi: (nextApi) => { api = nextApi; } }),
+      createElement(OverlayHarness, { key: ++mount, setApi: (nextApi) => { api = nextApi; } }),
     ));
-
-    await run(getApi, harness.act);
+    await remount();
+    await run(getApi, harness.act, remount);
   } finally {
     await harness.cleanup();
   }
@@ -86,12 +90,24 @@ describe("useOverlayParam navigation behavior", () => {
     });
   });
 
+  it("ignores a save's late dismissal after the user already went Back", async () => {
+    await withOverlayHarness(["/home", "/sessions/abc"], 1, async (getApi, act) => {
+      await act(async () => { getApi().open("plan"); });
+      const closeAfterSave = getApi().close;
+      await act(async () => { getApi().back(); });
+      await act(async () => { closeAfterSave(); });
+      expect(getApi().location).toBe("/sessions/abc");
+    });
+  });
+
   it("replaces a direct-linked overlay URL instead of leaving the page", async () => {
-    await withOverlayHarness(["/home", "/sessions/abc?sheet=plan"], 1, async (getApi, act) => {
+    const state = { returnTo: "parent" };
+    await withOverlayHarness(["/home", { pathname: "/sessions/abc", search: "?sheet=plan", state }], 1, async (getApi, act) => {
       expect(getApi().location).toBe("/sessions/abc?sheet=plan");
 
       await act(async () => { getApi().close(); });
       expect(getApi().location).toBe("/sessions/abc");
+      expect(getApi().state).toEqual(state);
     });
   });
 
@@ -109,11 +125,14 @@ describe("useOverlayParam navigation behavior", () => {
     });
   });
 
-  it("keeps close at the original route when overlay content is replaced", async () => {
-    await withOverlayHarness(["/home", "/sessions/abc"], 1, async (getApi, act) => {
+  it("keeps the underlying entry and its return state when overlay content is replaced", async () => {
+    const state = { returnTo: "home-card" };
+    await withOverlayHarness(["/home", { pathname: "/sessions/abc", state }], 1, async (getApi, act, remount) => {
       await act(async () => { getApi().open("one"); });
       await act(async () => { getApi().open("two", { replace: true }); });
       expect(getApi().location).toBe("/sessions/abc?sheet=two");
+      expect(getApi().state).toMatchObject(state);
+      await remount();
       await act(async () => { getApi().close(); });
       expect(getApi().location).toBe("/sessions/abc");
       await act(async () => { getApi().back(); });

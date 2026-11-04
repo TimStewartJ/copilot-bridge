@@ -321,6 +321,16 @@ html[data-theme="light"] {
   mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent 100%);
 }
 
+/* Calendar is a routed phone screen; only a launch from the visible Home lifts over it. */
+@keyframes calendar-rise {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+:root[data-motion="full"] .calendar-lift {
+  animation: calendar-rise 280ms cubic-bezier(.22,.75,.19,1);
+}
+
 @keyframes ds-reveal {
   from {
     opacity: 0;

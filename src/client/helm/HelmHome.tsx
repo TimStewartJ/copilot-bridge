@@ -96,6 +96,7 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
             {!everythingInNav && <Button variant="ghost" size="sm" onClick={() => navigate("/dashboard/home?view=classic")}>Everything<ArrowRight size={14} /></Button>}
           </div>}
         </div>
+        {phone && <HomeWeekStrip compact phone />}
         {brief && <p className="max-w-3xl text-[15px] leading-relaxed text-text-primary">{brief.summary}</p>}
         {(run || data?.nextRunAt) && <div className="flex items-start gap-1">
           {run ? <Details className="flex-1" label={`Updated ${formatClock(run.startedAt)}`} detail={data?.nextRunAt ? `next ${formatClock(data.nextRunAt)}` : undefined}>
@@ -114,7 +115,7 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
         {run?.sources.filter((source) => !source.ok).map((source) => <Notice key={source.serverId} tone="warning" title={`${source.name} couldn't be read`}>{source.error}</Notice>)}
       </header>
 
-      <HomeWeekStrip compact={phone || column} />
+      {!phone && <HomeWeekStrip compact={column} />}
 
       {data?.lastFailure && !data.running && <Notice tone="warning" title="Helm's last look didn't finish">{data.lastFailure.error ?? "Unknown error"} ({formatAgo(data.lastFailure.startedAt)})</Notice>}
       {data?.preview && <Notice tone="neutral" title="Staged preview">Previews don't think on a schedule or change other Bridges.</Notice>}

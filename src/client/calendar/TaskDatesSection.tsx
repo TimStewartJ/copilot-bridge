@@ -8,6 +8,7 @@ import { Button, Section } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
 import { addDaysKey, toDateKey } from "./calendar-model";
 import { useCalendarQuery } from "./calendar-api";
+import { calendarEntryState } from "./calendar-entry";
 import { ItemMark, KIND_LABEL, formatShortDate, itemDayKey, itemTime } from "./calendar-ui";
 
 const SHOWN = 5;
@@ -41,7 +42,8 @@ export default function TaskDatesSection({ taskId }: { taskId: string }) {
   };
   return (
     <Section surface label="Coming up" count={rows.length > SHOWN ? rows.length : undefined}
-      action={<Button size="sm" variant="ghost" className="-mr-2" onClick={() => navigate(`/calendar?date=${today}`)}>Calendar<ArrowRight size={13} /></Button>}>
+      action={<Button id={`task-calendar-${taskId}`} size="sm" variant="ghost" className="-mr-2"
+        onClick={() => navigate(`/calendar?date=${today}`, { state: calendarEntryState("task", `task-calendar-${taskId}`) })}>Calendar<ArrowRight size={13} /></Button>}>
       <div className={DS.surface.divided}>
         {rows.slice(0, SHOWN).map(({ item, overdue }) => (
           <div key={item.id} className="flex min-w-0 items-center gap-2 py-1.5 text-[13px]" title={item.title}>

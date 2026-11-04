@@ -1,7 +1,7 @@
 import { matchPath } from "react-router-dom";
 import { isDashboardRoutePath } from "./dashboard-routes";
 
-export type MobileNavTab = "home" | "work" | "helm" | "calendar" | "docs" | "settings";
+export type MobileNavTab = "home" | "work" | "helm" | "docs" | "settings";
 
 /** The Work tab holds the task list and the quick chats; a segment says which of the two a route belongs to. */
 export type MobileWorkSegment = "tasks" | "chats";
@@ -154,10 +154,7 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
   if (normalizedPath === "/calendar") {
     return buildMeta({
       route: "calendar",
-      activeTab: "calendar",
-      showBottomNav: true,
-      isRoot: true,
-      isDetail: false,
+      activeTab: "home",
     });
   }
 

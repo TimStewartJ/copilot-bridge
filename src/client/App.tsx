@@ -116,7 +116,8 @@ import { FileViewerHost } from "./components/FilePreview";
 
 const HelmView = lazy(() => import("./helm/HelmView"));
 const HelmMemory = lazy(() => import("./helm/HelmMemory"));
-const CalendarPage = lazy(() => import("./calendar/CalendarPage"));
+import CalendarScreen from "./calendar/CalendarScreen";
+import { useCalendarPresentation } from "./calendar/calendar-entry";
 import { helmStateQueryKey, resumeHelmConversation, useHelmStateQuery } from "./helm/helm-api";
 import { calendarRootKey } from "./calendar/calendar-api";
 import { helmBriefKey, helmBriefStatusKey, markHelmBriefSeen, useHelmBriefStatusQuery, useLoadedHelmBriefRunId } from "./helm/thinker-api";
@@ -303,6 +304,7 @@ function AppShell() {
 
   // Derive active IDs and mode from URL
   const mobileRouteMeta = getMobileRouteMeta(location.pathname, location.search);
+  const { entry: calendarEntry, homeBehind } = useCalendarPresentation(location, isMobile);
   const activeSessionId = mobileRouteMeta.sessionId;
   const activeTaskId = mobileRouteMeta.taskId;
   const { task: selectedTask, taskNotFound } = useActiveTask(
@@ -314,7 +316,7 @@ function AppShell() {
   const quickChatsRoute = mobileRouteMeta.route === "chat-list";
   const quickChatsMode = quickChatsRoute || mobileRouteMeta.route === "quick-chat";
   const mobileScrollRestorationPolicy = isMobile
-    ? getMobileScrollRestorationPolicy(mobileRouteMeta, {
+    ? getMobileScrollRestorationPolicy(homeBehind ? getMobileRouteMeta(homeBehind.pathname, homeBehind.search) : mobileRouteMeta, {
         navigationType,
         locationState: location.state,
       })
@@ -1025,11 +1027,10 @@ function AppShell() {
         handleSelectMobileWorkSegment(target.segment, target.replace);
         break;
       }
-      case "calendar": handleOpenCalendar(); break;
       case "docs": handleOpenDocsRoot(); break;
       case "settings": handleOpenSettings(); break;
     }
-  }, [handleOpenCalendar, handleOpenDashboard, handleOpenHelm, handleOpenDocsRoot, handleOpenSettings, handleSelectMobileWorkSegment, mobileRouteMeta.isRoot, mobileRouteMeta.workSegment]);
+  }, [handleOpenDashboard, handleOpenHelm, handleOpenDocsRoot, handleOpenSettings, handleSelectMobileWorkSegment, mobileRouteMeta.isRoot, mobileRouteMeta.workSegment]);
 
   const handleMobileUp = useCallback(() => {
     const upTarget = mobileRouteMeta.upTarget;
@@ -1813,6 +1814,7 @@ function AppShell() {
     calendar: mobileRouteMeta.route === "calendar",
   };
 
+  const calendarScreen = <CalendarScreen phone={isMobile} lifted={!!homeBehind} entry={calendarEntry} onSelectTask={handleSelectTask} tasks={tasks} />;
   const helmTalk = (
     <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-text-muted">Loading Helm…</div>}>
       <HelmView
@@ -2065,8 +2067,9 @@ function AppShell() {
           />
         )}
 
-        <main className="flex-1 flex flex-col min-h-0">
-          <Routes location={location}>
+        <main className={cx("flex-1 flex flex-col min-h-0", homeBehind && "relative")}>
+          <div className="contents" inert={homeBehind ? true : undefined} aria-hidden={homeBehind ? true : undefined}>
+          <Routes location={homeBehind ?? location}>
             <Route
               index
               element={
@@ -2304,14 +2307,7 @@ function AppShell() {
             />
             <Route path="docs/*" element={<DocsView onDocTitleChange={setDocTitle} />} />
             <Route path="settings" element={<SettingsView />} />
-            <Route
-              path="calendar"
-              element={
-                <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-text-muted">Loading calendar…</div>}>
-                  <CalendarPage onSelectTask={handleSelectTask} tasks={tasks} />
-                </Suspense>
-              }
-            />
+            <Route path="calendar" element={calendarScreen} />
             <Route
               path="helm"
               element={
@@ -2337,6 +2333,10 @@ function AppShell() {
             {/* Voice mode became Helm's hands-free mode; keep old links and home-screen shortcuts working. */}
             <Route path="voice" element={<Navigate to="/helm" replace />} />
           </Routes>
+          </div>
+          {homeBehind && <div className="absolute inset-0 isolate flex min-h-0 flex-col overflow-hidden">
+            <Routes location={location}><Route path="calendar" element={calendarScreen} /></Routes>
+          </div>}
         </main>
       </div>
       </div>{/* ← close row wrapper */}

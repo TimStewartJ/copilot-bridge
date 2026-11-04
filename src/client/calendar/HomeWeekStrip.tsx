@@ -2,7 +2,8 @@
 // today (what is on now or next, free time, what is due or overdue). Tapping a day opens it.
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, CalendarDays, ChevronRight } from "lucide-react";
+import { calendarEntryState } from "./calendar-entry";
 import type { CalendarItem } from "../../shared/calendar";
 import { DS, cx } from "../design/tokens";
 import { IdentitySwatch } from "../design/primitives";
@@ -12,12 +13,13 @@ import { useCalendarQuery } from "./calendar-api";
 import { EventBar, KindIcon, eventColor, itemDayKeys, itemShown, itemSurface, readHiddenSources, readLayers } from "./calendar-ui";
 
 const LINES = 3;
+const weekRange = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 
 function shortLabel(item: CalendarItem): string {
   return item.allDay ? item.title : `${formatClockShort(item.start)} ${item.title}`;
 }
 
-export default function HomeWeekStrip({ compact = false }: { compact?: boolean }) {
+export default function HomeWeekStrip({ compact = false, phone = false }: { compact?: boolean; phone?: boolean }) {
   const navigate = useNavigate();
   const now = useNow(true, 60_000);
   const today = toDateKey(new Date(now));
@@ -61,17 +63,25 @@ export default function HomeWeekStrip({ compact = false }: { compact?: boolean }
     return parts;
   }, [data, byDay, today, now]);
 
-  const open = (day: string) => navigate(`/calendar?view=day&date=${day}`);
+  const open = (day?: string) => navigate(day ? `/calendar?view=day&date=${day}` : "/calendar", {
+    state: phone ? calendarEntryState("home", day ? `home-calendar-${day}` : "home-calendar") : undefined,
+  });
   return (
-    <section aria-label="This week" className="space-y-2">
-      <div className={cx(DS.surface.group, "grid grid-cols-7 divide-x divide-border-subtle overflow-hidden")}>
+    <section aria-label="This week" className={phone ? cx(DS.surface.group, "overflow-hidden") : "space-y-2"}>
+      {phone && <button type="button" id="home-calendar" onClick={() => open()} aria-label="Open calendar"
+        className={cx(DS.collection.header, DS.focus, "w-full gap-2 px-3 text-left text-sm font-semibold text-text-primary hover:bg-bg-hover focus-visible:-outline-offset-2")}>
+        <CalendarDays size={17} aria-hidden="true" />Calendar
+        <span className={cx(DS.text.meta, "ml-auto")}>{weekRange.formatRange(parseDateKey(days[0]), parseDateKey(days[6]))}</span>
+        <ChevronRight size={16} aria-hidden="true" className="text-text-muted" />
+      </button>}
+      <div className={cx(!phone && DS.surface.group, "grid grid-cols-7 divide-x divide-border-subtle overflow-hidden")}>
         {days.map((day) => {
           const date = parseDateKey(day);
           const items = byDay.get(day) ?? [];
           const isToday = day === today;
           const weekend = date.getDay() === 0 || date.getDay() === 6;
           return (
-            <button key={day} type="button" onClick={() => open(day)}
+            <button key={day} type="button" id={phone ? `home-calendar-${day}` : undefined} onClick={() => open(day)}
               aria-label={`${date.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}, ${items.length} item${items.length === 1 ? "" : "s"}`}
               className={cx(DS.focus, "flex min-w-0 flex-col text-left transition-colors hover:bg-bg-hover/60 focus-visible:-outline-offset-2",
                 weekend && "bg-surface-inset/50")}>
@@ -110,7 +120,7 @@ export default function HomeWeekStrip({ compact = false }: { compact?: boolean }
           );
         })}
       </div>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+      <div className={cx("flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]", phone && "border-t border-border-subtle px-3 py-2")}>
         <span className="font-semibold text-text-primary">Today</span>
         {calendar.error ? <span className="text-text-secondary">The calendar couldn't load.</span>
           : !data ? <span className="text-text-faint">Loading…</span>
@@ -119,10 +129,10 @@ export default function HomeWeekStrip({ compact = false }: { compact?: boolean }
             {index > 0 && <span className="text-text-faint" aria-hidden="true">·</span>}
             <span className={part.tone === "warning" ? "text-warning" : "text-text-secondary"}>{part.text}</span>
           </span>)}
-        <button type="button" onClick={() => navigate(`/calendar?date=${today}`)}
+        {!phone && <button type="button" onClick={() => navigate(`/calendar?date=${today}`)}
           className={cx(DS.focus, "ml-auto inline-flex items-center gap-1 text-[13px] text-text-secondary hover:text-text-primary")}>
           Calendar<ArrowRight size={13} />
-        </button>
+        </button>}
       </div>
     </section>
   );

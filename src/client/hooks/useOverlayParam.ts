@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useLayoutEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { isRecord } from "../../shared/is-record";
 
 function formatSearchParams(params: URLSearchParams): string {
   const search = params.toString();
@@ -18,9 +19,7 @@ export function getSearchWithoutParam(search: string, paramName: string): string
   return formatSearchParams(next);
 }
 
-function getLocationSignature(pathname: string, search: string, hash: string): string {
-  return `${pathname}\n${search}\n${hash}`;
-}
+const OVERLAY_OWNER = "bridgeOverlayParam";
 
 /**
  * Hook for managing overlay state (sheets, modals, dialogs) via URL search params.
@@ -30,52 +29,40 @@ function getLocationSignature(pathname: string, search: string, hash: string): s
 export function useOverlayParam(paramName: string) {
   const location = useLocation();
   const navigate = useNavigate();
-  const ownedLocationKeysRef = useRef<Set<string>>(new Set());
-  const pendingOwnedLocationSignatureRef = useRef<string | null>(null);
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const value = searchParams.get(paramName);
   const isOpen = value !== null;
-  const locationSignature = getLocationSignature(location.pathname, location.search, location.hash);
-
-  useEffect(() => {
-    if (pendingOwnedLocationSignatureRef.current === locationSignature && isOpen) {
-      ownedLocationKeysRef.current.add(location.key);
-      pendingOwnedLocationSignatureRef.current = null;
-      return;
-    }
-
-    if (pendingOwnedLocationSignatureRef.current !== null) {
-      pendingOwnedLocationSignatureRef.current = null;
-    }
-  }, [isOpen, location.key, locationSignature]);
+  const owned = isRecord(location.state) && location.state[OVERLAY_OWNER] === paramName;
+  // A save can finish after Back, or even after Forward has reopened the same history entry.
+  const visit = useMemo(() => ({ active: false }), [location.key]);
+  useLayoutEffect(() => {
+    visit.active = true;
+    return () => { visit.active = false; };
+  }, [visit]);
 
   const open = useCallback(
     (paramValue: string = "1", options: { replace?: boolean } = {}) => {
       if (searchParams.get(paramName) === paramValue) return;
       const search = getSearchWithParam(location.search, paramName, paramValue);
       const replace = options.replace === true;
-      const owned = ownedLocationKeysRef.current.has(location.key);
-      if (replace) ownedLocationKeysRef.current.delete(location.key);
-      pendingOwnedLocationSignatureRef.current = replace && !owned
-        ? null
-        : getLocationSignature(location.pathname, search, location.hash);
+      // A pushed entry remembers its owner across reloads; replacing a cold link does not claim it.
+      const state = replace ? location.state : { ...location.state, [OVERLAY_OWNER]: paramName };
       navigate(
         {
           pathname: location.pathname,
           search,
           hash: location.hash,
         },
-        { replace },
+        { replace, state },
       );
     },
-    [location.hash, location.key, location.pathname, location.search, navigate, paramName, searchParams],
+    [location.hash, location.pathname, location.state, navigate, paramName, searchParams],
   );
 
   const close = useCallback(() => {
-    if (!searchParams.has(paramName)) return;
-    pendingOwnedLocationSignatureRef.current = null;
-
-    if (ownedLocationKeysRef.current.has(location.key)) {
+    if (!visit.active || !isOpen) return;
+    visit.active = false;
+    if (owned) {
       navigate(-1);
       return;
     }
@@ -86,9 +73,9 @@ export function useOverlayParam(paramName: string) {
         search: getSearchWithoutParam(location.search, paramName),
         hash: location.hash,
       },
-      { replace: true }, // direct link — stay on the current page
+      { replace: true, state: location.state }, // direct link — stay on the current page
     );
-  }, [location.hash, location.key, location.pathname, location.search, navigate, paramName, searchParams]);
+  }, [visit, isOpen, owned, location.hash, location.pathname, location.search, location.state, navigate, paramName]);
 
   return { isOpen, value, open, close };
 }

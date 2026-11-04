@@ -64,6 +64,8 @@ function getSegments(input: DocumentTitleInput): (string | null | undefined)[] {
       return ["Tasks"];
     case "chat-list":
       return ["Chats"];
+    case "calendar":
+      return ["Calendar"];
     case "settings":
       return ["Settings"];
     case "task-cockpit":

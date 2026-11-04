@@ -1,5 +1,4 @@
-import { BookOpen, CalendarDays, Layers, LayoutDashboard, Settings, ShipWheel, type LucideIcon } from "lucide-react";
-import { useMemo } from "react";
+import { BookOpen, Layers, LayoutDashboard, Settings, ShipWheel, type LucideIcon } from "lucide-react";
 import {
   describeTabAttention,
   type TabAttentionSummary,
@@ -16,10 +15,16 @@ interface MobileBottomNavProps {
   helmMark?: HomeMark | null;
   taskAttention?: TabAttentionSummary;
   chatAttention?: TabAttentionSummary;
-  showDocs?: boolean;
 }
 
 const NO_ATTENTION: TabAttentionSummary = { count: 0, needsUserInputCount: 0 };
+const TABS: { id: MobileNavTab; label: string; icon: LucideIcon }[] = [
+  { id: "home", label: "Home", icon: LayoutDashboard },
+  { id: "helm", label: "Helm", icon: ShipWheel },
+  { id: "work", label: "Work", icon: Layers },
+  { id: "docs", label: "Docs", icon: BookOpen },
+  { id: "settings", label: "Settings", icon: Settings },
+];
 
 export function MobileBottomNav({
   activeTab,
@@ -28,17 +33,7 @@ export function MobileBottomNav({
   helmMark = null,
   taskAttention = NO_ATTENTION,
   chatAttention = NO_ATTENTION,
-  showDocs = true,
 }: MobileBottomNavProps) {
-  // Helm's brief and its conversation are separate tabs so switching between them stays within thumb reach.
-  const tabs: { id: MobileNavTab; label: string; icon: LucideIcon }[] = useMemo(() => [
-    { id: "home", label: "Home", icon: LayoutDashboard },
-    { id: "helm", label: "Helm", icon: ShipWheel },
-    { id: "work", label: "Work", icon: Layers },
-    { id: "calendar", label: "Calendar", icon: CalendarDays },
-    ...(showDocs ? [{ id: "docs" as MobileNavTab, label: "Docs", icon: BookOpen }] : []),
-    { id: "settings", label: "Settings", icon: Settings },
-  ], [showDocs]);
 
   // Work holds both the task list and the quick chats, so its badge answers for both.
   const workAttention: TabAttentionSummary = {
@@ -57,7 +52,7 @@ export function MobileBottomNav({
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
       <div className="mx-auto flex h-14 max-w-xl items-stretch justify-around px-1">
-        {tabs.map(({ id, label, icon: Icon }) => {
+        {TABS.map(({ id, label, icon: Icon }) => {
           const active = activeTab === id;
           const attention = id === "work" ? workAttention : NO_ATTENTION;
           const mark = id === "home" ? homeMark : id === "helm" ? helmMark : null;

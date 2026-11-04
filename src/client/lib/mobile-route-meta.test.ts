@@ -17,6 +17,9 @@ describe("getMobileRouteMeta", () => {
     expect(getMobileRouteMeta("/helm/").route).toBe("helm");
     expect(getMobileRouteMeta("/helm/memory")).toMatchObject({ route: "helm", activeTab: "helm", showBottomNav: true });
     expect(getMobileRouteMeta("/dashboard/home")).toMatchObject({ route: "dashboard", activeTab: "home" });
+    expect(getMobileRouteMeta("/calendar", "?view=day&date=2026-04-06")).toMatchObject({
+      route: "calendar", activeTab: "home", isDetail: true, showBottomNav: false, showSharedHeader: false,
+    });
   });
 
   it("still resolves chat routes next to it", () => {
