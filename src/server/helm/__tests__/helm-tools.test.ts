@@ -177,9 +177,9 @@ describe("Helm tools", () => {
     const facade = createFacade();
     const unread = await tool(ctx, facade, "list_sessions").run({ filter: "unread" });
     expect(unread.sessions.map((entry: { ref: string }) => entry.ref)).toEqual(["aaaaaaaa"]);
-    await tool(ctx, facade, "read_session").run({ session: unread.sessions[0].ref });
+    await tool(ctx, facade, "read_session").run({ session: "tellus" });
     expect(facade.marked).toEqual([]);
-    const result = await tool(ctx, facade, "read_session").run({ session: "tellus", history: 5, markRead: true });
+    const result = await tool(ctx, facade, "read_session").run({ session: unread.sessions[0].ref, history: 5, markRead: true });
     expect(result.latestReply).toBe("Fixed the quantization bug and added tests.");
     expect(result.recentMessages).toEqual([
       { role: "user", content: "Fix the transition bands" },

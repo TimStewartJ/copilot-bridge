@@ -315,7 +315,7 @@ describe("classifyPage: a CAPTCHA widget", () => {
   it("is a check while the page has no form field and fewer than ten links", () => {
     expect(classifyPage({ ...ticketsQueue, links: 9 })?.kind).toBe("challenge");
     expect(classifyPage({ ...ticketsQueue, links: 10 })?.kind).toBe("captcha");
-    expect(classifyPage({ ...ticketsQueue, inputs: 1 })?.kind).toBe("captcha");
+    expect(classifyPage(page({ title: "Contact", text: "Name and message", inputs: 1, markers: ["hcaptcha"] }))?.kind).toBe("captcha");
   });
 
   it("is a CAPTCHA inside a page once the page has as much text as real pages have", () => {

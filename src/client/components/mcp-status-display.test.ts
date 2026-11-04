@@ -14,15 +14,18 @@ describe("MCP status display", () => {
   });
 
   it("classifies failures separately and clears guidance after a later successful call", () => {
-    const history = [
+    const current = new Map([
+      ["build-query", "403 Forbidden"], ["task-query", "403 Forbidden"],
+      ["kusto-query", "403 Forbidden"], ["calendar-query", "401 Unauthorized: token expired"],
+    ]);
+    const failures = recentToolFailures([
       ...Array.from({ length: 12 }, (_, index) => tool(`earlier-${index}`, false)),
-      tool("kusto-query", false),
-      tool("calendar-query", false, "401 Unauthorized: token expired"),
-    ];
-    const failures = recentToolFailures(history);
-    const knownNames = new Set(history.flatMap((entry) => entry.type === "tool" ? [entry.toolCall.name] : []));
-    expect(failures.length).toBeLessThan(history.length);
-    expect(failures.every(({ name }) => knownNames.has(name))).toBe(true);
+      ...Array.from(current, ([name, message]) => tool(name, false, message)),
+    ]);
+    const names = failures.map(({ name }) => name);
+    expect(names.length).toBeLessThanOrEqual(current.size);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names.every((name) => current.has(name))).toBe(true);
     expect(Object.fromEntries(failures.map(({ name, failure }) => [name, failure.category])))
       .toMatchObject({ "kusto-query": "permission", "calendar-query": "authentication" });
     expect(recentToolFailures([tool("kusto-query", false), tool("kusto-query", true)])).toEqual([]);
