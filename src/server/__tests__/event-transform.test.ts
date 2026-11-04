@@ -99,69 +99,31 @@ describe("event-transform visible activity", () => {
     expect(lastVisibleActivityAt).toBe("2026-04-10T10:00:02.000Z");
   });
 
-  it("hides self-renames (no sessionId, exact match, and trailing-whitespace match)", () => {
-    // Missing arguments and a blank target both mean this session.
-    expect(getLastVisibleActivityAt([
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename" } },
-      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
-    ], "session-1"), "omit sessionId: no visible activity").toBeUndefined();
-    expect(transformEventsToMessages([
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "  ", title: "Local rename" } } },
-      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
-    ], "session-1"), "blank sessionId: empty messages").toEqual([]);
-
-    // explicit match
-    expect(getLastVisibleActivityAt([
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "session-1", title: "Local rename" } } },
-      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
-    ], "session-1"), "explicit match: no visible activity").toBeUndefined();
-    expect(transformEventsToMessages([
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "session-1", title: "Local rename" } } },
-      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
-    ], "session-1"), "explicit match: empty messages").toEqual([]);
-
-    // trailing whitespace
-    expect(getLastVisibleActivityAt([
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "session-1   ", title: "Local rename" } } },
-      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
-    ], "session-1"), "trailing whitespace: no visible activity").toBeUndefined();
-    expect(transformEventsToMessages([
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:00.000Z", data: { toolCallId: "tool-1", toolName: "session_rename", arguments: { sessionId: "session-1   ", title: "Local rename" } } },
-      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tool-1", success: true, result: { content: "ok" } } },
-    ], "session-1"), "trailing whitespace: empty messages").toEqual([]);
-  });
-
-  it("keeps explicit cross-session renames visible", () => {
+  it("shows only the cross-session rename and keeps its completion as the last activity", () => {
+    const rename = (toolCallId: string, second: number, target?: string) => {
+      const at = (offset: number) => `2026-04-10T10:00:${String(second + offset).padStart(2, "0")}.000Z`;
+      return [
+        { id: `start-${toolCallId}`, type: "tool.execution_start", timestamp: at(0), data: {
+          toolCallId, toolName: "session_rename", ...(target === undefined ? {} : { arguments: { sessionId: target, title: "Renamed" } }),
+        } },
+        { type: "tool.execution_complete", timestamp: at(1), data: { toolCallId, success: true, result: { content: "ok" } } },
+      ];
+    };
     const events = [
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: {
-          toolCallId: "tool-2",
-          toolName: "session_rename",
-          arguments: { sessionId: "session-2", title: "Renamed elsewhere" },
-        },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:04.000Z",
-        data: { toolCallId: "tool-2", success: true, result: { content: "ok" } },
-      },
+      ...rename("other", 0, "session-2"),
+      ...rename("implicit", 2),
+      ...rename("blank", 4, "  "),
+      ...rename("exact", 6, "session-1"),
+      ...rename("trimmed", 8, "session-1   "),
     ];
 
-    expect(getLastVisibleActivityAt(events, "session-1")).toBe("2026-04-10T10:00:04.000Z");
-    expect(transformEventsToMessages(events, "session-1")).toMatchObject([
-      {
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-2",
-          name: "session_rename",
-          args: { sessionId: "session-2", title: "Renamed elsewhere" },
-          success: true,
-          completedAt: "2026-04-10T10:00:04.000Z",
-        },
+    expect(transformEventsToMessages(events, "session-1")).toMatchObject([{
+      type: "tool", sourceEventId: "start-other", toolCall: {
+        toolCallId: "other", name: "session_rename", args: { sessionId: "session-2", title: "Renamed" },
+        success: true, completedAt: "2026-04-10T10:00:01.000Z",
       },
-    ]);
+    }]);
+    expect(getLastVisibleActivityAt(events, "session-1")).toBe("2026-04-10T10:00:01.000Z");
   });
 
   it("ignores quiet interval defer turns for visible activity while keeping transcript entries", () => {
@@ -333,46 +295,25 @@ describe("event-transform stable identity", () => {
 });
 
 describe("event-transform skill injection", () => {
-  it("renders agent-injected skill context as a skill entry, not a user message", () => {
+  it("keeps tagged and preloaded skills distinct from the surrounding messages", () => {
     const events = [
-      { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Use the browser" } },
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: {
-          content: "<skill-context name=\"browser\">\nBase directory...\n</skill-context>",
-          source: "skill-browser",
-        },
-      },
-      { type: "assistant.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "On it." } },
+      { id: "prompt", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Read the PDF in the browser" } },
+      { id: "tagged", type: "user.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: '<skill-context name="browser">Tools</skill-context>', source: "skill-web" } },
+      { type: "user.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "Preloaded skill body", source: "skill-pdf" } },
+      { id: "reply", type: "assistant.message", timestamp: "2026-04-10T10:00:03.000Z", data: { content: "On it." } },
     ];
 
     expect(getLastVisibleActivityAt(events.slice(0, 2), "session-1")).toBe("2026-04-10T10:00:01.000Z");
-    expect(transformEventsToMessages(events, "session-1")).toMatchObject([
-      { type: "message", role: "user", content: "Use the browser" },
-      {
-        type: "skill",
-        skill: { id: "skill-browser", label: "browser" },
-        content: expect.stringContaining("<skill-context name=\"browser\">"),
-        timestamp: "2026-04-10T10:00:01.000Z",
-      },
-      { type: "message", role: "assistant", content: "On it." },
-    ]);
-  });
-
-  it("derives the skill label from the source when the content has no skill-context tag", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { content: "preloaded skill body", source: "skill-pdf" },
-      },
-    ], "session-1");
-
+    const entries = transformEventsToMessages(events, "session-1");
     expect(entries).toMatchObject([
-      { type: "skill", skill: { id: "skill-pdf", label: "pdf" } },
+      { type: "message", role: "user", sourceEventId: "prompt", content: "Read the PDF in the browser" },
+      { type: "skill", sourceEventId: "tagged", skill: { id: "skill-web", label: "browser" }, content: expect.stringContaining('<skill-context name="browser">'), timestamp: "2026-04-10T10:00:01.000Z" },
+      { type: "skill", skill: { id: "skill-pdf", label: "pdf" }, content: "Preloaded skill body" },
+      { type: "message", role: "assistant", sourceEventId: "reply", content: "On it." },
     ]);
-    expect(entries[0]).not.toHaveProperty("role");
+    expect(entries[1]).not.toHaveProperty("role");
+    expect(entries[2]).not.toHaveProperty("role");
+    expect(entries[2]).not.toHaveProperty("sourceEventId");
   });
 });
 
@@ -386,22 +327,24 @@ describe("event-transform agent-injected system messages", () => {
   const REMINDER = "<system_reminder>\nIMPORTANT: The tools listed below are deferred"
     + " — their full definitions are NOT loaded.\n</system_reminder>";
 
-  it("hides a system-sourced reminder that carries visible content", () => {
-    const entries = transformEventsToMessages([
-      { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Reply with just: PONG" } },
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { content: REMINDER, source: "system" },
-      },
-      { type: "assistant.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "PONG" } },
-    ], "session-1");
+  it("shows a human quoting the reminder but neither publishes nor counts the runtime copy", () => {
+    const question = `Why do I see this? ${REMINDER}`;
+    const privateNote = "Runtime-only copy for deferred tools";
+    const events = [
+      { id: "question", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: question } },
+      { id: "reply", type: "assistant.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "It is runtime context." } },
+      { id: "internal", type: "user.message", timestamp: "2026-04-10T10:05:00.000Z", data: { content: `${REMINDER} ${privateNote}`, source: "system" } },
+    ];
 
+    const entries = transformEventsToMessages(events, "session-1");
     expect(entries).toMatchObject([
-      { type: "message", role: "user", content: "Reply with just: PONG" },
-      { type: "message", role: "assistant", content: "PONG" },
+      { type: "message", role: "user", sourceEventId: "question", content: question },
+      { type: "message", role: "assistant", sourceEventId: "reply", content: "It is runtime context." },
     ]);
-    expect(JSON.stringify(entries)).not.toContain("system_reminder");
+    const [{ content: _quotedByUser, ...questionEnvelope }, ...rest] = entries;
+    expect(JSON.stringify([questionEnvelope, ...rest])).not.toContain("system_reminder");
+    expect(JSON.stringify(entries)).not.toContain(privateNote);
+    expect(getLastVisibleActivityAt(events, "session-1")).toBe("2026-04-10T10:00:02.000Z");
   });
 
   it("hides the pre-1.0.74 shape that kept the reminder in transformedContent", () => {
@@ -415,79 +358,25 @@ describe("event-transform agent-injected system messages", () => {
 
     expect(entries).toEqual([]);
   });
-
-  it("does not count an injected system message as visible activity", () => {
-    expect(getLastVisibleActivityAt([
-      { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Real prompt" } },
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:05:00.000Z",
-        data: { content: REMINDER, source: "system" },
-      },
-    ], "session-1")).toBe("2026-04-10T10:00:00.000Z");
-  });
-
-  it("still renders a genuine user message that merely mentions the marker", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { content: `why do i see this? ${REMINDER}` },
-      },
-    ], "session-1");
-
-    expect(entries).toMatchObject([{ type: "message", role: "user" }]);
-    expect(entries[0].content).toContain("why do i see this?");
-  });
 });
 
 describe("event-transform fork boundaries", () => {
-  it("uses the next raw non-system event after a completed assistant turn as a safe fork boundary", () => {
+  it("marks only the final reply of a completed turn with a following non-system event", () => {
     const entries = transformEventsToMessages([
-      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
-      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Answer one" } },
-      { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:02.000Z", data: {} },
-      { id: "system-2", type: "system.message", timestamp: "2026-04-10T10:00:03.000Z", data: { content: "Repeated instructions" } },
-      { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
-      { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-10T10:01:01.000Z", data: { content: "Answer two" } },
-      { id: "turn-end-2", type: "assistant.turn_end", timestamp: "2026-04-10T10:01:02.000Z", data: {} },
+      { id: "u1", type: "user.message", data: { content: "First" } },
+      { id: "interim", type: "assistant.message", data: { content: "Checking" } },
+      { id: "final", type: "assistant.message", data: { content: "Answer one" } },
+      { id: "child", type: "user.message", agentId: "agent-1", data: { content: "Inspect the repository", source: "agent-parent-session", parentAgentTaskId: "task-1" } },
+      { id: "e1", type: "assistant.turn_end", data: {} },
+      { id: "system", type: "system.message", data: { content: "Repeated instructions" } },
+      { id: "u2", type: "user.message", data: { content: "Second" } },
+      { id: "last", type: "assistant.message", data: { content: "Answer two" } },
+      { id: "e2", type: "assistant.turn_end", data: {} },
     ]);
 
-    const firstAssistant = entries.find((entry) => entry.role === "assistant" && entry.content === "Answer one");
-    expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
-  });
-
-  it("does not let a sub-agent instruction interrupt the parent turn boundary", () => {
-    const entries = transformEventsToMessages([
-      { id: "user-1", type: "user.message", data: { content: "First" } },
-      { id: "assistant-1", type: "assistant.message", data: { content: "Answer one" } },
-      {
-        id: "agent-prompt",
-        type: "user.message",
-        agentId: "agent-1",
-        data: {
-          content: "Inspect the repository",
-          source: "agent-parent-session",
-          parentAgentTaskId: "task-1",
-        },
-      },
-      { id: "turn-end-1", type: "assistant.turn_end", data: {} },
-      { id: "user-2", type: "user.message", data: { content: "Second" } },
+    expect(entries.filter((entry) => entry.role === "assistant").map((entry) => [entry.sourceEventId, entry.forkBoundaryEventId])).toEqual([
+      ["interim", undefined], ["final", "u2"], ["last", undefined],
     ]);
-
-    const firstAssistant = entries.find((entry) => entry.role === "assistant");
-    expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
-  });
-
-  it("omits fork boundaries when the completed turn has no following event", () => {
-    const entries = transformEventsToMessages([
-      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
-      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Answer one" } },
-      { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:02.000Z", data: {} },
-    ]);
-
-    const assistant = entries.find((entry) => entry.role === "assistant");
-    expect(assistant?.forkBoundaryEventId).toBeUndefined();
   });
 
   it("omits fork boundaries for in-flight assistant turns", () => {
@@ -499,19 +388,6 @@ describe("event-transform fork boundaries", () => {
 
     const assistant = entries.find((entry) => entry.role === "assistant");
     expect(assistant?.forkBoundaryEventId).toBeUndefined();
-  });
-
-  it("only marks the final top-level assistant message in a multi-message turn", () => {
-    const entries = transformEventsToMessages([
-      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
-      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Interim answer" } },
-      { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "Final answer" } },
-      { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:03.000Z", data: {} },
-      { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
-    ]);
-
-    const assistants = entries.filter((entry) => entry.role === "assistant");
-    expect(assistants.map((entry) => entry.forkBoundaryEventId)).toEqual([undefined, "user-2"]);
   });
 
   it("does not scan across failed turns when computing fork boundaries", () => {
@@ -533,16 +409,17 @@ describe("event-transform fork boundaries", () => {
 });
 
 describe("event-transform undo boundaries", () => {
-  it("anchors user and assistant messages to the visible user event that began the turn", () => {
+  it("keeps the human undo anchor across skill and agent records until the next prompt", () => {
     const entries = transformEventsToMessages([
       { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "First" } },
-      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:01.000Z", data: { content: "Answer one" } },
       {
         id: "skill-browser",
         type: "user.message",
-        timestamp: "2026-04-10T10:00:02.000Z",
+        timestamp: "2026-04-10T10:00:01.000Z",
         data: { content: "<skill-context name=\"browser\">", source: "skill-browser" },
       },
+      { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-10T10:00:02.000Z", data: { content: "Answer one" } },
+      { id: "child", type: "user.message", agentId: "agent-1", data: { content: "Inspect the repository", source: "agent-parent-session", parentAgentTaskId: "task-1" } },
       { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-10T10:00:03.000Z", data: { content: "Still turn one" } },
       { id: "user-2", type: "user.message", timestamp: "2026-04-10T10:01:00.000Z", data: { content: "Second" } },
       { id: "assistant-3", type: "assistant.message", timestamp: "2026-04-10T10:01:01.000Z", data: { content: "Answer two" } },
@@ -568,31 +445,6 @@ describe("event-transform undo boundaries", () => {
 
     expect(entries.filter((entry) => entry.type === "message").map((entry) => entry.undoEventId))
       .toEqual([undefined, undefined]);
-  });
-
-  it("keeps the human undo boundary across hidden sub-agent instructions", () => {
-    const entries = transformEventsToMessages([
-      { id: "user-1", type: "user.message", data: { content: "First" } },
-      {
-        id: "agent-prompt",
-        type: "user.message",
-        agentId: "agent-1",
-        data: {
-          content: "Inspect the repository",
-          source: "agent-parent-session",
-          parentAgentTaskId: "task-1",
-        },
-      },
-      { id: "assistant-1", type: "assistant.message", data: { content: "Answer" } },
-    ]);
-
-    expect(entries.filter((entry) => entry.type === "message").map((entry) => ({
-      content: entry.content,
-      undoEventId: entry.undoEventId,
-    }))).toEqual([
-      { content: "First", undoEventId: "user-1" },
-      { content: "Answer", undoEventId: "user-1" },
-    ]);
   });
 });
 
@@ -705,68 +557,16 @@ describe("event-transform tool results", () => {
     }
   });
 
-  it("prefers detailedContent for successful tools", () => {
+  it("matches interleaved tool completions to their calls and selects the right result text", () => {
     const entries = transformEventsToMessages([
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { toolCallId: "tool-1", toolName: "bash", arguments: { command: "git diff" } },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: {
-          toolCallId: "tool-1",
-          success: true,
-          result: {
-            content: "short summary",
-            detailedContent: "full diff output",
-          },
-        },
-      },
+      { type: "tool.execution_start", data: { toolCallId: "diff", toolName: "bash", arguments: { command: "git diff" } } },
+      { type: "tool.execution_start", data: { toolCallId: "snapshot", toolName: "browser_fetch", arguments: { url: "https://example.com" } } },
+      { type: "tool.execution_complete", data: { toolCallId: "snapshot", success: false, error: { message: "Snapshot failed" }, result: { content: "stale page" } } },
+      { type: "tool.execution_complete", data: { toolCallId: "diff", success: true, result: { content: "short summary", detailedContent: "full diff output" } } },
     ]);
-
     expect(entries).toMatchObject([
-      {
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-1",
-          name: "bash",
-          result: "full diff output",
-          success: true,
-        },
-      },
-    ]);
-  });
-
-  it("prefers error.message for failed tools", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { toolCallId: "tool-1", toolName: "browser_fetch", arguments: { url: "https://example.com" } },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: {
-          toolCallId: "tool-1",
-          success: false,
-          error: { message: "Snapshot failed" },
-        },
-      },
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-1",
-          name: "browser_fetch",
-          result: "Snapshot failed",
-          success: false,
-        },
-      },
+      { type: "tool", toolCall: { toolCallId: "diff", name: "bash", result: "full diff output", success: true } },
+      { type: "tool", toolCall: { toolCallId: "snapshot", name: "browser_fetch", result: "Snapshot failed", success: false } },
     ]);
   });
 
@@ -798,51 +598,6 @@ describe("event-transform tool results", () => {
           name: "browser_fetch",
           result: "Failed to capture page: snapshot failed",
           success: false,
-        },
-      },
-    ]);
-  });
-
-  it("keeps sub-agent response text over raw tool results", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { toolCallId: "tool-1", toolName: "task", arguments: { prompt: "Investigate" } },
-      },
-      {
-        type: "subagent.started",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { toolCallId: "tool-1", agentName: "explore", agentDisplayName: "Explore agent" },
-      },
-      {
-        type: "assistant.message",
-        timestamp: "2026-04-10T10:00:02.000Z",
-        data: { parentToolCallId: "tool-1", content: "Agent summary" },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:03.000Z",
-        data: {
-          toolCallId: "tool-1",
-          success: true,
-          result: {
-            content: "short summary",
-            detailedContent: "full detailed output",
-          },
-        },
-      },
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        type: "tool",
-        toolCall: {
-          toolCallId: "tool-1",
-          name: "🤖 Explore agent",
-          result: "Agent summary",
-          success: true,
-          isSubAgent: true,
         },
       },
     ]);
@@ -1074,7 +829,6 @@ describe("event-transform tool results", () => {
       },
     ]);
   });
-
 });
 
 describe("event-transform turn grouping", () => {
@@ -1163,7 +917,7 @@ describe("event-transform turn grouping", () => {
       {
         type: "tool.execution_complete",
         timestamp: "2026-04-10T10:00:04.000Z",
-        data: { toolCallId: "agent-tool", success: true, result: { content: "raw result" } },
+        data: { toolCallId: "agent-tool", success: true, result: { content: "raw result", detailedContent: "raw details" } },
       },
       {
         type: "assistant.message",
@@ -1180,6 +934,8 @@ describe("event-transform turn grouping", () => {
           toolCallId: "agent-tool",
           name: "🤖 Explore agent",
           result: "Agent summary",
+          success: true,
+          isSubAgent: true,
         },
       },
       { type: "message", role: "assistant", content: "Done.", turnId: "turn-1" },
@@ -1233,44 +989,21 @@ describe("event-transform turn grouping", () => {
 });
 
 describe("event-transform file attachment display names", () => {
-  it("derives the basename from both Windows-style backslash and POSIX-style forward-slash paths", () => {
-    for (const { label, path, displayName } of [
-      { label: "Windows", path: "C:\\Users\\me\\report.png", displayName: "report.png" },
-      { label: "POSIX", path: "/home/me/report.png", displayName: "report.png" },
-    ]) {
-      const entries = transformEventsToMessages([{
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: { content: "See attached", attachments: [{ type: "file", path }] },
-      }]);
+  it("keeps the paths and names of every file attached to one message", () => {
+    const windows = "C:\\folder\\report.png";
+    const posix = "/folder/notes.pdf";
+    const named = "C:\\folder\\q3.pdf";
+    const entries = transformEventsToMessages([{
+      id: "files", type: "user.message", data: { content: "See attached", attachments: [
+        { type: "file", path: windows }, { type: "file", path: posix }, { type: "file", path: named, displayName: "Quarterly report" },
+      ] },
+    }]);
 
-      expect(entries, label).toMatchObject([{
-        type: "message",
-        role: "user",
-        attachments: [{ type: "file", path, displayName }],
-      }]);
-    }
-  });
-
-  it("prefers an explicit displayName over the derived basename", () => {
-    const entries = transformEventsToMessages([
-      {
-        type: "user.message",
-        timestamp: "2026-04-10T10:00:00.000Z",
-        data: {
-          content: "See attached",
-          attachments: [{ type: "file", path: "C:\\Users\\me\\report.png", displayName: "Quarterly report" }],
-        },
-      },
-    ]);
-
-    expect(entries).toMatchObject([
-      {
-        type: "message",
-        role: "user",
-        attachments: [{ type: "file", path: "C:\\Users\\me\\report.png", displayName: "Quarterly report" }],
-      },
-    ]);
+    expect(entries).toMatchObject([{ type: "message", role: "user", sourceEventId: "files", attachments: [
+      { type: "file", path: windows, displayName: "report.png" },
+      { type: "file", path: posix, displayName: "notes.pdf" },
+      { type: "file", path: named, displayName: "Quarterly report" },
+    ] }]);
   });
 });
 
@@ -1282,9 +1015,23 @@ describe("event-transform model thinking", () => {
     data: { turnId: "0" },
   };
 
-  it("emits the thinking persisted on an assistant message ahead of that message", () => {
+  it("emits only the main agent’s thinking immediately before its reply", () => {
     const entries = transformEventsToMessages([
       turnStart,
+      {
+        id: "sub-message-1",
+        type: "assistant.message",
+        agentId: "agent-1",
+        timestamp: "2026-09-20T08:00:03.000Z",
+        data: { content: "sub-agent reply", parentToolCallId: "task-1", reasoningText: "sub-agent thinking" },
+      },
+      {
+        id: "sub-message-2",
+        type: "assistant.message",
+        agentId: "agent-1",
+        timestamp: "2026-09-20T08:00:04.000Z",
+        data: { content: "", reasoningText: "more sub-agent thinking" },
+      },
       {
         id: "assistant-message-1",
         type: "assistant.message",
@@ -1303,7 +1050,7 @@ describe("event-transform model thinking", () => {
         turnInstanceId: "turn-start-1",
         reasoning: { messageEventId: "assistant-message-1", startedAt: "2026-09-20T08:00:00.000Z" },
       },
-      { id: "entry-1", type: "message", role: "assistant", sourceEventId: "assistant-message-1" },
+      { id: "entry-1", type: "message", role: "assistant", sourceEventId: "assistant-message-1", content: "Eighteen sheep." },
     ]);
     // Only the message entry owns the event id, so exact-message lookups stay unambiguous.
     expect(entries[0]?.sourceEventId).toBeUndefined();
@@ -1331,28 +1078,6 @@ describe("event-transform model thinking", () => {
     ]);
 
     expect(entries.map((entry) => entry.type)).toEqual(["reasoning", "tool"]);
-  });
-
-  it("leaves a sub-agent's thinking out of the main transcript", () => {
-    const entries = transformEventsToMessages([
-      turnStart,
-      {
-        id: "sub-message-1",
-        type: "assistant.message",
-        agentId: "agent-1",
-        timestamp: "2026-09-20T08:00:03.000Z",
-        data: { content: "sub-agent reply", parentToolCallId: "task-1", reasoningText: "sub-agent thinking" },
-      },
-      {
-        id: "sub-message-2",
-        type: "assistant.message",
-        agentId: "agent-1",
-        timestamp: "2026-09-20T08:00:04.000Z",
-        data: { content: "", reasoningText: "more sub-agent thinking" },
-      },
-    ]);
-
-    expect(entries).toEqual([]);
   });
 
   it("ignores blank thinking and never treats thinking alone as visible activity", () => {
@@ -1621,29 +1346,25 @@ describe("event-transform turns of the main agent and of its sub-agents", () => 
   });
 });
 describe("event-transform autopilot", () => {
-  it("marks messages sent with autopilot and turns the CLI's continuations into markers", () => {
+  it("keeps real autopilot continuations in order without exposing runtime or agent records", () => {
     const entries = transformEventsToMessages([
       { id: "u1", type: "user.message", timestamp: "2026-09-27T10:00:00.000Z", data: { content: "Fix the tests", agentMode: "autopilot", source: "autopilot" } },
+      { id: "s1", type: "user.message", timestamp: "2026-09-27T10:00:00.000Z", data: { content: "", agentMode: "autopilot", source: "system" } },
+      { id: "g1", type: "user.message", agentId: "agent-1", timestamp: "2026-09-27T10:00:01.000Z", data: { content: "", isAutopilotContinuation: true } },
       { id: "a1", type: "assistant.message", timestamp: "2026-09-27T10:00:05.000Z", data: { content: "Working on it" } },
       { id: "c1", type: "user.message", timestamp: "2026-09-27T10:01:00.000Z", data: { content: "", agentMode: "autopilot", isAutopilotContinuation: true, source: "autopilot" } },
       { id: "c2", type: "user.message", timestamp: "2026-09-27T10:02:00.000Z", data: { content: "  ", agentMode: "autopilot" } },
       { id: "u2", type: "user.message", timestamp: "2026-09-27T10:03:00.000Z", data: { content: "Thanks" } },
     ]);
 
-    expect(entries.map((entry) => entry.type)).toEqual(["message", "message", "continuation", "continuation", "message"]);
+    expect(entries.map((entry) => [entry.type, entry.sourceEventId])).toEqual([
+      ["message", "u1"], ["message", "a1"], ["continuation", "c1"], ["continuation", "c2"], ["message", "u2"],
+    ]);
     expect(entries[0]).toMatchObject({ role: "user", agentMode: "autopilot", sourceEventId: "u1" });
     expect(entries[2]).toMatchObject({ type: "continuation", sourceEventId: "c1", timestamp: "2026-09-27T10:01:00.000Z" });
     expect(entries[4]).not.toHaveProperty("agentMode");
     // A continuation is not something the user wrote, so it never becomes an undo point.
     expect(entries[2]).not.toHaveProperty("undoEventId");
-  });
-
-  it("does not mistake runtime or sub-agent messages for continuations", () => {
-    const entries = transformEventsToMessages([
-      { id: "s1", type: "user.message", timestamp: "2026-09-27T10:00:00.000Z", data: { content: "", agentMode: "autopilot", source: "system" } },
-      { id: "g1", type: "user.message", agentId: "agent-1", timestamp: "2026-09-27T10:00:01.000Z", data: { content: "", isAutopilotContinuation: true } },
-    ]);
-    expect(entries).toEqual([]);
   });
 });
 describe("event-transform user message ids", () => {

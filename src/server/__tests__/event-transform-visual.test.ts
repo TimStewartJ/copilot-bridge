@@ -19,61 +19,27 @@ const SAMPLE_VISUAL_RESULT = {
   content: "Visual artifact published",
 };
 
-function makePublishVisualEvents(opts: {
-  toolCallId?: string;
-  success?: boolean;
-  result?: unknown;
-} = {}) {
-  const toolCallId = opts.toolCallId ?? "tc-publish-1";
+function publication(toolCallId: string, second: number, kind: string, title: string, result: unknown, success = true) {
+  const at = (offset: number) => `2026-04-10T10:00:${String(second + offset).padStart(2, "0")}.000Z`;
   return [
-    {
-      type: "user.message",
-      timestamp: "2026-04-10T10:00:00.000Z",
-      data: { content: "Show me a chart", timestamp: "2026-04-10T10:00:00.000Z" },
-    },
-    {
-      type: "tool.execution_start",
-      timestamp: "2026-04-10T10:00:01.000Z",
-      data: {
-        toolCallId,
-        toolName: "publish_visual",
-        arguments: { kind: "image", title: "My Chart" },
-      },
-    },
-    {
-      type: "tool.execution_complete",
-      timestamp: "2026-04-10T10:00:02.000Z",
-      data: {
-        toolCallId,
-        success: opts.success ?? true,
-        result: opts.result ?? SAMPLE_VISUAL_RESULT,
-      },
-    },
+    { type: "tool.execution_start", timestamp: at(0), data: { toolCallId, toolName: "publish_visual", arguments: { kind, title } } },
+    { type: "tool.execution_complete", timestamp: at(1), data: { toolCallId, success, result } },
   ];
 }
 
+function makePublishVisualEvents(opts: { success?: boolean; result?: unknown } = {}) {
+  return [
+    { type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Show me a chart" } },
+    ...publication("tc-publish-1", 1, "image", "My Chart", opts.result ?? SAMPLE_VISUAL_RESULT, opts.success),
+  ];
+}
+
+function visualResult(artifactId: string, kind: string, title: string, fields: Record<string, unknown> = {}) {
+  const url = `/api/sessions/${SESSION_ID}/visuals/${artifactId}`;
+  return { __kind: "visual.published", success: true, artifactId, kind, title, url, downloadUrl: `${url}/download`, ...fields };
+}
+
 describe("event-transform: visual entries", () => {
-  it("emits a visual entry when the persisted tool result is a JSON string or wraps JSON in content", () => {
-    // JSON string form (persisted as serialized result)
-    const entriesStr = transformEventsToMessages(
-      makePublishVisualEvents({ result: JSON.stringify(SAMPLE_VISUAL_RESULT) }),
-      SESSION_ID,
-    );
-    expect(entriesStr.filter((e) => e.type === "visual")[0].visual?.artifactId, "JSON string form").toBe("550e8400-e29b-41d4-a716-446655440000");
-
-    // content-wrapped form (persisted with content key)
-    const entriesWrapped = transformEventsToMessages(
-      makePublishVisualEvents({
-        result: {
-          content: JSON.stringify(SAMPLE_VISUAL_RESULT),
-          detailedContent: JSON.stringify(SAMPLE_VISUAL_RESULT),
-        },
-      }),
-      SESSION_ID,
-    );
-    expect(entriesWrapped.filter((e) => e.type === "visual")[0].visual?.artifactId, "content-wrapped form").toBe("550e8400-e29b-41d4-a716-446655440000");
-  });
-
   it("does not emit a visual entry when publish_visual fails", () => {
     const events = makePublishVisualEvents({
       success: false,
@@ -145,201 +111,62 @@ describe("event-transform: visual entries", () => {
     expect(visualEntries).toHaveLength(0);
   });
 
-  it("replays each published card after its tool without losing the surrounding conversation", () => {
-    const events = [
-      ...makePublishVisualEvents({ toolCallId: "tc-1" }),
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:03.000Z",
-        data: {
-          toolCallId: "tc-2",
-          toolName: "publish_visual",
-          arguments: { kind: "image", title: "Second" },
-        },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:04.000Z",
-        data: {
-          toolCallId: "tc-2",
-          success: true,
-          result: {
-            __kind: "visual.published",
-            artifactId: "660e8400-e29b-41d4-a716-446655440000",
-            kind: "image",
-            title: "Second",
-            displayName: "second.png",
-            mimeType: "image/jpeg",
-            size: 512,
-            url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/660e8400-e29b-41d4-a716-446655440000",
-            downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/660e8400-e29b-41d4-a716-446655440000/download",
-          },
-        },
-      },
-      { type: "assistant.message", timestamp: "2026-04-10T10:00:05.000Z", data: { content: "Here are your charts." } },
-    ];
-    const entries = transformEventsToMessages(events, SESSION_ID);
-    const visualEntries = entries.filter((e) => e.type === "visual");
-    expect(visualEntries).toHaveLength(2);
-    expect(entries.map((entry) => entry.type)).toEqual(["message", "tool", "visual", "tool", "visual", "message"]);
-    expect(entries[1].toolCall).toMatchObject({ name: "publish_visual", success: true });
-    expect(visualEntries[0].visual).toMatchObject({
-      artifactId: "550e8400-e29b-41d4-a716-446655440000", kind: "image", title: "My Chart", mimeType: "image/png",
-      url: expect.stringMatching(/\/visuals\//), downloadUrl: expect.stringMatching(/\/download/), caption: "Chart caption", altText: "chart alt",
-    });
-    expect(visualEntries[0].visual?.source).toBeUndefined();
-    expect(visualEntries[1].visual?.artifactId).toBe("660e8400-e29b-41d4-a716-446655440000");
-  });
+  it("replays direct, serialized and wrapped publications after their own calls", () => {
+    const second = visualResult("660e8400-e29b-41d4-a716-446655440000", "image", "Second", { mimeType: "image/jpeg" });
+    const third = visualResult("880e8400-e29b-41d4-a716-446655440000", "image", "Third");
+    const entries = transformEventsToMessages([
+      ...makePublishVisualEvents(),
+      ...publication("tc-second", 3, "image", "Second", JSON.stringify(second)),
+      ...publication("tc-third", 5, "image", "Third", { content: JSON.stringify(third), detailedContent: "Publication saved" }),
+      { type: "assistant.message", timestamp: "2026-04-10T10:00:07.000Z", data: { content: "Here are your charts." } },
+    ], SESSION_ID);
 
-});
-
-describe("event-transform: mermaid visual entries", () => {
-  const MERMAID_RESULT = {
-    __kind: "visual.published",
-    success: true,
-    artifactId: "770e8400-e29b-41d4-a716-446655440000",
-    kind: "mermaid",
-    title: "My Diagram",
-    displayName: "My_Diagram.mmd",
-    mimeType: "text/vnd.mermaid",
-    size: 20,
-    url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/770e8400-e29b-41d4-a716-446655440000",
-    downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/770e8400-e29b-41d4-a716-446655440000/download",
-    source: "graph TD\n  A-->B",
-    content: "Mermaid diagram published",
-  };
-
-  function makeMermaidEvents() {
-    return [
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: {
-          toolCallId: "tc-mermaid-1",
-          toolName: "publish_visual",
-          arguments: { kind: "mermaid", title: "My Diagram" },
-        },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:02.000Z",
-        data: {
-          toolCallId: "tc-mermaid-1",
-          success: true,
-          result: MERMAID_RESULT,
-        },
-      },
-    ];
-  }
-
-  it("emits a mermaid, vega-lite, and html visual entry each with metadata only (no source)", () => {
-    // mermaid
-    const mermaidEntries = transformEventsToMessages(makeMermaidEvents(), SESSION_ID);
-    const mv = mermaidEntries.filter((e) => e.type === "visual")[0];
-    expect(mv.visual?.kind, "mermaid kind").toBe("mermaid");
-    expect(mv.visual?.artifactId, "mermaid artifactId").toBe("770e8400-e29b-41d4-a716-446655440000");
-    expect(mv.visual?.title, "mermaid title").toBe("My Diagram");
-    expect(mv.visual?.mimeType, "mermaid mimeType").toBe("text/vnd.mermaid");
-    expect(mv.visual?.source, "mermaid no source").toBeUndefined();
-
-    // vega-lite
-    const vegaEvents = [
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tc-vl-meta", toolName: "publish_visual", arguments: { kind: "vega-lite", title: "My Bar Chart" } } },
-      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:02.000Z", data: { toolCallId: "tc-vl-meta", success: true, result: {
-        __kind: "visual.published", success: true, artifactId: "990e8400-e29b-41d4-a716-446655440000", kind: "vega-lite", title: "My Bar Chart",
-        displayName: "My_Bar_Chart.vl.json", mimeType: "application/vnd.vegalite+json", size: 200,
-        url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/990e8400-e29b-41d4-a716-446655440000",
-        downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/990e8400-e29b-41d4-a716-446655440000/download",
-        source: JSON.stringify({ mark: "bar" }),
-      } } },
-    ];
-    const vegaEntries = transformEventsToMessages(vegaEvents, SESSION_ID);
-    const vv = vegaEntries.filter((e) => e.type === "visual")[0];
-    expect(vv.visual?.kind, "vega-lite kind").toBe("vega-lite");
-    expect(vv.visual?.mimeType, "vega-lite mimeType").toBe("application/vnd.vegalite+json");
-    expect(vv.visual?.source, "vega-lite no source").toBeUndefined();
-
-    // html
-    const htmlEvents = [
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tc-html-meta", toolName: "publish_visual", arguments: { kind: "html", title: "My Page" } } },
-      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:02.000Z", data: { toolCallId: "tc-html-meta", success: true, result: {
-        __kind: "visual.published", success: true, artifactId: "aa0e8400-e29b-41d4-a716-446655440000", kind: "html", title: "My Page",
-        displayName: "My_Page.html", mimeType: "text/html", size: 40,
-        url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440000",
-        downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440000/download",
-        source: "<html></html>",
-      } } },
-    ];
-    const htmlEntries = transformEventsToMessages(htmlEvents, SESSION_ID);
-    const hv = htmlEntries.filter((e) => e.type === "visual")[0];
-    expect(hv.visual?.kind, "html kind").toBe("html");
-    expect(hv.visual?.mimeType, "html mimeType").toBe("text/html");
-    expect(hv.visual?.source, "html no source").toBeUndefined();
+    expect(entries).toMatchObject([
+      { type: "message", role: "user", content: "Show me a chart" },
+      { type: "tool", toolCall: { toolCallId: "tc-publish-1", name: "publish_visual", success: true } },
+      { type: "visual", visual: {
+        artifactId: "550e8400-e29b-41d4-a716-446655440000", kind: "image", title: "My Chart", mimeType: "image/png",
+        url: SAMPLE_VISUAL_RESULT.url, downloadUrl: SAMPLE_VISUAL_RESULT.downloadUrl, caption: "Chart caption", altText: "chart alt",
+      } },
+      { type: "tool", toolCall: { toolCallId: "tc-second" } },
+      { type: "visual", visual: { artifactId: "660e8400-e29b-41d4-a716-446655440000", mimeType: "image/jpeg" } },
+      { type: "tool", toolCall: { toolCallId: "tc-third" } },
+      { type: "visual", visual: { artifactId: "880e8400-e29b-41d4-a716-446655440000" } },
+      { type: "message", role: "assistant", content: "Here are your charts." },
+    ]);
+    expect(entries[2].visual?.source).toBeUndefined();
   });
 });
 
-describe("event-transform: vega-lite visual entries", () => {
-  const VEGA_LITE_RESULT = {
-    __kind: "visual.published",
-    success: true,
-    artifactId: "990e8400-e29b-41d4-a716-446655440000",
-    kind: "vega-lite",
-    title: "My Bar Chart",
-    displayName: "My_Bar_Chart.vl.json",
-    mimeType: "application/vnd.vegalite+json",
-    size: 200,
-    url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/990e8400-e29b-41d4-a716-446655440000",
-    downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/990e8400-e29b-41d4-a716-446655440000/download",
-    source: JSON.stringify({ mark: "bar", data: { values: [{ a: "A", b: 28 }] } }, null, 2),
-    content: "Vega-Lite chart published",
-  };
+describe("event-transform: published document formats", () => {
+  it("keeps diagram, chart and HTML publications metadata-only", () => {
+    const diagram = "770e8400-e29b-41d4-a716-446655440000";
+    const chart = "990e8400-e29b-41d4-a716-446655440000";
+    const page = "aa0e8400-e29b-41d4-a716-446655440000";
+    const entries = transformEventsToMessages([
+      ...publication("diagram", 1, "mermaid", "Architecture", visualResult(diagram, "mermaid", "Architecture", { mimeType: "text/vnd.mermaid", source: "graph TD; A-->B" })),
+      ...publication("chart", 3, "vega-lite", "Counts", visualResult(chart, "vega-lite", "Counts", { mimeType: "application/vnd.vegalite+json", source: '{"mark":"bar"}' })),
+      ...publication("page", 5, "html", "Report", visualResult(page, "html", "Report", { mimeType: "text/html; charset=utf-8", source: "<p>Report</p>" })),
+    ], SESSION_ID);
+    const visuals = entries.filter((entry) => entry.type === "visual").map((entry) => entry.visual);
+    expect(visuals).toMatchObject([
+      { artifactId: diagram, kind: "mermaid", title: "Architecture", mimeType: "text/vnd.mermaid" },
+      { artifactId: chart, kind: "vega-lite", title: "Counts", mimeType: "application/vnd.vegalite+json" },
+      { artifactId: page, kind: "html", title: "Report", mimeType: "text/html; charset=utf-8" },
+    ]);
+    expect(visuals.map((visual) => visual?.source)).toEqual([undefined, undefined, undefined]);
+  });
 
-  function makeVegaLiteEvents() {
-    return [
-      {
-        type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: {
-          toolCallId: "tc-vl-1",
-          toolName: "publish_visual",
-          arguments: { kind: "vega-lite", title: "My Bar Chart" },
-        },
-      },
-      {
-        type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:02.000Z",
-        data: {
-          toolCallId: "tc-vl-1",
-          success: true,
-          result: VEGA_LITE_RESULT,
-        },
-      },
-    ];
-  }
-
-  it("uses default mime types when mimeType is omitted: vega-lite and html", () => {
-    // vega-lite defaults to application/vnd.vegalite+json
-    const vegaEvents = makeVegaLiteEvents();
-    const vegaComplete = vegaEvents[1] as any;
-    const vegaResultWithoutMime = { ...vegaComplete.data.result } as any;
-    delete vegaResultWithoutMime.mimeType;
-    vegaComplete.data = { ...vegaComplete.data, result: vegaResultWithoutMime };
-    const vegaEntries = transformEventsToMessages(vegaEvents, SESSION_ID);
-    expect(vegaEntries.filter((e) => e.type === "visual")[0].visual?.mimeType, "vega-lite default mime").toBe("application/vnd.vegalite+json");
-
-    // html defaults to text/html
-    const htmlEvents = [
-      { type: "tool.execution_start", timestamp: "2026-04-10T10:00:01.000Z", data: { toolCallId: "tc-html-mime", toolName: "publish_visual", arguments: { kind: "html", title: "My Page" } } },
-      { type: "tool.execution_complete", timestamp: "2026-04-10T10:00:02.000Z", data: { toolCallId: "tc-html-mime", success: true, result: {
-        __kind: "visual.published", success: true, artifactId: "aa0e8400-e29b-41d4-a716-446655440001", kind: "html",
-        title: "My Page", displayName: "My_Page.html", size: 40,
-        url: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440001",
-        downloadUrl: "/api/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visuals/aa0e8400-e29b-41d4-a716-446655440001/download",
-        source: "<html></html>",
-      } } },
-    ];
-    const htmlEntries = transformEventsToMessages(htmlEvents, SESSION_ID);
-    expect(htmlEntries.filter((e) => e.type === "visual")[0].visual?.mimeType, "html default mime").toBe("text/html");
+  it("uses the format of each publication when its MIME type is absent", () => {
+    const chart = "990e8400-e29b-41d4-a716-446655440000";
+    const page = "aa0e8400-e29b-41d4-a716-446655440001";
+    const entries = transformEventsToMessages([
+      ...publication("chart", 1, "vega-lite", "Counts", visualResult(chart, "vega-lite", "Counts")),
+      ...publication("page", 3, "html", "Report", visualResult(page, "html", "Report")),
+    ], SESSION_ID);
+    expect(entries.filter((entry) => entry.type === "visual").map((entry) => [entry.visual?.artifactId, entry.visual?.mimeType])).toEqual([
+      [chart, "application/vnd.vegalite+json"], [page, "text/html"],
+    ]);
   });
 });
 
@@ -348,18 +175,20 @@ describe("event-transform: generated images", () => {
   const savedIn = (sessionId: string, fileName = "image-0a1b2c3d4e5f6071.png") =>
     `C:\\Users\\someone\\.copilot\\session-state\\${sessionId}\\images\\${fileName}`;
 
-  function imageEvents(options: { args?: Record<string, unknown>; savedPath?: string; success?: boolean } = {}) {
+  function imageEvents(options: { args?: Record<string, unknown>; savedPath?: string; success?: boolean; toolCallId?: string; second?: number } = {}) {
+    const toolCallId = options.toolCallId ?? "tc-image";
+    const at = (offset: number) => `2026-04-10T10:00:${String((options.second ?? 1) + offset).padStart(2, "0")}.000Z`;
     return [
       {
         type: "tool.execution_start",
-        timestamp: "2026-04-10T10:00:01.000Z",
-        data: { toolCallId: "tc-image", toolName: "image_generation", arguments: options.args ?? { prompt: "A small bridge at dusk" } },
+        timestamp: at(0),
+        data: { toolCallId, toolName: "image_generation", arguments: options.args ?? { prompt: "A small bridge at dusk" } },
       },
       {
         type: "tool.execution_complete",
-        timestamp: "2026-04-10T10:00:09.000Z",
+        timestamp: at(8),
         data: {
-          toolCallId: "tc-image",
+          toolCallId,
           success: options.success ?? true,
           result: {
             content: "Image generated successfully.",
@@ -382,23 +211,25 @@ describe("event-transform: generated images", () => {
     ];
   }
 
-  it.each([
-    { label: "a new image", args: { prompt: "A small bridge at dusk" }, title: "Generated image" },
-    { label: "an edit", args: { prompt: "Make the sky orange", input_images: [{ image_id: "sha256:abc" }] }, title: "Edited image" },
-  ])("shows $label as an image card after its tool entry, served from the session's images folder", ({ args, title }) => {
-    const entries = transformEventsToMessages(imageEvents({ args }), SESSION_ID);
+  it("shows a generated image and its edit after their own tools", () => {
+    const original = "image-0a1b2c3d4e5f6071.png";
+    const edit = "image-edited.png";
+    const entries = transformEventsToMessages([
+      ...imageEvents({ toolCallId: "draw", savedPath: savedIn(SESSION_ID, original), args: { prompt: "A bridge at dusk" } }),
+      ...imageEvents({ toolCallId: "edit", second: 10, savedPath: savedIn(SESSION_ID, edit), args: { prompt: "Make the sky orange", input_images: [{ image_id: "sha256:abc" }] } }),
+    ], SESSION_ID);
 
-    expect(entries.map((entry) => entry.type)).toEqual(["tool", "visual"]);
+    expect(entries.map((entry) => [entry.type, entry.toolCall?.toolCallId])).toEqual([
+      ["tool", "draw"], ["visual", undefined], ["tool", "edit"], ["visual", undefined],
+    ]);
+    const common = { kind: "image", mimeType: "image/png", size: Buffer.from(PNG_BASE64, "base64").length };
     expect(entries[1].visual).toEqual({
-      artifactId: "generated-image-0a1b2c3d4e5f6071.png",
-      kind: "image",
-      title,
-      displayName: "image-0a1b2c3d4e5f6071.png",
-      mimeType: "image/png",
-      size: Buffer.from(PNG_BASE64, "base64").length,
-      url: `/api/sessions/${SESSION_ID}/images/image-0a1b2c3d4e5f6071.png`,
-      downloadUrl: `/api/sessions/${SESSION_ID}/images/image-0a1b2c3d4e5f6071.png?download`,
-      altText: args.prompt,
+      ...common, artifactId: `generated-${original}`, displayName: original, title: "Generated image", altText: "A bridge at dusk",
+      url: `/api/sessions/${SESSION_ID}/images/${original}`, downloadUrl: `/api/sessions/${SESSION_ID}/images/${original}?download`,
+    });
+    expect(entries[3].visual).toEqual({
+      ...common, artifactId: `generated-${edit}`, displayName: edit, title: "Edited image", altText: "Make the sky orange",
+      url: `/api/sessions/${SESSION_ID}/images/${edit}`, downloadUrl: `/api/sessions/${SESSION_ID}/images/${edit}?download`,
     });
   });
 

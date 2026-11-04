@@ -64,50 +64,31 @@ const firstTurn: Event[] = [
 ];
 
 describe("TranscriptAgentFold", () => {
-  it("records an agent from its launch, under the name and brief it was given", () => {
+  it("lists named and unnamed agents in launch order even when they report out of order", () => {
     const fold = new TranscriptAgentFold();
-
-    expect(observeAll(fold, firstTurn.slice(0, 2))).toEqual([undefined, "started"]);
-    expect(fold.list()).toEqual([{
-      toolCallId: "call-moves",
-      agentId: "agent-moves",
-      name: "moves-agent",
-      agentType: "general-purpose",
-      description: "Refactor move generation",
-      background: true,
-      status: "running",
-      startedAt: at(0),
-      activeSince: at(0),
-      activeMs: 0,
-      toolCount: 0,
-      failedToolCount: 0,
-    }]);
-    expect(fold.getToolCallIdForAgent("agent-moves")).toBe("call-moves");
-  });
-
-  it("falls back to the agent's type when it was launched without a name", () => {
-    const fold = new TranscriptAgentFold();
-    observeAll(fold, [launch("call-review", 0, { agent_type: "code-review" }), started("call-review", "agent-review", 0, { agentName: "code-review" })]);
-
-    expect(fold.get("call-review")).toMatchObject({ name: "code-review", agentType: "code-review" });
-    expect(fold.get("call-review")).not.toHaveProperty("background");
-  });
-
-  it("lists agents in the order they were launched, not the order they reported in", () => {
-    const fold = new TranscriptAgentFold();
-    observeAll(fold, [
-      launch("call-alpha", 0, { name: "alpha-agent" }),
-      launch("call-beta", 1, { name: "beta-agent" }),
-      launch("call-gamma", 2, { name: "gamma-agent" }),
-      // Three launched side by side start in whichever order the runtime gets to them.
-      started("call-gamma", "agent-gamma", 3),
-      started("call-alpha", "agent-alpha", 4),
-      started("call-beta", "agent-beta", 5),
+    const changes = observeAll(fold, [
+      launch(MOVES.toolCallId, 0, { name: "moves-agent", agent_type: "general-purpose", description: "Refactor move generation", mode: "background" }),
+      launch("call-review", 1, { agent_type: "code-review" }),
+      launch("call-docs", 2, { name: "docs-agent" }),
+      started("call-docs", "agent-docs", 3),
+      started(MOVES.toolCallId, MOVES.agentId, 4, { agentDisplayName: "moves-agent", executionMode: "background" }),
+      started("call-review", "agent-review", 5, { agentName: "code-review" }),
     ]);
 
-    expect(fold.list().map((agent) => agent.name)).toEqual(["alpha-agent", "beta-agent", "gamma-agent"]);
-    // Its run began with the call that launched it; its work, when it reported in.
-    expect(fold.get("call-alpha")).toMatchObject({ startedAt: at(0), activeSince: at(4) });
+    expect(changes).toEqual([undefined, undefined, undefined, "started", "started", "started"]);
+    const agents = fold.list();
+    expect(agents.map((agent) => [agent.toolCallId, agent.name])).toEqual([
+      ["call-moves", "moves-agent"], ["call-review", "code-review"], ["call-docs", "docs-agent"],
+    ]);
+    expect(agents[0]).toEqual({
+      toolCallId: "call-moves", agentId: "agent-moves", name: "moves-agent", agentType: "general-purpose",
+      description: "Refactor move generation", background: true, status: "running", startedAt: at(0), activeSince: at(4),
+      activeMs: 0, toolCount: 0, failedToolCount: 0,
+    });
+    expect(agents[1]).toMatchObject({ agentId: "agent-review", agentType: "code-review", startedAt: at(1), activeSince: at(5) });
+    expect(agents[1]).not.toHaveProperty("background");
+    expect(fold.get("call-review")).toEqual(agents[1]);
+    expect(fold.getToolCallIdForAgent("agent-moves")).toBe("call-moves");
   });
 
   it("ends the first turn when the runtime says so, and counts the time worked", () => {

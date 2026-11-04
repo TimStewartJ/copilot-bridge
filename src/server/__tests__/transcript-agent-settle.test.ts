@@ -41,38 +41,42 @@ describe("settleTranscriptAgents", () => {
     const finished = [working({ status: "finished", activeSince: undefined, endedAt: at(150) })];
     expect(settleTranscriptAgents(finished, { tasks: [], refreshedAt: at(500) })).toBe(finished);
 
-    const stillRunning = [working()];
+    const stillRunning = [working(), working({ toolCallId: "call-child", agentId: "agent-child", parentToolCallId: "call-moves" })];
     expect(settleTranscriptAgents(stillRunning, { tasks: [task()], refreshedAt: at(500) })).toBe(stillRunning);
   });
 
-  it("marks an agent the runtime no longer tracks as stopped", () => {
-    // The process that ran it was killed, so the log never recorded an end.
-    const [settled] = settleTranscriptAgents([working()], { tasks: [], refreshedAt: at(500) });
+  it("stops a missing top-level agent but leaves its nested agent to the log", () => {
+    const parent = working();
+    const nested = working({ toolCallId: "call-inner", agentId: "agent-inner", parentToolCallId: parent.toolCallId });
+    const settled = settleTranscriptAgents([parent, nested], { tasks: [], refreshedAt: at(500) });
 
-    expect(settled).toMatchObject({ status: "stopped", activeMs: 40_000, toolCount: 12 });
-    expect(settled).not.toHaveProperty("activeSince");
-    expect(settled).not.toHaveProperty("endedAt");
+    expect(settled.map((agent) => [agent.toolCallId, agent.status])).toEqual([["call-moves", "stopped"], ["call-inner", "running"]]);
+    expect(settled[0]).toMatchObject({ activeMs: 40_000, toolCount: 12 });
+    expect(settled[0]).not.toHaveProperty("activeSince");
+    expect(settled[0]).not.toHaveProperty("endedAt");
+    expect(settled[1]).toBe(nested);
   });
 
-  it("takes the runtime's word for how an agent it still tracks ended", () => {
-    const settle = (partial: Partial<SessionAgentTask>) =>
-      settleTranscriptAgents([working()], { tasks: [task(partial)], refreshedAt: at(500) })[0];
+  it("settles tracked agents by launch or runtime ID without mixing their outcomes", () => {
+    const named = (name: string) => working({ toolCallId: `call-${name}`, agentId: `agent-${name}`, name });
+    const agents = [named("docs"), named("tests"), named("review"), named("index")];
+    const settled = settleTranscriptAgents(agents, {
+      refreshedAt: at(500),
+      tasks: [
+        task({ id: "agent-index", toolCallId: "call-index", status: "cancelled" }),
+        task({ id: "agent-review", toolCallId: "call-review", status: "failed", completedAt: at(200) }),
+        // The registry can know only the runtime id, or only the call that launched the agent.
+        task({ id: "agent-docs", toolCallId: undefined, status: "idle", idleSince: at(180), activeTimeMs: 120_000 }),
+        task({ id: "runtime-tests", toolCallId: "call-tests", status: "completed", completedAt: at(190) }),
+      ],
+    });
 
-    // A follow-up turn that ended without the log being able to tell.
-    expect(settle({ status: "idle", idleSince: at(180), activeTimeMs: 120_000 }))
-      .toMatchObject({ status: "finished", endedAt: at(180), activeMs: 120_000 });
-    expect(settle({ status: "completed", completedAt: at(190) })).toMatchObject({ status: "finished", endedAt: at(190), activeMs: 40_000 });
-    expect(settle({ status: "failed", completedAt: at(190) })).toMatchObject({ status: "failed", endedAt: at(190) });
-    expect(settle({ status: "cancelled" })).toMatchObject({ status: "stopped" });
-  });
-
-  it("finds the agent by its runtime id when the runtime does not name the launching call", () => {
-    const [settled] = settleTranscriptAgents(
-      [working()],
-      { tasks: [task({ toolCallId: undefined, status: "idle", idleSince: at(170) })], refreshedAt: at(500) },
-    );
-
-    expect(settled).toMatchObject({ status: "finished", endedAt: at(170) });
+    expect(settled.map(({ toolCallId, status, endedAt, activeMs }) => [toolCallId, status, endedAt, activeMs])).toEqual([
+      ["call-docs", "finished", at(180), 120_000],
+      ["call-tests", "finished", at(190), 40_000],
+      ["call-review", "failed", at(200), 40_000],
+      ["call-index", "stopped", undefined, 40_000],
+    ]);
   });
 
   it("does not overrule a turn that began after the list was read", () => {
@@ -85,11 +89,6 @@ describe("settleTranscriptAgents", () => {
     expect(settleTranscriptAgents(before, { tasks: [], refreshedAt: at(101) })).toBe(before);
   });
 
-  it("leaves an agent another agent launched to the log", () => {
-    const nested = [working({ toolCallId: "call-inner", agentId: "agent-inner", parentToolCallId: "call-moves" })];
-
-    expect(settleTranscriptAgents(nested, { tasks: [], refreshedAt: at(500) })).toBe(nested);
-  });
 
   it("corrects only the agents that need it", () => {
     const docs = working({ toolCallId: "call-docs", agentId: "agent-docs", name: "docs-agent" });

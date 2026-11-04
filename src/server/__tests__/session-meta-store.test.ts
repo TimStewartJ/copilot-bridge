@@ -52,24 +52,19 @@ describe("session-meta-store", () => {
     expect(store.listMetaFor([])).toEqual({});
   });
 
-  it("omits title-only and workspace-only overlay rows from meta reads", () => {
-    const bridgeSessionState = createBridgeSessionStateStore(db);
-    bridgeSessionState.setTitleOverride("title-only", "Manual title");
-    bridgeSessionState.setPinnedCwd("workspace-only", "D:\\repo");
+  it("lists attention metadata without exposing title-only or workspace-only overlays", () => {
+    const overlays = createBridgeSessionStateStore(db);
+    overlays.setTitleOverride("title-only", "Manual title");
+    overlays.setPinnedCwd("workspace-only", "D:\\repo");
+    store.setLastAttentionAt("attention-only", "2026-05-07T10:00:00.000Z");
 
+    const attention = { archived: false, lastAttentionAt: "2026-05-07T10:00:00.000Z" };
+    const all = store.listMeta();
+    expect(Object.keys(all)).toEqual(["attention-only"]);
+    expect(all["attention-only"]).toMatchObject(attention);
+    expect(store.getMeta("attention-only")).toMatchObject(attention);
     expect(store.getMeta("title-only")).toBeUndefined();
     expect(store.getMeta("workspace-only")).toBeUndefined();
-    expect(store.listMeta()).toEqual({});
-  });
-
-  it("includes attention-only rows in meta reads", () => {
-    store.setLastAttentionAt("session-1", "2026-05-07T10:00:00.000Z");
-
-    expect(store.getMeta("session-1")).toMatchObject({
-      archived: false,
-      lastAttentionAt: "2026-05-07T10:00:00.000Z",
-    });
-    expect(store.listMeta()["session-1"]?.lastAttentionAt).toBe("2026-05-07T10:00:00.000Z");
   });
 
   it("persists and clears bridge-synthesized terminal overlays", () => {
@@ -95,31 +90,21 @@ describe("session-meta-store", () => {
     expect(store.getMeta("session-1")).toBeUndefined();
   });
 
-  it("listSessionIdsBySchedule returns sessions for a schedule", () => {
-    store.recordScheduleRun("sched-a", "s1", "2026-01-01T00:00:00.000Z");
-    store.recordScheduleRun("sched-a", "s2", "2026-01-02T00:00:00.000Z");
-    store.recordScheduleRun("sched-a", "s1", "2026-01-01T00:00:00.000Z");
-    store.recordScheduleRun("sched-b", "s3");
-
-    const result = store.listSessionIdsBySchedule("sched-a");
-    expect(result).toEqual(["s2", "s1", "s1"]);
-    expect(store.listScheduleRuns("sched-a")).toMatchObject([
-      { sessionId: "s2", recordedAt: "2026-01-02T00:00:00.000Z" },
-      { sessionId: "s1", recordedAt: "2026-01-01T00:00:00.000Z" },
-      { sessionId: "s1", recordedAt: "2026-01-01T00:00:00.000Z" },
-    ]);
-  });
-
-  it("listScheduleRuns normalizes and sorts mixed timestamp formats", () => {
+  it("returns only this schedule’s runs in chronological order across timestamp formats", () => {
+    store.recordScheduleRun("sched-a", "repeated", "2026-01-01T00:00:00.000Z");
+    store.recordScheduleRun("sched-a", "repeated", "2026-01-01T00:00:00.000Z");
+    store.recordScheduleRun("sched-b", "other");
     db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-      .run("sched-a", "older", "2026-01-01T00:00:00.000Z");
-    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-      .run("sched-a", "newer", "2026-01-01 23:00:00");
+      .run("sched-a", "later", "2026-01-01 23:00:00");
 
-    expect(store.listScheduleRuns("sched-a")).toMatchObject([
-      { sessionId: "newer", recordedAt: "2026-01-01T23:00:00.000Z" },
-      { sessionId: "older", recordedAt: "2026-01-01T00:00:00.000Z" },
+    const runs = store.listScheduleRuns("sched-a");
+    expect(runs).toMatchObject([
+      { sessionId: "later", recordedAt: "2026-01-01T23:00:00.000Z" },
+      { sessionId: "repeated", recordedAt: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "repeated", recordedAt: "2026-01-01T00:00:00.000Z" },
     ]);
+    expect(runs[1].id).toBeGreaterThan(runs[2].id);
+    expect(store.listSessionIdsBySchedule("sched-a")).toEqual(["later", "repeated", "repeated"]);
   });
 
   it("run history is independent from latest session schedule metadata", () => {

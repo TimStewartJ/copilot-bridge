@@ -1131,27 +1131,33 @@ describe("readMessagesFromDisk latest-page path", () => {
     }
   });
 
-  it("preserves fork boundaries in the latest-page tail transform", async () => {
-    const copilotHome = makeTestDir("session-disk-reader-fork-boundary");
-    writeSessionFiles(copilotHome, "forkable", {
+  it("returns the fork boundary and the latest provider coverage from the same page", async () => {
+    const copilotHome = makeTestDir("session-disk-reader-boundaries");
+    const sessionId = "two-turns";
+    writeSessionFiles(copilotHome, sessionId, {
       events: [
-        { id: "user-1", type: "user.message", timestamp: "2026-04-30T10:00:00.000Z", data: { content: "First" } },
-        { id: "turn-start-1", type: "assistant.turn_start", timestamp: "2026-04-30T10:00:01.000Z", data: {} },
-        { id: "assistant-1", type: "assistant.message", timestamp: "2026-04-30T10:00:02.000Z", data: { content: "Answer one" } },
-        { id: "turn-end-1", type: "assistant.turn_end", timestamp: "2026-04-30T10:00:03.000Z", data: {} },
-        { id: "system-2", type: "system.message", timestamp: "2026-04-30T10:00:04.000Z", data: { content: "Repeated instructions" } },
-        { id: "user-2", type: "user.message", timestamp: "2026-04-30T10:01:00.000Z", data: { content: "Second" } },
-        { id: "turn-start-2", type: "assistant.turn_start", timestamp: "2026-04-30T10:01:01.000Z", data: {} },
-        { id: "assistant-2", type: "assistant.message", timestamp: "2026-04-30T10:01:02.000Z", data: { content: "Answer two" } },
-        { id: "turn-end-2", type: "assistant.turn_end", timestamp: "2026-04-30T10:01:03.000Z", data: {} },
+        { id: "u1", type: "user.message", data: { content: "First" } },
+        { id: "t1", type: "assistant.turn_start", data: { turnId: "provider-first" } },
+        { id: "a1", type: "assistant.message", data: { content: "Answer one" } },
+        { id: "e1", type: "assistant.turn_end", data: {} },
+        { id: "system", type: "system.message", data: { content: "Repeated instructions" } },
+        { id: "u2", type: "user.message", data: { content: "Second" } },
+        { id: "t2", type: "assistant.turn_start", data: { turnId: "provider-second" } },
+        { id: "a2", type: "assistant.message", data: { content: "Done" } },
+        { id: "terminal", type: "session.idle", data: {} },
+        { id: "trace", type: "internal.trace", data: {} },
       ],
     });
-
     const { deps } = createDeps(copilotHome);
-    const result = await readMessagesFromDisk(deps, "forkable", { limit: 10 });
+    const result = await readMessagesFromDisk(deps, sessionId, { limit: 10 });
 
-    const firstAssistant = result.messages.find((entry) => entry.role === "assistant" && entry.content === "Answer one");
-    expect(firstAssistant?.forkBoundaryEventId).toBe("user-2");
+    expect(result.messages).toMatchObject([
+      { type: "message", role: "user", sourceEventId: "u1", content: "First" },
+      { type: "message", role: "assistant", sourceEventId: "a1", forkBoundaryEventId: "u2", turnId: "provider-first", content: "Answer one" },
+      { type: "message", role: "user", sourceEventId: "u2", content: "Second" },
+      { type: "message", role: "assistant", sourceEventId: "a2", turnId: "provider-second", content: "Done" },
+    ]);
+    expect(result.coverage).toEqual({ latestEventId: "trace", latestTurnId: "provider-second", latestTerminalEventId: "terminal" });
   });
 
   it("returns an empty result if the event log disappears during a tail read", async () => {
@@ -1177,49 +1183,6 @@ describe("readMessagesFromDisk latest-page path", () => {
     const result = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
 
     expect(result).toEqual({ messages: [], total: 0, hasMore: false, coverage: {}, agents: [] });
-  });
-
-  it("returns provider turn and terminal coverage for overlay reconciliation", async () => {
-    const copilotHome = makeTestDir("session-disk-reader-coverage");
-    const sessionId = "coverage-session";
-    writeSessionFiles(copilotHome, sessionId, {
-      events: [
-        {
-          id: "turn-start-event",
-          type: "assistant.turn_start",
-          timestamp: "2026-07-21T17:00:00.000Z",
-          data: { turnId: "provider-turn-1" },
-        },
-        {
-          id: "assistant-event",
-          type: "assistant.message",
-          timestamp: "2026-07-21T17:00:01.000Z",
-          data: { content: "Done" },
-        },
-        {
-          id: "terminal-event",
-          type: "session.idle",
-          timestamp: "2026-07-21T17:00:02.000Z",
-          data: {},
-        },
-      ],
-    });
-    const { deps } = createDeps(copilotHome);
-
-    const result = await readMessagesFromDisk(deps, sessionId, { limit: 10 });
-
-    expect(result.messages).toMatchObject([
-      {
-        content: "Done",
-        turnId: "provider-turn-1",
-        sourceEventId: "assistant-event",
-      },
-    ]);
-    expect(result.coverage).toEqual({
-      latestEventId: "terminal-event",
-      latestTurnId: "provider-turn-1",
-      latestTerminalEventId: "terminal-event",
-    });
   });
 
   it("keeps agent-scoped errors nonterminal across the bounded-tail boundary", async () => {
