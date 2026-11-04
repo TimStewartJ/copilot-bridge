@@ -356,18 +356,12 @@ function setScrollGeometry(
   Object.defineProperty(element, "scrollTop", { configurable: true, writable: true, value: geometry.scrollTop });
 }
 
+function verticalRect(top: number, height = 0): DOMRect {
+  return { x: 0, y: top, width: 0, height, top, left: 0, right: 0, bottom: top + height, toJSON: () => ({}) };
+}
+
 function setElementTop(element: any, top: number) {
-  element.getBoundingClientRect = () => ({
-    x: 0,
-    y: top,
-    width: 0,
-    height: 0,
-    top,
-    left: 0,
-    right: 0,
-    bottom: top,
-    toJSON: () => ({}),
-  });
+  element.getBoundingClientRect = () => verticalRect(top);
 }
 
 /** Stands in for the browser's ResizeObserver. `notify(element)` reports that the element changed size. */
@@ -1260,23 +1254,10 @@ describe("ChatView navigation landing position", () => {
     const originalCreateElement = doc.createElement;
     doc.createElement = (tag: string) => {
       const element = originalCreateElement(tag);
-      Object.defineProperty(element, "scrollHeight", { configurable: true, value: SCROLL_HEIGHT });
-      Object.defineProperty(element, "clientHeight", { configurable: true, value: CLIENT_HEIGHT });
-      Object.defineProperty(element, "scrollTop", { configurable: true, writable: true, value: 0 });
+      setScrollGeometry(element, { scrollHeight: SCROLL_HEIGHT, clientHeight: CLIENT_HEIGHT, scrollTop: 0 });
       element.getBoundingClientRect = () => {
         const key = element.getAttribute?.("data-chat-message-key");
-        const top = (key != null ? messageTops[key] : undefined) ?? 0;
-        return {
-          x: 0,
-          y: top,
-          width: 0,
-          height: 0,
-          top,
-          left: 0,
-          right: 0,
-          bottom: top,
-          toJSON: () => ({}),
-        };
+        return verticalRect((key != null ? messageTops[key] : undefined) ?? 0);
       };
       return element;
     };
@@ -1285,34 +1266,32 @@ describe("ChatView navigation landing position", () => {
     };
   }
 
-  async function renderSettledSession(options: {
-    messages: ChatEntry[];
-    messageTops: Record<string, number>;
-    docReturnScrollTop?: number;
-  }) {
-    const history = createDeferred<{
-      messages: ChatEntry[];
-      runState: SessionRunState;
-      total: number;
-      warm: boolean;
-      hasMore: boolean;
-    }>();
+  function landingMessages() {
+    return [createMessage("older-entry"), createMessage("newest-entry")];
+  }
+
+  async function renderSettledSession(
+    messageTops: Record<string, number>,
+    { messages = landingMessages(), docReturnScrollTop }: { messages?: ChatEntry[]; docReturnScrollTop?: number } = {},
+  ) {
+    const history = createDeferred<FetchMessagesFastResult>();
     // The DOM shim restores document properties on install, so stub after the harness mounts and
     // before history paints the scroll container.
     const view = await renderChatView({
       fetchMessagesFastResult: history.promise,
       streamOverrides: { isStreaming: false, streamStatus: null, pendingOrigin: null },
       seedQueryClient: (client) => {
-        if (options.docReturnScrollTop !== undefined) {
-          client.setQueryData(["chat-doc-return", "composer-1"], { scrollTop: options.docReturnScrollTop, offset: 0 });
+        if (docReturnScrollTop !== undefined) {
+          client.setQueryData(["chat-doc-return", "composer-1"], { scrollTop: docReturnScrollTop, offset: 0 });
         }
       },
     });
-    const restoreGeometry = stubChatGeometry(options.messageTops);    await view.act(async () => {
+    const restoreGeometry = stubChatGeometry(messageTops);
+    await view.act(async () => {
       history.resolve({
-        messages: options.messages,
+        messages,
         runState: "idle",
-        total: options.messages.length,
+        total: messages.length,
         warm: true,
         hasMore: false,
       });
@@ -1321,20 +1300,22 @@ describe("ChatView navigation landing position", () => {
     await waitUntilAct(view.act, () => (
       view.dom.container.textContent?.includes("newest-entry") ?? false
     ));
-    return { ...view, restoreGeometry, scrollContainer: findScrollContainer(view.dom.container) };
+    return {
+      ...view,
+      scrollContainer: findScrollContainer(view.dom.container),
+      cleanup: async () => {
+        restoreGeometry();
+        await view.cleanup();
+      },
+    };
   }
 
   it("restores a non-default reading position from full Docs instead of landing on the newest reply", async () => {
-    const view = await renderSettledSession({
-      messages: [createMessage("older-entry"), createMessage("newest-entry")],
-      messageTops: { "newest-entry": -700 },
-      docReturnScrollTop: 540,
-    });
+    const view = await renderSettledSession({ "newest-entry": -700 }, { docReturnScrollTop: 540 });
     try {
       expect(view.scrollContainer.scrollTop).toBe(540);
       expect(view.queryClient.getQueryData(["chat-doc-return", "composer-1"])).toBeUndefined();
     } finally {
-      view.restoreGeometry();
       await view.cleanup();
     }
   });
@@ -1342,55 +1323,39 @@ describe("ChatView navigation landing position", () => {
   it("lands on the top of the newest assistant reply when it overflows the viewport", async () => {
     // Measured while the transcript is jammed to the bottom, so a top of -700 means the reply
     // starts 700px above the viewport, i.e. at content offset 900.
-    const view = await renderSettledSession({
-      messages: [createMessage("older-entry"), createMessage("newest-entry")],
-      messageTops: { "newest-entry": -700 },
-    });
+    const view = await renderSettledSession({ "newest-entry": -700 });
 
     try {
       expect(view.scrollContainer.scrollTop).toBe(900);
     } finally {
-      view.restoreGeometry();
       await view.cleanup();
     }
   });
 
   it("stays at the bottom when the newest assistant reply fits above the fold", async () => {
-    const view = await renderSettledSession({
-      messages: [createMessage("older-entry"), createMessage("newest-entry")],
-      messageTops: { "newest-entry": 100 },
-    });
+    const view = await renderSettledSession({ "newest-entry": 100 });
 
     try {
       expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
     } finally {
-      view.restoreGeometry();
       await view.cleanup();
     }
   });
 
   it("stays at the bottom when the transcript ends with a user message", async () => {
-    const view = await renderSettledSession({
-      messages: [
-        createMessage("older-entry"),
-        { id: "newest-entry", role: "user", content: "newest-entry" },
-      ],
-      messageTops: { "newest-entry": -700 },
+    const view = await renderSettledSession({ "newest-entry": -700 }, {
+      messages: [createMessage("older-entry"), { id: "newest-entry", role: "user", content: "newest-entry" }],
     });
 
     try {
       expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
     } finally {
-      view.restoreGeometry();
       await view.cleanup();
     }
   });
 
   it("releases the landing anchor when new work starts so live output stays visible", async () => {
-    const view = await renderSettledSession({
-      messages: [createMessage("older-entry"), createMessage("newest-entry")],
-      messageTops: { "newest-entry": -700 },
-    });
+    const view = await renderSettledSession({ "newest-entry": -700 });
 
     try {
       expect(view.scrollContainer.scrollTop).toBe(900);
@@ -1407,7 +1372,6 @@ describe("ChatView navigation landing position", () => {
       await waitUntilAct(view.act, () => view.scrollContainer.scrollTop === BOTTOM_SCROLL_TOP);
       expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
     } finally {
-      view.restoreGeometry();
       await view.cleanup();
     }
   });
@@ -1420,10 +1384,7 @@ describe("ChatView navigation landing position", () => {
     /** Lands on the reply at 900, then reports the view at `scrollTop` with the reply `replyTop` below its top edge. */
     async function renderParkedThenScrolled(scrollTop: number, replyTop: number) {
       const messageTops = { "newest-entry": -700 };
-      const view = await renderSettledSession({
-        messages: [createMessage("older-entry"), createMessage("newest-entry")],
-        messageTops,
-      });
+      const view = await renderSettledSession(messageTops);
       expect(view.scrollContainer.scrollTop).toBe(900);
       messageTops["newest-entry"] = replyTop;
       view.scrollContainer.scrollTop = scrollTop;
@@ -1445,7 +1406,6 @@ describe("ChatView navigation landing position", () => {
         await waitUntilAct(view.act, () => view.scrollContainer.scrollTop === BOTTOM_SCROLL_TOP);
         expect(view.scrollContainer.scrollTop).toBe(BOTTOM_SCROLL_TOP);
       } finally {
-        view.restoreGeometry();
         await view.cleanup();
       }
     });
@@ -1461,7 +1421,6 @@ describe("ChatView navigation landing position", () => {
 
         expect(view.scrollContainer.scrollTop).toBe(1100);
       } finally {
-        view.restoreGeometry();
         await view.cleanup();
       }
     });
@@ -1470,16 +1429,13 @@ describe("ChatView navigation landing position", () => {
   it("lands on the newest reply when switching to a cached session with the same message ids", async () => {
     // Message ids are per-session, so two sessions routinely share the newest anchor key. Cached
     // navigation must still re-run the landing effect instead of leaving the reader at the tail.
-    const view = await renderSettledSession({
-      messages: [createMessage("older-entry"), createMessage("newest-entry")],
-      messageTops: { "newest-entry": -700 },
-    });
+    const view = await renderSettledSession({ "newest-entry": -700 });
 
     try {
       expect(view.scrollContainer.scrollTop).toBe(900);
       setCachedChatSnapshot(
         view.queryClient,
-        createSnapshot("session-2", [createMessage("older-entry"), createMessage("newest-entry")]),
+        createSnapshot("session-2", landingMessages()),
       );
 
       await view.render({ sessionId: "session-2" });
@@ -1487,7 +1443,6 @@ describe("ChatView navigation landing position", () => {
       await waitUntilAct(view.act, () => view.scrollContainer.scrollTop === 900);
       expect(view.scrollContainer.scrollTop).toBe(900);
     } finally {
-      view.restoreGeometry();
       await view.cleanup();
     }
   });
@@ -1500,14 +1455,7 @@ describe("ChatView history pagination", () => {
 
   /** A rect whose top follows the scroller, so tests can move content by changing its layout top. */
   function placeInScroller(element: any, scroller: any, layoutTop: () => number, height: number) {
-    element.getBoundingClientRect = () => {
-      const top = layoutTop() - scroller.scrollTop;
-      return { x: 0, y: top, width: 0, height, top, left: 0, right: 0, bottom: top + height, toJSON: () => ({}) };
-    };
-  }
-
-  function scroll(scroller: any) {
-    getReactProps(scroller)!.onScroll();
+    element.getBoundingClientRect = () => verticalRect(layoutTop() - scroller.scrollTop, height);
   }
 
   /** Requests for the newest history, in order: every disk read except an older page. */
@@ -1524,18 +1472,33 @@ describe("ChatView history pagination", () => {
         ? { isStreaming: true, streamStatus: "streaming" }
         : { isStreaming: false, pendingOrigin: null },
     });
-    await waitUntilAct(view.act, () => view.dom.container.textContent?.includes("Load older messages") ?? false);
-    return { ...view, scrollContainer: findScrollContainer(view.dom.container) };
+    const { dom, act } = view;
+    await waitUntilAct(act, () => dom.container.textContent?.includes("Load older messages") ?? false);
+    const scrollContainer = findScrollContainer(dom.container);
+    const reportScroll = () => act(async () => {
+      getReactProps(scrollContainer)!.onScroll();
+      await waitTick();
+    });
+    return {
+      ...view,
+      scrollContainer,
+      reportScroll,
+      clickLoadOlder: () => act(async () => {
+        clickButton(findButtonContainingText(dom.container, "Load older messages"));
+        await waitTick();
+      }),
+      scrollTo: (top: number) => {
+        scrollContainer.scrollTop = top;
+        return reportScroll();
+      },
+    };
   }
 
   /** A chat of 300 entries whose reader paged back once, so entries 50 to 299 are loaded. */
   async function renderPagedBackSession(tail = createMessages(250, 300), running = false) {
     const view = await renderPaginatedSession(tail, 300, running);
     fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(50, 250), hasMore: true, total: 300 });
-    await view.act(async () => {
-      clickButton(findButtonContainingText(view.dom.container, "Load older messages"));
-      await waitTick();
-    });
+    await view.clickLoadOlder();
     await waitUntilAct(view.act, () => view.dom.container.textContent?.includes("entry-50") ?? false);
     fetchMessagesFastMock.mockClear();
     return view;
@@ -1558,10 +1521,7 @@ describe("ChatView history pagination", () => {
         300,
       );
 
-      await act(async () => {
-        clickButton(findButtonContainingText(dom.container, "Load older messages"));
-        await waitTick();
-      });
+      await view.clickLoadOlder();
       expect(fetchOlderMessagesFastMock).toHaveBeenCalledWith("session-1", { limit: 200, before: 3 });
       expect(dom.container.textContent).toContain("Loading older messages");
 
@@ -1601,10 +1561,7 @@ describe("ChatView history pagination", () => {
       placeInScroller(card, scrollContainer, () => 170 + (olderPageRendered() ? 700 : 0), 3000);
       setScrollGeometry(scrollContainer, { scrollHeight: 3200, clientHeight: 600, scrollTop: 400 });
 
-      await act(async () => {
-        clickButton(findButtonContainingText(dom.container, "Load older messages"));
-        await waitTick();
-      });
+      await view.clickLoadOlder();
       await waitUntilAct(act, olderPageRendered);
 
       expect(scrollContainer.scrollTop).toBe(1100);
@@ -1630,10 +1587,7 @@ describe("ChatView history pagination", () => {
       // The row that offers older messages goes once the first of them is in.
       const pageIn = () => !view.dom.container.textContent?.includes("older messages");
       const loadOlder = async () => {
-        await view.act(async () => {
-          clickButton(findButtonContainingText(view.dom.container, "Load older messages"));
-          await waitTick();
-        });
+        await view.clickLoadOlder();
         await waitUntilAct(view.act, pageIn);
       };
       return { ...view, reply, steps, stepsKept: () => rows.contains(steps), pageIn, loadOlder };
@@ -1698,10 +1652,7 @@ describe("ChatView history pagination", () => {
       }, 2000);
       setScrollGeometry(scrollContainer, { scrollHeight: 2100, clientHeight: 600, scrollTop: 400 });
 
-      await act(async () => {
-        clickButton(findButtonContainingText(dom.container, "Load older messages"));
-        await waitTick();
-      });
+      await view.clickLoadOlder();
       await waitUntilAct(act, olderPageRendered);
 
       // The reply's own top moved 60px less than the line did. Following it would undo the browser.
@@ -1737,11 +1688,6 @@ describe("ChatView history pagination", () => {
         grow: (by: number) => { grown += by; },
         /** The browser reports that the rows changed size. */
         reportResize: () => view.act(async () => resizes.notify(rows)),
-        /** The reader scrolls to where the view is now. */
-        scrollHere: () => view.act(async () => {
-          scroll(scrollContainer);
-          await waitTick();
-        }),
       };
     }
 
@@ -1749,7 +1695,7 @@ describe("ChatView history pagination", () => {
       const view = await renderSixRows();
 
       try {
-        await view.scrollHere();
+        await view.reportScroll();
         await advanceTimersByTimeAct(view.act, 120);
         view.grow(463);
         await view.reportResize();
@@ -1763,7 +1709,7 @@ describe("ChatView history pagination", () => {
       const view = await renderSixRows();
 
       try {
-        await view.scrollHere();
+        await view.reportScroll();
         await advanceTimersByTimeAct(view.act, 100);
         view.grow(463);
         await view.reportResize();
@@ -1784,19 +1730,11 @@ describe("ChatView history pagination", () => {
     const view = await renderPaginatedSession(createMessages(3, 5), 5);
 
     try {
-      const { scrollContainer, act } = view;
-      setScrollGeometry(scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 900 });
-      await act(async () => {
-        scroll(scrollContainer);
-        await waitTick();
-      });
+      setScrollGeometry(view.scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 900 });
+      await view.reportScroll();
       expect(fetchOlderMessagesFastMock).not.toHaveBeenCalled();
 
-      scrollContainer.scrollTop = 500;
-      await act(async () => {
-        scroll(scrollContainer);
-        await waitTick();
-      });
+      await view.scrollTo(500);
       expect(fetchOlderMessagesFastMock).toHaveBeenCalledWith("session-1", { limit: 200, before: 3 });
     } finally {
       await view.cleanup();
@@ -1814,10 +1752,7 @@ describe("ChatView history pagination", () => {
     try {
       const { scrollContainer, dom, act } = view;
       setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 600, scrollTop: 0 });
-      await act(async () => {
-        clickButton(findButtonContainingText(dom.container, "Load older messages"));
-        await waitTick();
-      });
+      await view.clickLoadOlder();
       await waitUntilAct(act, () => dom.container.textContent?.includes("entry-0") ?? false);
 
       expect(fetchOlderMessagesFastMock).toHaveBeenCalledTimes(2);
@@ -1832,15 +1767,8 @@ describe("ChatView history pagination", () => {
       const view = await renderPaginatedSession(createMessages(3, 5), 5);
       fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(0, 3), hasMore: false, total: 5 });
       setScrollGeometry(view.scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 900 });
-      const scrollTo = async (scrollTop: number) => {
-        view.scrollContainer.scrollTop = scrollTop;
-        await view.act(async () => {
-          scroll(view.scrollContainer);
-          await waitTick();
-        });
-      };
-      await scrollTo(900);
-      return { ...view, scrollTo, inserted: () => view.dom.container.textContent?.includes("entry-0") ?? false };
+      await view.scrollTo(900);
+      return { ...view, inserted: () => view.dom.container.textContent?.includes("entry-0") ?? false };
     }
 
     it("goes in only once they have stopped", async () => {
@@ -1933,10 +1861,7 @@ describe("ChatView history pagination", () => {
       // Reading entry-4, well above the bottom, when one more reply is committed.
       setScrollGeometry(scrollContainer, { scrollHeight: 3000, clientHeight: 600, scrollTop: 400 });
       placeInScroller(findMessageWrapperByAnchorKey(dom.container, "entry-4"), scrollContainer, () => 500, 300);
-      await act(async () => {
-        scroll(scrollContainer);
-        await waitTick();
-      });
+      await view.reportScroll();
       fetchMessagesFastMock.mockResolvedValueOnce({
         messages: createMessages(3, 6),
         runState: "idle",
@@ -1998,22 +1923,19 @@ describe("ChatView history pagination", () => {
   });
 
   it("waits for Retry after an older page fails instead of refetching on every scroll", async () => {
+    vi.useFakeTimers();
     const view = await renderPaginatedSession([createMessage("entry-1")], 2);
     fetchOlderMessagesFastMock.mockRejectedValueOnce(new Error("network unavailable"));
 
     try {
       const { scrollContainer, dom, act } = view;
-      await act(async () => {
-        clickButton(findButtonContainingText(dom.container, "Load older messages"));
-        await waitTick();
-      });
+      await view.clickLoadOlder();
       await waitUntilAct(act, () => dom.container.textContent?.includes("Could not load older messages: network unavailable") ?? false);
 
-      setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 600, scrollTop: 0 });
-      await act(async () => {
-        scroll(scrollContainer);
-        await waitTick();
-      });
+      // Moving up within a screen of the top would normally prefetch the page.
+      setScrollGeometry(scrollContainer, { scrollHeight: 1000, clientHeight: 600, scrollTop: 300 });
+      await view.reportScroll();
+      await view.scrollTo(0);
       expect(fetchOlderMessagesFastMock).toHaveBeenCalledTimes(1);
 
       fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: [createMessage("entry-0")], hasMore: false, total: 2 });
@@ -2021,6 +1943,8 @@ describe("ChatView history pagination", () => {
         clickButton(findButtonContainingText(dom.container, "Retry"));
         await waitTick();
       });
+      // A successful page waits for the reader's scroll to settle before it appears.
+      await advanceTimersByTimeAct(act, 120);
       await waitUntilAct(act, () => dom.container.textContent?.includes("entry-0") ?? false);
       expect(dom.container.textContent).not.toContain("Could not load older messages");
     } finally {
@@ -2126,10 +2050,7 @@ describe("ChatView history pagination", () => {
       await waitUntilAct(act, () => newestReads().length === 1);
 
       fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(50, 250), hasMore: true, total: 300 });
-      await act(async () => {
-        clickButton(findButtonContainingText(dom.container, "Load older messages"));
-        await waitTick();
-      });
+      await view.clickLoadOlder();
       await waitUntilAct(act, () => dom.container.textContent?.includes("entry-50") ?? false);
 
       // The read that was out covers only the 50 entries loaded when it began.
@@ -2179,7 +2100,7 @@ describe("ChatView history pagination", () => {
   it("keeps paginated history when a refresh window starts after the loaded window", async () => {
     vi.useFakeTimers();
     try {
-      const { dom, act, cleanup, render } = await renderPaginatedSession(
+      const { dom, act, cleanup, render, clickLoadOlder } = await renderPaginatedSession(
         [createMessage("entry-2", "newest"), createMessage("entry-3", "newer")],
         4,
       );
@@ -2190,10 +2111,7 @@ describe("ChatView history pagination", () => {
           hasMore: false,
           total: 4,
         });
-        await act(async () => {
-          clickButton(findButtonContainingText(dom.container, "Load older messages"));
-          await waitTick();
-        });
+        await clickLoadOlder();
         await waitUntilAct(act, () => dom.container.textContent?.includes("oldest") ?? false);
 
         // A tail refresh that only covers the newest entries must not drop the paginated prefix.
