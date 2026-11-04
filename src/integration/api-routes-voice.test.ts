@@ -3,9 +3,8 @@ import { existsSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { muxOggOpus } from "../shared/ogg-opus.js";
 import { oggOpusToneFixture } from "../test-support/ogg-opus-fixture.js";
-import type { ApiRouteTestState, DeferredPromptRunner } from "../test-support/api-routes.js";
+import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import {
-  createCopilotUsageTestHome,
   createMockSessionManager,
   createMockTranscriptionService,
   createRestartRuntimePaths,
@@ -14,14 +13,8 @@ import {
   get,
   installApiRouteTestHooks,
   join,
-  makeTestDir,
   mkdirSync,
-  providers,
-  publishOutboundAttachment,
   request,
-  scheduler,
-  writeCopilotUsageEvents,
-  writeRawCopilotUsageEvents,
   writeFileSync,
   writeRestartState,
 } from "../test-support/api-routes.js";

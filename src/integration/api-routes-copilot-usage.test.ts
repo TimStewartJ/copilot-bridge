@@ -17,11 +17,9 @@ import {
   createTestApp,
   installApiRouteTestHooks,
   join,
-  mkdirSync,
   request,
   writeCopilotUsageEvents,
   writeFileSync,
-  writeRawCopilotUsageEvents,
 } from "../test-support/api-routes.js";
 
 let app: ApiRouteTestState["app"];
