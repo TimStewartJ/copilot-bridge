@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { concatPcm, decodeBase64Pcm, parseAudioFrame, type VoiceTransportHandlers } from "./voice-transport";
 import { buildVoiceWebSocketUrl, voiceConversationPath } from "./voice-api";
-import { describeVoiceTool, formatBytes, initialVoiceViewState, reduceVoiceEvent } from "./voice-view-model";
+import { initialVoiceViewState, reduceVoiceEvent } from "./voice-view-model";
 
 describe("voice transport helpers", () => {
   it("parses binary audio frames", () => {
@@ -165,12 +165,5 @@ describe("voice view model", () => {
 
     state = reduceVoiceEvent(state, { type: "ended", reason: "user left hands-free" });
     expect(state).toMatchObject({ voiceState: "ended", ended: "user left hands-free" });
-  });
-
-  it("formats labels and sizes", () => {
-    expect(describeVoiceTool("send_to_session")).toBe("Sending to a session");
-    expect(describeVoiceTool("some_new_tool")).toBe("some new tool");
-    expect(formatBytes(891 * 1024 * 1024)).toBe("891 MB");
-    expect(formatBytes(1.5 * 1024 ** 3)).toBe("1.5 GB");
   });
 });

@@ -13,11 +13,12 @@ vi.mock("vega-embed", () => ({
   },
 }));
 
-const SPEC = JSON.stringify({
+const BAR_SPEC = {
   mark: "bar",
   data: { values: [{ a: "A", b: 3 }] },
   encoding: { x: { field: "a", type: "nominal" }, y: { field: "b", type: "quantitative" } },
-});
+};
+const SPEC = JSON.stringify(BAR_SPEC);
 
 let urlCounter = 0;
 
@@ -82,8 +83,15 @@ describe("VegaLiteVisual", () => {
 
     expect(renders.every((state) => state.loading || state.error !== null || state.source !== "")).toBe(true);
 
-    await harness!.render(createElement(VegaLiteVisual, { visual, mode: "focus", viewport }));
+    const wideViewport = { width: 1400, height: 500 };
+    await harness!.render(createElement(VegaLiteVisual, { visual, mode: "focus", viewport: wideViewport }));
     await waitUntilAct(harness!.act, () => embedCalls.length === 1, { label: "chart drawn" });
+    const drawn = embedCalls[0] as { width: number; height: number };
+    expect(drawn).toMatchObject(BAR_SPEC);
+    expect(drawn.width).toBeGreaterThan(wideViewport.width / 2);
+    expect(drawn.width).toBeLessThanOrEqual(wideViewport.width);
+    expect(drawn.height).toBeGreaterThan(wideViewport.height / 2);
+    expect(drawn.height).toBeLessThanOrEqual(wideViewport.height);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(harness!.dom.container.textContent).not.toContain("render error");
   });
@@ -95,8 +103,13 @@ describe("VegaLiteVisual", () => {
     await harness!.render(createElement(VegaLiteVisual, { visual, mode: "focus", viewport }));
     expect(harness!.dom.container.textContent).toContain("Vega-Lite spec is empty");
 
-    await harness!.render(createElement(VegaLiteVisual, { visual: { ...visual, source: SPEC }, mode: "focus", viewport }));
+    const authored = {
+      hconcat: [BAR_SPEC, { ...BAR_SPEC, mark: "point" }],
+      config: { view: { continuousWidth: 240, continuousHeight: 120 } },
+    };
+    await harness!.render(createElement(VegaLiteVisual, { visual: { ...visual, source: JSON.stringify(authored) }, mode: "focus", viewport }));
     await waitUntilAct(harness!.act, () => embedCalls.length === 1, { label: "chart drawn after the error cleared" });
+    expect(embedCalls[0]).toMatchObject(authored);
     expect(harness!.dom.container.textContent).not.toContain("render error");
   });
 });

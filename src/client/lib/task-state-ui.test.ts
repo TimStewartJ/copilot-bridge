@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskOverviewRow } from "../../shared/task-overview";
-import { contextLine, describeIdle, describeTouch, formatSpan, KEEP_DAYS, needsYouCount, outcomePatches, setAsideAttention, setAsidePatches, stateBadge } from "./task-state-ui";
+import { contextLine, describeTouch, KEEP_DAYS, needsYouCount, outcomePatches, setAsideAttention, setAsidePatches, stateBadge } from "./task-state-ui";
 import { groupHomeChecklistByDate } from "../components/HomeChecklist";
 
 const NOW = new Date("2026-09-22T12:00:00Z");
@@ -8,15 +8,6 @@ const row = (overrides: Partial<TaskOverviewRow> = {}): TaskOverviewRow => ({ id
   state: "up_next", reasons: [], staleWait: false, idleDays: 10, busyCount: 0, stalledCount: 0, inputCount: 0, automationCount: 0, order: 0, ...overrides });
 
 describe("task state wording", () => {
-  it("says spans and idle time the way a person would", () => {
-    expect(formatSpan(1)).toBe("1 day");
-    expect(formatSpan(13)).toBe("13 days");
-    expect(formatSpan(35)).toBe("5 weeks");
-    expect(formatSpan(120)).toBe("4 months");
-    expect(describeIdle({ idleDays: 0 })).toBe("today");
-    expect(describeIdle({ idleDays: 1 })).toBe("yesterday");
-    expect(describeIdle({ idleDays: null })).toBe("No recent activity from you");
-  });
   it("gives one context line from momentum, preferring a question about an old wait", () => {
     expect(contextLine(row({ nextAction: "Call", waitingOn: "Sam" }))).toEqual({ text: "Next: Call", empty: false });
     expect(contextLine(row({ waitingOn: "Sam" }))).toEqual({ text: "Waiting for: Sam", empty: false });

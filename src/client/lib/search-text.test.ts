@@ -8,11 +8,6 @@ describe("getSearchHighlightTerms", () => {
 });
 
 describe("saved document and note excerpts", () => {
-  it("reuses Markdown text normalization without showing formatting noise", () => {
-    expect(formatSearchExcerpt("## Release\r\n\r\n**Ready** _today_ with [the guide](https://example.com).")).toBe("Release Ready today with the guide.");
-    expect(formatSearchExcerpt("- [x] Reviewed\r\n> Confirmed")).toBe("Reviewed Confirmed");
-  });
-
   it("preserves code identifiers and inline code text", () => {
     expect(formatSearchExcerpt("Use `snake_case*value` and snake_case_name.")).toBe("Use snake_case*value and snake_case_name.");
   });

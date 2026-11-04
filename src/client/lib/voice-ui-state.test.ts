@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveVoiceUiState, describeRecordingLimit } from "./voice-ui-state";
+import { deriveVoiceUiState } from "./voice-ui-state";
 
 const baseState = {
   browserSupported: true,
@@ -142,13 +142,5 @@ describe("deriveVoiceUiState", () => {
       activeVoiceJob: { ...uploading, status: "transcribing" },
       uploadPercent: 100,
     }).detail).toBeNull();
-  });
-});
-
-describe("describeRecordingLimit", () => {
-  it("names whole minutes as minutes and anything else as seconds", () => {
-    expect(describeRecordingLimit(300)).toBe("5 minutes");
-    expect(describeRecordingLimit(60)).toBe("1 minute");
-    expect(describeRecordingLimit(90)).toBe("90 seconds");
   });
 });

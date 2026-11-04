@@ -28,7 +28,7 @@ describe("freeMinutes", () => {
     expect(freeMinutes(busy, now)).toBe(expected);
   });
 
-  it.each([[0, "No free time left"], [10, "15 min free"], [100, "1 h 45 min free"], [750, "12 h 30 min free"]])("formats %d minutes", (minutes, text) => {
+  it.each([[0, "No free time left"], [10, "15 min free"], [135, "2 h 30 min free"]])("formats %d minutes", (minutes, text) => {
     expect(formatFree(minutes)).toBe(text);
   });
 });

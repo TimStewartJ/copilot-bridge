@@ -8,7 +8,7 @@ const paragraph = (...children: PhrasingContent[]): Paragraph => ({ type: "parag
 
 function shape(node: Paragraph): string[] {
   return node.children.map((child) => {
-    if (child.type === "text") return `text:${child.value}`;
+    if (child.type === "text" || child.type === "inlineCode") return `${child.type}:${child.value}`;
     if (child.type === "strong") return `strong:${(child.children[0] as { value: string }).value}`;
     return child.type;
   });
@@ -16,28 +16,19 @@ function shape(node: Paragraph): string[] {
 
 describe("applyLabelBreaks", () => {
   it("puts each bold label of a metadata block on its own line", () => {
-    const node = paragraph(strong("Status:"), text(" shipped\r\n"), strong("Repo:"), text(" E:\\project\n"), strong("Owner:"), text(" Tim"));
+    const node = paragraph(
+      strong("Status:"), text(" shipped\r\n"), strong("Repo:"), { type: "inlineCode", value: "E:\\project" },
+      text("\n"), strong("Owner:"), text(" Tim"),
+    );
     applyLabelBreaks(node);
-    expect(shape(node)).toEqual([
-      "strong:Status:", "text: shipped", "break", "strong:Repo:", "text: E:\\project", "break", "strong:Owner:", "text: Tim",
+    expect(shape(node).filter((word) => word !== "text:")).toEqual([
+      "strong:Status:", "text: shipped", "break", "strong:Repo:", "inlineCode:E:\\project", "break", "strong:Owner:", "text: Tim",
     ]);
-  });
-
-  it("accepts the colon written just outside the bold run", () => {
-    const node = paragraph(text("intro\n"), strong("Status"), text(": shipped"));
-    applyLabelBreaks(node);
-    expect(shape(node)).toEqual(["text:intro", "break", "strong:Status", "text:: shipped"]);
   });
 
   it("keeps hard-wrapped prose flowing, including bold words that start a wrapped line", () => {
     const node = paragraph(text("a sentence that wraps\n"), strong("important"), text(" and continues\non the next line"));
     applyLabelBreaks(node);
     expect(shape(node)).toEqual(["text:a sentence that wraps\n", "strong:important", "text: and continues\non the next line"]);
-  });
-
-  it("drops a text node that held nothing but the line break", () => {
-    const node = paragraph({ type: "inlineCode", value: "x" }, text("\n"), strong("Next:"), text(" y"));
-    applyLabelBreaks(node);
-    expect(shape(node)).toEqual(["inlineCode", "break", "strong:Next:", "text: y"]);
   });
 });

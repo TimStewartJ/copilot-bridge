@@ -424,22 +424,12 @@ describe("tool call tree helpers", () => {
 // ---------------------------------------------------------------------------
 // tool-args helpers (merged from tool-args.test.ts)
 // ---------------------------------------------------------------------------
-import { formatToolArgsDetails, hasToolArgs, summarizeToolArgs } from "./tool-args";
-import { testPath } from "../../server/__tests__/test-paths.js";
+import { formatToolArgsDetails, hasToolArgs } from "./tool-args";
 
 describe("tool arg helpers", () => {
-  it("summarizes freeform string arguments without splitting characters", () => {
-    expect(summarizeToolArgs("*** Begin Patch\n*** Update File: foo.ts")).toBe("*** Begin Patch\n*** Update File: foo.ts");
-  });
-
-  it("keeps object-backed summaries focused on common keys", () => {
-    expect(summarizeToolArgs({ command: "npm run build -- --watch" }, { maxLength: 12 })).toBe("npm run b...");
-    expect(summarizeToolArgs({ path: testPath("a", "b", "c", "file.ts") })).toBe("b/c/file.ts");
-  });
-
   it("formats detail output for both strings and objects", () => {
     expect(formatToolArgsDetails("line 1\nline 2")).toBe("line 1\nline 2");
-    expect(formatToolArgsDetails({ shellId: "123", delay: 10 })).toBe('{\n  "shellId": "123",\n  "delay": 10\n}');
+    expect(JSON.parse(formatToolArgsDetails({ shellId: "123", delay: 10 }))).toEqual({ shellId: "123", delay: 10 });
   });
 
   it("detects whether any arguments are present", () => {

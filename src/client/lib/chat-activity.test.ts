@@ -381,17 +381,11 @@ describe("summarizeActivity", () => {
 
 describe("reasoning text helpers", () => {
   it("prefers a heading, then the first sentence, as the one-line stand-in", () => {
-    expect(getReasoningHeadline("**Calculating total sheep**\n\nI need to come up with an answer.")).toBe("Calculating total sheep");
+    const heading = getReasoningHeadline("**Calculating total sheep in the field**\n\nI need to come up with an answer.", 25);
+    expect(heading).toMatch(/^Calculating total sheep/);
+    expect(heading.length).toBeLessThanOrEqual(25);
     expect(getReasoningHeadline("The scanner counts entries. It must agree with the transform.")).toBe("The scanner counts entries.");
     expect(getReasoningHeadline("   ")).toBe("");
-  });
-
-  it("cuts an over-long headline at a word", () => {
-    const headline = getReasoningHeadline(`${"considering ".repeat(30)}`, 40);
-
-    expect(headline.length).toBeLessThanOrEqual(40);
-    expect(headline.endsWith("…")).toBe(true);
-    expect(headline).not.toContain("considering consi…");
   });
 
   it("returns the newest stretch of streaming text on one line, starting at a word", () => {

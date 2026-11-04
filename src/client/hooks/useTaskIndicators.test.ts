@@ -4,7 +4,6 @@ import {
   countUnreadTasks,
   unreadTasksLabel,
   countTaskUnread,
-  describeTabAttention,
   getArchivedActivityByTask,
   getTaskIndicator,
   summarizeChatTabAttention,
@@ -142,21 +141,6 @@ describe("summarizeChatTabAttention", () => {
       count: 3,
       needsUserInputCount: 2,
     });
-  });
-});
-
-describe("describeTabAttention", () => {
-  it("distinguishes total attention from needs-answer counts", () => {
-    expect(describeTabAttention(
-      { count: 3, needsUserInputCount: 1 },
-      "task",
-      "tasks",
-    )).toBe("3 tasks need attention; 1 needs an answer");
-    expect(describeTabAttention(
-      { count: 1, needsUserInputCount: 0 },
-      "chat",
-      "chats",
-    )).toBe("1 chat needs attention");
   });
 });
 

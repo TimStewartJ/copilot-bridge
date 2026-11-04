@@ -39,15 +39,6 @@ describe("makeMermaidSvgResponsive", () => {
     expect(responsive).not.toContain('width="420"');
     expect(responsive).not.toContain('height="180"');
   });
-
-  it("focus mode preserves fixed dimensions when an SVG has no viewBox", () => {
-    const svg = '<svg width="320" height="100"><g /></svg>';
-    const responsive = makeMermaidSvgResponsive(svg, "focus");
-
-    expect(responsive).toContain('width="320"');
-    expect(responsive).toContain('height="100"');
-    expect(responsive).toContain('style="max-width: 100%; max-height: 100%; width: auto; height: auto;"');
-  });
 });
 
 describe("prepareResponsiveVegaSpec", () => {
@@ -107,26 +98,5 @@ describe("prepareResponsiveVegaSpec", () => {
     expect(result.injectedViewConfig).toBe(false);
     expect(result.spec).not.toHaveProperty("width");
     expect(result.spec).not.toHaveProperty("height");
-  });
-
-  it("caps injected focus-mode height to the available viewport height", () => {
-    const result = prepareResponsiveVegaSpec(VALID_SPEC, { width: 1400, height: 500, mode: "focus" });
-
-    expect(result.injectedWidth).toBe(true);
-    expect(result.injectedHeight).toBe(true);
-    expect(result.spec.width).toBe(1400);
-    expect(result.spec.height).toBe(500);
-    expect(result.spec.autosize).toEqual({ type: "fit", contains: "padding" });
-  });
-
-  it("preserves existing compound view config values", () => {
-    const result = prepareResponsiveVegaSpec({
-      hconcat: [VALID_SPEC, VALID_SPEC],
-      config: { view: { continuousWidth: 240, continuousHeight: 120 } },
-    }, { width: 900, height: 700, mode: "focus" });
-
-    expect(result.skippedCompound).toBe(true);
-    expect(result.injectedViewConfig).toBe(false);
-    expect(result.spec.config).toEqual({ view: { continuousWidth: 240, continuousHeight: 120 } });
   });
 });

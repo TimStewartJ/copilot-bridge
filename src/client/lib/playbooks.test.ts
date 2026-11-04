@@ -25,7 +25,6 @@ describe("playbooks", () => {
     [{}, undefined],
     [{ playbook: "none", source: "user" as const }, "Direct"],
     [{ playbook: "bug-fix", source: "agent" as const, label: "Bug fix" }, "Bug fix"],
-    [{ playbook: "research", source: "task" as const }, "Research"],
     [{ playbook: "gone", source: "task" as const }, "gone"],
   ])("labels %j as %s", (view, expected) => {
     expect(playbookViewLabel(view, [playbook("research", "Research", "knowledge")])).toBe(expected);

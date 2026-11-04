@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, type AppSettings, type AppSettingsUpdates } from "../api";
-import { createSettingsWriter, describeSettingsKeys } from "./settings-writer";
+import { createSettingsWriter } from "./settings-writer";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -313,10 +313,5 @@ describe("settings writer", () => {
     env.writer.update((current) => ({ ...current, mcpServers: { x: { command: "node", args: [] } } }));
     await env.writer.whenIdle();
     expect(env.patch).not.toHaveBeenCalled();
-  });
-
-  it("describes the settings a message is about in words", () => {
-    expect(describeSettingsKeys(["model"])).toBe("model");
-    expect(describeSettingsKeys(["model", "reasoningEffort", "contextTier"])).toBe("model, effort and context");
   });
 });

@@ -61,6 +61,7 @@ describe("task attention source gaps", () => {
     await render(tasks, undefined, new Map([
       ["question", indicator({ needsUserInputCount: 1 })],
       ["reply", indicator({ unreadCount: 1 })],
+      ["revisit", indicator({ busy: true, busyCount: 1 })],
     ]));
     expect(reading.taskSignals.get("idle")).toBeNull();
     expect(reading.taskSignals.get("question")?.kind).toBe("needs-input");
@@ -91,8 +92,8 @@ describe("task attention source gaps", () => {
         unavailable: { scope: "task", reason: "A linked conversation is missing." },
       }) }), row("healthy"),
     ]));
-    expect(reading.taskSignals.get("broken")).toMatchObject({ kind: "status-unknown", detail: "A linked conversation is missing." });
-    expect(reading.taskSignals.get("healthy")?.kind).toBe("needs-look");
+    expect(reading.taskSignals.get("broken")).toMatchObject({ kind: "status-unknown", status: "unknown", detail: "A linked conversation is missing." });
+    expect(reading.taskSignals.get("healthy")).toMatchObject({ kind: "needs-look", status: "review" });
   });
 
   it("keeps healthy review, explicit questions and saved waits distinct within a partially unavailable task list", async () => {

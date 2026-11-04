@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { resolveDocumentTitle } from "./document-title";
+import { getMobileRouteMeta } from "./mobile-route-meta";
 import {
   getDashboardPanelId,
   getDashboardTabFromPathname,
@@ -10,7 +12,9 @@ import {
 
 describe("dashboard focus routes", () => {
   it("uses native Home as the canonical dashboard surface", () => {
-    expect(getDashboardTabPath("focus")).toBe("/dashboard/home");
+    const pathname = getDashboardTabPath("focus");
+    expect(pathname).toBe("/dashboard/home");
+    expect(resolveDocumentTitle({ route: getMobileRouteMeta(pathname).route, pathname })).toMatch(/\bhome\b/i);
     expect(getDashboardTabFromPathname("/dashboard/focus")).toBe("focus");
     expect(getDashboardTabId("focus")).toBe("dashboard-focus-tab");
     expect(getDashboardPanelId("focus")).toBe("dashboard-focus-panel");
@@ -27,7 +31,9 @@ describe("dashboard focus routes", () => {
   });
 
   it("preserves Work Map as an auxiliary dashboard route", () => {
-    expect(getDashboardTabPath("work-map")).toBe("/dashboard/work-map");
+    const pathname = getDashboardTabPath("work-map");
+    expect(pathname).toBe("/dashboard/work-map");
+    expect(resolveDocumentTitle({ route: getMobileRouteMeta(pathname).route, pathname })).toMatch(/\bwork map\b/i);
     expect(getDashboardTabFromPathname("/dashboard/work-map")).toBe("work-map");
     expect(getDashboardTabId("work-map")).toBe("dashboard-work-map-tab");
     expect(getDashboardPanelId("work-map")).toBe("dashboard-work-map-panel");

@@ -10,7 +10,7 @@ describe("describeTaskGitStatusSummary", () => {
       repoName: "copilot-bridge",
       worktreePath: "/repo",
       workspaceKind: "main",
-      head: { kind: "branch", name: "main" },
+      head: { kind: "detached", shortSha: "abc1234" },
       dirty: {
         clean: true,
         staged: 0,
@@ -19,7 +19,7 @@ describe("describeTaskGitStatusSummary", () => {
         conflicts: 0,
       },
       siblingWorktrees: [],
-      branch: "main",
+      branch: null,
       clean: true,
       staged: 0,
       modified: 0,
@@ -27,15 +27,15 @@ describe("describeTaskGitStatusSummary", () => {
       conflicts: 0,
     })).toEqual({
       repoName: "copilot-bridge",
-      branch: "main",
+      branch: expect.stringMatching(/detached.*abc1234/i),
       stateLabel: "clean",
-      summaryText: "copilot-bridge · main · clean",
+      summaryText: expect.stringMatching(/copilot-bridge.*detached.*abc1234.*clean/i),
       counts: [],
       workspaceKind: "main",
     });
   });
 
-  it("includes only non-zero dirty counts", () => {
+  it("lists each material change count on a dirty branch", () => {
     expect(describeTaskGitStatusSummary({
       status: "ok",
       cwd: "/repo",
@@ -68,41 +68,6 @@ describe("describeTaskGitStatusSummary", () => {
         { key: "modified", label: "modified", shortLabel: "M", value: 1 },
         { key: "untracked", label: "untracked", shortLabel: "U", value: 3 },
         { key: "conflicts", label: "conflicts", shortLabel: "C", value: 1 },
-      ],
-      workspaceKind: "main",
-    });
-  });
-
-  it("formats detached HEAD summaries from the structured head payload", () => {
-    expect(describeTaskGitStatusSummary({
-      status: "ok",
-      cwd: "/repo",
-      repoRoot: "/repo",
-      repoName: "copilot-bridge",
-      worktreePath: "/repo",
-      workspaceKind: "main",
-      head: { kind: "detached", shortSha: "abc1234" },
-      dirty: {
-        clean: false,
-        staged: 0,
-        modified: 1,
-        untracked: 0,
-        conflicts: 0,
-      },
-      siblingWorktrees: [],
-      branch: null,
-      clean: false,
-      staged: 0,
-      modified: 1,
-      untracked: 0,
-      conflicts: 0,
-    })).toEqual({
-      repoName: "copilot-bridge",
-      branch: "detached@abc1234",
-      stateLabel: "dirty",
-      summaryText: "copilot-bridge · detached@abc1234 · dirty",
-      counts: [
-        { key: "modified", label: "modified", shortLabel: "M", value: 1 },
       ],
       workspaceKind: "main",
     });

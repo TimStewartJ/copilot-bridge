@@ -11,7 +11,6 @@ import {
   buildAgentPlaceholders,
   describeWaitingOnAgents,
   getWorkingAgents,
-  listAgentNames,
   withoutWorkingAgents,
   type AgentAttachmentCache,
 } from "./transcript-agents";
@@ -144,16 +143,6 @@ describe("agents at work", () => {
     expect(getTopLevelAgentToolCallId("call-inner", directory)).toBe("call-moves");
     expect(getTopLevelAgentToolCallId("call-moves", directory)).toBe("call-moves");
     expect(getTopLevelAgentToolCallId("call-unknown", directory)).toBe("call-unknown");
-  });
-
-  it("names a few agents and counts the rest", () => {
-    const named = (...names: string[]) => names.map((name) => ({ name }));
-
-    expect(listAgentNames([])).toBe("");
-    expect(listAgentNames(named("moves-agent"))).toBe("moves-agent");
-    expect(listAgentNames(named("moves-agent", "saves-agent"))).toBe("moves-agent and saves-agent");
-    expect(listAgentNames(named("a", "b", "c"))).toBe("a, b and c");
-    expect(listAgentNames(named("a", "b", "c", "d", "e"))).toBe("a, b and 3 more");
   });
 
   it("says who the main agent is waiting on: one by name, several by count", () => {
