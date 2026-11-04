@@ -66,14 +66,19 @@ describe("tool call tree helpers", () => {
     });
   });
 
-  it("gives the model's thinking its own segment, ahead of the tools it led to", () => {
+  it("keeps a skill and the reasoning it led to ahead of the grouped tools", () => {
     const entries: ChatEntry[] = [
-      { role: "user", content: "Read the config" },
+      { role: "user", content: "Use the browser" },
+      {
+        id: "skill-1", type: "skill", skill: { id: "skill-browser", label: "browser" },
+        content: "<skill-context name=\"browser\"></skill-context>",
+      },
+      { id: "open", type: "tool", turnId: "open-page", toolCall: createToolCall("open") },
       {
         id: "thought-1",
         type: "reasoning",
         turnId: "turn-1",
-        content: "I should open the file first.",
+        content: "I should inspect the page before following the link.",
         reasoning: { messageEventId: "assistant-message-1" },
       },
       { id: "tool-a", type: "tool", turnId: "turn-1", toolCall: createToolCall("tool-a") },
@@ -83,33 +88,12 @@ describe("tool call tree helpers", () => {
     ];
 
     expect(segmentChatEntries(entries)).toMatchObject([
-      { type: "message", entry: { content: "Read the config" } },
+      { type: "message", entry: { content: "Use the browser" } },
+      { type: "skill-segment", entry: { skill: { label: "browser" } } },
+      { type: "tool-segment", turnId: "open-page", entries: [{ id: "open" }] },
       { type: "reasoning-segment", entry: { id: "thought-1" } },
       { type: "tool-segment", turnId: "turn-1", entries: [{ id: "tool-a" }, { id: "tool-b" }] },
       { type: "message", entry: { content: "Here it is" } },
-    ]);
-  });
-
-  it("keeps skill entries as their own render segment between messages and tools", () => {
-    const entries: ChatEntry[] = [
-      { role: "user", content: "Use the browser" },
-      {
-        id: "skill-1",
-        type: "skill",
-        skill: { id: "skill-browser", label: "browser" },
-        content: "<skill-context name=\"browser\"></skill-context>",
-      },
-      { id: "tool-a", type: "tool", turnId: "turn-1", toolCall: createToolCall("tool-a") },
-      { role: "assistant", content: "Done", turnId: "turn-1" },
-    ];
-
-    const segments = segmentChatEntries(entries);
-
-    expect(segments).toMatchObject([
-      { type: "message", entry: { content: "Use the browser" } },
-      { type: "skill-segment", entry: { skill: { label: "browser" } } },
-      { type: "tool-segment", turnId: "turn-1" },
-      { type: "message", entry: { content: "Done" } },
     ]);
   });
 
@@ -166,7 +150,7 @@ describe("tool call tree helpers", () => {
     ]);
   });
 
-  it("keeps reused provider turn ids ordered within one interaction", () => {
+  it("keeps nonconsecutive and consecutive reused turn ids in their own instances", () => {
     const entries: ChatEntry[] = [
       { role: "assistant", content: "First pass", turnId: "0", turnInstanceId: "turn-start-a" },
       {
@@ -192,36 +176,11 @@ describe("tool call tree helpers", () => {
         turnInstanceId: "turn-start-c",
         toolCall: createToolCall("tool-c"),
       },
-      { role: "assistant", content: "Finished", turnId: "0", turnInstanceId: "turn-start-c" },
-    ];
-
-    const segments = segmentChatEntries(entries);
-
-    expect(segments).toMatchObject([
-      { type: "message", entry: { content: "First pass" } },
-      { type: "tool-segment", turnInstanceId: "turn-start-a", entries: [{ id: "tool-a" }] },
-      { type: "message", entry: { content: "Second turn" } },
-      { type: "tool-segment", turnInstanceId: "turn-start-b", entries: [{ id: "tool-b" }] },
-      { type: "message", entry: { content: "Resumed pass" } },
-      { type: "tool-segment", turnInstanceId: "turn-start-c", entries: [{ id: "tool-c" }] },
-      { type: "message", entry: { content: "Finished" } },
-    ]);
-  });
-
-  it("separates consecutive reused provider ids without an intervening different id", () => {
-    const entries: ChatEntry[] = [
       {
-        id: "tool-first",
-        type: "tool",
-        turnId: "0",
-        turnInstanceId: "turn-start-first",
-        toolCall: createToolCall("tool-first"),
-      },
-      {
-        id: "completion-first",
+        id: "completion-c",
         type: "completion",
         turnId: "0",
-        turnInstanceId: "turn-start-first",
+        turnInstanceId: "turn-start-c",
         content: "Paused",
         completion: {
           content: "Paused",
@@ -237,20 +196,23 @@ describe("tool call tree helpers", () => {
         turnInstanceId: "turn-start-resumed",
         toolCall: createToolCall("tool-resumed"),
       },
+      { role: "assistant", content: "Finished", turnId: "0", turnInstanceId: "turn-start-resumed" },
     ];
 
     expect(segmentChatEntries(entries)).toMatchObject([
-      {
-        type: "tool-segment",
-        turnInstanceId: "turn-start-first",
-        entries: [{ id: "tool-first" }],
-      },
+      { type: "message", entry: { content: "First pass" } },
+      { type: "tool-segment", turnInstanceId: "turn-start-a", entries: [{ id: "tool-a" }] },
+      { type: "message", entry: { content: "Second turn" } },
+      { type: "tool-segment", turnInstanceId: "turn-start-b", entries: [{ id: "tool-b" }] },
+      { type: "message", entry: { content: "Resumed pass" } },
+      { type: "tool-segment", turnInstanceId: "turn-start-c", entries: [{ id: "tool-c" }] },
       { type: "completion-segment", entry: { content: "Paused" } },
       {
         type: "tool-segment",
         turnInstanceId: "turn-start-resumed",
         entries: [{ id: "tool-resumed" }],
       },
+      { type: "message", entry: { content: "Finished" } },
     ]);
   });
 
@@ -409,41 +371,27 @@ describe("tool call tree helpers", () => {
     expect(roots[0]?.toolCall.result).toBe("Done");
   });
 
-  it("does not replay ancestor completion state when only a later child row is visible", () => {
-    const fullForest = buildToolCallForest([
-      createToolCall("subagent-1", {
-        isSubAgent: true,
-        result: "Final summary",
-        success: true,
-        completedAt: "2026-04-23T21:00:00.000Z",
-      }),
-      createToolCall("bash-2", {
-        parentToolCallId: "subagent-1",
-        success: true,
-        completedAt: "2026-04-23T21:01:00.000Z",
-      }),
-    ]);
+  it("shows only this stretch’s children in their local order without replaying their parent’s result", () => {
+    const parent = createToolCall("agent", { isSubAgent: true, result: "Final summary", success: true, completedAt: "2026-04-23T21:00:00.000Z" });
+    const read = createToolCall("read", { parentToolCallId: "agent", success: true, completedAt: "2026-04-23T21:01:00.000Z" });
+    const check = createToolCall("check", { parentToolCallId: "agent", success: false });
+    const outside = createToolCall("outside", { parentToolCallId: "agent" });
+    const forest = buildToolCallForest([parent, read, check, outside]);
 
     const roots = buildRenderableSegmentRoots([
-      {
-        id: "tool-3",
-        type: "tool",
-        toolCall: createToolCall("bash-2", {
-          parentToolCallId: "subagent-1",
-          success: true,
-          completedAt: "2026-04-23T21:01:00.000Z",
-        }),
-      },
-    ], fullForest);
+      { id: "check-finished", type: "tool", toolCall: check },
+      { id: "read-finished", type: "tool", toolCall: read },
+    ], forest);
 
-    expect(roots).toHaveLength(1);
-    expect(roots[0]?.toolCall.toolCallId).toBe("subagent-1");
-    expect(roots[0]?.isContextOnly).toBe(true);
+    expect(roots).toMatchObject([{
+      toolCall: { toolCallId: "agent" }, isContextOnly: true, loadedChildCount: 3,
+      runningCount: 0, doneCount: 1, failedCount: 1,
+      children: [{ toolCall: { toolCallId: "check" } }, { toolCall: { toolCallId: "read" } }],
+    }]);
     expect(roots[0]?.toolCall.result).toBeUndefined();
     expect(roots[0]?.toolCall.success).toBeUndefined();
     expect(roots[0]?.toolCall.completedAt).toBeUndefined();
-    expect(roots[0]?.runningCount).toBe(0);
-    expect(roots[0]?.doneCount).toBe(1);
+    expect(forest.nodesById.get("agent")?.loadedChildCount).toBe(3);
   });
 
   it("uses the segment-local tool snapshot when the same tool appears again later", () => {
@@ -470,25 +418,6 @@ describe("tool call tree helpers", () => {
     expect(earlyRoots[0]?.toolCall.completedAt).toBeUndefined();
     expect(lateRoots[0]?.toolCall.result).toBe("Done");
     expect(lateRoots[0]?.toolCall.completedAt).toBe("2026-04-23T21:00:05.000Z");
-  });
-
-  it("preserves segment-local sibling order for later child-only segments", () => {
-    const fullForest = buildToolCallForest([
-      createToolCall("subagent-1", { isSubAgent: true }),
-      createToolCall("bash-a", { parentToolCallId: "subagent-1" }),
-      createToolCall("bash-b", { parentToolCallId: "subagent-1" }),
-      createToolCall("outside", { parentToolCallId: "subagent-1" }),
-    ]);
-
-    const roots = buildRenderableSegmentRoots([
-      { id: "tool-b", type: "tool", toolCall: createToolCall("bash-b", { parentToolCallId: "subagent-1" }) },
-      { id: "tool-a", type: "tool", toolCall: createToolCall("bash-a", { parentToolCallId: "subagent-1" }) },
-    ], fullForest);
-
-    expect(roots).toHaveLength(1);
-    expect(roots[0]).toMatchObject({ toolCall: { toolCallId: "subagent-1" }, loadedChildCount: 3 });
-    expect(roots[0]?.children.map((child) => child.toolCall.toolCallId)).toEqual(["bash-b", "bash-a"]);
-    expect(fullForest.nodesById.get("subagent-1")?.loadedChildCount).toBe(3);
   });
 });
 

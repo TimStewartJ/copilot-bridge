@@ -132,66 +132,43 @@ describe("SessionAgentsBar", () => {
     }
   });
 
-  it("summarizes background agents without fetching and lists them in launch order when opened", async () => {
+  it("lists working agents in launch order with their current step and best known counts", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(BASE_MS + 95_000);
+    const summary = liveSummary({ running: 3, idle: 2, total: 5 });
     fetchSessionAgents.mockResolvedValue(listing([
-      task("a-docs", { status: "idle", toolCallId: "call-docs", agentType: "general-purpose", description: "Update the docs", startedAt: at(0), activeTimeMs: 160_000 }),
-      task("a-moves", { toolCallId: "call-moves", name: "moves-agent", agentType: "general-purpose", description: "Refactor move generation", startedAt: at(10) }),
-      task("a-inline", { executionMode: "sync", agentType: "task", description: "inline child" }),
+      task("a-docs", { status: "idle", toolCallId: "call-docs", description: "Update the docs", startedAt: at(0), activeTimeMs: 160_000 }),
+      task("a-guide", { status: "idle", toolCallId: "call-guide", name: "guide-agent", description: "Review examples", startedAt: at(15) }),
+      task("a-lint", { toolCallId: "call-lint", description: "Check style", startedAt: at(20) }),
+      task("a-moves", { toolCallId: "call-moves", name: "moves-agent", description: "Refactor move generation", startedAt: at(10), activeTimeMs: 30_000, activeStartedAt: at(30) }),
+      task("a-inline", { executionMode: "sync", description: "inline child" }),
       task("a-saves", { toolCallId: "call-saves", agentType: "explore", description: "Map the save files", startedAt: at(5) }),
-    ]));
+    ], { backgroundAgents: summary }));
     const agents = buildTranscriptAgentDirectory([
-      // The runtime gave this one no name; the session's history has the one it was launched under.
       record("call-docs", { name: "docs-agent", status: "finished", toolCount: 3 }),
-      record("call-moves", { name: "moves-agent", toolCount: 31 }),
+      record("call-guide", { name: "guide-agent", status: "finished", toolCount: 40 }),
+      record("call-lint", { name: "lint-agent", toolCount: 31 }),
+      record("call-moves", { name: "earlier name", toolCount: 5 }),
     ]);
-
     const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary({ running: 0, idle: 1, total: 1 }), agents });
     expect(text(harness)).toBe("1 agent idle");
     await harness.render(createElement(SessionAgentsBar, {
-      sessionId: "s1", backgroundAgents: liveSummary({ running: 2, idle: 1, total: 3 }), agents,
+      sessionId: "s1", backgroundAgents: summary, agents,
+      latestSteps: new Map([["call-moves", "Running npm test"], ["call-guide", "Read README.md"]]),
+      loadedStepCounts: new Map([["call-moves", 9], ["call-guide", 12]]),
     }));
-    expect(text(harness)).toBe("2 agents working1 idle");
+    expect(text(harness)).toBe("3 agents working2 idle");
     expect(fetchSessionAgents).not.toHaveBeenCalled();
-    await openList(harness, "Refactor move generation");
-
-    expect(fetchSessionAgents).toHaveBeenCalledWith("s1");
-    const rows = agentRows(harness).map((row) => row.textContent);
-    // Working agents in the order they were launched, then the idle one. The type stands in for a missing name.
-    expect(rows).toEqual([
-      "exploreMap the save files",
-      "moves-agentRefactor move generation31 steps",
-      "docs-agentUpdate the docs3 stepsidle2m 40s",
+    await openList(harness, "Check style");
+    expect(fetchSessionAgents).toHaveBeenCalledExactlyOnceWith("s1");
+    expect(agentRows(harness).map((row) => [row.getAttribute("data-agent-id"), row.textContent])).toEqual([
+      ["a-saves", "exploreMap the save files"],
+      ["a-moves", "moves-agentRunning npm test9 steps1m 35s"],
+      ["a-lint", "lint-agentCheck style31 steps"],
+      ["a-docs", "docs-agentUpdate the docs3 stepsidle2m 40s"],
+      ["a-guide", "guide-agentReview examples40 stepsidle"],
     ]);
-    // An agent the main agent waits on inside its turn belongs to the transcript, not this list.
     expect(text(harness)).not.toContain("inline child");
-  });
-
-  it("shows each agent’s current step, elapsed time and best available step count from one listing", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(BASE_MS + 95_000);
-    fetchSessionAgents.mockResolvedValue(listing([
-      // One earlier period of 30s, and one in flight that began 65s ago.
-      task("a-moves", { toolCallId: "call-moves", name: "moves-agent", description: "Refactor move generation", activeTimeMs: 30_000, activeStartedAt: at(30) }),
-      task("a-docs", { status: "idle", toolCallId: "call-docs", name: "docs-agent", description: "Update the docs" }),
-    ]));
-    const latestSteps = new Map([["call-moves", "Running npm test"], ["call-docs", "Read README.md"]]);
-
-    // The records were read four steps ago; the transcript already shows those steps.
-    const agents = buildTranscriptAgentDirectory([
-      record("call-moves", { name: "moves-agent", toolCount: 5 }),
-      // Only the newest part of a long run is loaded, so the records know of more.
-      record("call-docs", { name: "docs-agent", status: "finished", toolCount: 40 }),
-    ]);
-    const loadedStepCounts = new Map([["call-moves", 9], ["call-docs", 12]]);
-
-    const harness = await mount({ sessionId: "s1", backgroundAgents: liveSummary({ running: 1, idle: 1, total: 2 }), latestSteps, agents, loadedStepCounts });
-    await openList(harness, "moves-agent");
-
-    expect(agentRows(harness).map((row) => row.textContent)).toEqual([
-      "moves-agentRunning npm test9 steps1m 35s",
-      // An agent that is not working says what it was asked to do, not the last thing it did.
-      "docs-agentUpdate the docs40 stepsidle",
-    ]);
   });
 
   it("opens an idle agent’s full brief and rereads its report when the listing changes", async () => {

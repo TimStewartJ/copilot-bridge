@@ -26,17 +26,19 @@ function tool(toolCallId: string, partial: Partial<ToolCall> = {}): ChatToolEntr
 }
 
 describe("attachTranscriptAgents", () => {
-  it("attaches the agent without mutating history and only replaces its row when the agent changes", () => {
+  it("attaches changed agent records without renaming recognized agents or copying unrelated rows", () => {
     const moves = record("call-moves", { name: "moves-agent", status: "running" });
+    const docs = record("call-docs", { name: "docs-agent" });
     const entries: ChatEntry[] = [
       { role: "user", content: "Refactor the engine" },
       // Read back before the agent had reported in: nothing in the entry says it is a delegation.
       tool("call-moves", { name: "task", args: { description: "Refactor move generation" } }),
       tool("call-view", { name: "view" }),
+      tool("call-docs", { name: "🤖 Docs agent", isSubAgent: true }),
     ];
 
     const cache: AgentAttachmentCache = new WeakMap();
-    const attached = attachTranscriptAgents(entries, buildTranscriptAgentDirectory([moves]), cache);
+    const attached = attachTranscriptAgents(entries, buildTranscriptAgentDirectory([moves, docs]), cache);
 
     expect(attached[0]).toBe(entries[0]);
     expect(attached[2]).toBe(entries[2]);
@@ -47,64 +49,47 @@ describe("attachTranscriptAgents", () => {
     expect(entries[1]).toMatchObject({ toolCall: { name: "task" } });
     expect((entries[1] as ChatToolEntry).toolCall.agent).toBeUndefined();
 
-    const again = attachTranscriptAgents([...entries], buildTranscriptAgentDirectory([moves]), cache);
+    const recognized = (attached[3] as ChatToolEntry).toolCall;
+    expect(recognized.name).toBe("🤖 Docs agent");
+    expect(agentDisplayName(recognized)).toBe("docs-agent");
+
+    const again = attachTranscriptAgents([...entries], buildTranscriptAgentDirectory([moves, docs]), cache);
     expect(again[1]).toBe(attached[1]);
 
     // The agent moved on: a new record means a new row.
     const finished = { ...moves, status: "finished" as const };
-    const later = attachTranscriptAgents(entries, buildTranscriptAgentDirectory([finished]), cache);
+    const later = attachTranscriptAgents(entries, buildTranscriptAgentDirectory([finished, docs]), cache);
     expect(later[1]).not.toBe(attached[1]);
     expect((later[1] as ChatToolEntry).toolCall.agent).toBe(finished);
-  });
-
-  it("keeps the name the server already gave a recognised agent", () => {
-    const [attached] = attachTranscriptAgents(
-      [tool("call-moves", { name: "🤖 Moves agent", isSubAgent: true })],
-      buildTranscriptAgentDirectory([record("call-moves", { name: "moves-agent" })]),
-      new WeakMap(),
-    );
-
-    expect((attached as ChatToolEntry).toolCall.name).toBe("🤖 Moves agent");
-    // What a person reads is the name it was launched under.
-    expect(agentDisplayName((attached as ChatToolEntry).toolCall)).toBe("moves-agent");
+    expect(later[3]).toBe(attached[3]);
   });
 });
 
 describe("buildAgentPlaceholders", () => {
-  it("shows one stand-in until its real launching call is present in the loaded history", () => {
-    const moves = record("call-moves", { name: "moves-agent", description: "Refactor move generation", startedAt: "2026-10-01T10:00:00.000Z" });
-    const directory = buildTranscriptAgentDirectory([moves]);
+  it("fills the missing launch chain once and removes stand-ins when the launches are loaded", () => {
+    const engine = record("call-engine", { name: "engine-agent" });
+    const moves = record("call-moves", { parentToolCallId: "call-engine", name: "moves-agent", description: "Refactor move generation", startedAt: "2026-10-01T10:00:00.000Z" });
+    const directory = buildTranscriptAgentDirectory([engine, moves]);
     const loaded = [tool("step-1", { parentToolCallId: "call-moves" }).toolCall, tool("step-2", { parentToolCallId: "call-moves" }).toolCall];
 
     const placeholders = buildAgentPlaceholders(loaded, directory);
 
     expect(placeholders).toEqual([{
       toolCallId: "call-moves",
+      parentToolCallId: "call-engine",
       name: "🤖 moves-agent",
       args: { description: "Refactor move generation" },
       isSubAgent: true,
       startedAt: "2026-10-01T10:00:00.000Z",
       agent: moves,
+    }, {
+      toolCallId: "call-engine", name: "🤖 engine-agent", isSubAgent: true, agent: engine,
     }]);
     // The same stand-in every time, so the row it backs keeps its identity.
     expect(buildAgentPlaceholders(loaded, directory)[0]).toBe(placeholders[0]);
 
-    const launch = tool("call-moves", { isSubAgent: true }).toolCall;
-    expect(buildAgentPlaceholders([launch, ...loaded], directory)).toEqual([]);
-  });
-
-  it("stands in for every agent between a step and the main agent", () => {
-    const directory = buildTranscriptAgentDirectory([
-      record("call-outer", { name: "outer-agent" }),
-      record("call-inner", { name: "inner-agent", parentToolCallId: "call-outer" }),
-    ]);
-
-    const placeholders = buildAgentPlaceholders([tool("step", { parentToolCallId: "call-inner" }).toolCall], directory);
-
-    expect(placeholders.map((placeholder) => [placeholder.toolCallId, placeholder.parentToolCallId])).toEqual([
-      ["call-inner", "call-outer"],
-      ["call-outer", undefined],
-    ]);
+    const launches = [tool("call-engine", { isSubAgent: true }), tool("call-moves", { isSubAgent: true, parentToolCallId: "call-engine" })];
+    expect(buildAgentPlaceholders([...launches.map((entry) => entry.toolCall), ...loaded], directory)).toEqual([]);
   });
 
   it("still gives a step an agent to sit under when the session's records do not know its parent", () => {

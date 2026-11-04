@@ -36,7 +36,7 @@ function ids(entries: ReturnType<typeof listUnreadSessions>): string[] {
 }
 
 describe("listUnreadSessions", () => {
-  it("lists idle chats with unseen results, newest first", () => {
+  it("lists unseen idle chats newest first, excluding the open chat and ineligible rows", () => {
     const entries = listUnreadSessions({
       sessions: [
         createSession("older", { lastActivityAt: undefined, lastVisibleActivityAt: AFTER_READ, lastAttentionAt: BEFORE_READ, modifiedTime: BEFORE_READ }),
@@ -44,32 +44,20 @@ describe("listUnreadSessions", () => {
         createSession("newest", { lastActivityAt: undefined, lastVisibleActivityAt: BEFORE_READ, lastAttentionAt: "2026-09-30T15:00:00.000Z", modifiedTime: BEFORE_READ }),
         createSession("never-read", { lastActivityAt: BEFORE_READ }),
         createSession("tie-b", { lastActivityAt: "2026-09-30T14:00:00.000Z" }),
-        createSession("tie-a", { lastActivityAt: "2026-09-30T14:00:00.000Z" }),
-      ],
-      tasks: [],
-      isUnread: readState(["never-read"]),
-    });
-
-    expect(ids(entries)).toEqual(["newest", "tie-a", "tie-b", "older", "never-read"]);
-    expect(entries.every((entry) => entry.task === undefined)).toBe(true);
-  });
-
-  it("leaves out chats that are working, archived, open behind the list, or without activity", () => {
-    const entries = listUnreadSessions({
-      sessions: [
+        createSession("tie-a", { runState: undefined, lastActivityAt: "2026-09-30T14:00:00.000Z" }),
         createSession("busy", { runState: "busy" }),
         createSession("stalled", { runState: "stalled" }),
         createSession("archived", { archived: true }),
         createSession("open"),
         createSession("no-activity", { lastActivityAt: undefined }),
-        createSession("unread", { runState: undefined }),
       ],
       tasks: [],
-      isUnread: readState(),
+      isUnread: readState(["never-read"]),
       activeSessionId: "open",
     });
 
-    expect(ids(entries)).toEqual(["unread"]);
+    expect(ids(entries)).toEqual(["newest", "tie-a", "tie-b", "older", "never-read"]);
+    expect(entries.every((entry) => entry.task === undefined)).toBe(true);
   });
 
   it("opens a chat under its first active, unmuted task, else its archived one, and keeps muted tasks quiet", () => {

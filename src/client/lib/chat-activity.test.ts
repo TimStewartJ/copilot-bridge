@@ -176,43 +176,31 @@ describe("agents in a stretch of work", () => {
     };
   }
 
-  it("puts what an agent did beneath the call that launched it, after the main agent's calls of the turn", () => {
-    const [block] = activity(blocksOf([
+  it("groups interleaved calls under their launches, then under one row per agent in a later stretch", () => {
+    const blocks = blocksOf([
       tool("moves", "turn-a", { isSubAgent: true }),
       tool("saves", "turn-a", { isSubAgent: true }),
       agentCall("moves-1", "moves"),
       agentCall("saves-1", "saves"),
       agentCall("moves-2", "moves"),
-    ]));
-
-    expect(block?.steps).toMatchObject([
-      {
-        kind: "tools",
-        entries: [{ id: "moves" }, { id: "saves" }, { id: "moves-1" }, { id: "saves-1" }, { id: "moves-2" }],
-      },
-    ]);
-  });
-
-  it("gives an agent launched earlier one step per stretch, however its calls were interleaved", () => {
-    const blocks = activity(blocksOf([
-      tool("moves", "turn-a", { isSubAgent: true }),
-      tool("saves", "turn-a", { isSubAgent: true }),
-      agentCall("moves-1", "moves"),
       { role: "assistant", content: "Both are running.", turnInstanceId: "turn-b" },
-      agentCall("moves-2", "moves"),
-      agentCall("saves-1", "saves"),
-      tool("read_agent", "turn-c"),
       agentCall("moves-3", "moves"),
       agentCall("saves-2", "saves"),
-    ]));
+      tool("read_agent", "turn-c"),
+      agentCall("moves-4", "moves"),
+      agentCall("saves-3", "saves"),
+    ]);
 
-    expect(blocks).toHaveLength(2);
-    expect(blocks[1]?.key).toBe("activity:moves-2-call:0");
-    // The stretch after the reply: each agent once, where it first acted, around the main agent's call.
-    expect(blocks[1]?.steps).toMatchObject([
-      { kind: "agent", agentToolCallId: "moves-call", entries: [{ id: "moves-2" }, { id: "moves-3" }] },
-      { kind: "agent", agentToolCallId: "saves-call", entries: [{ id: "saves-1" }, { id: "saves-2" }] },
-      { kind: "tools", entries: [{ id: "read_agent" }] },
+    expect(blocks).toMatchObject([
+      { type: "activity", steps: [{ kind: "tools", entries: [
+        { id: "moves" }, { id: "saves" }, { id: "moves-1" }, { id: "saves-1" }, { id: "moves-2" },
+      ] }] },
+      { type: "message", entry: { content: "Both are running." } },
+      { type: "activity", key: "activity:moves-3-call:0", steps: [
+        { kind: "agent", agentToolCallId: "moves-call", entries: [{ id: "moves-3" }, { id: "moves-4" }] },
+        { kind: "agent", agentToolCallId: "saves-call", entries: [{ id: "saves-2" }, { id: "saves-3" }] },
+        { kind: "tools", entries: [{ id: "read_agent" }] },
+      ] },
     ]);
   });
 

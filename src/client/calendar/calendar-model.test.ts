@@ -2,13 +2,18 @@ import { describe, expect, it } from "vitest";
 import { draggedTimes, formatFree, freeMinutes, layoutLanes, snapMinutes } from "./calendar-model";
 
 describe("layoutLanes", () => {
-  it.each([
-    { name: "apart blocks each take the whole column", spans: [["a", 60, 120], ["b", 120, 180]], expected: { a: [0, 1], b: [0, 1] } },
-    { name: "a chain of overlaps is one cluster, reusing a freed lane", spans: [["a", 0, 60], ["b", 30, 120], ["c", 90, 150]], expected: { a: [0, 2], b: [1, 2], c: [0, 2] } },
-    { name: "a moment gets a minimum height before it is placed", spans: [["a", 60, 60], ["b", 70, 80]], expected: { a: [0, 2], b: [1, 2] } },
-  ])("$name", ({ spans, expected }) => {
-    const placed = layoutLanes(spans.map(([id, start, end]) => ({ id: id as string, start: start as number, end: end as number })), 20);
-    expect(Object.fromEntries(placed.map((span) => [span.id, [span.lane, span.lanes]]))).toEqual(expected);
+  it("places touching blocks, a minimum-height moment and its overlap chain in one day", () => {
+    const placed = layoutLanes([
+      { id: "walk", start: 480, end: 510 },
+      { id: "breakfast", start: 510, end: 540 },
+      { id: "reminder", start: 540, end: 540 },
+      { id: "review", start: 550, end: 600 },
+      { id: "pairing", start: 575, end: 620 },
+    ], 20);
+
+    expect(placed.map(({ id, lane, lanes }) => [id, lane, lanes])).toEqual([
+      ["walk", 0, 1], ["breakfast", 0, 1], ["reminder", 0, 2], ["review", 1, 2], ["pairing", 0, 2],
+    ]);
   });
 });
 

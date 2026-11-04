@@ -260,26 +260,26 @@ describe("SessionList archived paging", () => {
 });
 
 describe("SessionList defer summary indicator", () => {
-  it.each([
-    { name: "multiple defers with the count and next run time", count: 2, runningCount: 0, label: "2 defers · next in 5m" },
-    { name: "running and queued defer counts together", count: 2, runningCount: 1, label: "1 running · 1 queued" },
-    { name: "no defer label when the summary is cleared", count: 0, runningCount: 0, label: null },
-  ])("renders $name", async ({ count, runningCount, label }) => {
+  it("shows scheduled, running and cleared defers on their own session rows", async () => {
+    const nextRunAt = minutesFromNow(5);
     const { dom, cleanup } = await renderSessionList([
-      createSession({
-        sessionId: "session-1",
-        summary: "Deferred session",
-        deferSummary: { count, runningCount, nextRunAt: minutesFromNow(5) },
-      }),
+      createSession({ sessionId: "scheduled", summary: "Later", deferSummary: { count: 2, runningCount: 0, nextRunAt } }),
+      createSession({ sessionId: "running", summary: "In flight", deferSummary: { count: 2, runningCount: 1, nextRunAt } }),
+      createSession({ sessionId: "cleared", summary: "Finished", deferSummary: { count: 0, runningCount: 0, nextRunAt } }),
     ]);
 
     try {
-      expect(dom.container.textContent).toContain("Deferred session");
-      if (label) {
-        expect(dom.container.textContent).toContain(label);
-      } else {
-        expect(dom.container.textContent).not.toMatch(/Deferred in|defers|running|queued/);
-      }
+      const rows = findAllByTag(dom.container, "BUTTON").filter((button) =>
+        typeof getReactProps(button)?.onContextMenu === "function");
+      expect(rows.map((button) => [button.textContent,
+        findAllByTag(button.parentNode, "BUTTON").filter((other) => other !== button)
+          .map((badge) => [badge.textContent, badge.getAttribute("title")]),
+      ])).toEqual([
+        ["Later", [["2 defers · next in 5m", "2 defers · next in 5m. Open deferred work."]]],
+        ["In flight", [["1 running · 1 queued", "1 running · 1 queued. Open deferred work."]]],
+        ["Finished", []],
+      ]);
+      expect(rows[2].parentNode.textContent).not.toMatch(/Deferred in|defers|running|queued/);
     } finally {
       await cleanup();
     }

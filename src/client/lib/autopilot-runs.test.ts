@@ -46,8 +46,9 @@ describe("summarizeAutopilotRuns", () => {
     expect(summaries.get(uncertain)?.verification).toBeUndefined();
   });
 
-  it("marks a run with a second message as Autopilot without figures", () => {
-    const done = completion("done", "2026-09-27T10:11:00.000Z");
+  it("reports figures only for unsteered Autopilot runs in the same transcript", () => {
+    const steered = completion("steered", "2026-09-27T10:11:00.000Z");
+    const measured = completion("measured", "2026-09-27T11:11:00.000Z");
     const summaries = summarize([
       { type: "message", role: "user", content: "fix it", agentMode: "autopilot", timestamp: "2026-09-27T10:00:00.000Z" },
       { type: "message", role: "assistant", content: "step one" },
@@ -55,23 +56,16 @@ describe("summarizeAutopilotRuns", () => {
       { type: "message", role: "user", content: "also the docs", agentMode: "autopilot", timestamp: "2026-09-27T10:05:00.000Z" },
       { type: "continuation", id: "c2" },
       { type: "continuation", id: "c3" },
-      done,
+      steered,
+      { type: "message", role: "user", content: "verify it", agentMode: "autopilot", timestamp: "2026-09-27T11:00:00.000Z" },
+      { type: "message", role: "assistant", content: "running checks" },
+      { type: "continuation", id: "c4" },
+      { type: "message", role: "assistant", content: "checking the results" },
+      { type: "continuation", id: "c5" },
+      measured,
     ]);
-    // A second message (steering, or a new run after a stop) makes the start uncertain: no figures.
-    expect(summaries.get(done)).toEqual({});
-  });
-
-  it("counts the turns and time of an autopilot run with no other message in it", () => {
-    const done = completion("done", "2026-09-27T10:11:00.000Z");
-    const summaries = summarize([
-      { type: "message", role: "user", content: "fix it", agentMode: "autopilot", timestamp: "2026-09-27T10:00:00.000Z" },
-      { type: "message", role: "assistant", content: "step one" },
-      { type: "continuation", id: "c1" },
-      { type: "message", role: "assistant", content: "step two" },
-      { type: "continuation", id: "c2" },
-      done,
-    ]);
-    expect(summaries.get(done)).toEqual({ turns: 3, durationMs: 11 * 60_000 });
+    expect(summaries.get(steered)).toEqual({});
+    expect(summaries.get(measured)).toEqual({ turns: 3, durationMs: 11 * 60_000 });
   });
 
   it("does not summarize a completion whose run did not start with Autopilot in the loaded history", () => {

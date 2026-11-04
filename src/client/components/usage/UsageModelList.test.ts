@@ -24,52 +24,38 @@ describe("usage model disclosures", () => {
     return harness.dom.container;
   }
 
-  it("starts closed, with meaningful figures and all accounting fields one click away", async () => {
-    const container = await render([row()]);
-    const details = findAllByTag(container, "DETAILS")[0];
-    expect(Boolean(getReactProps(details)?.open)).toBe(false);
-    expect(findAllByTag(details, "SUMMARY")[0].textContent).toContain("$0.0025 est.");
-    expect(findAllByTag(details, "SUMMARY")[0].textContent).toContain("220 tokens");
-    expect(findAllByTag(container, "TABLE")).toHaveLength(0);
-    for (const label of ["Sessions", "Requests", "Est. cost", "Est. credits", "Metered cost", "Metered credits", "Input", "Uncached input", "Cache read", "Cache write", "Output", "Reasoning"]) {
-      expect(container.textContent).toContain(label);
-    }
-    expect(container.textContent).toContain("included in output");
-    expect(container.textContent).toContain("Not recorded");
-  });
-
-  it("does not present unknown pricing as a free model", async () => {
-    const container = await render([row({ pricingStatus: "unpriced", estimatedCostUsd: 0, estimatedAiCredits: 0 })]);
-    const summary = findAllByTag(container, "SUMMARY")[0];
-    expect(summary.textContent).toContain("Unpriced");
-    expect(summary.textContent).not.toContain("$0.00");
-    expect(container.textContent).toContain("excluded from cost");
-  });
-
-  it("distinguishes a recorded free run and unattributed metering from missing metering", async () => {
-    const container = await render([
-      row({ model: "free-model", meteredTokens: 220, estimatedCostUsd: 0 }),
-      row({ model: COPILOT_USAGE_UNATTRIBUTED_MODEL, meteredTokens: 0, meteredAiCredits: 123.45, totalTokens: 0, pricingStatus: "unpriced" }),
-    ]);
-    const [free, unattributed] = findAllByTag(container, "DETAILS");
-    expect(free.textContent).toContain("$0.00");
-    expect(free.textContent).toContain("covers all tokens");
-    expect(unattributed.textContent).toContain("123.45 metered AI credits");
-    expect(unattributed.textContent).toContain("$1.23");
-    expect(unattributed.textContent).toContain("Not model-attributed");
-    expect(findAllByTag(unattributed, "SUMMARY")[0].textContent).not.toContain("Unpriced");
-  });
-
-  it("keeps different context tiers and price aliases readable", async () => {
+  it("shows each model and context tier with its own pricing and metering disclosure", async () => {
     const container = await render([
       row({ contextTier: "default", contextTierLabel: "Standard context" }),
       row({ contextTier: "long_context", contextTierLabel: "Long context", pricedAs: "canonical-model", normalizedPricingModel: "normalized-model" }),
+      row({ model: "unknown-model", pricingStatus: "unpriced", estimatedCostUsd: 0, estimatedAiCredits: 0 }),
+      row({ model: "free-model", meteredTokens: 220, estimatedCostUsd: 0 }),
+      row({ model: COPILOT_USAGE_UNATTRIBUTED_MODEL, meteredAiCredits: 123.45, totalTokens: 0, pricingStatus: "unpriced" }),
     ]);
-    expect(findAllByTag(container, "DETAILS")).toHaveLength(2);
-    expect(container.textContent).toContain("Standard context");
-    expect(container.textContent).toContain("Long context");
-    expect(container.textContent).toContain("priced as canonical-model");
-    expect(container.textContent).toContain("normalized-model");
+    const disclosures = findAllByTag(container, "DETAILS");
+    expect(disclosures.every((detail) => !getReactProps(detail)?.open)).toBe(true);
+    expect(findAllByTag(container, "TABLE")).toHaveLength(0);
+    expect(disclosures.map((detail) => findAllByTag(detail, "SUMMARY")[0].textContent)).toEqual([
+      "test-modelStandard context$0.0025 est.220 tokens",
+      "test-modelLong context$0.0025 est.220 tokens",
+      "unknown-modelUnpriced220 tokens",
+      "free-model$0.00 est.220 tokens",
+      `${COPILOT_USAGE_UNATTRIBUTED_MODEL}123.45 metered AI credits`,
+    ]);
+    const [standard, long, unknown, free, unattributed] = disclosures;
+    for (const label of ["Sessions", "Requests", "Est. cost", "Est. credits", "Metered cost", "Metered credits", "Input", "Uncached input", "Cache read", "Cache write", "Output", "Reasoning"]) {
+      expect(standard.textContent).toContain(label);
+    }
+    expect(standard.textContent).toContain("included in output");
+    expect(standard.textContent).toContain("Metered costNot recorded");
+    expect(standard.textContent).toContain("Metered creditsNot recorded");
+    expect(long.textContent).toContain("priced as canonical-model");
+    expect(long.textContent).toContain("normalized-model");
+    expect(unknown.textContent).toContain("excluded from cost");
+    expect(free.textContent).toContain("Metered cost$0.00");
+    expect(free.textContent).toContain("covers all tokens");
+    expect(unattributed.textContent).toContain("$1.23");
+    expect(unattributed.textContent).toContain("Not model-attributed");
   });
 
   it("does not invent counters the SDK did not report", async () => {

@@ -107,7 +107,7 @@ describe("ToolCallNodeGroup", () => {
     expect(html).not.toContain("text-success");
   });
 
-  it("renders delegated tasks and follow-ups inside the expanded agent row", () => {
+  it("shows the delegated brief, follow-up and nested agents in the expanded tool tree", () => {
     const { roots } = buildToolCallForest([
       toolCall("agent", {
         name: "🤖 Explore agent",
@@ -121,18 +121,22 @@ describe("ToolCallNodeGroup", () => {
           { kind: "follow_up", content: "Also verify Windows behavior." },
         ],
       }),
-      completedToolCall("child", 0, 2, { parentToolCallId: "agent" }),
+      toolCall("child-agent", { name: "🤖 Child agent", isSubAgent: true, parentToolCallId: "agent" }),
+      completedToolCall("grandchild-a", 0, 10, { parentToolCallId: "child-agent" }),
+      completedToolCall("grandchild-b", 1, 8, { parentToolCallId: "child-agent" }),
     ]);
 
     const html = renderToStaticMarkup(
       createElement(ToolCallTree, { node: roots[0]!, defaultExpanded: true }),
     );
 
-    expect(html).toContain("Investigate scheduler race");
-    expect(html).toContain("Task delegated by Copilot");
-    expect(html).toContain("Inspect the scheduler tests.");
-    expect(html).toContain("Follow-up from Copilot");
-    expect(html).toContain("Also verify Windows behavior.");
+    const text = visibleText(html);
+    expect(text).toMatch(/Explore agent.*Child agent.*Grandchild a.*Grandchild b/);
+    expect(text).toContain("Investigate scheduler race");
+    expect(text).toContain("Task delegated by Copilot");
+    expect(text).toContain("Inspect the scheduler tests.");
+    expect(text).toContain("Follow-up from Copilot");
+    expect(text).toContain("Also verify Windows behavior.");
   });
 
   it("keeps full instructions collapsed while showing a concise task summary", () => {
@@ -274,23 +278,5 @@ describe("ToolCallNodeGroup", () => {
     expect(text).toContain("Read repo/moves.ts");
     expect(text).not.toContain("Task delegated by Copilot");
     expect(html).not.toContain("data-agent-later-steps");
-  });
-
-  it("recurses into an agent launched by another agent", () => {
-    const { roots } = buildToolCallForest([
-      toolCall("root-agent", { name: "🤖 Root agent", isSubAgent: true }),
-      toolCall("child-agent", { name: "🤖 Child agent", isSubAgent: true, parentToolCallId: "root-agent" }),
-      completedToolCall("grandchild-a", 0, 10, { parentToolCallId: "child-agent" }),
-      completedToolCall("grandchild-b", 1, 8, { parentToolCallId: "child-agent" }),
-    ]);
-
-    const text = visibleText(renderToStaticMarkup(
-      createElement(ToolCallTree, { node: roots[0]!, defaultExpanded: true }),
-    ));
-
-    expect(text).toContain("Root agent");
-    expect(text).toContain("Child agent");
-    expect(text).toContain("Grandchild a");
-    expect(text).toContain("Grandchild b");
   });
 });
