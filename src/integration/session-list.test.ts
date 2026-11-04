@@ -146,7 +146,10 @@ describe("session list: one build at a time, never older than the reader", () =>
 
 describe("session list: what a response reads", () => {
   it("reads no whole table, in the build or in the response", async () => {
-    const { ctx, list } = createOwner(async () => named("one", "two"));
+    const { ctx, list } = createOwner(async () => [
+      ...named("one"),
+      { sessionId: "two", summary: "Listed", lastVisibleActivityAt: "2026-05-01T10:00:00.000Z", modifiedTime: "2026-05-01T09:00:00.000Z" },
+    ]);
     const task = ctx.taskStore.createTask("Linked");
     ctx.taskStore.linkSession(task.id, "one");
     ctx.readStateStore.markRead("two", "2026-05-01T12:00:00.000Z");
@@ -164,6 +167,10 @@ describe("session list: what a response reads", () => {
     await list.read();
 
     expect(rows.find((row) => row.sessionId === "one")).toMatchObject({ linkedTaskIds: [task.id] });
+    expect(rows.find((row) => row.sessionId === "two")).toMatchObject({
+      archived: false, archivedAt: null, linkedTaskIds: [],
+      lastVisibleActivityAt: "2026-05-01T10:00:00.000Z", modifiedTime: "2026-05-01T10:00:00.000Z",
+    });
     for (const read of wholeTable) expect(read).not.toHaveBeenCalled();
   });
 
@@ -291,21 +298,6 @@ describe("session list: what a response reads", () => {
     expect(all.find((row) => row.sessionId === "a")).toMatchObject({ archived: true, linkedTaskIds: [task.id] });
     expect(scan).toHaveBeenCalled();
     expect(byId).not.toHaveBeenCalled();
-  });
-
-  it("falls back to what the listing said for a session with no state row", async () => {
-    const { list } = createOwner(async () => [
-      { sessionId: "listed-only", summary: "Listed", lastVisibleActivityAt: "2026-05-01T10:00:00.000Z", modifiedTime: "2026-05-01T09:00:00.000Z" },
-    ]);
-
-    expect(await list.read()).toEqual([expect.objectContaining({
-      sessionId: "listed-only",
-      archived: false,
-      archivedAt: null,
-      lastVisibleActivityAt: "2026-05-01T10:00:00.000Z",
-      modifiedTime: "2026-05-01T10:00:00.000Z",
-      linkedTaskIds: [],
-    })]);
   });
 
   it("reads named sessions without building a list, and keeps a row for one whose files are gone", async () => {

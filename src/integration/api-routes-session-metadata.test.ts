@@ -38,49 +38,21 @@ describe("Error handling", () => {
 
 describe("Session metadata routes", () => {
 
-  it("DELETE /api/sessions/:id prunes read state for the deleted session", async () => {
-    ctx.readStateStore.markRead("deleted-sess", "2026-05-21T12:00:00.000Z");
-    ctx.readStateStore.markRead("kept-sess", "2026-05-21T12:05:00.000Z");
-
-    const res = await request(app).delete("/api/sessions/deleted-sess");
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-
-    const state = await request(app).get("/api/read-state");
-    expect(state.body["deleted-sess"]).toBeUndefined();
-    expect(state.body["kept-sess"]).toBe("2026-05-21T12:05:00.000Z");
-  });
-
-  it("POST /api/sessions/batch invalidates the cached session list after archiving", async () => {
-    ctx.sessionManager.listSessionsFromDisk = async () => [
-      { sessionId: "s1", summary: "Session one", startTime: "2026-04-19T00:00:00.000Z", lastVisibleActivityAt: "2026-04-19T00:00:00.000Z" } as any,
-      { sessionId: "s2", summary: "Session two", startTime: "2026-04-19T00:00:00.000Z", lastVisibleActivityAt: "2026-04-19T00:00:00.000Z" } as any,
-    ];
-    ctx.readStateStore.markRead("s1");
-    ctx.readStateStore.markRead("s2");
-
-    const before = await request(app).get("/api/sessions");
-    expect(before.status).toBe(200);
-    expect(before.body.sessions.map((session: { sessionId: string }) => session.sessionId)).toEqual(["s1", "s2"]);
-
-    const archive = await request(app)
-      .post("/api/sessions/batch")
-      .send({ sessionIds: ["s1"], action: "archive" });
-    expect(archive.status).toBe(200);
-    expect(archive.body.ok).toBe(true);
-
-    const after = await request(app).get("/api/sessions");
-    expect(after.status).toBe(200);
-    expect(after.body.sessions.map((session: { sessionId: string }) => session.sessionId)).toEqual(["s2"]);
-  });
-
   it("POST /api/sessions/batch announces a bulk archive once", async () => {
+    ctx.sessionManager.listSessionsFromDisk = async () => [
+      { sessionId: "s1", summary: "Archive me", startTime: "2026-04-19T00:00:00.000Z" },
+      { sessionId: "untouched", summary: "Keep me", startTime: "2026-04-18T00:00:00.000Z" },
+    ];
+    const visible = async () => (await request(app).get("/api/sessions").expect(200)).body.sessions.map((session: { sessionId: string }) => session.sessionId);
+    expect(await visible()).toEqual(["s1", "untouched"]);
     const events: Array<{ type: string }> = [];
     ctx.globalBus.subscribe((event) => { if (event.type === "session:archived") events.push(event); });
 
     const archive = await request(app)
       .post("/api/sessions/batch")
       .send({ sessionIds: ["s1", "s2", "s3", "s2"], action: "archive" });
+    expect(archive.status).toBe(200);
+    expect(await visible()).toEqual(["untouched"]);
     expect(archive.body).toEqual({ ok: true, errors: {} });
     const restore = await request(app)
       .post("/api/sessions/batch")

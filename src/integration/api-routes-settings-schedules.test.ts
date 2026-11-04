@@ -386,13 +386,16 @@ describe("Schedule routes", () => {
   });
 
   it("PATCH /api/schedules sets and clears a model tier, and refuses a pinned model", async () => {
-    const schedule = ctx.scheduleStore.createSchedule({
+    const created = await request(app).post("/api/schedules").send({
       taskId,
       name: "Tier patch",
       prompt: "Continue the conversation",
       type: "cron",
-      cron: "0 0 * * *",
-    });
+      cron: "0 0 * * *", modelTier: "preset2",
+    }).expect(201);
+    const schedule = created.body;
+    expect(schedule).toMatchObject({ taskId, name: "Tier patch", type: "cron", modelTier: "preset2" });
+    expect(ctx.scheduleStore.getSchedule(schedule.id)?.modelTier).toBe("preset2");
     const patch = (body: Record<string, unknown>) => request(app).patch(`/api/schedules/${schedule.id}`).send(body);
 
     const tiered = await patch({ modelTier: "preset1" });
@@ -553,11 +556,14 @@ describe("Schedule routes", () => {
     local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
     local.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
 
+    local.ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
+    local.ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
+
     const res = await request(local.app).get(`/api/schedules/${schedule.id}/sessions`);
     expect(res.status).toBe(200);
     expect(res.body.total).toBe(2);
     expect(res.body.sessions).toHaveLength(2);
-    expect(res.body.sessions[0].sessionId).toBe("shared-session");
+    expect(res.body.sessions[0]).toMatchObject({ sessionId: "shared-session", runState: "stalled" });
     expect(res.body.sessions[1].sessionId).toBe("shared-session");
     expect(res.body.sessions[0].diskSizeBytes).toBe(17);
     expect(res.body.sessions[1].diskSizeBytes).toBe(17);
@@ -568,23 +574,4 @@ describe("Schedule routes", () => {
     expect(measureSession).toHaveBeenCalledWith("shared-session");
   });
 
-  it("GET /api/schedules/:id/sessions includes runState while keeping busy compatibility", async () => {
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId, name: "Run states", prompt: "Do stuff", type: "cron", cron: "0 0 * * *",
-    });
-    ctx.sessionManager.listSessionsFromDisk = async () => [
-      { sessionId: "shared-session", summary: "Shared session" } as any,
-    ];
-    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
-    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
-    ctx.sessionMetaStore.recordScheduleRun(schedule.id, "shared-session");
-
-    const res = await request(app).get(`/api/schedules/${schedule.id}/sessions`);
-
-    expect(res.status).toBe(200);
-    expect(res.body.sessions[0]).toMatchObject({
-      sessionId: "shared-session",
-      runState: "stalled",
-    });
-  });
 });

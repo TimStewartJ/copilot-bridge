@@ -823,28 +823,24 @@ describe("readMessagesFromDisk latest-page path", () => {
       timestamp: "2026-04-30T10:00:00.000Z",
       data: { index, payload: "x".repeat(220) },
     }));
-    const recentMessages = Array.from({ length: 60 }, (_, index) => ({
-      type: "user.message",
-      timestamp: `2026-04-30T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
-      data: { content: `recent-${index}` },
-    }));
-    writeSessionFiles(copilotHome, sessionId, {
-      events: [...padding, ...recentMessages],
-    });
+    const turns = Array.from({ length: 12 }, (_, index) => [
+      { type: "assistant.turn_start", data: { turnId: `provider-turn-${index}` } },
+      { type: "assistant.message", data: { content: `reply ${index}` } },
+      { type: "session.idle", data: {} },
+    ]).flat();
+    writeSessionFiles(copilotHome, sessionId, { events: [...padding, ...turns] });
     const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
     const { deps, spans } = createDeps(copilotHome);
 
-    const first = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
-    await readMessagesFromDisk(deps, sessionId, { limit: 50 });
-    appendFileSync(
-      eventsPath,
-      `${JSON.stringify({
-        type: "user.message",
-        timestamp: "2026-04-30T11:00:00.000Z",
-        data: { content: "cache-bust" },
-      })}\n`,
-    );
-    const afterAppend = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    const first = await readMessagesFromDisk(deps, sessionId, { limit: 5 });
+    await readMessagesFromDisk(deps, sessionId, { limit: 5 });
+    const nextTurn = [
+      { type: "user.message", timestamp: "2026-04-30T11:00:00.000Z", data: { content: "cache-bust" } },
+      { type: "assistant.turn_start", id: "turn-start-open", data: { turnId: "provider-turn-open" } },
+      { type: "assistant.message", id: "assistant-open", data: { content: "open reply" } },
+    ];
+    appendFileSync(eventsPath, nextTurn.map((event) => JSON.stringify(event)).join("\n") + "\n");
+    const afterAppend = await readMessagesFromDisk(deps, sessionId, { limit: 5 });
 
     const statsSpans = spans.filter((span) => span.name === "session.readFromDisk.stats");
     expect(statsSpans.map((span) => span.metadata?.cacheResult))
@@ -854,67 +850,14 @@ describe("readMessagesFromDisk latest-page path", () => {
     const appendScanBytes = statsSpans[2]?.metadata?.scannedBytes as number;
     expect(appendScanBytes).toBeLessThan(fullScanBytes / 100);
     // The resumed fold must produce the same totals as a full rescan would.
-    expect(afterAppend.total).toBe(first.total + 1);
+    expect(afterAppend.total).toBe(first.total + 2);
+    expect(afterAppend.messages.at(-1)).toMatchObject({ sourceEventId: "assistant-open", turnId: "provider-turn-open", content: "open reply" });
     clearEventLogStatsCache(sessionId);
-    const rescanned = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
+    const rescanned = await readMessagesFromDisk(deps, sessionId, { limit: 5 });
     expect(rescanned.total).toBe(afterAppend.total);
     expect(rescanned.lastVisibleActivityAt).toBe(afterAppend.lastVisibleActivityAt);
     expect(rescanned.coverage).toEqual(afterAppend.coverage);
     expect(rescanned.messages).toEqual(afterAppend.messages);
-  });
-
-  it("keeps resumed turn state correct as the tail window moves across turns", async () => {
-    const copilotHome = makeTestDir("session-disk-reader-stats-turnstate");
-    const sessionId = "stats-turnstate";
-    const events: unknown[] = [];
-    for (let turn = 0; turn < 12; turn += 1) {
-      events.push({
-        type: "assistant.turn_start",
-        id: `turn-start-${turn}`,
-        data: { turnId: `provider-turn-${turn}` },
-        timestamp: `2026-05-02T10:${String(turn).padStart(2, "0")}:00.000Z`,
-      });
-      events.push({
-        type: "assistant.message",
-        id: `assistant-${turn}`,
-        data: { content: `reply ${turn}` },
-        timestamp: `2026-05-02T10:${String(turn).padStart(2, "0")}:01.000Z`,
-      });
-      events.push({
-        type: "session.idle",
-        id: `idle-${turn}`,
-        data: {},
-        timestamp: `2026-05-02T10:${String(turn).padStart(2, "0")}:02.000Z`,
-      });
-    }
-    writeSessionFiles(copilotHome, sessionId, { events });
-    const eventsPath = join(copilotHome, "session-state", sessionId, "events.jsonl");
-    const { deps } = createDeps(copilotHome);
-
-    await readMessagesFromDisk(deps, sessionId, { limit: 5 });
-
-    // Append an unterminated turn, then read again through the resumed fold.
-    appendFileSync(eventsPath, `${JSON.stringify({
-      type: "assistant.turn_start",
-      id: "turn-start-open",
-      data: { turnId: "provider-turn-open" },
-      timestamp: "2026-05-02T11:00:00.000Z",
-    })}\n`);
-    appendFileSync(eventsPath, `${JSON.stringify({
-      type: "assistant.message",
-      id: "assistant-open",
-      data: { content: "open reply" },
-      timestamp: "2026-05-02T11:00:01.000Z",
-    })}\n`);
-    const resumed = await readMessagesFromDisk(deps, sessionId, { limit: 5 });
-
-    clearEventLogStatsCache(sessionId);
-    const rescanned = await readMessagesFromDisk(deps, sessionId, { limit: 5 });
-
-    expect(resumed.total).toBe(rescanned.total);
-    expect(resumed.messages).toEqual(rescanned.messages);
-    expect(resumed.coverage).toEqual(rescanned.coverage);
-    expect(resumed.lastVisibleActivityAt).toBe(rescanned.lastVisibleActivityAt);
   });
 
   it("matches a full rescan across many incremental appends", async () => {
@@ -1015,33 +958,12 @@ describe("readMessagesFromDisk latest-page path", () => {
       .toEqual(["miss", "hit", "miss"]);
   });
 
-  it("derives stats from a single full-file tail read for small event logs", async () => {
-    const copilotHome = makeTestDir("session-disk-reader-small-derived");
-    const sessionId = "small-derived";
-    writeSessionFiles(copilotHome, sessionId, {
-      events: [
-        { type: "internal.trace", timestamp: "2026-04-30T10:00:00.000Z", data: { payload: "ignored" } },
-        { type: "user.message", timestamp: "2026-04-30T10:00:01.000Z", data: { content: "hello" } },
-      ],
-    });
-
-    const { deps, spans } = createDeps(copilotHome);
-
-    const result = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
-
-    expect(result.total).toBe(1);
-    expect(result.messages).toMatchObject([{ id: "entry-0", content: "hello" }]);
-    expect(spans.find((span) => span.name === "session.readFromDisk.stats")?.metadata)
-      .toMatchObject({ cacheResult: "derived", eventCount: 2, totalMessages: 1 });
-    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata)
-      .toMatchObject({ readFullFile: true, eventCount: 2, totalMessages: 1 });
-  });
-
   it("does not count sub-agent instructions as user transcript entries", async () => {
     const copilotHome = makeTestDir("session-disk-reader-agent-instructions");
     const sessionId = "agent-instructions";
     writeSessionFiles(copilotHome, sessionId, {
       events: [
+        { type: "internal.trace", data: { payload: "ignored" } },
         { type: "user.message", data: { content: "Investigate this" } },
         {
           type: "tool.execution_start",
@@ -1071,13 +993,17 @@ describe("readMessagesFromDisk latest-page path", () => {
         },
       ],
     });
-    const { deps } = createDeps(copilotHome);
+    const { deps, spans } = createDeps(copilotHome);
 
     const result = await readMessagesFromDisk(deps, sessionId, { limit: 50 });
 
     expect(result.total).toBe(2);
+    expect(spans.find((span) => span.name === "session.readFromDisk.stats")?.metadata)
+      .toMatchObject({ cacheResult: "derived", eventCount: 5, totalMessages: 2 });
+    expect(spans.find((span) => span.name === "session.readFromDisk")?.metadata)
+      .toMatchObject({ readFullFile: true, eventCount: 5, totalMessages: 2 });
     expect(result.messages.filter((entry) => entry.type === "message")).toMatchObject([
-      { role: "user", content: "Investigate this" },
+      { id: "entry-0", role: "user", content: "Investigate this" },
     ]);
     expect(result.messages.find((entry) => entry.type === "tool")?.toolCall)
       .toMatchObject({

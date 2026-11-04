@@ -211,12 +211,6 @@ describe("Docs DB routes", () => {
     expect(res.body.error).toContain(`folder: "${folder}"`);
   });
 
-  it("DELETE /api/docs/db returns deleted:false for a missing slug", async () => {
-    const res = await request(app).delete(`/api/docs/db/${folder}/does-not-exist`);
-    expect(res.status).toBe(200);
-    expect(res.body.deleted).toBe(false);
-  });
-
   it("DELETE /api/docs/db rejects an unknown collection", async () => {
     const res = await request(app).delete("/api/docs/db/not-a-collection/some-slug");
     expect(res.status).toBe(400);
@@ -234,8 +228,13 @@ describe("Docs DB routes", () => {
 describe("Docs routes for the docs UI", () => {
   it("GET /api/docs/tree carries titles, summaries and collection names", async () => {
     await request(app).put("/api/docs/pages/guides/release/deploy").send({
-      frontmatter: { title: "Deploying: the safe way", description: "How releases ship.", tags: ["release"] },
-      body: "Body",
+      frontmatter: { title: "Deploying: phase #2", description: "Why: because", tags: ["release: safe"], owner: { team: "core" } },
+      body: "# Plan\n\nText",
+    }).expect(200);
+    const page = await request(app).get("/api/docs/pages/guides/release/deploy").expect(200);
+    expect(page.body).toMatchObject({
+      title: "Deploying: phase #2", tags: ["release: safe"], body: "# Plan\n\nText",
+      frontmatter: { description: "Why: because", owner: { team: "core" } },
     });
     await request(app).put("/api/docs/schema/runbooks").send({ name: "Runbook library", fields: [{ name: "owner", type: "text" }] });
 
@@ -246,9 +245,9 @@ describe("Docs routes for the docs UI", () => {
     expect(release.children).toEqual([
       expect.objectContaining({
         path: "guides/release/deploy",
-        title: "Deploying: the safe way",
-        description: "How releases ship.",
-        tags: ["release"],
+        title: "Deploying: phase #2",
+        description: "Why: because",
+        tags: ["release: safe"],
         modified: expect.any(String),
       }),
     ]);
@@ -270,22 +269,6 @@ describe("Docs routes for the docs UI", () => {
       decorate.mockRestore();
       warn.mockRestore();
     }
-  });
-
-  it("PUT /api/docs/pages serializes structured frontmatter on the server", async () => {
-    const save = await request(app).put("/api/docs/pages/notes/plan").send({
-      frontmatter: { title: "Plan: phase #2", description: "Why: because", tags: ["a: b"], owner: { team: "core" } },
-      body: "# Plan\n\nText",
-    });
-    expect(save.status).toBe(200);
-
-    const page = await request(app).get("/api/docs/pages/notes/plan");
-    expect(page.body).toMatchObject({
-      title: "Plan: phase #2",
-      tags: ["a: b"],
-      body: "# Plan\n\nText",
-      frontmatter: { description: "Why: because", owner: { team: "core" } },
-    });
   });
 
   it("PUT /api/docs/pages still requires content or structured fields", async () => {

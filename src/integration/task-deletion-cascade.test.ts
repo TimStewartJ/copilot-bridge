@@ -45,6 +45,10 @@ describe("task deletion removes child schedules", () => {
     initScheduler();
     const task = ctx.taskStore.createTask("Scheduled task");
     const otherTask = ctx.taskStore.createTask("Other task");
+    const tag = ctx.tagStore!.createTag("linked");
+    ctx.tagStore!.setEntityTags("task", task.id, [tag.id]);
+    const child = ctx.checklistStore.createChecklistItem(task.id, "Child item");
+    ctx.taskStore.linkWorkItem(task.id, "77", "github");
     const { cronId, onceId } = seedSchedules(task.id);
     const survivor = ctx.scheduleStore.createSchedule({
       taskId: otherTask.id,
@@ -62,7 +66,13 @@ describe("task deletion removes child schedules", () => {
     expect(before.cron).toContain(cronId);
     expect(before.oneShot).toContain(onceId);
 
-    await request(app).delete(`/api/tasks/${task.id}`).expect(200);
+    const deleted = await request(app).delete(`/api/tasks/${task.id}`).expect(200);
+    expect(deleted.body.ok).toBe(true);
+    expect(ctx.checklistStore.getChecklistItem(child.id)).toBeUndefined();
+    expect(ctx.tagStore!.getEntityTags("task", task.id)).toEqual([]);
+    expect((await request(app).get(`/api/tasks/${task.id}`)).status).toBe(404);
+    expect((await request(app).get(`/api/tasks/${otherTask.id}`)).body.task.title).toBe("Other task");
+    expect((await request(app).get("/api/tags")).body.tags[0].id).toBe(tag.id);
 
     expect(ctx.scheduleStore.getSchedule(cronId)).toBeUndefined();
     expect(ctx.scheduleStore.getSchedule(onceId)).toBeUndefined();
@@ -116,24 +126,6 @@ describe("task deletion removes child schedules", () => {
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
   });
 
-  it("restores entity tags when the cascade rolls back", async () => {
-    const task = ctx.taskStore.createTask("Tagged rollback");
-    const tag = ctx.tagStore!.createTag("release");
-    ctx.tagStore!.setEntityTags("task", task.id, [tag.id]);
-
-    db.exec("PRAGMA foreign_keys = OFF");
-    db.exec("ALTER TABLE tasks RENAME TO tasks_hidden");
-    await expect(
-      deleteTaskWithOwnedState(ctx, task.id, { sessionDisposition: "archive" }),
-    ).rejects.toThrow();
-    db.exec("ALTER TABLE tasks_hidden RENAME TO tasks");
-    db.exec("PRAGMA foreign_keys = ON");
-
-    // Tag removal is inside the cascade transaction, so a surviving task keeps
-    // its tags instead of silently losing them.
-    expect(ctx.tagStore!.getEntityTags("task", task.id)).toHaveLength(1);
-    expect(ctx.taskStore.getTask(task.id)).toBeDefined();
-  });
 });
 
 describe("task deletion session disposition", () => {
@@ -203,6 +195,11 @@ describe("task deletion session disposition", () => {
     const task = ctx.taskStore.createTask("Archive me");
     ctx.taskStore.linkSession(task.id, "session-a");
     ctx.taskStore.linkSession(task.id, "session-b");
+    const schedule = ctx.scheduleStore.createSchedule({ taskId: task.id, name: "Nightly", prompt: "run", type: "cron", cron: "0 0 * * *" });
+    ctx.sessionMetaStore.setScheduleMeta("session-a", schedule.id, "Nightly");
+    const cancelPrompts = vi.spyOn(ctx.deferredPromptStore!, "cancelForSession");
+    const cancelLoops = vi.spyOn(ctx.deferLoopStore!, "cancelForSession");
+    const cancelJobResults = vi.spyOn(ctx.deferredPromptStore!, "cancelManagementJobDeliveriesForSession");
     const invalidate = vi.spyOn(ctx.sessionManager, "invalidateSessionConfig");
 
     const res = await request(app)
@@ -212,6 +209,11 @@ describe("task deletion session disposition", () => {
     expect(res.body.archivedSessionIds).toEqual(["session-a", "session-b"]);
     // Kept chats rebuild their prompt, which named the deleted task.
     expect(invalidate.mock.calls).toEqual([["session-a", "task deleted"], ["session-b", "task deleted"]]);
+    expect(cancelPrompts.mock.calls).toEqual([["session-a"], ["session-b"]]);
+    expect(cancelLoops.mock.calls).toEqual([["session-a"], ["session-b"]]);
+    expect(cancelJobResults.mock.calls).toEqual([["session-a"], ["session-b"]]);
+    const provenance = db.prepare("SELECT scheduleId, scheduleName FROM bridge_session_state WHERE sessionId = ?").get("session-a");
+    expect(provenance).toMatchObject({ scheduleId: null, scheduleName: "Nightly" });
     expect(isArchived("session-a")).toBe(true);
     expect(isArchived("session-b")).toBe(true);
     expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
@@ -220,6 +222,9 @@ describe("task deletion session disposition", () => {
   it("does not leave sessions archived when the task delete rolls back", async () => {
     const task = ctx.taskStore.createTask("Atomic archive");
     ctx.taskStore.linkSession(task.id, "session-a");
+
+    const tag = ctx.tagStore!.createTag("release");
+    ctx.tagStore!.setEntityTags("task", task.id, [tag.id]);
 
     db.exec("PRAGMA foreign_keys = OFF");
     db.exec("ALTER TABLE tasks RENAME TO tasks_hidden");
@@ -231,30 +236,16 @@ describe("task deletion session disposition", () => {
 
     // Archiving commits with the cascade, so a surviving task cannot be left
     // with all of its sessions mysteriously archived.
+    expect(ctx.tagStore!.getEntityTags("task", task.id).map((item) => item.id)).toEqual([tag.id]);
     expect(isArchived("session-a")).toBe(false);
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
-  });
-
-  it("delete disposition deletes linked sessions and the task", async () => {
-    const task = ctx.taskStore.createTask("Delete me");
-    ctx.taskStore.linkSession(task.id, "session-a");
-    ctx.taskStore.linkSession(task.id, "session-b");
-    const deleted: string[] = [];
-    ctx.sessionManager.deleteSession = (async (id: string) => { deleted.push(id); }) as any;
-
-    const res = await request(app)
-      .delete(`/api/tasks/${task.id}?sessionDisposition=delete`)
-      .expect(200);
-
-    expect(deleted).toEqual(["session-a", "session-b"]);
-    expect(res.body.deletedSessionIds).toEqual(["session-a", "session-b"]);
-    expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
   });
 
   it("unlinks sessions another task still owns instead of deleting them", async () => {
     const task = ctx.taskStore.createTask("Owner");
     const otherTask = ctx.taskStore.createTask("Co-owner");
     ctx.taskStore.linkSession(task.id, "exclusive-session");
+    ctx.taskStore.linkSession(task.id, "second-exclusive");
     ctx.taskStore.linkSession(task.id, "shared-session");
     ctx.taskStore.linkSession(otherTask.id, "shared-session");
     const deleted: string[] = [];
@@ -267,7 +258,9 @@ describe("task deletion session disposition", () => {
 
     // Deleting a session unlinks it from every task, so a shared session must
     // never be destroyed on behalf of just one of its owners.
-    expect(deleted).toEqual(["exclusive-session"]);
+    expect(deleted).toEqual(["exclusive-session", "second-exclusive"]);
+    expect(res.body.deletedSessionIds).toEqual(deleted);
+    expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
     expect(res.body.unlinkedSharedSessionIds).toEqual(["shared-session"]);
     expect(ctx.taskStore.getTask(otherTask.id)!.sessionIds).toEqual(["shared-session"]);
     expect(invalidate.mock.calls).toEqual([["shared-session", "task deleted"]]);
@@ -305,36 +298,6 @@ describe("task deletion session disposition", () => {
     // rather than a set of orphaned sessions.
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
     expect(ctx.taskStore.getTask(task.id)!.sessionIds).toEqual(["doomed-session"]);
-  });
-
-  it("cancels deferred work for sessions archived in bulk", async () => {
-    const task = ctx.taskStore.createTask("Deferred host");
-    ctx.taskStore.linkSession(task.id, "session-a");
-    ctx.taskStore.linkSession(task.id, "session-b");
-    const cancelledPrompts: string[] = [];
-    const cancelledLoops: string[] = [];
-    ctx.deferredPromptStore!.cancelForSession = ((id: string) => {
-      cancelledPrompts.push(id);
-      return 1;
-    }) as any;
-    ctx.deferLoopStore!.cancelForSession = ((id: string) => {
-      cancelledLoops.push(id);
-      return 1;
-    }) as any;
-    const cancelledJobResults: string[] = [];
-    ctx.deferredPromptStore!.cancelManagementJobDeliveriesForSession = ((id: string) => {
-      cancelledJobResults.push(id);
-      return 1;
-    }) as any;
-
-    await request(app).delete(`/api/tasks/${task.id}?sessionDisposition=archive`).expect(200);
-
-    // Per-session `session:archived` events are what normally cancel deferred
-    // work; the bulk path skips them, so it must cancel explicitly or an
-    // archived session could still fire a deferred prompt.
-    expect(cancelledPrompts).toEqual(["session-a", "session-b"]);
-    expect(cancelledLoops).toEqual(["session-a", "session-b"]);
-    expect(cancelledJobResults).toEqual(["session-a", "session-b"]);
   });
 
   it("keeps the task when a session is linked while the delete runs", async () => {
@@ -402,27 +365,6 @@ describe("task deletion session disposition", () => {
     });
   });
 
-  it("clears a dangling scheduleId on sessions that survive the task", async () => {
-    const task = ctx.taskStore.createTask("Scheduled");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Nightly",
-      prompt: "run",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-    ctx.taskStore.linkSession(task.id, "run-session");
-    ctx.sessionMetaStore.setScheduleMeta("run-session", schedule.id, "Nightly");
-
-    await request(app).delete(`/api/tasks/${task.id}?sessionDisposition=archive`).expect(200);
-
-    const row = db
-      .prepare("SELECT scheduleId, scheduleName FROM bridge_session_state WHERE sessionId = ?")
-      .get("run-session") as { scheduleId: string | null; scheduleName: string | null };
-    // The name is provenance worth keeping; the ID now points at nothing.
-    expect(row.scheduleId).toBeNull();
-    expect(row.scheduleName).toBe("Nightly");
-  });
 });
 
 describe("scheduler self-heals pre-existing orphaned schedules", () => {
@@ -450,29 +392,6 @@ describe("scheduler self-heals pre-existing orphaned schedules", () => {
 });
 
 describe("schedule deletion is atomic", () => {
-  it("deletes the schedule, its runs, and its claims together", () => {
-    const task = ctx.taskStore.createTask("Schedule host");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Cascade",
-      prompt: "run",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-      .run(schedule.id, "run-1", new Date().toISOString());
-    db.prepare(`
-      INSERT INTO schedule_run_claims (scheduleId, runKey, source, status, claimedAt, leaseExpiresAt)
-      VALUES (?, 'key', 'cron', 'claimed', ?, ?)
-    `).run(schedule.id, new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
-
-    ctx.scheduleStore.deleteSchedule(schedule.id);
-
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toBeUndefined();
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schedule_runs WHERE scheduleId = ?").get(schedule.id) as any).count).toBe(0);
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schedule_run_claims WHERE scheduleId = ?").get(schedule.id) as any).count).toBe(0);
-  });
-
   it("rolls back run history when the schedule row delete fails", () => {
     const task = ctx.taskStore.createTask("Schedule host");
     const schedule = ctx.scheduleStore.createSchedule({

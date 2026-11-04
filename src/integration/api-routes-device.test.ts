@@ -84,6 +84,9 @@ describe("Device management routes", () => {
     });
     const { app } = createTestApp();
 
+    await request(app).post("/api/device/hibernate/on-idle").send({ enabled: true, graceMinutes: 5 }).expect(202);
+    expect(getHibernateOnIdleStatus().armed).toBe(true);
+
     const res = await request(app)
       .post("/api/device/hibernate")
       .send({});
@@ -97,6 +100,7 @@ describe("Device management routes", () => {
       onIdle: disarmedOnIdle,
       message: "Hibernate requested. This device may sleep shortly.",
     });
+    expect(getHibernateOnIdleStatus().armed).toBe(false);
     expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(250);
@@ -171,14 +175,9 @@ describe("Device management routes", () => {
 
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(requestDeviceHibernateMock).not.toHaveBeenCalled();
-  });
 
-  it("POST /api/device/hibernate/cancel reports when nothing is pending", async () => {
-    const { app } = createTestApp();
-
-    const res = await request(app).post("/api/device/hibernate/cancel").send({});
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ ok: true, cancelled: false, pending: false });
+    const again = await request(app).post("/api/device/hibernate/cancel").send({}).expect(200);
+    expect(again.body).toMatchObject({ ok: true, cancelled: false, pending: false });
   });
 
   it("POST /api/device/hibernate/on-idle arms the watcher and hibernates once sessions go idle", async () => {
@@ -330,16 +329,4 @@ describe("Device management routes", () => {
     expect(getHibernateOnIdleStatus().armed).toBe(false);
   });
 
-  it("an immediate hibernate request disarms the idle watcher", async () => {
-    vi.useFakeTimers({ now: new Date("2026-06-06T12:00:00.000Z") });
-    requestDeviceHibernateMock.mockResolvedValue(linuxHibernateCommand);
-    const { app } = createTestApp();
-
-    await request(app).post("/api/device/hibernate/on-idle").send({ enabled: true, graceMinutes: 5 });
-    expect(getHibernateOnIdleStatus().armed).toBe(true);
-
-    const res = await request(app).post("/api/device/hibernate").send({});
-    expect(res.body.onIdle).toEqual(disarmedOnIdle);
-    expect(getHibernateOnIdleStatus().armed).toBe(false);
-  });
 });

@@ -43,16 +43,6 @@ describe("Session manager routes", () => {
     expect(warm).toHaveBeenCalledExactlyOnceWith("test-id", { source: "chat-open" });
   });
 
-  it("GET /api/sessions/:id/messages-fast returns runState for stalled sessions", async () => {
-    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
-    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
-
-    const res = await request(app).get("/api/sessions/test-id/messages-fast");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ runState: "stalled" });
-  });
-
   it("GET /api/busy includes background lifecycle work without inventing a session", async () => {
     const sessionManager = createMockSessionManager();
     sessionManager.getSessionActivity = vi.fn().mockReturnValue([]);
@@ -208,12 +198,14 @@ describe("Session manager routes", () => {
       agents: [moves],
     });
 
+    ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("stalled");
+    ctx.sessionManager.isSessionBusy = vi.fn().mockReturnValue(true);
     const res = await request(app).get("/api/sessions/test-id/messages-fast?limit=50&before=200");
 
     expect(res.status).toBe(200);
     expect(ctx.sessionManager.readMessagesFromDisk).toHaveBeenCalledWith("test-id", { limit: 50, before: 200 });
     expect(res.body).toMatchObject({
-      agents: [moves], lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
+      runState: "stalled", agents: [moves], lastVisibleActivityAt: "2026-04-29T12:05:00.000Z",
       coverage: { latestEventId: "event-1" }, warm: false,
     });
   });
@@ -413,11 +405,23 @@ describe("Session manager routes", () => {
     });
     ({ app, ctx } = createTestApp({ copilotHome, sessionManager }));
 
+    const taskA = ctx.taskStore.createTask("Task A");
+    const taskB = ctx.taskStore.createTask("Task B");
+    ctx.taskStore.linkSession(taskA.id, "test-id");
+    ctx.taskStore.linkSession(taskB.id, "test-id");
+    let linkedAtWarm: string[] = [];
+    sessionManager.warmSession.mockImplementation(async (id: string) => {
+      linkedAtWarm = (ctx.taskStore.listTaskLinksBySession([id]).get(id) ?? []).map((task) => task.id);
+    });
+
     const res = await request(app).post("/api/sessions/test-id/fork");
     const completed = await waitForForkJob(res.body.job.id);
 
     expect(res.status).toBe(202);
     expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
+    expect(linkedAtWarm.sort()).toEqual([taskA.id, taskB.id].sort());
+    expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain(completed.body.sessionId);
+    expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain(completed.body.sessionId);
     expect(sessionManager.warmSession).toHaveBeenCalledWith("fork-session");
     expect(sessionManager.setSessionName).toHaveBeenCalledWith("fork-session", "Fork of Original session");
     expect(sessionManager.listSessionsFromDisk).not.toHaveBeenCalled();
@@ -579,27 +583,6 @@ describe("Session manager routes", () => {
 
     expect(res.status).toBe(501);
     expect(res.body.code).toBe("unsupported");
-  });
-
-  it("POST /api/sessions/:id/fork preserves all task links from the source session", async () => {
-    const sessionManager = createMockSessionManager();
-    ({ app, ctx } = createTestApp({ sessionManager }));
-    const taskA = ctx.taskStore.createTask("Task A");
-    ctx.taskStore.linkSession(taskA.id, "test-id");
-    const taskB = ctx.taskStore.createTask("Task B");
-    ctx.taskStore.linkSession(taskB.id, "test-id");
-    sessionManager.warmSession = vi.fn().mockImplementation(async (sessionId: string) => {
-      expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain(sessionId);
-      expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain(sessionId);
-    });
-
-    const res = await request(app).post("/api/sessions/test-id/fork");
-    const completed = await waitForForkJob(res.body.job.id);
-
-    expect(res.status).toBe(202);
-    expect(completed.body).toMatchObject({ status: "succeeded", sessionId: "fork-session" });
-    expect(ctx.taskStore.getTask(taskA.id)?.sessionIds).toContain("fork-session");
-    expect(ctx.taskStore.getTask(taskB.id)?.sessionIds).toContain("fork-session");
   });
 
   it("POST /api/sessions/:id/reload reloads a session", async () => {

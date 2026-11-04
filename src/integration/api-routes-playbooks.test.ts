@@ -7,11 +7,15 @@ describe("playbook routes", () => {
   it("passes a launch playbook to task and taskless session creation and rejects malformed names", async () => {
     const { app, ctx } = createTestApp();
     const task = await request(app).post("/api/tasks").send({ title: "Playbook host" });
-    const createTaskSession = vi.spyOn(ctx.sessionManager, "createTaskSession");
+    const createTaskSession = vi.spyOn(ctx.sessionManager, "createTaskSession").mockResolvedValue({ sessionId });
 
     const created = await request(app).post(`/api/tasks/${task.body.task.id}/session`).send({ playbook: "watch" });
     expect(created.status).toBe(200);
     expect(createTaskSession.mock.calls[0]?.[6]).toMatchObject({ playbook: "watch" });
+    expect(created.body.sessionId).toBe(sessionId);
+    expect(ctx.taskStore.getTask(task.body.task.id)?.sessionIds).toContain(sessionId);
+    const linked = await request(app).get(`/api/tasks/${task.body.task.id}`).expect(200);
+    expect(linked.body.task.activeSessionIds).toContain(sessionId);
 
     const rejected = await request(app).post(`/api/tasks/${task.body.task.id}/session`).send({ playbook: "../escape" });
     expect(rejected.status).toBe(400);
@@ -26,8 +30,9 @@ describe("playbook routes", () => {
   it("reports and changes a chat's playbook, mapping errors to status codes", async () => {
     const { app, ctx } = createTestApp();
     vi.spyOn(ctx.sessionManager, "getSessionPlaybook").mockReturnValue({ playbook: "research", source: "agent", label: "Research" });
-    const model = await request(app).get(`/api/sessions/${sessionId}/model`);
-    expect(model.body).toMatchObject({ playbook: { playbook: "research", source: "agent" } });
+    vi.spyOn(ctx.sessionManager, "getSessionModelState").mockResolvedValue({ model: "test-model", reasoningEffort: "high", source: "events" });
+    const model = await request(app).get(`/api/sessions/${sessionId}/model`).expect(200);
+    expect(model.body).toEqual({ model: "test-model", reasoningEffort: "high", source: "events", playbook: { playbook: "research", source: "agent", label: "Research" } });
 
     const setSessionPlaybook = vi.spyOn(ctx.sessionManager, "setSessionPlaybook")
       .mockResolvedValue({ playbook: "bug-fix", source: "user", label: "Bug fix" });

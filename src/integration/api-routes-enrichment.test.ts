@@ -25,74 +25,30 @@ describe("Task enrichment routes", () => {
   });
 
   it("GET /api/tasks/:id/enriched returns populated provider metadata", async () => {
-    const enrichWorkItemsSpy = vi.spyOn(providers, "enrichWorkItems").mockResolvedValue([
-      {
-        id: "30000015",
-        provider: "ado",
-        title: "Review SDL bug",
-        state: "Active",
-        type: "Bug",
-        assignedTo: "Tim Stewart",
-        areaPath: "One\\Bridge",
-        url: "https://exampleorg.visualstudio.com/One/_workitems/edit/30000015",
-      },
-    ]);
-    const enrichPullRequestsSpy = vi.spyOn(providers, "enrichPullRequests").mockResolvedValue([
-      {
-        repoId: "a1a1a1a1-0000-4000-8000-000000000001",
-        repoName: "example-repo",
-        prId: 10000002,
-        provider: "ado",
-        title: "[Cherry-pick] Remove eastus2euap from Arc region dropdown",
-        status: "completed",
-        createdBy: "Tim Stewart",
-        reviewerCount: 2,
-        url: "https://exampleorg.visualstudio.com/One/_git/example-repo/pullrequest/10000002",
-      },
-    ]);
-
+    const workItem = {
+      id: "42", provider: "ado" as const, title: "Fix the build", state: "Active", type: "Bug",
+      assignedTo: "Example User", areaPath: "Project", url: "https://dev.azure.com/example/Project/_workitems/edit/42",
+    };
+    const ref = { repoId: "00000000-0000-4000-8000-000000000001", repoName: "Service", prId: 12, provider: "ado" } satisfies PRRef;
+    const pullRequest = { ...ref, title: "Fix the build", status: "completed" as const, createdBy: "Example User", reviewerCount: 2,
+      url: "https://dev.azure.com/example/Project/_git/Service/pullrequest/12" };
+    const enrichWorkItems = vi.spyOn(providers, "enrichWorkItems").mockResolvedValue([workItem]);
+    const enrichPullRequests = vi.spyOn(providers, "enrichPullRequests").mockResolvedValue([pullRequest]);
     try {
-      const task = ctx.taskStore.createTask("Enriched payload");
-      ctx.taskStore.linkWorkItem(task.id, "30000015", "ado");
-      ctx.taskStore.linkPR(task.id, {
-        repoId: "a1a1a1a1-0000-4000-8000-000000000001",
-        repoName: "example-repo",
-        prId: 10000002,
-        provider: "ado",
-      });
+      const created = await request(app).post("/api/tasks").send({ title: "Enriched payload", workItem: { workItemId: "42", provider: "ado" } }).expect(200);
+      const task = created.body.task;
+      expect(task).toMatchObject({ title: "Enriched payload", workItems: [{ id: "42", provider: "ado" }], activeSessionIds: [], sessionCount: 0 });
+      ctx.taskStore.linkPR(task.id, ref);
 
-      const res = await request(app).get(`/api/tasks/${task.id}/enriched`);
-
-      expect(res.status).toBe(200);
+      const res = await request(app).get(`/api/tasks/${task.id}/enriched`).expect(200);
+      expect(enrichWorkItems).toHaveBeenCalledWith(task.workItems);
+      expect(enrichPullRequests).toHaveBeenCalledWith([ref]);
       expect(res.body.task).toMatchObject({ id: task.id, title: "Enriched payload" });
-      expect(res.body.workItems).toEqual([
-        {
-          id: "30000015",
-          provider: "ado",
-          title: "Review SDL bug",
-          state: "Active",
-          type: "Bug",
-          assignedTo: "Tim Stewart",
-          areaPath: "One\\Bridge",
-          url: "https://exampleorg.visualstudio.com/One/_workitems/edit/30000015",
-        },
-      ]);
-      expect(res.body.pullRequests).toEqual([
-        {
-          repoId: "a1a1a1a1-0000-4000-8000-000000000001",
-          repoName: "example-repo",
-          prId: 10000002,
-          provider: "ado",
-          title: "[Cherry-pick] Remove eastus2euap from Arc region dropdown",
-          status: "completed",
-          createdBy: "Tim Stewart",
-          reviewerCount: 2,
-          url: "https://exampleorg.visualstudio.com/One/_git/example-repo/pullrequest/10000002",
-        },
-      ]);
+      expect(res.body.workItems).toEqual([workItem]);
+      expect(res.body.pullRequests).toEqual([pullRequest]);
     } finally {
-      enrichWorkItemsSpy.mockRestore();
-      enrichPullRequestsSpy.mockRestore();
+      enrichWorkItems.mockRestore();
+      enrichPullRequests.mockRestore();
     }
   });
 });

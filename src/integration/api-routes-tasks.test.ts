@@ -106,16 +106,6 @@ describe("Task routes", () => {
     expect(ctx.taskHistoryStore!.countEntries(task.id)).toBe(1);
   });
 
-  it("rebuilds a chat's prompt when it is linked to or unlinked from a task", async () => {
-    const task = ctx.taskStore.createTask("Link target");
-    const invalidate = vi.spyOn(ctx.sessionManager, "invalidateSessionConfig");
-    expect((await request(app).post(`/api/tasks/${task.id}/link`).send({ type: "session", sessionId: "chat-1" })).status).toBe(200);
-    expect(invalidate).toHaveBeenLastCalledWith("chat-1", "task link changed");
-    invalidate.mockClear();
-    expect((await request(app).delete(`/api/tasks/${task.id}/link`).send({ type: "session", sessionId: "chat-1" })).status).toBe(200);
-    expect(invalidate).toHaveBeenLastCalledWith("chat-1", "task link changed");
-  });
-
   it("PATCH saves task instructions and rebuilds the task's chats only when they change", async () => {
     const task = ctx.taskStore.createTask("Instructions task");
     const invalidate = vi.spyOn(ctx.sessionManager, "invalidateTaskSessionConfig");
@@ -210,43 +200,6 @@ describe("Task routes", () => {
     expect(storageResponse.body.totalDiskSizeBytes).toBe(42);
   });
 
-  it("PATCH /api/tasks/:id updates a task", async () => {
-    const create = await request(app)
-      .post("/api/tasks")
-      .send({ title: "Original" });
-    const id = create.body.task.id;
-
-    const res = await request(app)
-      .patch(`/api/tasks/${id}`)
-      .send({
-        title: "Updated",
-        muted: true,
-        notes: "Some notes",
-        doneWhen: "Shipped to production",
-        nextAction: "Verify telemetry",
-        waitingOn: "Customer confirmation",
-        nextTouchAt: "2026-05-02T09:00:00.000Z",
-      });
-    expect(res.status).toBe(200);
-    expect(res.body.task.title).toBe("Updated");
-    expect(res.body.task.muted).toBe(true);
-    expect(res.body.task.notes).toBe("Some notes");
-    expect(res.body.task.doneWhen).toBe("Shipped to production");
-    expect(res.body.task.nextAction).toBe("Verify telemetry");
-    expect(res.body.task.waitingOn).toBe("Customer confirmation");
-    expect(res.body.task.nextTouchAt).toBe("2026-05-02T09:00:00.000Z");
-
-    const get = await request(app).get(`/api/tasks/${id}`);
-    expect(get.status).toBe(200);
-    expect(get.body.task).toEqual(expect.objectContaining({
-      doneWhen: "Shipped to production",
-      muted: true,
-      nextAction: "Verify telemetry",
-      waitingOn: "Customer confirmation",
-      nextTouchAt: "2026-05-02T09:00:00.000Z",
-    }));
-  });
-
   it("PATCH /api/tasks/:id updates kind and rejects invalid kinds", async () => {
     const create = await request(app)
       .post("/api/tasks")
@@ -268,23 +221,6 @@ describe("Task routes", () => {
       .send({ kind: "invalid" });
     expect(invalid.status).toBe(400);
     expect(invalid.body.error).toContain("kind must be either 'task' or 'ongoing'");
-  });
-
-  it("POST /api/tasks creates a task with an initial work item link", async () => {
-    const res = await request(app)
-      .post("/api/tasks")
-      .send({
-        title: "New Task",
-        workItem: { workItemId: "30000015", provider: "ado" },
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body.task).toEqual(expect.objectContaining({
-      title: "New Task",
-      workItems: [{ id: "30000015", provider: "ado" }],
-      activeSessionIds: [],
-      sessionCount: 0,
-    }));
   });
 
   it("POST /api/tasks links several work items at once and skips duplicates", async () => {
@@ -458,17 +394,6 @@ describe("Task group routes", () => {
     const list = await request(app).get("/api/task-groups");
     const unchanged = list.body.groups.find((g: { id: string }) => g.id === id);
     expect(unchanged.color).toBe(originalColor);
-  });
-
-  it("DELETE /api/task-groups/:id reports an idempotent no-op for a missing group", async () => {
-    const del = await request(app).delete("/api/task-groups/missing-group");
-
-    expect(del.status).toBe(200);
-    expect(del.body).toEqual({
-      success: true,
-      deleted: false,
-      ungroupedTaskCount: 0,
-    });
   });
 
   it("DELETE /api/task-groups/:id returns JSON and rolls back on cascade failure", async () => {

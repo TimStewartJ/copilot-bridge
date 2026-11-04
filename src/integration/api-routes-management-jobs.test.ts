@@ -78,22 +78,6 @@ describe("management job API routes", () => {
     expect(invalidLimit.body.error).toContain("limit must be a positive integer");
   });
 
-  it("returns detail with sanitized log tail", async () => {
-    const { app, store } = createManagementJobApiTestApp();
-    const job = store.enqueue("staging_preview", { stagingDir: "detail" });
-    if (!job.logPath) throw new Error("expected job log path");
-    writeFileSync(job.logPath, "safe\n\u001b[31mred\u001b[0m\nnul:\u0000end", "utf-8");
-
-    const res = await request(app).get(`/api/management-jobs/${job.id}`);
-
-    expect(res.status).toBe(200);
-    expect(res.body.id).toBe(job.id);
-    expect(res.body.input).toEqual({ stagingDir: "detail" });
-    expect(res.body.logTail).toContain("red");
-    expect(res.body.logTail).not.toContain("\u001b");
-    expect(res.body.logTail).toContain("�");
-  });
-
   it("returns clamped sanitized log tails and validates tailBytes", async () => {
     const { app, store } = createManagementJobApiTestApp();
     const job = store.enqueue("staging_preview", { stagingDir: "log" });
@@ -124,7 +108,12 @@ describe("management job API routes", () => {
     const { app, store } = createManagementJobApiTestApp();
     const job = store.enqueue("staging_preview", { stagingDir: "pruned-log" });
     if (!job.logPath) throw new Error("expected job log path");
-    writeFileSync(job.logPath, "about to be pruned", "utf-8");
+    writeFileSync(job.logPath, "safe\n\u001b[31mred\u001b[0m\nnul:\u0000end", "utf-8");
+    const original = await request(app).get(`/api/management-jobs/${job.id}`).expect(200);
+    expect(original.body).toMatchObject({ id: job.id, input: { stagingDir: "pruned-log" } });
+    expect(original.body.logTail).toContain("red");
+    expect(original.body.logTail).not.toContain("\u001b");
+    expect(original.body.logTail).toContain("�");
     store.succeed(job.id, {});
     rmSync(job.logPath, { force: true });
 

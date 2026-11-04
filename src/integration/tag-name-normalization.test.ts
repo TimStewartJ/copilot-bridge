@@ -8,7 +8,7 @@ import { createTagToolDefinitions } from "../server/tools/tag-tools.js";
 import { createTaskToolDefinitions } from "../server/tools/task-tools.js";
 import { toolFailure } from "../server/tool-results.js";
 import { makeTestDir, setupTestDb } from "../server/__tests__/helpers.js";
-import { createTestApp } from "../test-support/api-routes.js";
+import { createTestApp, request } from "../test-support/api-routes.js";
 
 const NFC_CAFE = "Café";
 const NFD_CAFE = "Cafe\u0301";
@@ -49,7 +49,7 @@ describe("tag name normalization", () => {
   });
 
   it("uses canonical tag lookups through tag tools and task tag creation", async () => {
-    const { ctx } = createTestApp();
+    const { app, ctx } = createTestApp();
     const tagCreateTool = getTool(ctx, "tag_create");
     const taskCreateTool = getTool(ctx, "task_create");
 
@@ -57,6 +57,9 @@ describe("tag name normalization", () => {
       .resolves.toMatchObject({ success: true });
     await expect(tagCreateTool.handler({ name: NFD_CAFE }, createInvocation("tag_create")))
       .resolves.toEqual(toolFailure(`Tag "${NFD_CAFE}" already exists`));
+    const collision = await request(app).post("/api/tags").send({ name: NFD_CAFE });
+    expect(collision.status).toBe(400);
+    expect(collision.body.error).toContain("already exists");
 
     const created = await taskCreateTool.handler({
       title: "Use canonical tag",

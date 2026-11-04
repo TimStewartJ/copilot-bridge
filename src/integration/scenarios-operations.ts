@@ -47,26 +47,16 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-07", title: "renames and reschedules an existing recurring schedule",
-    async run(world) {
-      const task = await world.createTask("Reschedule task");
-      world.initializeScheduler();
-      const schedule = await world.createSchedule(task.id, "Old schedule");
-      const updated = await request(world.app).patch(`/api/schedules/${schedule.id}`).send({ name: "New schedule", cron: "0 10 * * 1-5", timezone: "UTC" });
-      expect(updated.status).toBe(200);
-      expect(updated.body).toMatchObject({ id: schedule.id, name: "New schedule", cron: "0 10 * * 1-5", timezone: "UTC" });
-      expect(world.ctx.scheduleStore.getSchedule(schedule.id)?.name).toBe("New schedule");
-    },
-  },
-  {
     id: "OPS-08", title: "disables and re-enables a schedule without replacing it",
     async run(world) {
       const task = await world.createTask("Pause automation");
       world.initializeScheduler();
       const schedule = await world.createSchedule(task.id, "Pauseable");
       expect((await request(world.app).patch(`/api/schedules/${schedule.id}`).send({ enabled: false })).body.enabled).toBe(false);
-      expect((await request(world.app).patch(`/api/schedules/${schedule.id}`).send({ enabled: true })).body.enabled).toBe(true);
-      expect(world.ctx.scheduleStore.getSchedule(schedule.id)?.id).toBe(schedule.id);
+      const changes = { name: "New schedule", cron: "0 10 * * 1-5", timezone: "UTC", enabled: true };
+      const resumed = await request(world.app).patch(`/api/schedules/${schedule.id}`).send(changes).expect(200);
+      expect(resumed.body).toMatchObject({ id: schedule.id, ...changes });
+      expect(world.ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({ id: schedule.id, ...changes });
     },
   },
   {
@@ -87,11 +77,15 @@ export const operationScenarios: IntegrationScenario[] = [
       world.initializeScheduler();
       const removed = await world.createSchedule(task.id, "Remove");
       const kept = await world.createSchedule(task.id, "Keep", { cron: "0 11 * * *" });
+      world.ctx.sessionMetaStore.recordScheduleRun(removed.id, "run-1", "2030-01-01T00:00:00.000Z");
+      expect(world.ctx.scheduleStore.claimScheduleRun(removed.id, "manual").acquired).toBe(true);
       const deletion = await request(world.app).delete(`/api/schedules/${removed.id}`);
       expect(deletion.status).toBe(200);
       const listed = await request(world.app).get(`/api/schedules?taskId=${task.id}`);
       expect(listed.body.map((item: any) => item.id)).toEqual([kept.id]);
       expect(world.ctx.scheduleStore.getSchedule(removed.id)).toBeUndefined();
+      expect(world.ctx.sessionMetaStore.listScheduleRuns(removed.id)).toEqual([]);
+      expect(world.db.prepare("SELECT runKey FROM schedule_run_claims WHERE scheduleId = ?").all(removed.id)).toEqual([]);
     },
   },
   {
@@ -142,16 +136,6 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-15", title: "stores a schedule's model tier",
-    async run(world) {
-      const task = await world.createTask("Model schedule");
-      world.initializeScheduler();
-      const schedule = await world.createSchedule(task.id, "Model-aware", { modelTier: "preset2" });
-      expect(schedule).toMatchObject({ taskId: task.id, name: "Model-aware", type: "cron", modelTier: "preset2" });
-      expect(world.ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({ modelTier: "preset2" });
-    },
-  },
-  {
     id: "OPS-20", title: "creates a global session with validated model launch options",
     async run(world) {
       const selection = { model: "gpt-test", reasoningEffort: "high", contextTier: "long_context" };
@@ -161,18 +145,6 @@ export const operationScenarios: IntegrationScenario[] = [
       expect(response.body.sessionId).toBe("global-session");
       expect(validate).toHaveBeenCalledWith(selection);
       expect(create).toHaveBeenCalledWith({ background: true, ...selection });
-    },
-  },
-  {
-    id: "OPS-21", title: "creates a task session and links it durably to the task",
-    async run(world) {
-      const task = await world.createTask("Conversation task");
-      vi.spyOn(world.ctx.sessionManager, "createTaskSession").mockResolvedValue({ sessionId: "linked-session" });
-      const response = await request(world.app).post(`/api/tasks/${task.id}/session`).send({});
-      expect(response.status).toBe(200);
-      expect(response.body.sessionId).toBe("linked-session");
-      expect(world.ctx.taskStore.getTask(task.id)?.sessionIds).toContain("linked-session");
-      expect((await world.getTask(task.id)).activeSessionIds).toContain("linked-session");
     },
   },
   {

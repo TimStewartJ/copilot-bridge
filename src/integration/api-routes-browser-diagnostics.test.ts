@@ -188,22 +188,14 @@ describe("Browser diagnostics routes", () => {
     expect(res.body.config).not.toHaveProperty("liveView");
   });
 
-  it("GET /api/browser/diagnostics reports what the last check of the live view found", async () => {
-    const local = createTestApp();
-    const check = { ok: false, checkedAt: "2026-03-10T12:00:00.000Z", message: "The stream sent no picture of the page." };
-    vi.spyOn(browserRuntimeOf(local.ctx).live, "getLastCheck").mockReturnValue(check);
-
-    const res = await request(local.app).get("/api/browser/diagnostics");
-
-    expect(res.status).toBe(200);
-    expect(res.body.config.liveView).toEqual(check);
-  });
-
   it("GET /api/browser/diagnostics counts public profiles and lists blocked pages", async () => {
     const local = createTestApp();
     seedPublicProfile(local.ctx, 1);
     seedPublicProfile(local.ctx, 2);
-    const lease = await browserRuntimeOf(local.ctx).broker.createSessionTarget("public");
+    const runtime = browserRuntimeOf(local.ctx);
+    const check = { ok: false, checkedAt: "2026-03-10T12:00:00.000Z", message: "The stream sent no picture of the page." };
+    vi.spyOn(runtime.live, "getLastCheck").mockReturnValue(check);
+    const lease = await runtime.broker.createSessionTarget("public");
     for (const by of ["Cloudflare", "DataDome", "Cloudflare"]) {
       local.ctx.telemetryStore!.recordSpan({
         name: "browser.page.blocked",
@@ -216,12 +208,13 @@ describe("Browser diagnostics routes", () => {
     const res = await request(local.app).get("/api/browser/diagnostics");
 
     expect(res.status).toBe(200);
+    expect(res.body.config.liveView).toEqual(check);
     expect(res.body.contexts.public).toMatchObject({ profiles: 2, profilesInUse: 1 });
     expect(res.body.issues).toEqual([
       { code: "page.blocked.cloudflare", label: "Blocked by Cloudflare", count: 2, latestAt: expect.any(String) },
       { code: "page.blocked.datadome", label: "Blocked by DataDome", count: 1, latestAt: expect.any(String) },
     ]);
-    await browserRuntimeOf(local.ctx).broker.disposeSessionTarget(lease, { toolName: "test", browserOpId: "op-1" });
+    await runtime.broker.disposeSessionTarget(lease, { toolName: "test", browserOpId: "op-1" });
   });
 
   it.each([

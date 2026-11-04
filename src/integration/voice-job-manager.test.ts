@@ -187,7 +187,7 @@ describe("voice job restart gating", () => {
     });
 
     it("removes old orphan job directories but preserves young candidates", async () => {
-      const { runtimePaths, manager } = createManagerHarness();
+      const { runtimePaths, store, manager } = createManagerHarness();
       const now = Date.parse("2026-07-23T20:00:00.000Z");
       const oldId = randomUUID();
       const youngId = randomUUID();
@@ -202,38 +202,24 @@ describe("voice job restart gating", () => {
       utimesSync(oldDir, oldTime, oldTime);
       utimesSync(youngDir, youngTime, youngTime);
 
+      const activeId = randomUUID();
+      const activeAudio = join(runtimePaths.dataDir, "voice-jobs", activeId, "recording.wav");
+      mkdirSync(dirname(activeAudio), { recursive: true });
+      writeFileSync(activeAudio, "active-audio");
+      utimesSync(dirname(activeAudio), oldTime, oldTime);
+      store.createVoiceJob({ id: activeId, composerKey: "existing-session", targetSessionId: "existing-session", audioPath: activeAudio });
+      store.updateVoiceJob(activeId, { status: "transcribing" });
+
       const result = await manager.runMaintenance(now);
       await manager.shutdown();
 
-      expect(result.orphanDirectoriesRemoved).toBe(1);
       expect(existsSync(oldDir)).toBe(false);
       expect(existsSync(youngDir)).toBe(true);
+      expect(existsSync(activeAudio)).toBe(true);
+      expect(store.getVoiceJob(activeId)?.status).toBe("transcribing");
+      expect(result.orphanDirectoriesRemoved).toBe(1);
     });
 
-    it("preserves active job directories during maintenance", async () => {
-      const { runtimePaths, store, manager } = createManagerHarness();
-      const now = Date.parse("2026-07-23T20:00:00.000Z");
-      const id = randomUUID();
-      const audioPath = join(runtimePaths.dataDir, "voice-jobs", id, "recording.wav");
-      mkdirSync(dirname(audioPath), { recursive: true });
-      writeFileSync(audioPath, "test-audio");
-      const oldTime = new Date(now - VOICE_JOB_ORPHAN_GRACE_MS - 1);
-      utimesSync(dirname(audioPath), oldTime, oldTime);
-      store.createVoiceJob({
-        id,
-        composerKey: "existing-session",
-        targetSessionId: "existing-session",
-        audioPath,
-      });
-      store.updateVoiceJob(id, { status: "transcribing" });
-
-      const result = await manager.runMaintenance(now);
-      await manager.shutdown();
-
-      expect(result.orphanDirectoriesRemoved).toBe(0);
-      expect(existsSync(dirname(audioPath))).toBe(true);
-      expect(store.getVoiceJob(id)?.status).toBe("transcribing");
-    });
   });
 
   it("starts an Autopilot recording's run in Autopilot, including after a restart", async () => {

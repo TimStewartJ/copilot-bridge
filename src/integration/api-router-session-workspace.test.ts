@@ -57,7 +57,26 @@ describe("session workspace routes", () => {
     const task = ctx.taskStore.createTask("Workspace task");
     ctx.taskStore.updateTask(task.id, { cwd: taskWorkspace });
     ctx.taskStore.linkSession(task.id, "session-1");
-    ctx.sessionWorkspaceStore.setWorkspace("session-1", overrideWorkspace);
+    readGitWorktreeStatusMock.mockResolvedValue({ status: "not_repo", cwd: overrideWorkspace });
+    const setSessionWorkspace = vi.fn((sessionId: string, cwd: string) => {
+      ctx.sessionWorkspaceStore.setWorkspace(sessionId, cwd);
+      return {
+        cwd,
+        source: "explicit",
+        message: `Session workspace set to ${cwd} for future turns`,
+      };
+    });
+    ctx.sessionManager.setSessionWorkspace = setSessionWorkspace as any;
+
+    const set = await request(app)
+      .put("/api/sessions/session-1/workspace/path")
+      .send({ cwd: overrideWorkspace });
+
+    expect(set.status).toBe(200);
+    expect(setSessionWorkspace).toHaveBeenCalledWith("session-1", overrideWorkspace);
+    expect(ctx.sessionWorkspaceStore.getWorkspace("session-1")).toMatchObject({
+      cwd: overrideWorkspace,
+    });
 
     const res = await request(app).get("/api/sessions");
 
@@ -95,6 +114,9 @@ describe("session workspace routes", () => {
     const secondRes = await request(app).get("/api/sessions");
     runState = "idle";
     ctx.globalBus.emit({ type: "session:idle", sessionId: "session-1" });
+    const lastAttentionAt = "2026-04-16T12:00:00.000Z";
+    ctx.sessionMetaStore.setLastAttentionAt("session-1", lastAttentionAt);
+    ctx.globalBus.emit({ type: "sessions:changed", sessionId: "session-1", reason: "attention" });
     const thirdRes = await request(app).get("/api/sessions");
 
     expect(firstRes.status).toBe(200);
@@ -102,7 +124,7 @@ describe("session workspace routes", () => {
     expect(thirdRes.status).toBe(200);
     expect(firstRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle" });
     expect(secondRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "busy" });
-    expect(thirdRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle" });
+    expect(thirdRes.body.sessions[0]).toMatchObject({ sessionId: "session-1", runState: "idle", lastAttentionAt });
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
@@ -139,7 +161,7 @@ describe("session workspace routes", () => {
 
   it("archiving removes a chat from the next list without a build, and restoring brings it back", async () => {
     const copilotHome = createCopilotHome();
-    const listSessionsFromDisk = vi.fn(async () => [{ sessionId: "session-1", summary: "Cached session" }]);
+    const listSessionsFromDisk = vi.fn(async (_options?: { includeArchived?: boolean }) => [{ sessionId: "session-1", summary: "Cached session" }]);
     const sessionManager = {
       ...createMockSessionManager(),
       listSessionsFromDisk,
@@ -149,22 +171,25 @@ describe("session workspace routes", () => {
     ctx = testApp.ctx;
     ctx.sessionTitles.setTitle("session-1", "Cached session");
 
-    await request(app).get("/api/sessions");
+    const before = await request(app).get("/api/sessions").expect(200);
+    expect(before.body.sessions).toMatchObject([{ sessionId: "session-1", archivedAt: null }]);
     const archived = await request(app).patch("/api/sessions/session-1").send({ archived: true }).expect(200);
     expect(archived.body).toMatchObject({ ok: true, archived: true });
-    const archivedRes = await request(app).get("/api/sessions");
+    const archivedRes = await request(app).get("/api/sessions").expect(200);
     const stillArchivedRes = await request(app).get("/api/sessions");
 
     expect(archivedRes.body.sessions).toEqual([]);
     expect(stillArchivedRes.body.sessions).toEqual([]);
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
 
+    const history = await request(app).get("/api/sessions?includeArchived=true").expect(200);
+    expect(history.body.sessions).toMatchObject([{ sessionId: "session-1", archived: true, archivedAt: expect.stringMatching(/^20/) }]);
     const restored = await request(app).patch("/api/sessions/session-1").send({ archived: false }).expect(200);
     expect(restored.body).toMatchObject({ ok: true, archived: false });
     const restoredRes = await request(app).get("/api/sessions");
 
     expect(restoredRes.body.sessions).toEqual([expect.objectContaining({ sessionId: "session-1", archived: false })]);
-    expect(listSessionsFromDisk).toHaveBeenCalledTimes(2);
+    expect(listSessionsFromDisk.mock.calls.filter(([options]) => !options?.includeArchived)).toHaveLength(2);
   });
 
   it("avoids arbitrary task workspace defaults in the session list for multi-task sessions", async () => {
@@ -315,42 +340,6 @@ describe("session workspace routes", () => {
       taskCwd: taskWorkspace,
       overridesTaskWorkspace: true,
       canResetToTask: true,
-    });
-  });
-
-  it("stores an explicit workspace path", async () => {
-    const copilotHome = createCopilotHome();
-    const sessionManager = {
-      ...createMockSessionManager(),
-      listSessionsFromDisk: async () => [{ sessionId: "session-1", summary: "Workspace session" }],
-    } as any;
-    const explicitWorkspace = join(copilotHome, "explicit-workspace");
-    mkdirSync(explicitWorkspace, { recursive: true });
-    readGitWorktreeStatusMock.mockResolvedValue({
-      status: "not_repo",
-      cwd: explicitWorkspace,
-    });
-    const testApp = createTestApp({ copilotHome, sessionManager });
-    app = testApp.app;
-    ctx = testApp.ctx;
-    const setSessionWorkspace = vi.fn((sessionId: string, cwd: string) => {
-      ctx.sessionWorkspaceStore.setWorkspace(sessionId, cwd);
-      return {
-        cwd,
-        source: "explicit",
-        message: `Session workspace set to ${cwd} for future turns`,
-      };
-    });
-    ctx.sessionManager.setSessionWorkspace = setSessionWorkspace as any;
-
-    const res = await request(app)
-      .put("/api/sessions/session-1/workspace/path")
-      .send({ cwd: explicitWorkspace });
-
-    expect(res.status).toBe(200);
-    expect(setSessionWorkspace).toHaveBeenCalledWith("session-1", explicitWorkspace);
-    expect(ctx.sessionWorkspaceStore.getWorkspace("session-1")).toMatchObject({
-      cwd: explicitWorkspace,
     });
   });
 

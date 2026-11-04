@@ -169,62 +169,6 @@ describe("store write transactions", () => {
       expect(events).toEqual([]);
     });
 
-    it("commits the full cascade before emitting affected task events", () => {
-      const first = groupStore.createGroup("First");
-      const second = groupStore.createGroup("Second");
-      const taskA = taskStore.createTask("A", first.id);
-      const taskB = taskStore.createTask("B", first.id);
-      const unaffected = taskStore.createTask("Other", second.id);
-      db.prepare("UPDATE tasks SET updatedAt = '2020-01-01T00:00:00.000Z' WHERE id IN (?, ?)")
-        .run(taskA.id, taskB.id);
-      const tag = tagStore.createTag("group-tag");
-      tagStore.setEntityTags("task_group", first.id, [tag.id]);
-      const observed: Array<{
-        taskId?: string;
-        groupMissing: boolean;
-        taskGroupId?: string;
-        taskUpdatedAt?: string;
-      }> = [];
-      const unsubscribe = bus.subscribe((event) => {
-        if (event.type !== "task:changed") return;
-        const task = event.taskId ? taskStore.getTask(event.taskId) : undefined;
-        observed.push({
-          taskId: event.taskId,
-          groupMissing: groupStore.getGroup(first.id) === undefined,
-          taskGroupId: task?.groupId,
-          taskUpdatedAt: task?.updatedAt,
-        });
-      });
-
-      let result;
-      try {
-        result = groupStore.deleteGroup(first.id);
-      } finally {
-        unsubscribe();
-      }
-
-      expect(result).toEqual({
-        affectedTaskIds: expect.arrayContaining([taskA.id, taskB.id]),
-        deleted: true,
-      });
-      expect(result.affectedTaskIds).toHaveLength(2);
-      expect(taskStore.getTask(taskA.id)?.groupId).toBeUndefined();
-      expect(taskStore.getTask(taskB.id)?.groupId).toBeUndefined();
-      expect(taskStore.getTask(taskA.id)?.updatedAt).not.toBe("2020-01-01T00:00:00.000Z");
-      expect(taskStore.getTask(taskB.id)?.updatedAt).not.toBe("2020-01-01T00:00:00.000Z");
-      expect(taskStore.getTask(unaffected.id)?.groupId).toBe(second.id);
-      expect(tagStore.getEntityTags("task_group", first.id)).toEqual([]);
-      expect(groupStore.listGroups()).toEqual([
-        expect.objectContaining({ id: second.id, order: 0 }),
-      ]);
-      expect(observed).toHaveLength(2);
-      expect(observed.map((item) => item.taskId)).toEqual(expect.arrayContaining([taskA.id, taskB.id]));
-      expect(observed.every((item) =>
-        item.groupMissing
-        && item.taskGroupId === undefined
-        && item.taskUpdatedAt !== "2020-01-01T00:00:00.000Z"
-      )).toBe(true);
-    });
   });
 
   describe("checklist-store", () => {

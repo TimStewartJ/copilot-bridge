@@ -4,28 +4,6 @@ import type { IntegrationScenario } from "./scenario-types.js";
 
 export const knowledgeScenarios: IntegrationScenario[] = [
   {
-    id: "KNOW-02", title: "updates a page and replaces stale search content",
-    async run(world) {
-      await world.writePage("notes/rename", "# Old\n\nobsolete-keyword");
-      expect((await request(world.app).get("/api/docs/search?q=obsolete-keyword")).body.results).toHaveLength(1);
-      await world.writePage("notes/rename", "# New\n\ncurrent-keyword");
-      expect((await request(world.app).get("/api/docs/search?q=obsolete-keyword")).body.results).toHaveLength(0);
-      expect((await request(world.app).get("/api/docs/search?q=current-keyword")).body.results[0].path).toBe("notes/rename");
-    },
-  },
-  {
-    id: "KNOW-03", title: "deletes a page and removes it from full-text search",
-    async run(world) {
-      await world.writePage("notes/disposable", "# Disposable\n\nvanishing-term");
-      expect((await request(world.app).get("/api/docs/search?q=vanishing-term")).body.results).toHaveLength(1);
-      const deleted = await request(world.app).delete("/api/docs/pages/notes/disposable");
-      expect(deleted.status).toBe(200);
-      expect(deleted.body.deleted).toBe(true);
-      expect((await request(world.app).get("/api/docs/search?q=vanishing-term")).body.results).toHaveLength(0);
-      expect((await request(world.app).get("/api/docs/pages/notes/disposable")).status).toBe(404);
-    },
-  },
-  {
     id: "KNOW-05", title: "resolves a wikilink by page title",
     async run(world) {
       await world.writePage("people/alex", "---\ntitle: Alex Rivera\ndescription: Teammate\n---\n# Alex Rivera");
@@ -50,7 +28,13 @@ export const knowledgeScenarios: IntegrationScenario[] = [
   {
     id: "KNOW-08", title: "creates a pre-delete snapshot before removing user knowledge",
     async run(world) {
+      await world.writePage("safety/delete-me", "# Draft\n\nobsolete-keyword");
+      const oldSearch = "/api/docs/search?q=obsolete-keyword";
+      expect((await request(world.app).get(oldSearch)).body.results).toMatchObject([{ path: "safety/delete-me" }]);
       await world.writePage("safety/delete-me", "# Safety Copy");
+      expect((await request(world.app).get(oldSearch)).body.results).toEqual([]);
+      const searchPath = "/api/docs/search?q=Safety";
+      expect((await request(world.app).get(searchPath)).body.results).toMatchObject([{ path: "safety/delete-me" }]);
       const store = world.ctx.docsSnapshotStore!;
       const before = store.listSnapshots().length;
       const deleted = await request(world.app).delete("/api/docs/pages/safety/delete-me").expect(200);
@@ -59,6 +43,7 @@ export const knowledgeScenarios: IntegrationScenario[] = [
       expect(snapshots).toHaveLength(before + 1);
       expect(snapshots[0].reason).toBe("pre-delete");
       await request(world.app).get("/api/docs/pages/safety/delete-me").expect(404);
+      expect((await request(world.app).get(searchPath)).body).toMatchObject({ results: [], total: 0 });
       store.restoreSnapshot(snapshots[0].id);
       expect((await world.readPage("safety/delete-me")).body).toBe("# Safety Copy");
     },
@@ -79,32 +64,20 @@ export const knowledgeScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "KNOW-12", title: "adds collection entries and increments the durable schema count",
-    async run(world) {
-      await world.createCollection("records/counts");
-      await world.addCollectionEntry("records/counts", { title: "First", status: "open", priority: 1 }, "A saved body");
-      await world.addCollectionEntry("records/counts", { title: "Second", status: "closed", priority: 2 });
-      const schema = await request(world.app).get("/api/docs/schema/records/counts");
-      expect(schema.status).toBe(200);
-      expect(schema.body).toMatchObject({ name: "records/counts", entryCount: 2 });
-      expect(schema.body.fields).toHaveLength(2);
-      const listed = await request(world.app).get("/api/docs/db/records/counts").expect(200);
-      expect(listed.body.total).toBe(2);
-      expect(listed.body.entries).toHaveLength(2);
-      expect(listed.body.entries.every((entry: any) => !("body" in entry))).toBe(true);
-    },
-  },
-  {
     id: "KNOW-15", title: "paginates structured collection results",
     async run(world) {
       await world.createCollection("records/pages");
       await world.addCollectionEntry("records/pages", { title: "Three", status: "open", priority: 3 });
       await world.addCollectionEntry("records/pages", { title: "One", status: "open", priority: 1 });
-      await world.addCollectionEntry("records/pages", { title: "Two", status: "open", priority: 2 });
+      await world.addCollectionEntry("records/pages", { title: "Two", status: "open", priority: 2 }, "A saved body");
       await world.addCollectionEntry("records/pages", { title: "Four", status: "open", priority: 4 });
-      const page = await request(world.app).get("/api/docs/db/records/pages?limit=2&offset=1&_sort=priority&_order=asc");
+      const schema = await request(world.app).get("/api/docs/schema/records/pages").expect(200);
+      expect(schema.body).toMatchObject({ name: "records/pages", entryCount: 4 });
+      expect(schema.body.fields).toHaveLength(2);
+      const page = await request(world.app).get("/api/docs/db/records/pages?limit=2&offset=1&_sort=priority&_order=asc").expect(200);
       expect(page.body.entries.map((entry: any) => entry.title)).toEqual(["Two", "Three"]);
       expect(page.body.total).toBe(4);
+      expect(page.body.entries.every((entry: any) => !("body" in entry))).toBe(true);
     },
   },
   {
@@ -123,43 +96,30 @@ export const knowledgeScenarios: IntegrationScenario[] = [
     id: "KNOW-18", title: "updates an entry body while retaining unmodified fields",
     async run(world) {
       await world.createCollection("records/body-update");
-      const entry = await world.addCollectionEntry("records/body-update", { title: "Body mutable", status: "open", priority: 4 }, "Old body");
-      await request(world.app).patch(`/api/docs/db/records/body-update/${entry.slug}`).send({ body: "New body" });
+      const entry = await world.addCollectionEntry("records/body-update", { title: "Body mutable", status: "open", priority: 4 }, "old-body-term");
+      await request(world.app).patch(`/api/docs/db/records/body-update/${entry.slug}`).send({ body: "new-body-term" }).expect(200);
       const result = await request(world.app).get("/api/docs/db/records/body-update?_includeBody=true");
-      expect(result.body.entries[0]).toMatchObject({ title: "Body mutable", fields: expect.objectContaining({ status: "open", priority: 4 }), body: "New body" });
+      expect(result.body.entries[0]).toMatchObject({ title: "Body mutable", fields: expect.objectContaining({ status: "open", priority: 4 }), body: "new-body-term" });
+      expect((await request(world.app).get("/api/docs/search?q=old-body-term")).body.results).toEqual([]);
+      expect((await request(world.app).get("/api/docs/search?q=new-body-term")).body.results).toMatchObject([{ path: entry.path }]);
     },
   },
   {
     id: "KNOW-19", title: "deletes one structured entry and preserves its siblings",
     async run(world) {
       await world.createCollection("records/delete");
-      const removed = await world.addCollectionEntry("records/delete", { title: "Remove", status: "open", priority: 1 });
+      const removed = await world.addCollectionEntry("records/delete", { title: "Remove", status: "open", priority: 1 }, "rare-collection-term");
       await world.addCollectionEntry("records/delete", { title: "Keep", status: "closed", priority: 2 });
+      const searchPath = "/api/docs/search?q=rare-collection-term";
+      expect((await request(world.app).get(searchPath)).body.results).toMatchObject([{ path: removed.path }]);
       const deletion = await request(world.app).delete(`/api/docs/db/records/delete/${removed.slug}`);
       expect(deletion.status).toBe(200);
       expect(deletion.body.deleted).toBe(true);
+      expect((await request(world.app).get(searchPath)).body).toMatchObject({ results: [], total: 0 });
       const remaining = await request(world.app).get("/api/docs/db/records/delete");
       expect(remaining.body.entries.map((item: any) => item.title)).toEqual(["Keep"]);
-    },
-  },
-  {
-    id: "KNOW-20", title: "removes a deleted collection entry from full-text search",
-    async run(world) {
-      await world.createCollection("records/search-delete");
-      const entry = await world.addCollectionEntry("records/search-delete", { title: "Searchable", status: "open", priority: 1 }, "rare-collection-term");
-      expect((await request(world.app).get("/api/docs/search?q=rare-collection-term")).body.results).toHaveLength(1);
-      await request(world.app).delete(`/api/docs/db/records/search-delete/${entry.slug}`);
-      expect((await request(world.app).get("/api/docs/search?q=rare-collection-term")).body.results).toHaveLength(0);
-    },
-  },
-  {
-    id: "KNOW-21", title: "indexes updated collection body content",
-    async run(world) {
-      await world.createCollection("records/reindex-update");
-      const entry = await world.addCollectionEntry("records/reindex-update", { title: "Indexed", status: "open", priority: 1 }, "old-body-term");
-      await request(world.app).patch(`/api/docs/db/records/reindex-update/${entry.slug}`).send({ body: "new-body-term" });
-      expect((await request(world.app).get("/api/docs/search?q=old-body-term")).body.results).toHaveLength(0);
-      expect((await request(world.app).get("/api/docs/search?q=new-body-term")).body.results[0].path).toContain(entry.slug);
+      const again = await request(world.app).delete(`/api/docs/db/records/delete/${removed.slug}`).expect(200);
+      expect(again.body.deleted).toBe(false);
     },
   },
   {

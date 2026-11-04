@@ -73,96 +73,6 @@ describe("Session routes (mocked)", () => {
     expect(sessionManager.listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });
 
-  it("an archived chat leaves the list at once, and the archived list shows it with its archive time", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
-      {
-        sessionId: "archive-me",
-        summary: "Archive me",
-        modifiedTime: "2026-04-16T12:00:00.000Z",
-        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
-      },
-    ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
-
-    const before = await request(app).get("/api/sessions");
-    const patch = await request(app).patch("/api/sessions/archive-me").send({ archived: true });
-    const after = await request(app).get("/api/sessions");
-    const archivedList = await request(app).get("/api/sessions?includeArchived=true");
-
-    expect(before.status).toBe(200);
-    expect(before.body.sessions).toEqual([expect.objectContaining({ sessionId: "archive-me", archivedAt: null })]);
-    expect(patch.status).toBe(200);
-    expect(after.status).toBe(200);
-    expect(after.body.sessions).toEqual([]);
-    expect(archivedList.body.sessions).toEqual([
-      expect.objectContaining({ sessionId: "archive-me", archived: true, archivedAt: expect.stringMatching(/^20/) }),
-    ]);
-  });
-
-  it("GET /api/sessions includes a backgroundAgents summary on each row", async () => {
-    const sessionManager = createMockSessionManager();
-    sessionManager.getBackgroundAgentsSummary = vi.fn(() => ({
-      running: 1,
-      idle: 1,
-      failed: 0,
-      total: 2,
-      source: "live" as const,
-      refreshedAt: "2026-04-16T12:00:00.000Z",
-    }));
-    sessionManager.listSessionsFromDisk = vi.fn().mockResolvedValue([
-      {
-        sessionId: "agents-session",
-        summary: "Agents session",
-        modifiedTime: "2026-04-16T12:00:00.000Z",
-        lastVisibleActivityAt: "2026-04-16T12:00:00.000Z",
-      },
-    ]);
-    ({ app, ctx } = createTestApp({ sessionManager }));
-
-    const res = await request(app).get("/api/sessions");
-    expect(res.status).toBe(200);
-    expect(res.body.sessions).toEqual([
-      expect.objectContaining({
-        sessionId: "agents-session",
-        backgroundAgents: expect.objectContaining({ running: 1, idle: 1, total: 2, source: "live" }),
-      }),
-    ]);
-  });
-
-  it("GET /api/sessions/:id/agents returns the snapshot and truncates large text", async () => {
-    const sessionManager = createMockSessionManager();
-    const bigResult = "x".repeat(5000);
-    sessionManager.listSessionAgents = vi.fn(async () => ({
-      tasks: [
-        {
-          id: "explore-docs",
-          status: "running" as const,
-          executionMode: "background" as const,
-          agentType: "explore",
-          description: "Explore the docs",
-          result: bigResult,
-        },
-      ],
-      source: "live" as const,
-      refreshedAt: "2026-04-16T12:00:00.000Z",
-    }));
-    sessionManager.getBackgroundAgentsSummary = vi.fn(() => ({
-      running: 1, idle: 0, failed: 0, total: 1, source: "live" as const,
-    }));
-    ({ app, ctx } = createTestApp({ sessionManager }));
-
-    const res = await request(app).get("/api/sessions/explore-host/agents");
-    expect(res.status).toBe(200);
-    expect(sessionManager.listSessionAgents).toHaveBeenCalledWith("explore-host");
-    expect(res.body.source).toBe("live");
-    expect(res.body.tasks).toHaveLength(1);
-    expect(res.body.tasks[0].id).toBe("explore-docs");
-    expect(res.body.tasks[0].result.length).toBeLessThan(bigResult.length);
-    expect(res.body.tasks[0].result).toContain("(truncated)");
-    expect(res.body.backgroundAgents).toMatchObject({ running: 1, source: "live" });
-  });
-
   it("GET /api/sessions/:id/agents/:agentId returns one agent's brief and report in full", async () => {
     const sessionManager = createMockSessionManager();
     // Far more than the list carries of each agent, and well short of the bound on a single one.
@@ -171,14 +81,22 @@ describe("Session routes (mocked)", () => {
     sessionManager.listSessionAgents = vi.fn(async () => ({
       tasks: [
         { id: "agent-docs", status: "idle" as const, executionMode: "background" as const, latestResponse: "Docs updated." },
-        { id: "agent-moves", status: "running" as const, executionMode: "background" as const, name: "moves-agent", latestResponse: report, prompt },
+        { id: "agent-moves", status: "running" as const, executionMode: "background" as const, name: "moves-agent", latestResponse: report, result: report, prompt },
       ],
       source: "live" as const,
       refreshedAt: "2026-04-16T12:00:00.000Z",
     }));
+    sessionManager.getBackgroundAgentsSummary = vi.fn(() => ({ running: 1, idle: 1, failed: 0, total: 2, source: "live" as const }));
     ({ app, ctx } = createTestApp({ sessionManager }));
 
-    const res = await request(app).get("/api/sessions/agents-host/agents/agent-moves");
+    const list = await request(app).get("/api/sessions/agents-host/agents").expect(200);
+    expect(list.body).toMatchObject({ source: "live", backgroundAgents: { running: 1, source: "live" } });
+    expect(list.body.tasks.map((task: { id: string }) => task.id)).toEqual(["agent-docs", "agent-moves"]);
+    const selected = list.body.tasks[1];
+    expect(selected.result.length).toBeLessThan(report.length);
+    expect(selected.result).toContain("(truncated)");
+    expect(selected.latestResponse.length).toBeLessThan(report.length);
+    const res = await request(app).get(`/api/sessions/agents-host/agents/${selected.id}`);
 
     expect(res.status).toBe(200);
     expect(sessionManager.listSessionAgents).toHaveBeenCalledWith("agents-host");
@@ -186,9 +104,7 @@ describe("Session routes (mocked)", () => {
     expect(res.body.task.latestResponse).toBe(report);
     expect(res.body.task.prompt).toBe(prompt);
 
-    // The list still carries only the start of each.
-    const list = await request(app).get("/api/sessions/agents-host/agents");
-    expect(list.body.tasks[1].latestResponse.length).toBeLessThan(report.length);
+    expect(res.body.task.result).toBe(report);
   });
 
   it("GET /api/sessions/:id/agents/:agentId says when the runtime no longer tracks the agent", async () => {
@@ -347,9 +263,12 @@ describe("Session routes (mocked)", () => {
     expect(single.body.task).not.toHaveProperty("sessionIds");
 
     // Swapping one link for another keeps the count but must change the revision.
-    await request(app).delete(`/api/tasks/${task.id}/link`).send({ type: "session", sessionId: "run-1" });
+    const invalidate = vi.spyOn(ctx.sessionManager, "invalidateSessionConfig");
+    await request(app).delete(`/api/tasks/${task.id}/link`).send({ type: "session", sessionId: "run-1" }).expect(200);
+    expect(invalidate).toHaveBeenLastCalledWith("run-1", "task link changed");
     const linked = await request(app).post(`/api/tasks/${task.id}/link`).send({ type: "session", sessionId: "run-4" });
     expect(linked.status).toBe(200);
+    expect(invalidate).toHaveBeenLastCalledWith("run-4", "task link changed");
     expect(linked.body.task).toMatchObject({ activeSessionIds: ["run-3", "run-4"], sessionCount: 3, archivedSessionCount: 1 });
     expect(linked.body.task.sessionLinksRevision).not.toBe(listed.sessionLinksRevision);
     expect(linked.body.task).not.toHaveProperty("sessionIds");
@@ -410,6 +329,8 @@ describe("Session routes (mocked)", () => {
     ctx.sessionManager.getSessionRunState = vi.fn().mockReturnValue("busy");
     ctx.sessionManager.getPendingUserInputCount = vi.fn().mockReturnValue(1);
 
+    ctx.sessionManager.getBackgroundAgentsSummary = vi.fn(() => ({ running: 1, idle: 1, failed: 0, total: 2, source: "live" as const }));
+
     const res = await request(app).get("/api/sessions");
 
     expect(res.status).toBe(200);
@@ -418,6 +339,7 @@ describe("Session routes (mocked)", () => {
       runState: "busy",
       pendingUserInputCount: 1,
       needsUserInput: true,
+      backgroundAgents: { running: 1, idle: 1, total: 2, source: "live" },
     });
   });
 

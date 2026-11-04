@@ -253,24 +253,6 @@ describe("SessionManager workspace resolution", () => {
     expect(sessionWorkspaceStore.getWorkspace("forked-session")).toMatchObject({ cwd: legacyWorkspace });
   });
 
-  it("session_set_workspace stores an explicit workspace for future turns", async () => {
-    const { ctx, manager, sessionWorkspaceStore } = createToolContext();
-    const cachedSession = makeAgentSessionStub({ disconnect: vi.fn() });
-    manager.sessionObjects.set("session-1", cachedSession);
-    const tool = getTool(ctx, "session_set_workspace");
-
-    await expect(tool.handler({ cwd: "  /explicit/worktree  " }, createInvocation("session_set_workspace")))
-      .resolves.toMatchObject({
-        success: true,
-        sessionId: "session-1",
-        cwd: "/explicit/worktree",
-        source: "explicit",
-      });
-    expect(sessionWorkspaceStore.getWorkspace("session-1")).toMatchObject({ cwd: "/explicit/worktree" });
-    expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);
-    expect(manager.sessionObjects.has("session-1")).toBe(false);
-  });
-
   it("session_set_workspace resets to the linked task default", async () => {
     const copilotHome = mkdtempSync(join(tmpdir(), "bridge-session-workspace-"));
     tempDirs.push(copilotHome);
@@ -283,10 +265,17 @@ describe("SessionManager workspace resolution", () => {
     const task = taskStore.createTask("Linked task");
     taskStore.updateTask(task.id, { cwd: taskDefaultWorkspace });
     taskStore.linkSession(task.id, "session-1");
-    sessionWorkspaceStore.setWorkspace("session-1", "/explicit/worktree");
+    const tool = getTool(ctx, "session_set_workspace");
+    const prior = makeAgentSessionStub({ disconnect: vi.fn() });
+    manager.sessionObjects.set("session-1", prior);
+    await expect(tool.handler({ cwd: "  /explicit/worktree  " }, createInvocation("session_set_workspace")))
+      .resolves.toMatchObject({ success: true, sessionId: "session-1", cwd: "/explicit/worktree", source: "explicit" });
+    expect(sessionWorkspaceStore.getWorkspace("session-1")).toMatchObject({ cwd: "/explicit/worktree" });
+    expect(prior.disconnect).toHaveBeenCalledTimes(1);
+    expect(manager.sessionObjects.has("session-1")).toBe(false);
+
     const cachedSession = makeAgentSessionStub({ disconnect: vi.fn() });
     manager.sessionObjects.set("session-1", cachedSession);
-    const tool = getTool(ctx, "session_set_workspace");
 
     await expect(tool.handler({ reset: true }, createInvocation("session_set_workspace")))
       .resolves.toMatchObject({

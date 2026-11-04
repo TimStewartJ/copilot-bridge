@@ -65,6 +65,9 @@ describe("session deletion cleans up every owned subsystem", () => {
     seedSessionContext(SESSION_ID);
     seedSessionContext(OTHER_SESSION_ID);
 
+    ctx.readStateStore.markRead(SESSION_ID, "2026-05-21T12:00:00.000Z");
+    ctx.readStateStore.markRead(OTHER_SESSION_ID, "2026-05-21T12:05:00.000Z");
+
     const deferStore = ctx.deferredPromptStore!;
     const loopStore = ctx.deferLoopStore!;
 
@@ -118,6 +121,11 @@ describe("session deletion cleans up every owned subsystem", () => {
 
     const res = await request(app).delete(`/api/sessions/${SESSION_ID}`);
     expect(res.status).toBe(200);
+
+    expect(res.body.ok).toBe(true);
+    const readState = await request(app).get("/api/read-state").expect(200);
+    expect(readState.body[SESSION_ID]).toBeUndefined();
+    expect(readState.body[OTHER_SESSION_ID]).toBe("2026-05-21T12:05:00.000Z");
 
     // All four session_context_* families are gone for the deleted session.
     for (const table of [

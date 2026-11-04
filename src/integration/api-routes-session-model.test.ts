@@ -20,34 +20,6 @@ describe("GET /api/sessions/:id/model route", () => {
     expect(res.body.source).toBe("unknown");
   });
 
-  it("returns model and reasoningEffort when manager provides them", async () => {
-    const { app } = createTestApp({
-      sessionManager: {
-        listSessions: async () => [],
-        listSessionsFromDisk: () => [],
-        getSessionActivity: () => [],
-        isSessionBusy: () => false,
-        getSessionRunState: () => "idle",
-        getPendingUserInputCount: () => 0,
-        isSessionWarm: () => false,
-        waitForSessionCreation: async () => {},
-        setSessionModel: async (_id: string, model: string, reasoningEffort?: string) => ({
-          model,
-          ...(reasoningEffort ? { reasoningEffort } : {}),
-        }),
-        getSessionModelState: async () => ({
-          model: "claude-opus-4.7",
-          reasoningEffort: "high",
-          source: "events" as const,
-        }),
-        getSessionPlaybook: () => ({ playbook: "bug-fix", source: "agent", label: "Bug fix" }),
-      } as any,
-    });
-    const res = await request(app).get(`/api/sessions/${sessionId}/model`);
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ model: "claude-opus-4.7", reasoningEffort: "high", source: "events", playbook: { playbook: "bug-fix", source: "agent", label: "Bug fix" } });
-  });
-
   it("answers for a chat still being created once it is made, not with guesses", async () => {
     let created = false;
     const { app } = createTestApp({

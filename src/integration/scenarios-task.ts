@@ -25,12 +25,15 @@ export const taskScenarios: IntegrationScenario[] = [
     id: "TASK-02", title: "tracks task momentum through completion and archival",
     async run(world) {
       const task = await world.createTask("Production rollout");
-      await world.updateTask(task.id, {
+      const changes = {
+        title: "Shipping rollout", muted: true, notes: "Production notes",
         doneWhen: "All regions healthy",
         nextAction: "Deploy canary",
         waitingOn: "Change approval",
         nextTouchAt: "2030-01-02T12:00:00.000Z",
-      });
+      };
+      expect(await world.updateTask(task.id, changes)).toMatchObject(changes);
+      expect(await world.getTask(task.id)).toMatchObject(changes);
       const archived = await world.updateTask(task.id, { completionAction: "complete-and-archive" });
       expect(archived).toMatchObject({ status: "archived", doneWhen: "All regions healthy", completedAt: expect.any(String) });
       expect(archived.nextAction).toBeUndefined();
@@ -73,12 +76,38 @@ export const taskScenarios: IntegrationScenario[] = [
       const group = await world.createGroup("Temporary program");
       const first = await world.createTask("First workstream", { groupId: group.id });
       const second = await world.createTask("Second workstream", { groupId: group.id });
-      const removed = await request(world.app).delete(`/api/task-groups/${group.id}`);
+      const groups = world.ctx.taskGroupStore!;
+      const other = groups.createGroup("Other program");
+      const untouched = world.ctx.taskStore.createTask("Other work", other.id);
+      const tag = world.ctx.tagStore!.createTag("group-tag");
+      world.ctx.tagStore!.setEntityTags("task_group", group.id, [tag.id]);
+      const old = "2020-01-01T00:00:00.000Z";
+      world.db.prepare("UPDATE tasks SET updatedAt = ? WHERE groupId = ?").run(old, group.id);
+      const observed: Array<{ id: string; committed: boolean }> = [];
+      const unsubscribe = world.ctx.globalBus.subscribe((event) => {
+        if (event.type !== "task:changed" || !event.taskId) return;
+        const task = world.ctx.taskStore.getTask(event.taskId);
+        observed.push({ id: event.taskId, committed: !world.db.isTransaction && !groups.getGroup(group.id)
+          && !!task && task.groupId === undefined && task.updatedAt !== old });
+      });
+      let removed;
+      try {
+        removed = await request(world.app).delete(`/api/task-groups/${group.id}`);
+      } finally {
+        unsubscribe();
+      }
+      expect(observed).toHaveLength(2);
+      expect(observed).toEqual(expect.arrayContaining([{ id: first.id, committed: true }, { id: second.id, committed: true }]));
+      expect(world.ctx.tagStore!.getEntityTags("task_group", group.id)).toEqual([]);
+      expect(groups.listGroups()).toMatchObject([{ id: other.id, order: 0 }]);
+      expect(world.ctx.taskStore.getTask(untouched.id)?.groupId).toBe(other.id);
       expect(removed.status).toBe(200);
       expect(removed.body).toMatchObject({ success: true, deleted: true, ungroupedTaskCount: 2 });
-      expect(world.ctx.taskGroupStore!.getGroup(group.id)).toBeUndefined();
+      expect(groups.getGroup(group.id)).toBeUndefined();
       expect((await world.getTask(first.id)).groupId).toBeUndefined();
       expect((await world.getTask(second.id)).groupId).toBeUndefined();
+      const again = await request(world.app).delete(`/api/task-groups/${group.id}`).expect(200);
+      expect(again.body).toEqual({ success: true, deleted: false, ungroupedTaskCount: 0 });
     },
   },
   {
@@ -154,26 +183,17 @@ export const taskScenarios: IntegrationScenario[] = [
     id: "TASK-12", title: "completes a checklist and exposes it through the dashboard",
     async run(world) {
       const task = await world.createTask("Launch checklist");
-      const first = await world.createChecklistItem(task.id, "Deploy");
+      const first = await world.createChecklistItem(task.id, "Draft", "2026-10-01");
+      expect(first.deadline).toBe("2026-10-01");
       const second = await world.createChecklistItem(task.id, "Verify");
+      await request(world.app).patch(`/api/checklist-items/${first.id}`).send({ text: "Publish", deadline: "2026-10-05" }).expect(200);
       const complete = await request(world.app).patch(`/api/checklist-items/${first.id}`).send({ done: true });
       expect(complete.status).toBe(200);
+      const list = await request(world.app).get(`/api/tasks/${task.id}/checklist-items`).expect(200);
+      expect(list.body.checklistItems).toContainEqual(expect.objectContaining({ id: first.id, text: "Publish", deadline: "2026-10-05", done: true }));
       const dashboard = await request(world.app).get("/api/dashboard/focus");
       expect(dashboard.body.completedChecklistItems).toContainEqual(expect.objectContaining({ id: first.id, taskId: task.id, taskTitle: "Launch checklist" }));
       expect(dashboard.body.openChecklistItems.map((item: any) => item.id)).toContain(second.id);
-    },
-  },
-  {
-    id: "TASK-13", title: "edits checklist text and deadline before completion",
-    async run(world) {
-      const task = await world.createTask("Prepare review");
-      const item = await world.createChecklistItem(task.id, "Draft", "2026-10-01");
-      expect(item.deadline).toBe("2026-10-01");
-      const edited = await request(world.app).patch(`/api/checklist-items/${item.id}`).send({ text: "Publish", deadline: "2026-10-05" });
-      expect(edited.status).toBe(200);
-      await request(world.app).patch(`/api/checklist-items/${item.id}`).send({ done: true });
-      const list = await request(world.app).get(`/api/tasks/${task.id}/checklist-items`);
-      expect(list.body.checklistItems[0]).toMatchObject({ text: "Publish", deadline: "2026-10-05", done: true });
     },
   },
   {
@@ -237,7 +257,10 @@ export const taskScenarios: IntegrationScenario[] = [
     id: "TASK-19", title: "keeps earlier task edits after a later invalid mutation is rejected",
     async run(world) {
       const task = await world.createTask("Validated task");
+      const item = await world.createChecklistItem(task.id, "Visible item");
       await world.updateTask(task.id, { title: "Accepted title", notes: "Accepted notes" });
+      const dashboard = await request(world.app).get("/api/dashboard/focus").expect(200);
+      expect(dashboard.body.openChecklistItems.find((entry: { id: string }) => entry.id === item.id)?.taskTitle).toBe("Accepted title");
       const rejected = await request(world.app).patch(`/api/tasks/${task.id}`).send({ priority: 1.5 });
       expect(rejected.status).toBe(400);
       expect(rejected.body.error).toContain("priority must be a finite integer");
@@ -293,25 +316,6 @@ export const taskScenarios: IntegrationScenario[] = [
       await world.assignTaskTags(task.id, [newTag.id]);
       const detail = await world.getTask(task.id);
       expect(detail.tags.map((tag: any) => tag.id)).toEqual([newTag.id]);
-    },
-  },
-  {
-    id: "TASK-25", title: "deletes a richly linked task without affecting unrelated work",
-    async run(world) {
-      const doomed = await world.createTask("Delete rich task");
-      const survivor = await world.createTask("Survivor");
-      const tag = await world.createTag("linked");
-      await world.assignTaskTags(doomed.id, [tag.id]);
-      const child = await world.createChecklistItem(doomed.id, "Child item");
-      await request(world.app).post(`/api/tasks/${doomed.id}/link`).send({ type: "workItem", workItemId: "77", provider: "github" });
-      const deleted = await request(world.app).delete(`/api/tasks/${doomed.id}`);
-      expect(deleted.status).toBe(200);
-      expect(deleted.body.ok).toBe(true);
-      expect(world.ctx.checklistStore.getChecklistItem(child.id)).toBeUndefined();
-      expect(world.ctx.tagStore!.getEntityTags("task", doomed.id)).toEqual([]);
-      expect((await request(world.app).get(`/api/tasks/${doomed.id}`)).status).toBe(404);
-      expect((await world.getTask(survivor.id)).title).toBe("Survivor");
-      expect((await request(world.app).get("/api/tags")).body.tags[0].id).toBe(tag.id);
     },
   },
 ];
