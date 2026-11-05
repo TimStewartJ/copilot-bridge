@@ -114,7 +114,7 @@ function buildTaskNotes(
   addNotes("task", "Task notes (the current state of the work; any rules the user wrote here still apply)", task.notes);
   if (groupNotes) addNotes("group", `Group notes (task group "${escapePromptLiteral(oneLine(groupNotes.groupName, 80))}")`, groupNotes.notes);
   if (hasExcerpt) {
-    lines.push(`Excerpts can omit rules and decisions. When your work depends on them, or before replacing the notes, read the rest with task_get_info (taskId: ${task.id}, with the notesSource, nextOffset as offset, and revision shown; repeat until nextOffset is null).`);
+    lines.push(`Excerpts can omit rules and decisions. When your work depends on them, read the rest with task_get_info (taskId: ${task.id}, with the notesSource, nextOffset as offset, and revision shown; repeat until nextOffset is null). To change part of task notes, use task_update with notesEdit.`);
   }
   return section("task_notes", lines, EMPTY_TASK_NOTES);
 }

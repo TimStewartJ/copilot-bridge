@@ -10,7 +10,7 @@ import type { AppContext } from "../app-context.js";
 import type { Task, TaskChangeActor } from "../task-store.js";
 import type { ProvidersConfig } from "../providers/types.js";
 import type { TagStore } from "../tag-store.js";
-import { notesContinuationRefusal, notesWriteRefusal, notesWriteTokenField, readTaskNotesPage } from "../task-note-pages.js";
+import { applyNotesEdit, notesContinuationRefusal, notesWriteRefusal, notesWriteTokenField, readTaskNotesPage } from "../task-note-pages.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
 import {
   InvalidTaskHistoryEntryError,
@@ -140,6 +140,15 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         priority: { type: "integer", description: "Task priority" },
         instructions: { type: "string", description: "Standing rules for every session of this task, such as approval requirements or how to verify work (markdown). Overwrites existing instructions. Keep it short." },
         notes: { type: "string", description: "Current state of the work: open items, the latest known facts, what to do next (markdown). Overwrites existing notes. Do not keep a log of past work here; use task_history_add." },
+        notesEdit: {
+          type: "object",
+          description: "Change one passage instead of sending all the notes. Prefer this for long notes. Instead of notes.",
+          properties: {
+            old_str: { type: "string", description: "The exact text to replace. It must appear exactly once." },
+            new_str: { type: "string", description: "The replacement text." },
+          },
+          required: ["old_str", "new_str"],
+        },
         notesWriteToken: { type: "string", description: "Required to replace long notes: the notesWriteToken from reading them to the end with task_get_info, or from your last task_update." },
         cwd: { type: "string", description: "Working directory path for the task" },
         groupId: { anyOf: [{ type: "string" }, { type: "null" }], description: "Task group ID to assign to. Empty string or null ungroups the task." },
@@ -173,11 +182,17 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         updates.playbook = args.playbook;
       }
       const hasTags = Array.isArray(args.tags);
-      if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, priority, instructions, notes, cwd, groupId, doneWhen, playbook, tags");
+      if (args.notes !== undefined && args.notesEdit !== undefined) return toolFailure("Pass notes or notesEdit, not both.");
+      if (Object.keys(updates).length === 0 && !hasTags && args.notesEdit === undefined) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, priority, instructions, notes, notesEdit, cwd, groupId, doneWhen, playbook, tags");
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       const refusal = args.notes === undefined ? undefined : notesWriteRefusal(task.value.notes, args.notesWriteToken);
       if (refusal) return toolFailure(refusal);
+      if (args.notesEdit !== undefined) {
+        const edited = applyNotesEdit(task.value.notes, args.notesEdit.old_str, args.notesEdit.new_str);
+        if ("error" in edited) return toolFailure(edited.error);
+        updates.notes = edited.notes;
+      }
       let tagStore: TagStore | undefined;
       if (hasTags) {
         const tagStoreResult = ensureTagStore(ctx);

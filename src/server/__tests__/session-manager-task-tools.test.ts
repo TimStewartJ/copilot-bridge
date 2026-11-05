@@ -142,6 +142,23 @@ describe("session manager task tools", () => {
     expect(await write({ notes: "No token needed" })).toMatchObject({ success: true });
   });
 
+  it("changes one passage of long notes without a read, and only when it is unambiguous", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Release review");
+    const long = `Current: comparing vendors.\n${"Keep this context. ".repeat(1000)}Rule at the end.`;
+    ctx.taskStore.updateTask(task.id, { notes: long });
+    const update = (args: Record<string, unknown>) => getTool(ctx, "task_update").handler({ taskId: task.id, ...args }, createInvocation("task_update"));
+    const notesEdit = (old_str: string, new_str: string) => ({ notesEdit: { old_str, new_str } });
+
+    for (const refused of [notesEdit("Not in the notes", "x"), notesEdit("Keep this context.", "x"), notesEdit("", "x"), { notes: "x", ...notesEdit("Current", "x") }]) {
+      expect(await update(refused)).toMatchObject({ resultType: "failure" });
+    }
+    expect(ctx.taskStore.getTask(task.id)!.notes).toBe(long);
+
+    expect(await update(notesEdit("comparing vendors", "picked Acme"))).toMatchObject({ success: true, message: "Task updated (notes)" });
+    expect(ctx.taskStore.getTask(task.id)!.notes).toBe(long.replace("comparing vendors", "picked Acme"));
+  });
+
   it("a full read of long task notes also unlocks replacing them", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Release review");

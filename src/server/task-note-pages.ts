@@ -25,8 +25,17 @@ export function notesWriteRefusal(current: string, token: unknown): string | und
   const { notesWriteToken } = notesWriteTokenField(current);
   if (!notesWriteToken || token === notesWriteToken) return undefined;
   return token === undefined
-    ? "These notes are longer than the excerpt in your context. Read them to the end with task_get_info (task_group_list for group notes) and pass its notesWriteToken."
+    ? "These notes are longer than the excerpt in your context. To change part of task notes use notesEdit; to replace them, read them to the end with task_get_info (task_group_list for group notes) and pass its notesWriteToken."
     : "These notes changed since you read them. Read them again and pass the new notesWriteToken.";
+}
+
+/** Changes one exact passage, so nothing else has to be read or sent back. */
+export function applyNotesEdit(notes: string, oldStr: string, newStr: string): { notes: string } | { error: string } {
+  if (!oldStr) return { error: "old_str must not be empty." };
+  const first = notes.indexOf(oldStr);
+  if (first < 0) return { error: "old_str is not in the notes. Copy it exactly from the notes." };
+  if (notes.includes(oldStr, first + 1)) return { error: "old_str appears more than once. Include more text around it." };
+  return { notes: notes.slice(0, first) + newStr + notes.slice(first + oldStr.length) };
 }
 
 export function sliceTaskNotes(notes: string, offset: number, length: number): string {
