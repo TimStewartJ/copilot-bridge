@@ -5,6 +5,7 @@ import { createHelmThinkerStore } from "../thinker/store.js";
 import { HelmThinker } from "../thinker/thinker.js";
 import type { PacketBridge, ThinkerPacket } from "../thinker/context.js";
 import { RunSources } from "../thinker/outside-sources.js";
+import { MAX_CHARS, validatePublication } from "../thinker/publish.js";
 
 function packetBridge(): PacketBridge {
   return {
@@ -61,10 +62,13 @@ function setupClock(at: Date, options?: { staging?: boolean }) {
   return fixture;
 }
 
+function packet(): ThinkerPacket {
+  return { now: new Date().toISOString(), timezone: "UTC", trigger: "manual", rebuild: false, lastRunAt: null, bridges: [packetBridge()], memory: [], feedback: [], previousItems: [], outsideSources: [] };
+}
+
 function activate(thinker: HelmThinker, store: ReturnType<typeof createHelmThinkerStore>, runSession = "run-session") {
   const run = store.createRun({ sessionId: runSession, trigger: "manual", rebuild: false, model: null, effort: null });
-  const packet: ThinkerPacket = { now: new Date().toISOString(), timezone: "UTC", trigger: "manual", rebuild: false, lastRunAt: null, bridges: [packetBridge()], memory: [], feedback: [], previousItems: [], outsideSources: [] };
-  (thinker as any).active = { runId: run.id, sessionId: run.sessionId, packet, controller: new AbortController(), carriedSources: [] };
+  (thinker as any).active = { runId: run.id, sessionId: run.sessionId, packet: packet(), controller: new AbortController(), carriedSources: [] };
   const publish = (thinker as any).getTools().find((tool: any) => tool.name === "helm_publish");
   return { run, publish: (args: unknown, sessionId = runSession) => publish.handler(args, { sessionId, toolCallId: "c", toolName: "helm_publish" }) };
 }
@@ -79,6 +83,77 @@ const BRIEF = {
 function text(result: any): string {
   return JSON.stringify(result);
 }
+
+const ITEM = { kind: "fyi", bridge: "local", title: "Install?", recommendation: "Yes." };
+const withItem = (extra: object) => ({ summary: "x", items: [{ ...ITEM, ...extra }] });
+const withMemory = (memory: object) => ({ summary: "x", items: [], memory });
+
+// Each row finds a limit in the tool's schema and builds a publication that sits on it.
+const TEXT_LIMITS: Array<[string, (schema: any) => any, (value: string) => unknown]> = [
+  ["summary", (s) => s.summary, (value) => ({ summary: value, items: [] })],
+  ["item title", (s) => s.items.items.properties.title, (value) => withItem({ title: value })],
+  ["recommendation", (s) => s.items.items.properties.recommendation, (value) => withItem({ recommendation: value })],
+  ["why", (s) => s.items.items.properties.why, (value) => withItem({ why: value })],
+  ["evidence label", (s) => s.items.items.properties.evidence.items.properties.label, (value) => withItem({ evidence: [{ label: value, taskId: "t1" }] })],
+  ["action label", (s) => s.items.items.properties.actions.items.properties.label, (value) => withItem({ actions: [{ label: value, type: "open", taskId: "t1" }] })],
+  ["answer", (s) => s.items.items.properties.actions.items.properties.answer, (value) => withItem({ actions: [{ label: "Yes", type: "answer", sessionId: "s-q", requestId: "r1", answer: value }] })],
+  ["message", (s) => s.items.items.properties.actions.items.properties.message, (value) => withItem({ actions: [{ label: "Send", type: "send", sessionId: "s-r", message: value }] })],
+  ["proposal", (s) => s.proposals.items.properties.text, (value) => ({ summary: "x", items: [], proposals: [{ bridge: "local", text: value }] })],
+  ["watching", (s) => s.watching.items.properties.text, (value) => ({ summary: "x", items: [], watching: [{ bridge: "local", text: value }] })],
+  ["handled why", (s) => s.handled.items.properties.why, (value) => ({ summary: "x", items: [], handled: [{ bridge: "local", sessionId: "s-r", why: value }] })],
+  ["thread", (s) => s.memory.properties.threads.items.properties.text, (value) => withMemory({ threads: [{ bridge: "local", taskId: "t1", text: value }] })],
+  ["person", (s) => s.memory.properties.people.items.properties.text, (value) => withMemory({ people: [{ key: "k", text: value }] })],
+  ["date", (s) => s.memory.properties.dates.items.properties.text, (value) => withMemory({ dates: [{ key: "k", text: value }] })],
+  ["proposed rule", (s) => s.memory.properties.proposeRules.items.properties.text, (value) => withMemory({ proposeRules: [{ text: value }] })],
+  ["proposed priority", (s) => s.memory.properties.proposePriorities.items.properties.text, (value) => withMemory({ proposePriorities: [{ text: value }] })],
+];
+
+const LIST_LIMITS: Array<[string, (schema: any) => any, (count: number) => unknown]> = [
+  ["items", (s) => s.items, (count) => ({ summary: "x", items: Array(count).fill(ITEM) })],
+  ["evidence", (s) => s.items.items.properties.evidence, (count) => withItem({ evidence: Array(count).fill({ label: "AWC", taskId: "t1" }) })],
+  ["actions", (s) => s.items.items.properties.actions, (count) => withItem({ actions: Array(count).fill({ label: "Open", type: "open", taskId: "t1" }) })],
+  ["proposals", (s) => s.proposals, (count) => ({ summary: "x", items: [], proposals: Array(count).fill({ bridge: "local", text: "Close it" }) })],
+  ["watching", (s) => s.watching, (count) => ({ summary: "x", items: [], watching: Array(count).fill({ bridge: "local", text: "A reply" }) })],
+  ["handled", (s) => s.handled, (count) => ({ summary: "x", items: [], handled: Array(count).fill({ bridge: "local", sessionId: "s-r", why: "FYI" }) })],
+];
+
+function statedLimit(field: { description?: string }): number {
+  const stated = /At most (\d+)/.exec(field.description ?? "");
+  expect(stated, `no limit in: ${field.description}`).not.toBeNull();
+  return Number(stated![1]);
+}
+
+function publishSchema() {
+  const { thinker } = setup();
+  return (thinker as any).getTools().find((tool: any) => tool.name === "helm_publish").inputSchema.properties;
+}
+
+describe("helm_publish schema", () => {
+  it("names every too-long field in one reply, so a run can fix them together", async () => {
+    const { store, thinker } = setup();
+    const { publish } = activate(thinker, store);
+    const why = "x".repeat(MAX_CHARS.why + 1);
+    const reply = text(await publish({
+      summary: "x",
+      items: [{ ...ITEM, why }, { ...ITEM, why }],
+      watching: [{ bridge: "local", text: "x".repeat(MAX_CHARS.watching + 1) }],
+    }));
+    expect(reply).toContain("item 1: why");
+    expect(reply).toContain("item 2: why");
+    expect(reply).toContain("watching 1: text");
+  });
+  it.each(TEXT_LIMITS)("states the longest %s the publication check accepts", (_name, field, build) => {
+    const limit = statedLimit(field(publishSchema()));
+    expect(validatePublication(build("x".repeat(limit)), packet(), [])).toMatchObject({ ok: true });
+    expect(validatePublication(build("x".repeat(limit + 1)), packet(), [])).toMatchObject({ ok: false });
+  });
+
+  it.each(LIST_LIMITS)("states the most %s the publication check accepts", (_name, field, build) => {
+    const limit = statedLimit(field(publishSchema()));
+    expect(validatePublication(build(limit), packet(), [])).toMatchObject({ ok: true });
+    expect(validatePublication(build(limit + 1), packet(), [])).toMatchObject({ ok: false });
+  });
+});
 
 describe("Helm thinker", () => {
   it("accepts one publication only from its own running session, then serves the brief", async () => {

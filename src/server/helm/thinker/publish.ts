@@ -19,11 +19,26 @@ import {
 } from "../../../shared/helm-thinker.js";
 import type { PacketBridge, ThinkerPacket } from "./context.js";
 
+// helm_publish states these limits in its tool descriptions, so a run sees them before it writes.
 export const MAX_ITEMS = 6;
-const MAX_PROPOSALS = 5;
-const MAX_WATCHING = 10;
-const MAX_HANDLED = 30;
-const MAX_ACTIONS = 3;
+export const MAX_EVIDENCE = 4;
+export const MAX_PROPOSALS = 5;
+export const MAX_WATCHING = 10;
+export const MAX_HANDLED = 30;
+export const MAX_ACTIONS = 3;
+export const MAX_CHARS = {
+  summary: 700,
+  title: 160,
+  recommendation: 600,
+  why: 400,
+  evidenceLabel: 120,
+  actionLabel: 60,
+  answer: 1500,
+  message: 2000,
+  proposal: 400,
+  watching: 300,
+  handledWhy: 200,
+} as const;
 const ITEM_KINDS: HelmItemKind[] = ["question", "decision", "due", "connects", "fyi"];
 
 export type MemoryOp =
@@ -69,17 +84,17 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
     return bridge;
   };
 
-  const summary = text(input.summary, 700);
-  if (!summary) errors.push("summary is required (at most 700 characters)");
+  const summary = text(input.summary, MAX_CHARS.summary);
+  if (!summary) errors.push(`summary is required (at most ${MAX_CHARS.summary} characters)`);
 
   const parseAction = (rawAction: any, bridge: PacketBridge, where: string, index: number): HelmAction | undefined => {
-    const label = text(rawAction?.label, 60);
-    if (!label) { errors.push(`${where}: label is required (at most 60 characters)`); return undefined; }
+    const label = text(rawAction?.label, MAX_CHARS.actionLabel);
+    if (!label) { errors.push(`${where}: label is required (at most ${MAX_CHARS.actionLabel} characters)`); return undefined; }
     const type = rawAction?.type;
     let action: HelmActionDo | undefined;
     if (type === "answer") {
       const question = bridge.questions.find((candidate) => candidate.sessionId === rawAction.sessionId && candidate.requestId === rawAction.requestId);
-      const answer = text(rawAction.answer, 1500);
+      const answer = text(rawAction.answer, MAX_CHARS.answer);
       if (!question) errors.push(`${where}: answer needs the sessionId and requestId of a question listed for ${bridge.id}`);
       else if (!question.answerable || question.kind !== "user_input") errors.push(`${where}: that question can't be answered from Home; use an open action instead`);
       else if (!answer) errors.push(`${where}: answer text is required`);
@@ -89,9 +104,9 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
         else action = { type: "answer", bridge: bridge.id, sessionId: question.sessionId, requestId: question.requestId, answer: choice ?? answer, wasFreeform: !choice };
       }
     } else if (type === "send") {
-      const message = text(rawAction.message, 2000);
+      const message = text(rawAction.message, MAX_CHARS.message);
       if (typeof rawAction.sessionId !== "string" || !bridge.sessionIds.has(rawAction.sessionId)) errors.push(`${where}: send needs the sessionId of a conversation listed for ${bridge.id}`);
-      else if (!message) errors.push(`${where}: message is required (at most 2000 characters)`);
+      else if (!message) errors.push(`${where}: message is required (at most ${MAX_CHARS.message} characters)`);
       else action = { type: "send", bridge: bridge.id, sessionId: rawAction.sessionId, message };
     } else if (type === "tick") {
       if (!bridge.due.some((due) => due.actionId === rawAction.actionId)) errors.push(`${where}: tick needs the actionId of a checklist item listed for ${bridge.id}`);
@@ -127,9 +142,9 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
 
   const parseEvidence = (rawEvidence: unknown, bridge: PacketBridge, where: string): HelmEvidence[] => {
     if (rawEvidence === undefined) return [];
-    if (!Array.isArray(rawEvidence) || rawEvidence.length > 4) { errors.push(`${where}: evidence must be a list of at most 4`); return []; }
+    if (!Array.isArray(rawEvidence) || rawEvidence.length > MAX_EVIDENCE) { errors.push(`${where}: evidence must be a list of at most ${MAX_EVIDENCE}`); return []; }
     return rawEvidence.flatMap((entry: any, index) => {
-      const label = text(entry?.label, 120);
+      const label = text(entry?.label, MAX_CHARS.evidenceLabel);
       const sessionOk = typeof entry?.sessionId === "string" && bridge.sessionIds.has(entry.sessionId);
       const taskOk = typeof entry?.taskId === "string" && bridge.tasks.some((task) => task.taskId === entry.taskId);
       if (!label || (!sessionOk && !taskOk)) {
@@ -145,15 +160,15 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
   else input.items.forEach((rawItem: any, index: number) => {
     const where = `item ${index + 1}`;
     const bridge = bridgeOf(rawItem?.bridge, where);
-    const title = text(rawItem?.title, 160);
-    const recommendation = text(rawItem?.recommendation, 600);
+    const title = text(rawItem?.title, MAX_CHARS.title);
+    const recommendation = text(rawItem?.recommendation, MAX_CHARS.recommendation);
     const kind = ITEM_KINDS.includes(rawItem?.kind) ? rawItem.kind as HelmItemKind : undefined;
-    if (!title) errors.push(`${where}: title is required (at most 160 characters)`);
-    if (!recommendation) errors.push(`${where}: recommendation is required (at most 600 characters)`);
+    if (!title) errors.push(`${where}: title is required (at most ${MAX_CHARS.title} characters)`);
+    if (!recommendation) errors.push(`${where}: recommendation is required (at most ${MAX_CHARS.recommendation} characters)`);
     if (!kind) errors.push(`${where}: kind must be one of ${ITEM_KINDS.join(", ")}`);
     if (!bridge || !title || !recommendation || !kind) return;
-    const why = rawItem.why === undefined ? undefined : text(rawItem.why, 400);
-    if (rawItem.why !== undefined && !why) errors.push(`${where}: why must be at most 400 characters`);
+    const why = rawItem.why === undefined ? undefined : text(rawItem.why, MAX_CHARS.why);
+    if (rawItem.why !== undefined && !why) errors.push(`${where}: why must be at most ${MAX_CHARS.why} characters`);
     let reply: HelmBriefItem["reply"];
     if (rawItem.replyTo !== undefined) {
       const sessionId = rawItem.replyTo?.sessionId;
@@ -181,8 +196,8 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
   else (input.proposals ?? []).forEach((rawProposal: any, index: number) => {
     const where = `proposal ${index + 1}`;
     const bridge = bridgeOf(rawProposal?.bridge, where);
-    const proposalText = text(rawProposal?.text, 400);
-    if (!proposalText) errors.push(`${where}: text is required (at most 400 characters)`);
+    const proposalText = text(rawProposal?.text, MAX_CHARS.proposal);
+    if (!proposalText) errors.push(`${where}: text is required (at most ${MAX_CHARS.proposal} characters)`);
     if (!bridge || !proposalText) return;
     proposals.push({ id: `p${index + 1}`, text: proposalText, actions: parseActions(rawProposal.actions, bridge, where) });
   });
@@ -192,8 +207,8 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
   else (input.watching ?? []).forEach((rawWatch: any, index: number) => {
     const where = `watching ${index + 1}`;
     const bridge = bridgeOf(rawWatch?.bridge, where);
-    const watchText = text(rawWatch?.text, 300);
-    if (!watchText) errors.push(`${where}: text is required (at most 300 characters)`);
+    const watchText = text(rawWatch?.text, MAX_CHARS.watching);
+    if (!watchText) errors.push(`${where}: text is required (at most ${MAX_CHARS.watching} characters)`);
     if (!bridge || !watchText) return;
     const taskOk = typeof rawWatch.taskId === "string" && bridge.tasks.some((task) => task.taskId === rawWatch.taskId);
     watching.push({ text: watchText, bridge: bridge.id, ...(taskOk ? { taskId: rawWatch.taskId } : {}) });
@@ -206,9 +221,9 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
     const bridge = bridgeOf(rawHandled?.bridge, where);
     if (!bridge) return;
     const reply = bridge.replies.find((candidate) => candidate.sessionId === rawHandled.sessionId);
-    const why = text(rawHandled.why, 200);
+    const why = text(rawHandled.why, MAX_CHARS.handledWhy);
     if (!reply || !reply.activityAt) errors.push(`${where}: only an unread reply listed for ${bridge.id} can be marked read`);
-    else if (!why) errors.push(`${where}: why is required (at most 200 characters)`);
+    else if (!why) errors.push(`${where}: why is required (at most ${MAX_CHARS.handledWhy} characters)`);
     else if (bridge.questions.some((question) => question.sessionId === reply.sessionId)) errors.push(`${where}: that conversation is waiting on a question; it can't be marked read`);
     else handled.push({ bridge: bridge.id, sessionId: reply.sessionId, title: reply.task ? `${reply.task} · ${reply.conversation}` : reply.conversation, why, activityAt: reply.activityAt });
   });

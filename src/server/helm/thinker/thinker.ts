@@ -17,6 +17,7 @@ import { registerDeadlineJob, type DeadlineJob } from "../../scheduler-deadlines
 import { sendChatMessage } from "../../chat-message-delivery.js";
 import { toolFailure } from "../../tool-results.js";
 import {
+  HELM_ENTRY_MAX_CHARS,
   HELM_MEMORY_LIMITS,
   isRebuildSlot,
   nextScheduledRun,
@@ -42,7 +43,7 @@ import { applyHelmSessionProfile } from "../helm-session-profile.js";
 import { createHelmToolDefinitions, type HelmBridgeFacade, type HelmToolRuntime } from "../helm-tools.js";
 import { bridgeStatuses, buildThinkerPacket, countChanges, readBridgeForChat, renderThinkerPacket, type ChatBridgeView, type ThinkerPacket } from "./context.js";
 import { buildThinkerPrompt, buildThinkerSystemPrompt, THINKER_NUDGE } from "./prompt.js";
-import { normalizeChoice, validatePublication, type HandledPlan, type MemoryOp } from "./publish.js";
+import { MAX_ACTIONS, MAX_CHARS, MAX_EVIDENCE, MAX_HANDLED, MAX_ITEMS, MAX_PROPOSALS, MAX_WATCHING, normalizeChoice, validatePublication, type HandledPlan, type MemoryOp } from "./publish.js";
 import { createLocalSource, createPeerSource, sourceLink, type HelmSource } from "./sources.js";
 import { mergeSourceIds, toRunView, type HelmRunRecord, type HelmThinkerStore } from "./store.js";
 import { connectSource, RunSources, SourceError, sourceUnsupportedReason, type SourceConnector, type SourceToolInfo } from "./outside-sources.js";
@@ -385,38 +386,47 @@ export class HelmThinker {
   }
 
   private publishTool(): BridgeToolDefinition {
+    // Limits go in descriptions, not maxLength or maxItems: the tool adapter stops at the first schema
+    // violation, while validatePublication names every problem so a run can fix them all in one retry.
+    const chars = (max: number, lead = "") => ({ type: "string", description: `${lead}At most ${max} characters.` });
+    const entryText = chars(HELM_ENTRY_MAX_CHARS);
     return defineBridgeTool("helm_publish", {
       description: "Publish this run's brief and memory updates. Call exactly once at the end; if it returns errors, fix them and call again. Only the first successful call counts.",
       parameters: {
         type: "object",
         properties: {
-          summary: { type: "string", description: "Two or three plain sentences: how things stand and what matters most." },
+          summary: chars(MAX_CHARS.summary, "Two or three plain sentences: how things stand and what matters most. "),
           items: {
             type: "array",
-            description: "At most 6 things that need Tim, most important first.",
+            description: `At most ${MAX_ITEMS} things that need Tim, most important first.`,
             items: {
               type: "object",
               properties: {
                 kind: { type: "string", enum: ["question", "decision", "due", "connects", "fyi"] },
                 bridge: { type: "string" },
-                title: { type: "string" },
-                recommendation: { type: "string" },
-                why: { type: "string" },
+                title: chars(MAX_CHARS.title),
+                recommendation: chars(MAX_CHARS.recommendation),
+                why: chars(MAX_CHARS.why, "Why it matters, in two short sentences. "),
                 source: { type: "string", description: "When the item rests on an outside source, that source's name from outsideSources." },
-                evidence: { type: "array", items: { type: "object", properties: { label: { type: "string" }, sessionId: { type: "string" }, taskId: { type: "string" } } } },
+                evidence: {
+                  type: "array",
+                  description: `At most ${MAX_EVIDENCE} links to conversations or tasks listed for this item's bridge in the packet.`,
+                  items: { type: "object", properties: { label: chars(MAX_CHARS.evidenceLabel), sessionId: { type: "string" }, taskId: { type: "string" } } },
+                },
                 replyTo: { type: "object", properties: { sessionId: { type: "string" } } },
                 actions: {
                   type: "array",
+                  description: `At most ${MAX_ACTIONS}.`,
                   items: {
                     type: "object",
                     properties: {
-                      label: { type: "string" },
+                      label: chars(MAX_CHARS.actionLabel),
                       primary: { type: "boolean" },
                       type: { type: "string", enum: ["answer", "send", "tick", "close_tasks", "tidy_task", "open"] },
                       sessionId: { type: "string" },
                       requestId: { type: "string" },
-                      answer: { type: "string" },
-                      message: { type: "string" },
+                      answer: chars(MAX_CHARS.answer),
+                      message: chars(MAX_CHARS.message),
                       actionId: { type: "string" },
                       taskId: { type: "string" },
                       taskIds: { type: "array", items: { type: "string" } },
@@ -428,19 +438,31 @@ export class HelmThinker {
               required: ["kind", "bridge", "title", "recommendation"],
             },
           },
-          proposals: { type: "array", items: { type: "object", properties: { bridge: { type: "string" }, text: { type: "string" }, actions: { type: "array", items: { type: "object" } } }, required: ["bridge", "text"] } },
-          watching: { type: "array", items: { type: "object", properties: { bridge: { type: "string" }, text: { type: "string" }, taskId: { type: "string" } }, required: ["bridge", "text"] } },
-          handled: { type: "array", items: { type: "object", properties: { bridge: { type: "string" }, sessionId: { type: "string" }, why: { type: "string" } }, required: ["bridge", "sessionId", "why"] } },
+          proposals: {
+            type: "array",
+            description: `At most ${MAX_PROPOSALS}.`,
+            items: { type: "object", properties: { bridge: { type: "string" }, text: chars(MAX_CHARS.proposal), actions: { type: "array", description: `At most ${MAX_ACTIONS}.`, items: { type: "object" } } }, required: ["bridge", "text"] },
+          },
+          watching: {
+            type: "array",
+            description: `At most ${MAX_WATCHING}.`,
+            items: { type: "object", properties: { bridge: { type: "string" }, text: chars(MAX_CHARS.watching), taskId: { type: "string" } }, required: ["bridge", "text"] },
+          },
+          handled: {
+            type: "array",
+            description: `At most ${MAX_HANDLED}, and only replies listed under this bridge's replies in the packet.`,
+            items: { type: "object", properties: { bridge: { type: "string" }, sessionId: { type: "string" }, why: chars(MAX_CHARS.handledWhy) }, required: ["bridge", "sessionId", "why"] },
+          },
           memory: {
             type: "object",
             properties: {
               picture: { type: "string" },
-              threads: { type: "array", items: { type: "object", properties: { bridge: { type: "string" }, taskId: { type: "string" }, text: { type: "string" } }, required: ["bridge", "taskId", "text"] } },
+              threads: { type: "array", items: { type: "object", properties: { bridge: { type: "string" }, taskId: { type: "string" }, text: entryText }, required: ["bridge", "taskId", "text"] } },
               removeThreads: { type: "array", items: { type: "string" } },
-              people: { type: "array", items: { type: "object", properties: { key: { type: "string" }, text: { type: "string" }, source: { type: "string" } }, required: ["key", "text"] } },
-              dates: { type: "array", items: { type: "object", properties: { key: { type: "string" }, text: { type: "string" }, source: { type: "string" } }, required: ["key", "text"] } },
-              proposeRules: { type: "array", items: { type: "object", properties: { text: { type: "string" }, source: { type: "string" } }, required: ["text"] } },
-              proposePriorities: { type: "array", items: { type: "object", properties: { text: { type: "string" }, source: { type: "string" } }, required: ["text"] } },
+              people: { type: "array", items: { type: "object", properties: { key: { type: "string" }, text: entryText, source: { type: "string" } }, required: ["key", "text"] } },
+              dates: { type: "array", items: { type: "object", properties: { key: { type: "string" }, text: entryText, source: { type: "string" } }, required: ["key", "text"] } },
+              proposeRules: { type: "array", items: { type: "object", properties: { text: entryText, source: { type: "string" } }, required: ["text"] } },
+              proposePriorities: { type: "array", items: { type: "object", properties: { text: entryText, source: { type: "string" } }, required: ["text"] } },
               confirm: { type: "array", items: { type: "string" } },
               drop: { type: "array", items: { type: "string" } },
             },
