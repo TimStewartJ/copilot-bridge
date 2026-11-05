@@ -6,6 +6,8 @@ import { queryClient } from "./queryClient";
 import { ThemeProvider } from "./useTheme";
 import { ToastProvider } from "./useToast";
 import App from "./App";
+import { FileTab } from "./components/FilePreview";
+import { fileFromTabPath } from "./components/file-preview";
 import { initPushSubscriptionReconciliation, registerPushServiceWorker } from "./push-notifications";
 import "./index.css";
 
@@ -17,13 +19,15 @@ if (typeof window !== "undefined") {
   });
 }
 
+const tabFile = fileFromTabPath(window.location.pathname);
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/+$/, "") || undefined}>
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
           <ToastProvider>
-            <App />
+            {tabFile ? <FileTab file={tabFile} /> : <App />}
           </ToastProvider>
         </ThemeProvider>
       </QueryClientProvider>

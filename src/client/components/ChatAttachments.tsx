@@ -1,6 +1,7 @@
 import { useRef, useState, type ComponentType } from "react";
 import {
   Download,
+  ExternalLink,
   File as FileIcon,
   FileArchive,
   FileAudio,
@@ -16,7 +17,7 @@ import {
 } from "lucide-react";
 import { API_BASE, type Attachment } from "../api";
 import { DS, cx } from "../design/tokens";
-import { fileExtension, filePreviewKind, isVectorImage, showFile, type PreviewFile } from "./file-preview";
+import { fileExtension, filePreviewKind, fileTabUrl, imageTabUrl, isVectorImage, showFile, type PreviewFile } from "./file-preview";
 import type { ViewerImage } from "./image-viewer";
 
 /**
@@ -143,6 +144,25 @@ export const TILE_CORNER_BUTTON = cx(
   DS.focus,
 );
 
+/** Opens a file in a browser tab of its own. */
+function NewTabLink({ href, name, size = 14, className }: { href: string; name: string; size?: number; className: string }) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer" title="Open in new tab" aria-label={`Open ${name} in a new tab`} className={className}>
+      <ExternalLink size={size} aria-hidden />
+    </a>
+  );
+}
+
+/**
+ * Opens an image in a new tab from the corner of its tile. Tiles are close together on a phone,
+ * which has no hover to hide this, so there it is left to the image viewer's bar.
+ */
+export function ImageTabCorner({ src, name }: { src: string; name: string }) {
+  const href = imageTabUrl(src);
+  if (!href) return null;
+  return <NewTabLink href={href} name={name} size={12} className={cx(TILE_CORNER_BUTTON, "[@media(hover:none)]:hidden")} />;
+}
+
 interface FileCardProps {
   name: string;
   mimeType?: string;
@@ -151,12 +171,14 @@ interface FileCardProps {
   href?: string;
   /** When set, the card opens the file instead, and downloading is left to the viewer. */
   onOpen?: () => void;
+  /** When set, the card also offers the file in a new tab. */
+  tabUrl?: string;
   /** The shorter card used in the composer tray, where it sits beside 56px thumbnails. */
   compact?: boolean;
 }
 
 /** A file as one object: its kind as an icon, its name, and what it is. */
-export function FileCard({ name, mimeType, size, href, onOpen, compact = false }: FileCardProps) {
+export function FileCard({ name, mimeType, size, href, onOpen, tabUrl, compact = false }: FileCardProps) {
   const { Icon, kind } = describeFile(name, mimeType);
   const meta = [kind, formatFileSize(size)].filter(Boolean).join(" · ");
   const ActionIcon = onOpen ? Maximize2 : Download;
@@ -169,6 +191,14 @@ export function FileCard({ name, mimeType, size, href, onOpen, compact = false }
         <span className="block truncate text-[13px] font-medium leading-5 text-text-primary">{name}</span>
         <span className="block truncate text-xs leading-4 text-text-faint">{meta}</span>
       </span>
+      {tabUrl && (
+        <NewTabLink
+          href={tabUrl}
+          name={name}
+          size={15}
+          className={cx("relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-faint transition-colors hover:text-text-primary", DS.focus)}
+        />
+      )}
       {(href || onOpen) && (
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-faint transition-colors group-hover/file:text-text-primary">
           <ActionIcon size={15} aria-hidden />
@@ -181,16 +211,18 @@ export function FileCard({ name, mimeType, size, href, onOpen, compact = false }
     compact ? "h-14 w-60" : "w-72",
   );
   if (onOpen) {
+    // A link cannot sit inside a button, so the open action lies over the card with the link above it.
     return (
-      <button
-        type="button"
-        onClick={onOpen}
-        className={cx(frame, "transition-colors hover:bg-surface-selected", DS.focus)}
-        aria-label={`Open ${name}`}
-        title={`Open ${name}`}
-      >
+      <div className={cx(frame, "relative transition-colors hover:bg-surface-selected")}>
         {body}
-      </button>
+        <button
+          type="button"
+          onClick={onOpen}
+          className={cx("absolute inset-0 rounded-xl focus-visible:ring-inset", DS.focus)}
+          aria-label={`Open ${name}`}
+          title={`Open ${name}`}
+        />
+      </div>
     );
   }
   if (href) {
@@ -221,16 +253,18 @@ interface PreviewCaptionProps {
   note?: string;
   /** Opens it full screen. Left out for content that needs no larger view, such as an audio player. */
   onExpand?: () => void;
+  /** Where a new tab shows it. Left out for content a tab would not show, such as a diagram's source. */
+  tabUrl?: string;
   downloadUrl: string;
   downloadName: string;
   className?: string;
 }
 
 /**
- * The line under a file or a visual shown in the chat: what it is, with Expand and Download
+ * The line under a file or a visual shown in the chat: what it is, with Expand, New tab and Download
  * beside it, so the content above stays the only thing in the frame.
  */
-export function PreviewCaption({ Icon, title, meta, note, onExpand, downloadUrl, downloadName, className }: PreviewCaptionProps) {
+export function PreviewCaption({ Icon, title, meta, note, onExpand, tabUrl, downloadUrl, downloadName, className }: PreviewCaptionProps) {
   const actionClass = cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost);
   return (
     <figcaption className={cx("flex min-w-0 items-start gap-2 px-0.5", className)}>
@@ -246,6 +280,7 @@ export function PreviewCaption({ Icon, title, meta, note, onExpand, downloadUrl,
             <Maximize2 size={14} aria-hidden />
           </button>
         )}
+        {tabUrl && <NewTabLink href={tabUrl} name={title} className={actionClass} />}
         <a
           href={downloadUrl}
           download={downloadName}
@@ -316,32 +351,34 @@ export function ImageGallery({ images, align = "start" }: ImageGalleryProps) {
       )}
     >
       {shown.map((image, index) => (
-        <button
-          key={`${image.src.slice(0, 64)}-${index}`}
-          type="button"
-          onClick={() => open(index)}
-          className={cx(
-            "block cursor-zoom-in overflow-hidden rounded-2xl border border-surface-edge bg-surface-inset transition-opacity hover:opacity-90",
-            DS.focus,
-          )}
-          aria-label={`Open image ${image.name}`}
-          title={image.name}
-        >
-          <img
-            ref={(element) => { thumbRefs.current[index] = element; }}
-            src={image.src}
-            alt={image.alt ?? image.name}
-            loading="lazy"
-            onError={() => markFailed(image.src)}
+        <div key={`${image.src.slice(0, 64)}-${index}`} className={cx("group relative min-w-0", single && "max-w-[22rem]")}>
+          <button
+            type="button"
+            onClick={() => open(index)}
             className={cx(
-              "block",
-              !single && "h-28 w-28 object-cover sm:h-32 sm:w-32",
-              single && "max-h-80 object-contain",
-              single && (isVectorImage(image.src) ? "w-72 max-w-full" : "w-auto max-w-[min(100%,22rem)]"),
-              isVectorImage(image.src) && "bg-white",
+              "block max-w-full cursor-zoom-in overflow-hidden rounded-2xl border border-surface-edge bg-surface-inset transition-opacity hover:opacity-90",
+              DS.focus,
             )}
-          />
-        </button>
+            aria-label={`Open image ${image.name}`}
+            title={image.name}
+          >
+            <img
+              ref={(element) => { thumbRefs.current[index] = element; }}
+              src={image.src}
+              alt={image.alt ?? image.name}
+              loading="lazy"
+              onError={() => markFailed(image.src)}
+              className={cx(
+                "block",
+                !single && "h-28 w-28 object-cover sm:h-32 sm:w-32",
+                single && "max-h-80 object-contain",
+                single && (isVectorImage(image.src) ? "w-72 max-w-full" : "w-auto max-w-full"),
+                isVectorImage(image.src) && "bg-white",
+              )}
+            />
+          </button>
+          <ImageTabCorner src={image.src} name={image.name} />
+        </div>
       ))}
     </div>
     )}
@@ -384,6 +421,7 @@ export function MessageAttachments({
                 name={name}
                 href={url}
                 onOpen={url && filePreviewKind(name) ? () => openFile({ url, name }) : undefined}
+                tabUrl={(url && fileTabUrl({ url, name })) || undefined}
                 {...attachmentMeta(att)}
               />
             );

@@ -64,6 +64,7 @@ export default function VisualArtifactCard({ visual: published }: VisualArtifact
           meta={meta}
           note={visual.caption}
           onExpand={expand}
+          tabUrl={isImage ? visual.url : undefined}
           downloadUrl={visual.downloadUrl}
           downloadName={visual.displayName}
           className={isImage ? "w-0 min-w-full" : undefined}

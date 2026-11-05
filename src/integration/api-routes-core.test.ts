@@ -487,19 +487,47 @@ describe("Attachment routes", () => {
     }
     const base = `/api/sessions/${sessionId}/attachments`;
 
-    const framed = await request(attachmentApp).get(`${base}/page.html?inline=1`);
-    expect(framed.status).toBe(200);
-    expect(framed.headers["content-type"]).toMatch(/^text\/html/);
-    expect(framed.headers["content-disposition"]).toBeUndefined();
-    expect(framed.headers["content-security-policy"]).toContain("sandbox allow-scripts;");
-    expect(framed.headers["content-security-policy"]).toContain("connect-src 'none'");
-    expect(framed.headers["x-content-type-options"]).toBe("nosniff");
+    for (const [name, type] of [["page.html", /^text\/html/], ["logo.svg", /^image\/svg\+xml/]] as const) {
+      const framed = await request(attachmentApp).get(`${base}/${name}?inline=1`);
+      expect(framed.status, name).toBe(200);
+      expect(framed.headers["content-type"], name).toMatch(type);
+      expect(framed.headers["content-disposition"], name).toBeUndefined();
+      expect(framed.headers["content-security-policy"], name).toContain("sandbox allow-scripts;");
+      expect(framed.headers["content-security-policy"], name).toContain("connect-src 'none'");
+      expect(framed.headers["x-content-type-options"], name).toBe("nosniff");
+    }
 
-    for (const path of [`${base}/page.html`, `${base}/page.html?inline=1&download=1`, `${base}/logo.svg?inline=1`]) {
+    for (const path of [`${base}/page.html`, `${base}/page.html?inline=1&download=1`, `${base}/logo.svg`]) {
       const downloaded = await request(attachmentApp).get(path);
       expect(downloaded.status, path).toBe(200);
       expect(downloaded.headers["content-disposition"], path).toContain("attachment;");
       expect(downloaded.headers["x-content-type-options"], path).toBe("nosniff");
+    }
+  });
+
+  it("GET /api/sessions/:id/attachments/:attachmentId?inline shows a PDF or media in a tab and still downloads anything else", async () => {
+    const copilotHome = makeTestDir("route-home");
+    const { app: attachmentApp } = createTestApp({ copilotHome });
+    const names = ["flyer.pdf", "take.mp3", "demo.mp4", "notes.md", "feed.xml", "bundle.zip"];
+    for (const name of names) {
+      const sourcePath = join(copilotHome, name);
+      writeFileSync(sourcePath, "content");
+      const published = publishOutboundAttachment({ copilotHome, sessionId, sourcePath });
+      if (!published.ok) throw new Error(published.error);
+    }
+    const base = `/api/sessions/${sessionId}/attachments`;
+
+    for (const [name, type] of [["flyer.pdf", /^application\/pdf/], ["take.mp3", /^audio\/mpeg/], ["demo.mp4", /^video\/mp4/]] as const) {
+      const shown = await request(attachmentApp).get(`${base}/${name}?inline=1`);
+      expect(shown.status, name).toBe(200);
+      expect(shown.headers["content-type"], name).toMatch(type);
+      expect(shown.headers["content-disposition"], name).toBeUndefined();
+      expect(shown.headers["x-content-type-options"], name).toBe("nosniff");
+    }
+    for (const path of [`${base}/notes.md?inline=1`, `${base}/feed.xml?inline=1`, `${base}/bundle.zip?inline=1`, `${base}/flyer.pdf`, `${base}/flyer.pdf?inline=1&download=1`]) {
+      const downloaded = await request(attachmentApp).get(path);
+      expect(downloaded.status, path).toBe(200);
+      expect(downloaded.headers["content-disposition"], path).toContain("attachment;");
     }
   });
 

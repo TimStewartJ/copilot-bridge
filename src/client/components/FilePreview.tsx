@@ -7,6 +7,8 @@ import { describeFile, FileCard, ImageGallery, PreviewCaption } from "./ChatAtta
 import {
   fileExtension,
   filePreviewKind,
+  fileTabUrl,
+  inlineFileUrl,
   loadedFileText,
   loadFileText,
   parseDelimitedRows,
@@ -17,7 +19,7 @@ import {
   type FileText,
   type PreviewFile,
 } from "./file-preview";
-import { LIGHTBOX_BACKDROP_ATTR, LightboxDownload, LightboxShell } from "./LightboxShell";
+import { LIGHTBOX_BACKDROP_ATTR, LightboxDownload, LightboxNewTab, LightboxShell } from "./LightboxShell";
 import type { PdfPreviewProps } from "./PdfPreview";
 import { APP_PROSE } from "./shared/prose-classes";
 import { HTML_SANDBOX_PERMISSIONS } from "./visualDisplay";
@@ -26,9 +28,9 @@ import { EmptyHint, IconButton } from "../design/primitives";
 
 /**
  * A file shown in the chat itself. In the transcript it is a card: a glimpse of the content in a
- * frame, and a line that names it with Expand and Download. Opening it shows the whole file full
- * screen, where it scrolls, selects and (for a web page) responds. Downloading is the other option,
- * never the only one, except for formats the browser cannot show.
+ * frame, and a line that names it with Expand, New tab and Download. Opening it shows the whole file
+ * full screen, where it scrolls, selects and (for a web page) responds. Downloading is the other
+ * option, never the only one, except for formats the browser cannot show.
  */
 
 /** Stands in when pdf.js cannot be loaded (offline, or a tab older than the running build). */
@@ -155,7 +157,7 @@ function FilePreviewBody(props: FilePreviewBodyProps) {
     // The card shows the page at half size, as a picture of itself; the viewer shows it for use.
     return (
       <iframe
-        src={`${file.url}${file.url.includes("?") ? "&" : "?"}inline=1`}
+        src={inlineFileUrl(file.url)}
         sandbox={HTML_SANDBOX_PERMISSIONS}
         title={file.name}
         loading="lazy"
@@ -252,6 +254,7 @@ export const OutboundAttachment = memo(function OutboundAttachment({ url, name }
         title={name}
         meta={label}
         onExpand={isPlayer(kind) ? undefined : open}
+        tabUrl={fileTabUrl(file) ?? undefined}
         downloadUrl={url}
         downloadName={name}
         className="not-prose"
@@ -260,18 +263,20 @@ export const OutboundAttachment = memo(function OutboundAttachment({ url, name }
   );
 });
 
-function FileViewer({ file }: { file: PreviewFile }) {
+/** The whole file, over the page it was opened from or, with no `onClose`, as the page itself. */
+function FileViewer({ file, onClose }: { file: PreviewFile; onClose?: () => void }) {
   const kind = filePreviewKind(file.name);
   const [zoomStep, setZoomStep] = useState(0);
   const [failed, setFailed] = useState(false);
   const fail = useCallback(() => setFailed(true), []);
   const shown = kind && kind !== "image" && !failed ? kind : null;
+  const tabUrl = onClose && shown ? fileTabUrl(file) : null;
 
   return (
     <LightboxShell
       title={file.name}
       subtitle={describeFile(file.name).kind}
-      onClose={() => showFile(null)}
+      onClose={onClose}
       actions={(
         <>
           {shown === "pdf" && (
@@ -284,6 +289,7 @@ function FileViewer({ file }: { file: PreviewFile }) {
               </IconButton>
             </>
           )}
+          {tabUrl && <LightboxNewTab href={tabUrl} fileName={file.name} />}
           <LightboxDownload href={file.url} fileName={file.name} />
         </>
       )}
@@ -317,5 +323,13 @@ function FileViewer({ file }: { file: PreviewFile }) {
 /** The one full-screen file viewer, mounted at the app's root. Anything opens it with `showFile`. */
 export function FileViewerHost() {
   const file = useOpenFile();
-  return file ? <FileViewer key={file.url} file={file} /> : null;
+  return file ? <FileViewer key={file.url} file={file} onClose={() => showFile(null)} /> : null;
+}
+
+/** A file in a browser tab of its own: the viewer with no app behind it, named after the file. */
+export function FileTab({ file }: { file: PreviewFile }) {
+  useEffect(() => {
+    document.title = file.name;
+  }, [file.name]);
+  return <FileViewer file={file} />;
 }

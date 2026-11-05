@@ -96,6 +96,18 @@ export function isInlineRenderableAttachment(mimeType: string): boolean {
   return INLINE_RENDERABLE_MIME_TYPES.has(mimeType.toLowerCase());
 }
 
+/** What a browser shows in a tab by itself, running nothing as the Bridge: a PDF or a media player. */
+export function isBrowserViewableAttachment(mimeType: string): boolean {
+  const mime = mimeType.toLowerCase();
+  return mime === "application/pdf" || mime.startsWith("audio/") || mime.startsWith("video/");
+}
+
+/** A document that can run script, so a browser may show it only under the sandbox policy. */
+export function isActiveDocumentAttachment(mimeType: string): boolean {
+  const mime = mimeType.toLowerCase();
+  return mime === MIME_TYPES_BY_EXTENSION.html || mime === MIME_TYPES_BY_EXTENSION.svg;
+}
+
 export function getOutboundAttachmentDir(copilotHome: string, sessionId: string): string {
   return join(copilotHome, "session-state", sessionId, "files", "outgoing");
 }

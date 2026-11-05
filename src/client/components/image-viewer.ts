@@ -2,7 +2,7 @@ import PhotoSwipe, { type SlideData } from "photoswipe";
 import "photoswipe/style.css";
 import "./image-viewer.css";
 import { prefersReducedMotion } from "../lib/motion";
-import { isVectorImage } from "./file-preview";
+import { imageTabUrl, isVectorImage } from "./file-preview";
 
 /**
  * The full-screen image viewer. PhotoSwipe owns the gestures a phone photo viewer has: pinch to
@@ -73,6 +73,7 @@ function svg(paths: string, size = 20): string {
 const ICON_CLOSE = svg('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>');
 const ICON_ZOOM = svg('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8v6" class="bridge-pswp-zoom-v"/><path d="M8 11h6"/>');
 const ICON_DOWNLOAD = svg('<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>');
+const ICON_NEW_TAB = svg('<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>');
 const ICON_PREV = `<span class="bridge-pswp-arrow">${svg('<path d="m15 18-6-6 6-6"/>', 18)}</span>`;
 const ICON_NEXT = `<span class="bridge-pswp-arrow">${svg('<path d="m9 18 6-6-6-6"/>', 18)}</span>`;
 
@@ -99,6 +100,7 @@ export async function openImageViewer(images: ViewerImage[], index = 0): Promise
     name: image.name,
     fileName: image.fileName ?? image.name,
     downloadUrl: image.downloadUrl ?? image.src,
+    tabUrl: imageTabUrl(image.src),
   }));
 
   active?.destroy();
@@ -156,6 +158,28 @@ export async function openImageViewer(images: ViewerImage[], index = 0): Promise
         };
         instance.on("change", render);
         render();
+      },
+    });
+    pswp.ui?.registerElement({
+      name: "bridge-new-tab",
+      order: 7,
+      appendTo: "bar",
+      isButton: true,
+      tagName: "a",
+      title: "Open in new tab",
+      ariaLabel: "Open in new tab",
+      html: ICON_NEW_TAB,
+      onInit: (element, instance) => {
+        const link = element as HTMLAnchorElement;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        const update = () => {
+          const tabUrl = instance.currSlide?.data?.tabUrl;
+          link.style.display = typeof tabUrl === "string" ? "" : "none";
+          link.href = typeof tabUrl === "string" ? tabUrl : "";
+        };
+        instance.on("change", update);
+        update();
       },
     });
     pswp.ui?.registerElement({

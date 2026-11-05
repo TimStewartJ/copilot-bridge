@@ -113,9 +113,12 @@ describe("ComposerAttachmentTray", () => {
           { type: "file", path: `${filesDir}\\bundle.zip`, displayName: "bundle.zip" },
         ],
       }));
-      const link = findAllByTag(harness.dom.container, "A")[0];
-      expect(link.getAttribute("href")).toBe(`/api/sessions/${id}/files/bundle.zip`);
-      expect(link.getAttribute("download")).toBe("bundle.zip");
+      const link = findAllByTag(harness.dom.container, "A").find((node) => node.getAttribute?.("download") === "bundle.zip");
+      expect(link?.getAttribute("href")).toBe(`/api/sessions/${id}/files/bundle.zip`);
+
+      const tabLinks = findAllByTag(harness.dom.container, "A").filter((node) => node.getAttribute?.("target") === "_blank");
+      expect(tabLinks.map((node) => node.getAttribute("href"))).toEqual([`/file/${id}/files/data.csv`]);
+      expect(tabLinks[0].getAttribute("aria-label")).toBe("Open data.csv in a new tab");
 
       const open = findAllByTag(harness.dom.container, "BUTTON").find((button) => (
         button.getAttribute?.("aria-label") === "Open data.csv"

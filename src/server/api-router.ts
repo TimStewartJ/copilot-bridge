@@ -69,6 +69,8 @@ import { readCachedGitWorktreeStatus, readGitWorktreeStatus } from "./git-worktr
 import { readLauncherLogTail } from "./launcher-log.js";
 import {
   isCanonicalSessionId,
+  isActiveDocumentAttachment,
+  isBrowserViewableAttachment,
   resolveOutboundAttachment,
   resolveSessionGeneratedImage,
   resolveSessionUploadedFile,
@@ -1727,8 +1729,9 @@ export function createApiRouter(
    * Sends a file kept in a session: one the agent sent with send_attachment, or one the user
    * attached to a prompt. Raster images are served for display and everything else as a download,
    * which is all `fetch`, `<img>`, `<audio>` and `<video>` need to preview a file in the chat.
-   * `?inline` serves an HTML file for the chat's sandboxed frame, under the policy that keeps it
-   * from acting as the Bridge even when opened by itself; `?download` always downloads.
+   * `?inline` is for a browser showing the file by itself, in the chat's frame or a tab: a PDF or
+   * media as it is, and HTML or SVG under the policy that keeps it from acting as the Bridge.
+   * Anything else still downloads, and `?download` always does.
    */
   function sendSessionFile(req: express.Request, res: express.Response, file: Result<ResolvedOutboundAttachment>): void {
     if (!file.ok) {
@@ -1743,8 +1746,10 @@ export function createApiRouter(
     };
     res.type(mimeType);
     res.setHeader("X-Content-Type-Options", "nosniff");
-    const sandboxed = mimeType === HTML_MIME_TYPE && req.query.inline !== undefined;
-    if (req.query.download !== undefined || !(inline || sandboxed)) {
+    const shown = req.query.inline !== undefined;
+    const sandboxed = shown && isActiveDocumentAttachment(mimeType);
+    const viewable = shown && isBrowserViewableAttachment(mimeType);
+    if (req.query.download !== undefined || !(inline || sandboxed || viewable)) {
       res.download(filePath, displayName, { dotfiles: "allow" }, onSendError);
       return;
     }

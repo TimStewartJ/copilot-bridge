@@ -6,7 +6,7 @@ import CodeBlock from "./CodeBlock";
 import ChatDocLink from "./ChatDocLink";
 import ChatWorkReferencePreview from "./ChatWorkReferencePreview";
 import { BridgeReferenceCard, BridgeReferenceChip, parseChatBridgeLink } from "./BridgeReference";
-import { openFile, parseOutboundAttachmentLink, showImages } from "./ChatAttachments";
+import { ImageTabCorner, openFile, parseOutboundAttachmentLink, showImages } from "./ChatAttachments";
 import { OutboundAttachment } from "./FilePreview";
 import { filePreviewKind, type PreviewFile } from "./file-preview";
 
@@ -80,19 +80,22 @@ const ChatMarkdownImage: NonNullable<Components["img"]> = ({ node: _node, src, a
   const name = alt?.trim() || src.split(/[?#]/)[0].split("/").pop() || "image";
   const outbound = parseOutboundAttachmentLink(src);
   return (
-    <button
-      type="button"
-      onClick={(event) => showImages([{
-        src, name, alt: alt ?? name,
-        ...(outbound ? { fileName: outbound.name } : {}),
-        element: event.currentTarget.querySelector("img"),
-      }], 0)}
-      className={cx("not-prose my-1 block max-w-full cursor-zoom-in overflow-hidden rounded-2xl border border-surface-edge bg-surface-inset align-top transition-opacity hover:opacity-90", DS.focus)}
-      aria-label={`Open image ${name}`}
-      title={title ?? name}
-    >
-      <img src={src} alt={alt ?? name} loading="lazy" className="m-0 block max-h-96 w-auto max-w-full object-contain" />
-    </button>
+    <span className="not-prose group relative my-1 block w-fit max-w-full">
+      <button
+        type="button"
+        onClick={(event) => showImages([{
+          src, name, alt: alt ?? name,
+          ...(outbound ? { fileName: outbound.name } : {}),
+          element: event.currentTarget.querySelector("img"),
+        }], 0)}
+        className={cx("block max-w-full cursor-zoom-in overflow-hidden rounded-2xl border border-surface-edge bg-surface-inset align-top transition-opacity hover:opacity-90", DS.focus)}
+        aria-label={`Open image ${name}`}
+        title={title ?? name}
+      >
+        <img src={src} alt={alt ?? name} loading="lazy" className="m-0 block max-h-96 w-auto max-w-full object-contain" />
+      </button>
+      <ImageTabCorner src={src} name={name} />
+    </span>
   );
 };
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { filePreviewKind, loadedFileText, loadFileText, parseDelimitedRows, pdfCanvasScale } from "./file-preview";
+import { fileFromTabPath, fileTabUrl, filePreviewKind, imageTabUrl, loadedFileText, loadFileText, parseDelimitedRows, pdfCanvasScale } from "./file-preview";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -32,6 +32,50 @@ describe("filePreviewKind", () => {
     expect(filePreviewKind("LICENSE")).toBe("text");
     expect(filePreviewKind("bundle.zip")).toBeNull();
     expect(filePreviewKind("budget.xlsx")).toBeNull();
+  });
+});
+
+describe("opening a file in a new tab", () => {
+  const id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const sent = `/api/sessions/${id}/attachments`;
+
+  it.each([
+    ["flyer.pdf", `${sent}/flyer.pdf`, `${sent}/flyer.pdf?inline=1`],
+    ["mockup.html", `${sent}/mockup.html`, `${sent}/mockup.html?inline=1`],
+    ["take.mp3", `${sent}/take.mp3`, `${sent}/take.mp3?inline=1`],
+    ["chart.png", `${sent}/chart.png`, `${sent}/chart.png`],
+    ["logo.svg", `${sent}/logo.svg`, `${sent}/logo.svg?inline=1`],
+    ["report.md", `${sent}/report.md`, `/file/${id}/attachments/report.md`],
+    ["my data.csv", `/staging/p1/api/sessions/${id}/files/my%20data.csv`, `/staging/p1/file/${id}/files/my%20data.csv`],
+    ["bundle.zip", `${sent}/bundle.zip`, null],
+    ["report.md", "https://example.com/report.md", null],
+    ["shot.png", "data:image/png;base64,AAAA", null],
+    ["shot.png", "blob:https://bridge.example/1234", null],
+  ])("%s at %s", (name, url, expected) => {
+    expect(fileTabUrl({ url, name })).toBe(expected);
+  });
+
+  it("treats an image by its address, since its name may be alt text", () => {
+    expect(imageTabUrl(`${sent}/chart.png`)).toBe(`${sent}/chart.png`);
+    expect(imageTabUrl("data:image/png;base64,AAAA")).toBeNull();
+  });
+
+  it("finds the same file again from the tab's address", () => {
+    for (const url of [`${sent}/report.md`, `/staging/p1/api/sessions/${id}/files/my%20data.csv`]) {
+      const name = decodeURIComponent(url.split("/").pop()!);
+      expect(fileFromTabPath(fileTabUrl({ url, name })!)).toEqual({ url, name });
+    }
+  });
+
+  it.each([
+    ["/"],
+    [`/sessions/${id}`],
+    ["/file/not-a-session/attachments/a.md"],
+    [`/file/${id}/outgoing/a.md`],
+    [`/file/${id}/attachments/a/b.md`],
+    [`/file/${id}/attachments/%E0%A4%A`],
+  ])("leaves %s to the app", (pathname) => {
+    expect(fileFromTabPath(pathname)).toBeNull();
   });
 });
 

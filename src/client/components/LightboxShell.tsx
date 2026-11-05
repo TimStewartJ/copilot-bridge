@@ -1,5 +1,5 @@
 import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
-import { Download, X } from "lucide-react";
+import { Download, ExternalLink, X } from "lucide-react";
 import { DS, cx } from "../design/tokens";
 import { useModalDialog } from "./shared/useModalDialog";
 
@@ -16,13 +16,14 @@ interface LightboxShellProps {
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
-  onClose: () => void;
+  /** Left out where there is nothing to go back to, such as a browser tab showing only this. */
+  onClose?: () => void;
   children: ReactNode;
 }
 
 export function LightboxShell({ title, subtitle, actions, onClose, children }: LightboxShellProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const { titleId, dialogProps } = useModalDialog({ onDismiss: onClose });
+  const { titleId, dialogProps } = useModalDialog({ onDismiss: () => onClose?.() });
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -35,7 +36,7 @@ export function LightboxShell({ title, subtitle, actions, onClose, children }: L
 
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
-    if (target === event.currentTarget || target?.hasAttribute?.(LIGHTBOX_BACKDROP_ATTR)) onClose();
+    if (target === event.currentTarget || target?.hasAttribute?.(LIGHTBOX_BACKDROP_ATTR)) onClose?.();
   };
 
   return (
@@ -51,22 +52,41 @@ export function LightboxShell({ title, subtitle, actions, onClose, children }: L
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {actions}
-          <button
-            ref={closeButtonRef}
-            type="button"
-            onClick={onClose}
-            className={cx(DS.button.base, DS.button.icon.md, DS.button.variant.ghost)}
-            aria-label="Close"
-            title="Close (Esc)"
-          >
-            <X size={18} />
-          </button>
+          {onClose && (
+            <button
+              ref={closeButtonRef}
+              type="button"
+              onClick={onClose}
+              className={cx(DS.button.base, DS.button.icon.md, DS.button.variant.ghost)}
+              aria-label="Close"
+              title="Close (Esc)"
+            >
+              <X size={18} />
+            </button>
+          )}
         </div>
       </div>
       <div className="relative flex min-h-0 flex-1 flex-col" {...{ [LIGHTBOX_BACKDROP_ATTR]: "" }}>
         {children}
       </div>
     </div>
+  );
+}
+
+/** A link that opens what is on screen in a browser tab of its own, styled as the viewer's other actions. */
+export function LightboxNewTab({ href, fileName }: { href: string; fileName: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost)}
+      aria-label={`Open ${fileName} in a new tab`}
+      title="Open in new tab"
+    >
+      <ExternalLink size={15} aria-hidden="true" />
+      <span className="hidden sm:inline">New tab</span>
+    </a>
   );
 }
 

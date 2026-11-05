@@ -52,8 +52,8 @@ describe("openImageViewer", () => {
     expect(init).toHaveBeenCalledTimes(1);
     expect(options.index).toBe(1);
     expect(options.showHideAnimationType).toBe("zoom");
-    expect(options.dataSource[0]).toMatchObject({ width: 1200, height: 800, element: first, thumbCropped: true, fileName: "a.png" });
-    expect(options.dataSource[1]).toMatchObject({ width: 640, height: 960, thumbCropped: false, fileName: "b.png", downloadUrl: "/api/x/b.png?download=1" });
+    expect(options.dataSource[0]).toMatchObject({ width: 1200, height: 800, element: first, thumbCropped: true, fileName: "a.png", tabUrl: null });
+    expect(options.dataSource[1]).toMatchObject({ width: 640, height: 960, thumbCropped: false, fileName: "b.png", downloadUrl: "/api/x/b.png?download=1", tabUrl: "/api/x/b.png" });
   });
 
   it("skips the open animation when motion is reduced", async () => {

@@ -141,6 +141,49 @@ describe("OutboundAttachment", () => {
   });
 });
 
+describe("opening in a new tab", () => {
+  const id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const file = { url: `/api/sessions/${id}/attachments/report.md`, name: "report.md" };
+  const newTab = "Open report.md in a new tab";
+
+  it("offers it on the card and in the viewer", async () => {
+    stubFile("# Findings");
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement("div", null,
+        createElement(mod.OutboundAttachment, file),
+        createElement(mod.FileViewerHost),
+      ));
+      const onCard = byLabel(harness.dom.container, "A", newTab);
+      expect(onCard.getAttribute("href")).toBe(`/file/${id}/attachments/report.md`);
+      expect(onCard.getAttribute("target")).toBe("_blank");
+
+      await harness.act(async () => { preview.showFile(file); });
+      const links = findAllByTag(harness.dom.container, "A").filter((node) => node.getAttribute?.("aria-label") === newTab);
+      expect(links).toHaveLength(2);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("in its own tab shows the file, named in the tab, with nothing to close or open again", async () => {
+    stubFile("# Findings");
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(mod.FileTab, { file }));
+      await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "H1").length > 0);
+
+      expect(findAllByTag(harness.dom.container, "H1")[0].textContent).toBe("Findings");
+      expect(document.title).toBe("report.md");
+      expect(byLabel(harness.dom.container, "A", "Download report.md")).toBeDefined();
+      expect(byLabel(harness.dom.container, "A", newTab)).toBeUndefined();
+      expect(byLabel(harness.dom.container, "BUTTON", "Close")).toBeUndefined();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
 describe("FileViewerHost", () => {
   it("shows nothing until a file is opened, then the whole file with a way to download and close it", async () => {
     const fetchMock = stubFile("diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n");

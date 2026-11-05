@@ -50,6 +50,50 @@ export function filePreviewKind(name: string): FilePreviewKind | null {
   return KIND_BY_EXTENSION[ext] ?? (OPAQUE_EXTENSIONS.has(ext) ? null : "text");
 }
 
+/** The address at which the server shows a file for the browser to display, instead of downloading it. */
+export function inlineFileUrl(url: string): string {
+  return `${url}${url.includes("?") ? "&" : "?"}inline=1`;
+}
+
+/** Where a new tab shows an image, or null when only this page holds it. */
+export function imageTabUrl(src: string): string | null {
+  if (/^(?:data|blob):/i.test(src)) return null;
+  return isVectorImage(src) ? inlineFileUrl(src) : src;
+}
+
+const SESSION_FILE_URL_RE = /\/api\/sessions\/[a-f0-9-]{36}\/(?:attachments|files)\/[^/?#]+$/i;
+const FILE_TAB_PATH_RE = /^(.*)\/file\/([a-f0-9-]{36})\/(attachments|files)\/([^/]+)$/i;
+
+/**
+ * Where a new tab shows a file, or null when the file can only be downloaded. A browser shows an
+ * image, a PDF, a player or a sandboxed page by itself. Text and tables open in the Bridge's own
+ * viewer at a /file/ path, since a browser would show them unrendered or download them.
+ */
+export function fileTabUrl({ url, name }: PreviewFile): string | null {
+  const kind = filePreviewKind(name);
+  if (!kind) return null;
+  if (kind === "image") return imageTabUrl(url);
+  if (kind === "markdown" || kind === "table" || kind === "text") {
+    return SESSION_FILE_URL_RE.test(url) ? url.replace("/api/sessions/", "/file/") : null;
+  }
+  return inlineFileUrl(url);
+}
+
+/**
+ * The file a tab at this path shows, or null for any other page of the app. The path names a
+ * session's file rather than carrying a URL, so a link cannot point the viewer anywhere else.
+ */
+export function fileFromTabPath(pathname: string): PreviewFile | null {
+  const match = FILE_TAB_PATH_RE.exec(pathname);
+  if (!match) return null;
+  const [, base, sessionId, folder, encodedName] = match;
+  try {
+    return { url: `${base}/api/sessions/${sessionId}/${folder}/${encodedName}`, name: decodeURIComponent(encodedName) };
+  } catch {
+    return null;
+  }
+}
+
 export interface FileText {
   text: string;
   /** True when the file is longer than what was read. */
