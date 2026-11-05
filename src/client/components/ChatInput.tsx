@@ -1,5 +1,5 @@
-import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
-import { ArrowUp, Square, Paperclip, Loader2, Mic, MoreHorizontal, X } from "lucide-react";
+import { useId, useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { ArrowUp, Check, Square, Paperclip, Loader2, Mic, MoreHorizontal, X } from "lucide-react";
 import type { BlobAttachment, Attachment, SlashCommandInfo } from "../api";
 import { uploadFile } from "../api";
 import {
@@ -140,6 +140,44 @@ export interface ComposerTool {
 
 const COMPOSER_TOOL_BUTTON_CLASS = "flex h-12 w-10 flex-shrink-0 items-center justify-center rounded-full transition-colors";
 
+const AUTO_SEND_STRIKE = "m2 2 20 20";
+
+/** Auto-send's paper plane. Turning it off draws a strike across it, with a gap cut in the plane so the strike reads at this size. */
+function AutoSendIcon({ on }: { on: boolean }) {
+  const gapId = useId();
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={18}
+      height={18}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <mask id={gapId} maskUnits="userSpaceOnUse" x={0} y={0} width={24} height={24}>
+        <rect width={24} height={24} fill="white" stroke="none" />
+        <path d={AUTO_SEND_STRIKE} stroke="black" strokeWidth={5.5} />
+      </mask>
+      <g mask={on ? undefined : `url(#${gapId})`}>
+        <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" />
+        <path d="m21.854 2.147-10.94 10.939" />
+      </g>
+      {/* The dash starts past the line's 28.3 units while on, so its round cap leaves no dot. */}
+      <path
+        d={AUTO_SEND_STRIKE}
+        strokeDasharray="29 31"
+        style={{ strokeDashoffset: on ? 30 : 0 }}
+        className="transition-[stroke-dashoffset] duration-150 ease-out motion-reduce:transition-none"
+      />
+    </svg>
+  );
+}
+
 export default function ChatInput({
   onSend,
   onAbort,
@@ -197,6 +235,8 @@ export default function ChatInput({
   const pendingAcceptedHandoffRef = useRef<{ originComposerKey: string; targetComposerKey: string } | null>(null);
   const previousVoiceJobRef = useRef<ActiveVoiceBackgroundJob | null>(null);
   const [showAcceptedConfirmation, setShowAcceptedConfirmation] = useState(false);
+  /** Whether finishing the recording sends it. Each recording starts on. */
+  const [autoSend, setAutoSend] = useState(true);
   const [recordingCancelled, setRecordingCancelled] = useState<"user" | "nothing-heard" | null>(null);
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0);
   const {
@@ -294,7 +334,7 @@ export default function ChatInput({
   const voice = useVoiceInput({
     contextKey: composerKey,
     onAudioCaptured: async ({ audio, contextKey }) => {
-      // Finish was pressed in the chat this was recorded in. A recording ended any other way stays a draft.
+      // Finish was pressed in the chat this was recorded in, with auto-send on. Any other ending stays a draft.
       const finishedMode = contextKey === composerKey ? pendingCaptureSubmitModeRef.current : null;
       const submitMode = finishedMode ?? "insert";
       const capturedSendMode = submitMode === "autosend" ? pendingCaptureSendModeRef.current : null;
@@ -355,14 +395,16 @@ export default function ChatInput({
   }, [composerKey]);
   // Pressing stop and running into the length limit end a recording the same way.
   stopVoiceRecordingRef.current = (sendMode) => {
-    pendingCaptureSubmitModeRef.current = resolveVoiceSubmitMode({
-      text: inputRef.current,
-      attachmentCount: attachmentsRef.current.length,
-      sendBlocked: sendBlockedRef.current,
-      uploadingCount: uploadingRef.current,
-    });
+    pendingCaptureSubmitModeRef.current = autoSend
+      ? resolveVoiceSubmitMode({
+          text: inputRef.current,
+          attachmentCount: attachmentsRef.current.length,
+          sendBlocked: sendBlockedRef.current,
+          uploadingCount: uploadingRef.current,
+        })
+      : null;
     // Like a typed send, a message into a running turn has no mode of its own.
-    pendingCaptureSendModeRef.current = agentBusyRef.current
+    pendingCaptureSendModeRef.current = !autoSend || agentBusyRef.current
       ? null
       : { mode: sendMode ?? nextSendModeRef.current, choice: sendModeChoiceRef.current };
     void voice.stopRecording();
@@ -786,6 +828,7 @@ export default function ChatInput({
           serverOwned: activeVoiceJob.serverOwned,
         }
       : null,
+    autoSend,
     hasPendingRecording: hasPendingVoiceRecording,
     persistWarning: voiceJob?.persistWarning ?? null,
     recordingSeconds: voice.elapsedSeconds,
@@ -803,6 +846,7 @@ export default function ChatInput({
     }
     setRecordingCancelled(null);
     onClearVoiceJobError?.(composerKey);
+    setAutoSend(true);
     pendingCaptureSubmitModeRef.current = null;
     void voice.startRecording();
   };
@@ -842,8 +886,8 @@ export default function ChatInput({
   // Steering goes into the run already going, and a new chat picks its mode on the launch panel.
   const showAutopilotToggle = !isDraft && !onAbort;
   const finishBindings = bindSendModeMenu("voice-finish", () => stopVoiceRecordingRef.current());
-  // Holding Finish offers what holding Send does.
-  const finishMenuEnabled = voice.phase === "recording" && showAutopilotToggle;
+  // Holding Finish offers what holding Send does, when Finish is going to send.
+  const finishMenuEnabled = voice.phase === "recording" && autoSend && showAutopilotToggle;
   const finishWithAutopilot = () => {
     closeSendModeMenu();
     chooseSendMode("autopilot");
@@ -873,6 +917,26 @@ export default function ChatInput({
     >
       <AutopilotIcon size={17} />
       {autopilotNext && <span className="hidden text-xs font-medium sm:inline">Autopilot</span>}
+    </button>
+  );
+
+  const autoSendToggle = (
+    <button
+      type="button"
+      onClick={() => {
+        haptic("selection");
+        setAutoSend((on) => !on);
+      }}
+      aria-pressed={autoSend}
+      aria-label="Auto-send"
+      title={autoSend ? "Auto-send is on: Finish sends your words" : "Auto-send is off: Finish puts your words in the composer"}
+      className={cx(
+        "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full transition-colors md:h-8 md:w-8",
+        DS.focus,
+        autoSend ? "text-accent hover:text-accent-hover" : "text-text-muted hover:text-text-primary",
+      )}
+    >
+      <AutoSendIcon on={autoSend} />
     </button>
   );
 
@@ -1029,11 +1093,14 @@ export default function ChatInput({
               >
                 {voice.phase !== "recording" ? (
                   <Loader2 size={16} className="animate-spin motion-reduce:animate-none" />
-                ) : (
+                ) : autoSend ? (
                   <ArrowUp size={17} strokeWidth={2.25} />
+                ) : (
+                  <Check size={17} strokeWidth={2.5} />
                 )}
               </button>
               {autopilotToggle}
+              {autoSendToggle}
             </>
           ) : collapseTools ? (
             <button
@@ -1140,10 +1207,10 @@ export default function ChatInput({
                 <VoiceRecordingWave getLevel={voice.getLevel} live={voice.phase === "recording"} />
               </div>
               {voiceUi.silenceNotice && (
-                <span className={cx("shrink-0 text-xs font-medium", DS.tone.warning)} aria-hidden="true">{voiceUi.silenceNotice}</span>
+                <span className={cx("min-w-0 truncate text-xs font-medium", DS.tone.warning)} aria-hidden="true">{voiceUi.silenceNotice}</span>
               )}
               {voiceUi.limitNotice && (
-                <span className="shrink-0 text-xs font-medium text-accent" aria-hidden="true">{voiceUi.limitNotice}</span>
+                <span className="min-w-0 truncate text-xs font-medium text-accent" aria-hidden="true">{voiceUi.limitNotice}</span>
               )}
               {voiceUi.recordingClock && (
                 <span className="shrink-0 text-xs tabular-nums text-text-muted" aria-hidden="true">{voiceUi.recordingClock}</span>

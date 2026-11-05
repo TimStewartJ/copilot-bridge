@@ -20,6 +20,8 @@ export interface VoiceUiStateContext {
   recorderPhase: VoiceRecorderPhase;
   isCheckingStatus: boolean;
   activeVoiceJob: VoiceUiJobState | null;
+  /** Finishing the recording sends it; otherwise its words only go to the composer. */
+  autoSend: boolean;
   /** An unsent recording is still stored for this composer and must be retried or discarded. */
   hasPendingRecording?: boolean;
   /** Set when the recording could not be written to durable client storage. */
@@ -74,6 +76,7 @@ export function deriveVoiceUiState({
   recorderPhase,
   isCheckingStatus,
   activeVoiceJob,
+  autoSend,
   hasPendingRecording = false,
   persistWarning = null,
   recordingSeconds,
@@ -157,10 +160,10 @@ export function deriveVoiceUiState({
       message = "Can't hear anything. Check your microphone.";
       silenceNotice = "Can't hear you";
     } else if (secondsLeft <= LIMIT_NOTICE_SECONDS) {
-      message = `Recording… stops and sends at ${limit}.`;
-      limitNotice = `Sends at ${limit}`;
+      message = `Recording… stops and ${autoSend ? "sends" : "transcribes"} at ${limit}.`;
+      limitNotice = `${autoSend ? "Sends" : "Stops"} at ${limit}`;
     } else {
-      message = "Recording… stop to send.";
+      message = autoSend ? "Recording… stop to send." : "Recording… stop to transcribe.";
     }
     if (recordingSeconds !== undefined) {
       recordingClock = formatClock(recordingSeconds);
@@ -196,7 +199,7 @@ export function deriveVoiceUiState({
   } else if (isStarting) {
     buttonTitle = "Starting microphone";
   } else if (isRecording) {
-    buttonTitle = "Stop recording, transcribe, and send automatically";
+    buttonTitle = autoSend ? "Stop recording, transcribe, and send automatically" : "Stop recording and transcribe";
   } else if (hasPendingRecording) {
     buttonTitle = "Retry or discard the unsent voice recording first";
   } else if (statusError) {

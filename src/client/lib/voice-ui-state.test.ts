@@ -11,6 +11,7 @@ const baseState = {
   recorderPhase: "idle" as const,
   isCheckingStatus: false,
   activeVoiceJob: null,
+  autoSend: true,
 };
 
 describe("deriveVoiceUiState", () => {
@@ -25,6 +26,10 @@ describe("deriveVoiceUiState", () => {
 
     expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording" })).toMatchObject({
       buttonState: "stop", buttonDisabled: false, message: "Recording… stop to send.", tone: "accent",
+      buttonTitle: "Stop recording, transcribe, and send automatically",
+    });
+    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording", autoSend: false })).toMatchObject({
+      message: "Recording… stop to transcribe.", buttonTitle: "Stop recording and transcribe",
     });
 
     // server job phases
@@ -116,6 +121,9 @@ describe("deriveVoiceUiState", () => {
     });
     expect(deriveVoiceUiState({ ...recording, recordingSeconds: 299 })).toMatchObject({
       message: "Recording… stops and sends at 5:00.", detail: "4:59 / 5:00", limitNotice: "Sends at 5:00",
+    });
+    expect(deriveVoiceUiState({ ...recording, recordingSeconds: 299, autoSend: false })).toMatchObject({
+      message: "Recording… stops and transcribes at 5:00.", limitNotice: "Stops at 5:00",
     });
 
     // Without a known limit the clock still runs; without a clock there is nothing to show.
