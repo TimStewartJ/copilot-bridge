@@ -525,11 +525,20 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await harness?.cleanup();
     harness = null;
     result = null;
     __resetVoiceRecordingStoreForTests();
   });
+
+  // A job found at start is followed by a poll on a timer, which a test runs itself instead of waiting for it.
+  async function runNextPoll() {
+    await waitUntilAct(getHarness().act, () => vi.getTimerCount() > 0);
+    await getHarness().act(async () => {
+      await vi.advanceTimersToNextTimerAsync();
+    });
+  }
 
   async function renderWithActiveComposer(activeComposerKey: string, overrides: Partial<HookOptions> = {}) {
     harness = await createReactDomHarness();
@@ -702,8 +711,10 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
     fetchVoiceJobMock.mockResolvedValue(voiceJobSnapshot({ ...heldElsewhere, id: "still-running", status: "held" }));
     const setDraftImmediate = vi.fn();
     const onVoiceSessionSettled = vi.fn();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 
     await renderWithActiveComposer("session-1", { setDraftImmediate, onVoiceSessionSettled });
+    await runNextPoll();
     await waitUntilAct(getHarness().act, () => onVoiceSessionSettled.mock.calls.length === 2);
 
     expect(onVoiceSessionSettled.mock.calls.map(([settled]) => [settled.jobId, settled.status])).toEqual([
@@ -726,8 +737,10 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
     fetchOpenVoiceJobsMock.mockResolvedValueOnce([voiceJobSnapshot({ ...job, status: "transcribing" })]);
     fetchVoiceJobMock.mockResolvedValue(voiceJobSnapshot({ ...job, status: "done", transcript: "words" }));
     const onVoiceSessionSettled = vi.fn();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 
     await renderWithActiveComposer("session-1", { onVoiceSessionSettled });
+    await runNextPoll();
     await waitUntilAct(getHarness().act, () => onVoiceSessionSettled.mock.calls.length > 0);
 
     expect(await getPendingVoiceRecording("session-2")).toMatchObject({ recordingId: "failed-upload" });
