@@ -1,15 +1,12 @@
 import { createHash } from "node:crypto";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { DocsIndex } from "./docs-index.js";
-import type { DocsStore, DocTreeNode } from "./docs-store.js";
+import type { DocsStore } from "./docs-store.js";
 import type { TagStore } from "./tag-store.js";
 import { PLACEHOLDER_TASK_TITLE, type Task } from "./task-store.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
-import {
-  formatLinkedPullRequest,
-  formatPromptTagList,
-  formatRelatedDocManifestEntry,
-} from "./session-formatting.js";
+import { escapePromptLiteral, formatLinkedPullRequest, formatRelatedDocManifestEntry } from "./session-formatting.js";
+import { sliceTaskNotes, TASK_NOTES_BRIEF_LENGTH, taskNotesRevision, type TaskNotesSource } from "./task-note-pages.js";
 import { formatTaskMomentumContext } from "./session-task-momentum.js";
 import { NO_PLAYBOOK, type PlaybookSource } from "../shared/workflow-vocabulary.js";
 
@@ -18,9 +15,8 @@ import { NO_PLAYBOOK, type PlaybookSource } from "../shared/workflow-vocabulary.
  * messages instead of in the system prompt, so edits never invalidate the cached conversation and
  * reach cached chats on their next message. Every section is always present, so a chat that
  * leaves its task or loses its knowledge base is told so like any other change, and each section
- * is resent only when it changes. Notes have a section of their own because they are the largest
- * part of a task's state and change least often: a new history line or next step resends only
- * task_state.
+ * is resent only when it changes. Notes have a section of their own: a new history line or
+ * next step doesn't resend the notes, and a change beyond an excerpt still changes its revision.
  */
 export type BridgeContextSectionName = "task_state" | "task_notes" | "knowledge_base" | "playbook";
 
@@ -32,9 +28,9 @@ export interface BridgeContextSection {
 
 export interface BridgeContextDeps {
   checklistStore?: Pick<ChecklistStore, "listChecklistItems">;
-  tagStore?: Pick<TagStore, "resolveEffectiveTags">;
+  tagStore?: Pick<TagStore, "getEffectiveTaskTags">;
   docsIndex?: Pick<DocsIndex, "findDocsByTagNames">;
-  docsStore?: Pick<DocsStore, "listTree" | "readSchema">;
+  docsStore?: Pick<DocsStore, "readPage">;
   taskHistoryStore?: Pick<TaskHistoryStore, "listEntries" | "countEntries">;
 }
 
@@ -46,40 +42,7 @@ export const BRIDGE_CONTEXT_HISTORY_ENTRIES = 3;
 export const PLACEHOLDER_TITLE_GUIDANCE = `This task still has the placeholder title "${PLACEHOLDER_TASK_TITLE}". After reading the user's message, use task_update to give it a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.`;
 const HISTORY_LINE_LENGTH = 200;
 
-export function renderDocsTree(nodes: DocTreeNode[], depth = 0): string {
-  return nodes.map((n) => {
-    const indent = "  ".repeat(depth);
-    if (n.type === "folder") {
-      const label = n.isDb
-        ? `${n.name}/ (collection)`
-        : n.hasIndex ? `${n.name}/ (page: docs_read "${n.path}")` : `${n.name}/`;
-      const children = n.isDb ? "" : depth < 1 && n.children?.length
-        ? "\n" + renderDocsTree(n.children, depth + 1)
-        : n.children?.length ? ` (${n.children.length} items)` : "";
-      return `${indent}- 📁 ${label}${children}`;
-    }
-    return `${indent}- ${n.name}`;
-  }).join("\n");
-}
-
-function collectDocsDatabaseSummaries(
-  docsStore: Pick<DocsStore, "readSchema">,
-  nodes: DocTreeNode[],
-  summaries: string[] = [],
-): string[] {
-  for (const n of nodes) {
-    if (n.type !== "folder") continue;
-    if (n.isDb) {
-      const schema = docsStore.readSchema(n.path);
-      if (schema) {
-        const fields = schema.fields.map((f) => `${f.name} (${f.type})`).join(", ");
-        summaries.push(`- ${n.path}/ "${schema.name}": ${fields}`);
-      }
-    }
-    if (n.children?.length) collectDocsDatabaseSummaries(docsStore, n.children, summaries);
-  }
-  return summaries;
-}
+const RELATED_DOCS_LIMIT = 3;
 
 function oneLine(text: string, limit: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
@@ -136,35 +99,38 @@ function buildTaskNotes(
 ): BridgeContextSection {
   if (!task) return section("task_notes", [], NO_TASK_NOTES);
   const lines: string[] = [];
-  if (task.notes.trim()) {
-    lines.push(`Task notes (the current state of the work; any rules the user wrote here still apply):\n${task.notes.trim()}`);
+  let hasExcerpt = false;
+  function addNotes(source: TaskNotesSource, label: string, raw: string) {
+    if (!raw.trim()) return;
+    if (raw.length <= TASK_NOTES_BRIEF_LENGTH) {
+      lines.push(`${label}:\n${raw.trim()}`);
+    } else {
+      hasExcerpt = true;
+      // Cut the stored text, not a trimmed copy, so nextOffset continues where this stops.
+      const shown = sliceTaskNotes(raw, 0, TASK_NOTES_BRIEF_LENGTH);
+      lines.push(`${label} [first ${shown.length} of ${raw.length} characters, revision ${taskNotesRevision(raw)}, notesSource: "${source}", nextOffset: ${shown.length}]:\n${shown.trim()}…`);
+    }
   }
-  if (groupNotes?.notes?.trim()) {
-    lines.push(`Group notes (task group "${groupNotes.groupName}"):\n${groupNotes.notes.trim()}`);
+  addNotes("task", "Task notes (the current state of the work; any rules the user wrote here still apply)", task.notes);
+  if (groupNotes) addNotes("group", `Group notes (task group "${escapePromptLiteral(oneLine(groupNotes.groupName, 80))}")`, groupNotes.notes);
+  if (hasExcerpt) {
+    lines.push(`Excerpts can omit rules and decisions. When your work depends on them, or before replacing the notes, read the rest with task_get_info (taskId: ${task.id}, with the notesSource, nextOffset as offset, and revision shown; repeat until nextOffset is null).`);
   }
   return section("task_notes", lines, EMPTY_TASK_NOTES);
 }
 
 function buildKnowledgeBase(deps: BridgeContextDeps, task: Task | null | undefined): BridgeContextSection {
-  const lines: string[] = [];
-  if (task && deps.tagStore && deps.docsIndex) {
-    const tagNames = deps.tagStore.resolveEffectiveTags(task.id, task.groupId).tags.map((tag) => tag.name);
-    const relatedDocs = tagNames.length > 0 ? deps.docsIndex.findDocsByTagNames(tagNames, 20) : [];
-    if (relatedDocs.length > 0) {
-      lines.push(`Docs related to this task's tags (${formatPromptTagList(tagNames)}); read them with docs_read when relevant:\n${
-        relatedDocs.map((doc) => formatRelatedDocManifestEntry(doc)).join("\n")
-      }`);
-    }
+  // These are the same prerequisites as docs_search/list/read/schema. No catalog walk is needed,
+  // including for an empty but available knowledge base or a chat without a task.
+  if (!deps.docsStore || !deps.docsIndex) return section("knowledge_base", [], "Knowledge base tools are unavailable.");
+  const lines = ["Find pages with docs_search or browse with docs_list. Use docs_read for current text and docs_db_schema for collection fields."];
+  if (task && deps.tagStore) {
+    const tags = deps.tagStore.getEffectiveTaskTags(task.id, task.groupId).map((tag) => tag.name);
+    const pointers = tags.length ? deps.docsIndex.findDocsByTagNames(tags, RELATED_DOCS_LIMIT)
+      .map(formatRelatedDocManifestEntry).filter((entry) => entry !== undefined) : [];
+    if (pointers.length) lines.push(`Pages related to this task's tags:\n${pointers.join("\n")}`);
   }
-  const tree = deps.docsStore?.listTree() ?? [];
-  if (tree.length > 0) {
-    lines.push(`Knowledge base structure (use docs_read/docs_search). Folder entries marked as pages are readable with docs_read using the shown folder path:\n${renderDocsTree(tree)}`);
-    const databases = deps.docsStore ? collectDocsDatabaseSummaries(deps.docsStore, tree) : [];
-    if (databases.length > 0) {
-      lines.push(`Database collections (use docs_db_query/docs_db_add; docs_db_schema for full field options):\n${databases.join("\n")}`);
-    }
-  }
-  return section("knowledge_base", lines, "The knowledge base is empty.");
+  return section("knowledge_base", lines, "");
 }
 
 /** The chat's playbook as the agent is told about it. */
@@ -241,8 +207,8 @@ export function buildBridgeContextSections(
 }
 
 /**
- * What a chat knows before any block: no task and no knowledge base, which is what its system
- * prompt says too. Starting from these hashes means a taskless chat with no docs gets no block.
+ * Start from no linked task and no KB tools. A taskless chat with KB tools receives their
+ * lookup pointer once, regardless of how many pages or collections are present.
  */
 export function emptyBridgeContextHashes(): Map<BridgeContextSectionName, string> {
   // With playbooks installed, the playbook section differs from this starting point, so a chat's

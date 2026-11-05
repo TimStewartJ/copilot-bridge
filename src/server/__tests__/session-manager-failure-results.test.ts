@@ -24,6 +24,11 @@ function getTool(ctx: AppContext, name: string) {
   return tool as any;
 }
 
+function actionCaller(ctx: AppContext) {
+  const tools = new Map(getBridgeToolDefinitions(ctx).map(({ name, handler }) => [name, handler]));
+  return (name: string, args: Record<string, unknown> = {}) => tools.get(name)!(args, {});
+}
+
 function createInvocation(toolName: string) {
   return {
     sessionId: "session-1",
@@ -41,29 +46,59 @@ describe("session manager failure results", () => {
     await expect(taskLinkTool.handler({ taskId: "missing-task", workItemId: "123" }, createInvocation("task_link_work_item")))
       .resolves.toEqual(toolFailure("Task missing-task not found"));
 
-    const checklistAddTool = getTool(ctx, "checklist_add");
-    await expect(checklistAddTool.handler({ taskId: "missing-task", text: "Ship it" }, createInvocation("checklist_add")))
-      .resolves.toEqual(toolFailure("Task missing-task not found"));
+    const call = actionCaller(ctx);
+    const missingTask = { taskId: "missing-task", text: "Ship it", extra: true };
+    for (const name of ["action_add", "checklist_add"]) {
+      expect(await call(name, missingTask)).toEqual(toolFailure("Task missing-task not found"));
+    }
+    expect(await call("action_add", { text: "Ship it", b: true, a: true })).toEqual(toolFailure("Unknown field(s): b, a"));
+    expect(await call("action_update", { actionId: "missing" })).toEqual(toolFailure("Checklist item missing not found"));
+    expect(await call("checklist_update", { checklistItemId: "missing", extra: true }))
+      .toEqual(toolFailure("Checklist item missing not found"));
   });
 
-  it("checklist_list can list global items with omitted or null taskId", async () => {
+  it("edits the same global item through both tool families without changing their projections", async ({ onTestFinished }) => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2030-01-02T00:15:00Z") });
+    onTestFinished(() => { vi.useRealTimers(); });
     const { ctx } = createTestApp();
+    const call = actionCaller(ctx);
     const task = ctx.taskStore.createTask("Checklist host");
-    const globalItem = ctx.checklistStore.createChecklistItem(null, "Global");
-    ctx.checklistStore.createChecklistItem(task.id, "Task-specific");
-    const listTool = getTool(ctx, "checklist_list");
-
+    const local = ctx.checklistStore.createChecklistItem(task.id, "Task-specific");
+    const added = await call("checklist_add", { text: "Global", deadline: "2030-01-01", key: "ignored", sourceUrl: "ignored" });
+    expect(added).toEqual({ success: true, message: 'Checklist item added: "Global" (due 2030-01-01)', checklistItemId: expect.any(String) });
+    const { checklistItemId: id } = added as { checklistItemId: string };
+    const action = { id, taskId: null, text: "Global", done: false, order: 0, createdAt: "2030-01-02T00:15:00.000Z", deadline: "2030-01-01" };
+    expect(await call("action_list")).toEqual({ actions: [action] });
+    const legacy = { id, text: "Global", done: false, deadline: "2030-01-01", isOverdue: true };
     for (const args of [{}, { taskId: null }]) {
-      await expect(listTool.handler(args, createInvocation("checklist_list"))).resolves.toMatchObject({
-        checklistItems: [expect.objectContaining({ id: globalItem.id, text: "Global" })],
-        total: 1,
-      });
+      expect(await call("checklist_list", args)).toEqual({ checklistItems: [legacy], total: 1, done: 0 });
     }
-
-    await expect(listTool.handler({ taskId: task.id }, createInvocation("checklist_list"))).resolves.toMatchObject({
-      checklistItems: [expect.objectContaining({ text: "Task-specific" })],
-      total: 1,
+    expect(await call("action_update", { actionId: id, done: true, extra: true })).toEqual({
+      success: true, action: { ...action, done: true, completedAt: action.createdAt },
     });
+    expect(await call("checklist_list")).toEqual({ checklistItems: [{ ...legacy, done: true, isOverdue: false }], total: 1, done: 1 });
+    expect(await call("checklist_list", { taskId: task.id })).toEqual({
+      checklistItems: [{ id: local.id, text: "Task-specific", done: false, deadline: null, isOverdue: false }], total: 1, done: 0,
+    });
+    expect(await call("checklist_remove", { checklistItemId: id })).toEqual({ success: true, message: "Checklist item removed" });
+    expect(await call("action_list")).toEqual({ actions: [] });
+  });
+
+  it("returns the same sourced Action on a keyed retry without creating a duplicate", async () => {
+    const { ctx } = createTestApp();
+    const call = actionCaller(ctx);
+    const args = { text: "Send report", key: "report", sourceUrl: "https://example.com/report" };
+    const first = await call("action_add", args) as { action: { id: string } };
+    expect(first).toMatchObject({ success: true, action: { taskId: null, stableKey: args.key, sourceUrl: args.sourceUrl } });
+    expect(await call("action_add", { ...args, taskId: null, text: "Retry" })).toEqual(first);
+    expect(await call("action_list", { taskId: null })).toEqual({ actions: [first.action] });
+    expect(await call("action_add", { ...args, taskId: ctx.taskStore.createTask("Other").id }))
+      .toEqual(toolFailure("key belongs to an Action in a different task"));
+    const checklistItemId = first.action.id;
+    expect(await call("checklist_update", { checklistItemId, done: true })).toEqual({ success: true, message: 'Checklist item completed: "Send report"' });
+    expect(await call("checklist_update", { checklistItemId, deadline: null })).toEqual({ success: true, message: 'Checklist item updated: "Send report"' });
+    expect(await call("action_remove", { actionId: checklistItemId })).toEqual({ success: true });
+    expect(await call("checklist_remove", { checklistItemId })).toEqual(toolFailure(`Checklist item ${checklistItemId} not found`));
   });
 
   it("task_group_delete uses the atomic store operation and reports failures", async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { setupTestDb } from "../../__tests__/helpers.js";
 import { createReadStateStore } from "../../read-state-store.js";
 import { createHelmThinkerStore } from "../thinker/store.js";
@@ -47,7 +47,18 @@ function setup(options: { staging?: boolean } = {}) {
     deleteSession: async () => undefined,
     emitReadStateChanged,
   });
-  return { store, thinker, readStateStore, submitUserInputResponse, emitReadStateChanged };
+  return { ctx, store, thinker, readStateStore, submitUserInputResponse, emitReadStateChanged };
+}
+
+function setupClock(at: Date, options?: { staging?: boolean }) {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  vi.setSystemTime(at);
+  const fixture = setup(options);
+  onTestFinished(async () => {
+    await fixture.thinker.dispose();
+    vi.useRealTimers();
+  });
+  return fixture;
 }
 
 function activate(thinker: HelmThinker, store: ReturnType<typeof createHelmThinkerStore>, runSession = "run-session") {
@@ -278,13 +289,93 @@ describe("Helm thinker", () => {
     expect(() => thinker.addMemory({ kind: "picture", text: "x" })).toThrow(/kind must be/);
   });
 
-  it("fails runs a restart interrupted and never schedules itself in a staged preview", () => {
-    const { store, thinker } = setup({ staging: true });
+  it("fails interrupted runs in a preview without scheduling looks, but still accepts a manual look", async () => {
+    const { store, thinker } = setupClock(new Date(2026, 9, 25, 16), { staging: true });
     store.createRun({ sessionId: "old", trigger: "schedule", rebuild: false, model: null, effort: null });
+    store.updateSettings({ times: ["17:00", "18:00"] });
+    vi.setSystemTime(new Date(2026, 9, 25, 17, 59, 30));
     thinker.start();
     expect(store.latestRun()).toMatchObject({ status: "failed", error: expect.stringMatching(/restarted/) });
-    expect((thinker as any).nextRunAt).toBeNull();
-    thinker.dispose();
+    expect(await thinker.getBrief()).toMatchObject({ preview: true, nextRunAt: null });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(thinker.listRuns()).toHaveLength(1);
+    expect(await thinker.think({ trigger: "manual", rebuild: true })).toMatchObject({ trigger: "manual", rebuild: true });
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it.each([
+    { hour: 9, minute: 0, manual: false, triggers: ["schedule"] }, // starting exactly on the slot
+    { hour: 10, minute: 29, manual: false, triggers: ["schedule"] }, // 90 minutes late when replayed
+    { hour: 10, minute: 29, manual: true, triggers: ["manual"] },
+    { hour: 10, minute: 59, manual: false, triggers: [] }, // exactly two hours when replayed
+  ])("rechecks the missed 09:00 slot after startup at $hour:$minute, manual=$manual", async ({ hour, minute, manual, triggers }) => {
+    const { store, thinker } = setupClock(new Date(2026, 9, 25, hour, minute));
+    store.updateSettings({ times: ["08:30", "09:00"], rebuildWeekday: 0 });
+    thinker.start();
+    expect((await thinker.getBrief()).nextRunAt).toBe(new Date(2026, 9, 26, 8, 30).toISOString());
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(thinker.listRuns()).toHaveLength(0);
+    if (manual) {
+      await thinker.think({ trigger: "manual" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(thinker.getRunning()).toBeNull();
+    }
+    await vi.advanceTimersByTimeAsync(1);
+    expect(thinker.listRuns().map((run) => run.trigger)).toEqual(triggers);
+    if (triggers[0] === "schedule") expect(thinker.listRuns()[0]?.rebuild).toBe(true);
+  });
+
+  it.each(["disable", "edit", "empty", "dispose"])("cancels both the delayed replay and old regular slot on %s", async (change) => {
+    const { store, thinker } = setupClock(new Date(2026, 9, 25, 8, 45, 30));
+    store.updateSettings({ times: ["08:00", "08:47"] });
+    thinker.start();
+    if (change === "dispose") await thinker.dispose();
+    else if (change === "disable") await thinker.patchSettings({ enabled: false });
+    else await thinker.patchSettings({ times: change === "empty" ? [] : ["08:45", "09:00"] });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(thinker.listRuns()).toHaveLength(0);
+    expect((await thinker.getBrief()).nextRunAt).toBe(change === "edit" ? new Date(2026, 9, 25, 9).toISOString() : null);
+  });
+
+  it.each([
+    { time: "02:30", slot: new Date(2026, 2, 8, 2, 30) }, // 03:30 in a US spring gap
+    { time: "01:30", slot: new Date(2026, 10, 1, 1, 30) }, // first occurrence in a US autumn fold
+  ])("dispatches one local $time slot across a clock change", async ({ time, slot }) => {
+    const { store, thinker } = setupClock(new Date(slot.getTime() - 60_000));
+    store.updateSettings({ times: [time] });
+    thinker.start();
+    expect((await thinker.getBrief()).nextRunAt).toBe(slot.toISOString());
+    await vi.advanceTimersByTimeAsync(90 * 60_000);
+    expect(thinker.listRuns()).toMatchObject([{ trigger: "schedule", startedAt: slot.toISOString() }]);
+  });
+
+  it.each(["08:30", "08:31"])("drops the older %s look still choosing a model when the next slot starts", async (firstSlot) => {
+    const { ctx, store, thinker } = setupClock(new Date(2026, 9, 25, 8, 30, 59));
+    let release!: () => void;
+    const choosing = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(ctx.sessionManager, "listModels").mockImplementationOnce(async () => { await choosing; return []; });
+    // The first slot is either a startup replay or a regular deadline.
+    store.updateSettings({ times: [firstSlot, "08:32"], rebuildWeekday: 0 });
+    thinker.start();
+    await vi.advanceTimersByTimeAsync(61_000);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(thinker.listRuns()).toMatchObject([{ trigger: "schedule", rebuild: true }]);
+  });
+
+  it("skips a regular slot during a manual look without retrying it", async () => {
+    const { ctx, thinker } = setupClock(new Date(2026, 9, 25, 17, 59, 30));
+    let finish!: () => void;
+    const finishing = new Promise<void>((resolve) => { finish = resolve; });
+    ctx.sessionManager.getSessionUsageMetrics = async () => { await finishing; return { aiCredits: 0 }; };
+    thinker.start();
+    await thinker.think({ trigger: "manual" });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(thinker.getRunning()?.trigger).toBe("manual");
+    finish();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(thinker.listRuns().map((run) => run.trigger)).toEqual(["manual"]);
+    expect((await thinker.getBrief()).nextRunAt).toBe(new Date(2026, 9, 26, 8).toISOString());
   });
 
   it("forgets old runs only after their conversations are deleted", async () => {

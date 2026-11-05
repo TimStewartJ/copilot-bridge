@@ -1,3 +1,5 @@
+import { createTestApp } from "../../__tests__/test-app.js";
+import { createTaskToolDefinitions } from "../../tools/task-tools.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -178,6 +180,9 @@ describe("Helm tools", () => {
     const unread = await tool(ctx, facade, "list_sessions").run({ filter: "unread" });
     expect(unread.sessions.map((entry: { ref: string }) => entry.ref)).toEqual(["aaaaaaaa"]);
     await tool(ctx, facade, "read_session").run({ session: "tellus" });
+    for (const target of [{ session: "tellus" }, { task: "task-1" }]) {
+      expect(await tool(ctx, facade, "read_session").run({ ...target, markRead: true })).toMatchObject({ resultType: "failure" });
+    }
     expect(facade.marked).toEqual([]);
     const result = await tool(ctx, facade, "read_session").run({ session: unread.sessions[0].ref, history: 5, markRead: true });
     expect(result.latestReply).toBe("Fixed the quantization bug and added tests.");
@@ -255,7 +260,14 @@ describe("Helm tools", () => {
     const { ctx } = createContext();
     const facade = createFacade();
     const { run, runtime } = tool(ctx, facade, "send_to_session");
-    const result = await run({ session: "focus protection", message: "Also run the client tests" });
+    const list = facade.listSessions;
+    facade.listSessions = async (options) => [...await list(options), session({
+      sessionId: "bbbbbbbb-9999-4000-8000-000000000006", title: "Release checklist", archived: true,
+    })];
+    for (const reference of ["the lease chat", "bbbbbbbb"]) {
+      expect(await run({ session: reference, message: "Must not be delivered" })).toMatchObject({ resultType: "failure" });
+    }
+    const result = await run({ session: "bridge://session/bbbbbbbb-2222-4000-8000-000000000002", message: "Also run the client tests" });
     expect(result).toMatchObject({ success: true, session: "Focus protection preview", link: "bridge://session/bbbbbbbb-2222-4000-8000-000000000002" });
     expect(facade.sent).toEqual([["bbbbbbbb-2222-4000-8000-000000000002", "Also run the client tests"]]);
     expect(runtime.watchSession).toHaveBeenCalledWith(HELM_SESSION_ID, "bbbbbbbb-2222-4000-8000-000000000002");
@@ -345,28 +357,31 @@ describe("Helm tools", () => {
 
   it("answers a waiting question with the matching choice", async () => {
     const { ctx, submitUserInputResponse } = createContext();
-    const result = await tool(ctx, createFacade(), "answer_session_question").run({ session: "deploy check", answer: "yes deploy" });
+    const result = await tool(ctx, createFacade(), "answer_session_question").run({ session: "cccccccc", answer: "yes deploy" });
     expect(result).toMatchObject({ success: true, answer: "Yes, deploy" });
     expect(submitUserInputResponse).toHaveBeenCalledWith("cccccccc-3333-4000-8000-000000000003", "req-1", { answer: "Yes, deploy", wasFreeform: false });
   });
 
   it("requires confirmation before stopping a session", async () => {
     const { ctx } = createContext();
-    const unconfirmed = await tool(ctx, createFacade(), "stop_session").run({ session: "focus", confirmed: false });
+    const unconfirmed = await tool(ctx, createFacade(), "stop_session").run({ session: "bbbbbbbb", confirmed: false });
     expect(unconfirmed.resultType).toBe("failure");
-    const confirmed = await tool(ctx, createFacade(), "stop_session").run({ session: "focus", confirmed: true });
+    const confirmed = await tool(ctx, createFacade(), "stop_session").run({ session: "bbbbbbbb", confirmed: true });
     expect(confirmed).toMatchObject({ success: true });
   });
 
   it("archives idle sessions and refuses ones that are still working", async () => {
     const { ctx } = createContext();
     const facade = createFacade();
-    const archived = await tool(ctx, facade, "archive_sessions").run({ sessions: ["tellus"] });
+    const mixed = await tool(ctx, facade, "archive_sessions").run({ sessions: ["aaaaaaaa", "deploy check"] });
+    expect(mixed.resultType).toBe("failure");
+    expect(facade.archived).toEqual([]);
+    const archived = await tool(ctx, facade, "archive_sessions").run({ sessions: ["aaaaaaaa"] });
     expect(archived).toMatchObject({ success: true, archived: true, sessions: ["Tellus worldgen transition fix"] });
     expect(facade.archived).toEqual([[["aaaaaaaa-1111-4000-8000-000000000001"], true]]);
-    const running = await tool(ctx, facade, "archive_sessions").run({ sessions: ["focus protection"] });
+    const running = await tool(ctx, facade, "archive_sessions").run({ sessions: ["bbbbbbbb"] });
     expect(running.resultType).toBe("failure");
-    const restored = await tool(ctx, facade, "archive_sessions").run({ sessions: ["old archived"], archived: false });
+    const restored = await tool(ctx, facade, "archive_sessions").run({ sessions: ["dddddddd"], archived: false });
     expect(restored).toMatchObject({ success: true, archived: false });
   });
 
@@ -397,6 +412,19 @@ describe("Helm tools", () => {
     expect(bounded.notes.endsWith("… (truncated)")).toBe(true);
     expect(bounded.items).toHaveLength(61);
     expect(bounded.items.at(-1)).toBe("… 10 more");
+  });
+
+  it("keeps a page of notes whole for a read-only Helm look, but still bounds a full read", async () => {
+    const { ctx: app } = createTestApp();
+    const task = app.taskStore.createTask("Long notes");
+    const notes = "Keep this context. ".repeat(1000);
+    app.taskStore.updateTask(task.id, { notes });
+    const reusing = { ...app, bridgeToolsMcpServer: { getToolDefinitions: () => createTaskToolDefinitions(app) } } as unknown as AppContext;
+    const info = createHelmToolDefinitions(reusing, createFacade(), createRuntime().runtime).find((candidate) => candidate.name === "task_get_info")!;
+    const page = await info.handler({ taskId: task.id, notesSource: "task" }, {}) as { text: string; nextOffset: number };
+    expect(page.text).toBe(notes.slice(0, page.nextOffset));
+    const full = await info.handler({ taskId: task.id }, {}) as { notes: string };
+    expect(full.notes.endsWith("… (truncated)")).toBe(true);
   });
 });
 

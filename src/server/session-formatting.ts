@@ -110,8 +110,9 @@ export function formatPromptTag(tag: string): string {
     : escapePromptText(escapeUnicodeLineSeparators(JSON.stringify(tag)));
 }
 
-export function formatPromptTagList(tags: string[]): string {
-  return tags.map(formatPromptTag).join(", ");
+function briefLabel(value: string, limit: number): string {
+  const text = normalizeInlineText(value);
+  return escapePromptText(text.length <= limit ? text : `${text.slice(0, limit - 1)}…`);
 }
 
 export function formatRelatedDocManifestEntry(doc: {
@@ -119,17 +120,18 @@ export function formatRelatedDocManifestEntry(doc: {
   path: string;
   description?: string;
   matchedTags: string[];
-}): string {
-  const title = escapePromptText(normalizeInlineText(doc.title));
+}): string | undefined {
   const path = escapePromptLiteral(doc.path);
-  const description = doc.description ? escapePromptText(normalizeInlineText(doc.description)) : "";
-  const matchedTags = doc.matchedTags.filter(Boolean);
-
+  // A clipped path isn't a usable docs_read pointer. The page is still discoverable with docs_search.
+  if (path.length > 240) return undefined;
+  const title = briefLabel(doc.title, 64);
   let line = `- ${title} (${path})`;
+  const description = doc.description ? briefLabel(doc.description, 96) : "";
   if (description) line += ` — ${description}`;
-  if (matchedTags.length > 0) {
-    const suffix = description && !/[.!?]$/.test(description) ? "." : "";
-    line += `${suffix} [matched: ${formatPromptTagList(matchedTags)}]`;
+  const tags = doc.matchedTags.slice(0, 2).filter((tag) => tag && tag.length <= 40).map(formatPromptTag);
+  if (tags.length > 0) {
+    const suffix = description && !/[.!?…]$/.test(description) ? "." : "";
+    line += `${suffix} [matched: ${tags.join(", ")}]`;
   }
   return line;
 }

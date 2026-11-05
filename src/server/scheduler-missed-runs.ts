@@ -1,4 +1,5 @@
 import type { Schedule, ScheduleStore } from "./schedule-store.js";
+import { isRecentMissedSlot } from "./scheduler-deadlines.js";
 
 interface MissedRunCandidate {
   id: string;
@@ -95,14 +96,6 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
     return `${candidate.id}:${candidate.source}:${candidate.scheduledFor}`;
   }
 
-  function isEligibleMissedRunTime(
-    scheduledTime: number,
-    now: number,
-  ): boolean {
-    if (scheduledTime >= now) return false;
-    return (now - scheduledTime) < MISSED_RUN_GRACE_WINDOW_MS;
-  }
-
   function revalidateDeferredCandidate(candidate: MissedRunCandidate, now: number): MissedRunCandidate | undefined {
     const schedule = deps.scheduleStore().getSchedule(candidate.id);
     if (!schedule || !schedule.enabled) return undefined;
@@ -158,7 +151,7 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
         const runAtTime = new Date(schedule.runAt).getTime();
         if (runAtTime >= options.now) continue;
         if (
-          isEligibleMissedRunTime(runAtTime, options.now)
+          isRecentMissedSlot(runAtTime, options.now, MISSED_RUN_GRACE_WINDOW_MS)
           || options.preservedCandidateKeys?.has(candidateKey)
         ) {
           missedRuns.push(candidate);
@@ -184,7 +177,7 @@ export function createMissedRunCatchUpController(deps: MissedRunCatchUpDeps): Mi
       const nextExpectedTime = new Date(nextExpected).getTime();
       if (nextExpectedTime >= options.now) continue;
       if (
-        isEligibleMissedRunTime(nextExpectedTime, options.now)
+        isRecentMissedSlot(nextExpectedTime, options.now, MISSED_RUN_GRACE_WINDOW_MS)
         || options.preservedCandidateKeys?.has(candidateKey)
       ) {
         missedRuns.push(candidate);

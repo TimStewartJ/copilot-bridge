@@ -10,6 +10,7 @@ import type { AppContext } from "../app-context.js";
 import type { Task, TaskChangeActor } from "../task-store.js";
 import type { ProvidersConfig } from "../providers/types.js";
 import type { TagStore } from "../tag-store.js";
+import { notesContinuationRefusal, notesWriteRefusal, notesWriteTokenField, readTaskNotesPage } from "../task-note-pages.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
 import {
   InvalidTaskHistoryEntryError,
@@ -139,6 +140,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         priority: { type: "integer", description: "Task priority" },
         instructions: { type: "string", description: "Standing rules for every session of this task, such as approval requirements or how to verify work (markdown). Overwrites existing instructions. Keep it short." },
         notes: { type: "string", description: "Current state of the work: open items, the latest known facts, what to do next (markdown). Overwrites existing notes. Do not keep a log of past work here; use task_history_add." },
+        notesWriteToken: { type: "string", description: "Required to replace long notes: the notesWriteToken from reading them to the end with task_get_info, or from your last task_update." },
         cwd: { type: "string", description: "Working directory path for the task" },
         groupId: { anyOf: [{ type: "string" }, { type: "null" }], description: "Task group ID to assign to. Empty string or null ungroups the task." },
         doneWhen: { anyOf: [{ type: "string" }, { type: "null" }], description: "Definition of done for this task. Null clears it." },
@@ -174,6 +176,8 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if (Object.keys(updates).length === 0 && !hasTags) return toolFailure("No fields to update. Provide at least one of: title, kind, muted, priority, instructions, notes, cwd, groupId, doneWhen, playbook, tags");
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
+      const refusal = args.notes === undefined ? undefined : notesWriteRefusal(task.value.notes, args.notesWriteToken);
+      if (refusal) return toolFailure(refusal);
       let tagStore: TagStore | undefined;
       if (hasTags) {
         const tagStoreResult = ensureTagStore(ctx);
@@ -202,7 +206,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         tagStore.setEntityTags("task", args.taskId, tagIds);
       }
       const fields = [...Object.keys(updates), ...(hasTags ? ["tags"] : [])].join(", ");
-      return { success: true, message: `Task updated (${fields})`, kind: updatedTask.kind };
+      return { success: true, message: `Task updated (${fields})`, kind: updatedTask.kind, ...notesWriteTokenField(updatedTask.notes) };
     },
   }),
   defineBridgeTool("task_update_momentum", {
@@ -357,16 +361,39 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_get_info", {
-    description: "Get task details including title, kind, status, tags, linked session counts/previews, work items, PRs, instructions, notes, and the number of history entries (read them with task_history_list)",
-    parameters: { type: "object", properties: { taskId: { type: "string", description: "The exact task ID, copied verbatim from task_list or from injected task context. Never guess, infer, or reconstruct an ID from a task title." } }, required: ["taskId"] },
+    description: "Get task details, instructions, notes, links, checklist and history count (entries: task_history_list). Set notesSource to read only the task or group notes in pages.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "The exact task ID from task_list or the chat's task context. Never guess it." },
+        notesSource: { type: "string", enum: ["task", "group"], description: "Return only a page of the task's notes or its current group's notes." },
+        offset: { type: "integer", minimum: 0, description: "To continue reading with notesSource: the nextOffset from the excerpt or previous page." },
+        revision: { type: "string", description: "Required with offset: the revision shown with that nextOffset. A read of changed notes fails; read again without offset." },
+      },
+      required: ["taskId"],
+      if: { required: ["offset"] },
+      then: { required: ["notesSource", "revision"] },
+    },
     handler: async (args: any) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
+      if (args.notesSource) {
+        const group = args.notesSource === "group" && task.value.groupId ? ctx.taskGroupStore.getGroup(task.value.groupId) : undefined;
+        const notes = args.notesSource === "group" ? group?.notes ?? "" : task.value.notes;
+        const refusal = notesContinuationRefusal(notes, args.offset ?? 0, args.revision);
+        if (refusal) return toolFailure(refusal);
+        return {
+          taskId: task.value.id, notesSource: args.notesSource,
+          ...(args.notesSource === "group" ? { groupId: group?.id ?? null } : {}),
+          ...readTaskNotesPage(notes, args.offset ?? 0),
+        };
+      }
       const tags = (ctx.tagStore?.getEntityTags("task", args.taskId) ?? [])
         .map(({ id, name, color }) => ({ id, name, color }));
       const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId);
       return {
         ...task.value,
+        ...notesWriteTokenField(task.value.notes),
         ...compactTaskInfoSessionIds(task.value.sessionIds),
         tags,
         checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })),

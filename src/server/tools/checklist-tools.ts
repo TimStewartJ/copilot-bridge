@@ -1,7 +1,6 @@
-import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
-import { ensureChecklistItem, ensureTask } from "./helpers.js";
-import { ChecklistNotFoundError, ChecklistValidationError } from "../checklist-store.js";
+import type { ChecklistItemUpdate } from "../checklist-store.js";
+import { createActionHandlers, type ChecklistAddArgs } from "./action-tools.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -9,44 +8,28 @@ import {
   type BridgeToolsMcpServer,
 } from "../agent-tools-mcp/index.js";
 
-function checklistToolFailure(error: unknown) {
-  if (error instanceof ChecklistValidationError || error instanceof ChecklistNotFoundError) {
-    return toolFailure(error.message);
-  }
-  throw error;
-}
-
 export interface RegisterChecklistToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
 export function createChecklistToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
+  const actions = createActionHandlers(ctx);
   return [
   defineBridgeTool("checklist_add", {
     description: "Compatibility alias for action_add. Prefer action_add for new work.",
     parameters: { type: "object", properties: { taskId: { type: ["string", "null"], description: "The task ID. Omit to create a global (unparented) checklist item." }, text: { type: "string", description: "The checklist item text" }, deadline: { type: "string", description: "Optional deadline date in YYYY-MM-DD format" } }, required: ["text"] },
-    handler: async (args: any) => {
-      if (args.taskId !== undefined && args.taskId !== null) {
-        const task = ensureTask(ctx, args.taskId);
-        if (!task.ok) return toolFailure(task.error);
-      }
-      try {
-        const checklistItem = ctx.checklistStore.createChecklistItem(args.taskId ?? null, args.text, args.deadline);
-        return {
-          success: true,
-          message: `Checklist item added: "${checklistItem.text}"${checklistItem.deadline ? ` (due ${checklistItem.deadline})` : ""}`,
-          checklistItemId: checklistItem.id,
-        };
-      } catch (error) {
-        return checklistToolFailure(error);
-      }
+    handler: ({ taskId, text, deadline }: ChecklistAddArgs) => {
+      const result = actions.add({ taskId, text, deadline });
+      if (!("action" in result)) return result;
+      const item = result.action;
+      return { success: true, message: `Checklist item added: "${item.text}"${item.deadline ? ` (due ${item.deadline})` : ""}`, checklistItemId: item.id };
     },
   }),
   defineBridgeTool("checklist_list", {
     description: "Compatibility alias for action_list. Prefer action_list for new work.",
     parameters: { type: "object", properties: { taskId: { type: ["string", "null"], description: "The task ID. Omit or pass null to list global checklist items." } } },
-    handler: async (args: any) => {
-      const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId ?? null);
+    handler: (args: { taskId?: string | null }) => {
+      const { actions: checklistItems } = actions.list(args);
       const today = new Date().toISOString().slice(0, 10);
       return {
         checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null, isOverdue: !t.done && !!t.deadline && t.deadline < today })),
@@ -58,34 +41,19 @@ export function createChecklistToolDefinitions(ctx: AppContext): BridgeToolDefin
   defineBridgeTool("checklist_update", {
     description: "Compatibility alias for action_update. Prefer action_update for new work.",
     parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" }, text: { type: "string", description: "New text" }, done: { type: "boolean", description: "Mark done (true) or not done (false)" }, deadline: { type: ["string", "null"], description: "Deadline date in YYYY-MM-DD format, or null to clear" } }, required: ["checklistItemId"] },
-    handler: async (args: any) => {
-      const updates: Record<string, any> = {};
-      if (args.text !== undefined) updates.text = args.text;
-      if (args.done !== undefined) updates.done = args.done;
-      if (args.deadline !== undefined) updates.deadline = args.deadline;
-      if (Object.keys(updates).length === 0) return toolFailure("Provide at least one of: text, done, deadline");
-      const checklistItem = ensureChecklistItem(ctx, args.checklistItemId);
-      if (!checklistItem.ok) return toolFailure(checklistItem.error);
-      try {
-        const updatedChecklistItem = ctx.checklistStore.updateChecklistItem(args.checklistItemId, updates);
-        return { success: true, message: `Checklist item ${args.done ? "completed" : "updated"}: "${updatedChecklistItem.text}"` };
-      } catch (error) {
-        return checklistToolFailure(error);
-      }
+    handler: ({ checklistItemId, text, done, deadline }: ChecklistItemUpdate & { checklistItemId: string }) => {
+      const result = actions.update({ actionId: checklistItemId, text, done, deadline });
+      return "action" in result
+        ? { success: true, message: `Checklist item ${done ? "completed" : "updated"}: "${result.action.text}"` }
+        : result;
     },
   }),
   defineBridgeTool("checklist_remove", {
     description: "Compatibility alias for action_remove. Prefer action_remove for new work.",
     parameters: { type: "object", properties: { checklistItemId: { type: "string", description: "The checklist item ID" } }, required: ["checklistItemId"] },
-    handler: async (args: any) => {
-      const checklistItem = ensureChecklistItem(ctx, args.checklistItemId);
-      if (!checklistItem.ok) return toolFailure(checklistItem.error);
-      try {
-        ctx.checklistStore.deleteChecklistItem(args.checklistItemId);
-        return { success: true, message: "Checklist item removed" };
-      } catch (error) {
-        return checklistToolFailure(error);
-      }
+    handler: ({ checklistItemId }: { checklistItemId: string }) => {
+      const result = actions.remove({ actionId: checklistItemId });
+      return "success" in result ? { success: true, message: "Checklist item removed" } : result;
     },
   }),
   ];

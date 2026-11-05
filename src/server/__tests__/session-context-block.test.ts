@@ -179,9 +179,7 @@ describe("bridge context sections", () => {
   });
 
   it("hashes each section independently so only the changed one is resent", () => {
-    const docsStore = createDocsStore(makeTestDir("context-block-docs"));
-    docsStore.writePage("runbooks/deploy", "# Deploy");
-    const build = (task: Task | null) => buildBridgeContextSections({ docsStore }, task);
+    const build = (task: Task | null) => buildBridgeContextSections({}, task);
     const hashes = (task: Task | null) => build(task).map((section) => section.hash);
     const before = hashes(createTask({ notes: "first" }));
 
@@ -192,12 +190,12 @@ describe("bridge context sections", () => {
     expect([moved[0] !== before[0], moved[1] !== before[1], moved[2] !== before[2]]).toEqual([true, false, false]);
     const edited = hashes(createTask({ notes: "second" }));
     expect([edited[0] !== before[0], edited[1] !== before[1], edited[2] !== before[2]]).toEqual([false, true, false]);
-    // Every section is always present, so leaving a task or emptying the docs is just a change.
+    // Every section is always present, so leaving a task is just a change.
     const detached = buildBridgeContextSections({}, null);
     expect(detached.map((section) => section.content)).toEqual([
       "<task_state>\nThis chat is not linked to a Bridge task.\n</task_state>",
       "<task_notes>\nThis chat is not linked to a Bridge task.\n</task_notes>",
-      "<knowledge_base>\nThe knowledge base is empty.\n</knowledge_base>",
+      "<knowledge_base>\nKnowledge base tools are unavailable.\n</knowledge_base>",
       "<playbook>\nNo playbook is chosen for this chat yet.\n</playbook>",
     ]);
     expect([...emptyBridgeContextHashes().values()]).toEqual(detached.map((section) => section.hash));
@@ -224,16 +222,19 @@ describe("bridge context sections", () => {
     }
   });
 
-  it("keeps database schema context stable when collection entries change without scanning entries", () => {
+  it("offers KB lookup even to taskless chats without walking the tree or loading schemas", () => {
     const docsStore = createDocsStore(makeTestDir("context-block-db"));
-    docsStore.writeSchema("notes", { name: "Notes", fields: [{ name: "title", type: "text" }] });
-    const scan = vi.spyOn(docsStore, "listDbEntries");
-    const before = buildBridgeContextSections({ docsStore }, null);
-    docsStore.addDbEntry("notes", { title: "First note" });
-    docsStore.addDbEntry("notes", { title: "Second note" });
-    expect(buildBridgeContextSections({ docsStore }, null)).toEqual(before);
-    expect(before[2]!.content).toContain('notes/ "Notes": title (text)');
-    expect(scan).not.toHaveBeenCalled();
+    const deps = { docsStore, docsIndex: { findDocsByTagNames: () => [] } };
+    const walk = vi.spyOn(docsStore, "listTree");
+    const schema = vi.spyOn(docsStore, "readSchema");
+    const available = buildBridgeContextSections(deps, null)[2]!;
+    expect(available.hash).not.toBe(emptyBridgeContextHashes().get("knowledge_base"));
+    for (const tool of ["docs_search", "docs_list", "docs_read", "docs_db_schema"]) expect(available.content).toContain(tool);
+    docsStore.writeSchema("collections/notes", { name: "Notes", fields: [{ name: "title", type: "text" }] });
+    docsStore.writePage("runbooks/new-page", "# New page");
+    expect(buildBridgeContextSections(deps, null)[2]).toEqual(available);
+    expect(walk).not.toHaveBeenCalled();
+    expect(schema).not.toHaveBeenCalled();
   });
 });
 

@@ -13,15 +13,15 @@ import type { DeferLoopStore } from "./defer-loop-store.js";
 import { createMissedRunCatchUpController } from "./scheduler-missed-runs.js";
 import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
 import { computeNextRunAt, validateSupportedCronExpression } from "./cron-next-run.js";
-import { safeSetTimeout, type LongTimeout } from "./long-timeout.js";
+import { registerDeadlineJob, type DeadlineJob } from "./scheduler-deadlines.js";
 
 export { computeNextRunAt, matchesCron, matchesField, validateSupportedCronExpression } from "./cron-next-run.js";
 
 // ── State ─────────────────────────────────────────────────────────
 
 const cronJobs = new Map<string, ScheduledTask>();
-const oneShotTimers = new Map<string, LongTimeout>();
-const automaticRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const oneShotTimers = new Map<string, DeadlineJob>();
+const automaticRetryTimers = new Map<string, DeadlineJob>();
 let sessionMgr: SessionManager | null = null;
 let busUnsubscribe: (() => void) | undefined;
 
@@ -251,48 +251,34 @@ export function unregisterSchedule(scheduleId: string): void {
  * Clears any existing timer for this schedule first.
  */
 export function armOneShot(scheduleId: string, runAt: string): void {
-  // Clear existing timer
-  const existing = oneShotTimers.get(scheduleId);
-  if (existing) existing.cancel();
+  registerOneShotDeadline(scheduleId, new Date(runAt));
+}
 
-  const scheduledFor = new Date(runAt).toISOString();
-  scheduleStore.updateNextRunAt(scheduleId, scheduledFor);
-
-  const delay = Date.parse(scheduledFor) - Date.now();
-  if (delay <= 0) return;
-
-  const timer = safeSetTimeout(() => {
+function registerOneShotDeadline(scheduleId: string, wakeAt: Date, scheduledFor = wakeAt.toISOString()): void {
+  oneShotTimers.get(scheduleId)?.cancel();
+  scheduleStore.updateNextRunAt(scheduleId, wakeAt.toISOString());
+  const job = registerDeadlineJob(wakeAt, () => {
     oneShotTimers.delete(scheduleId);
     triggerSchedule(scheduleId, { source: "once", scheduledFor }).catch((err) => {
       console.error(`[scheduler] One-shot trigger failed for ${scheduleId}:`, err);
     });
-  }, delay);
-  oneShotTimers.set(scheduleId, timer);
+  });
+  if (job.nextRunAt) oneShotTimers.set(scheduleId, job);
+  else oneShotTimers.delete(scheduleId); // Past deadlines belong to missed-run catch-up.
 }
 
 function armOneShotRetry(scheduleId: string, scheduledFor: string): void {
   const schedule = scheduleStore.getSchedule(scheduleId);
   if (!schedule || !schedule.enabled || schedule.type !== "once") return;
 
-  const existing = oneShotTimers.get(scheduleId);
-  if (existing) existing.cancel();
-
-  const retryAt = new Date(Date.now() + ONE_SHOT_RETRY_DELAY_MS).toISOString();
-  const timer = safeSetTimeout(() => {
-    oneShotTimers.delete(scheduleId);
-    triggerSchedule(scheduleId, { source: "once", scheduledFor }).catch((err) => {
-      console.error(`[scheduler] One-shot retry failed for ${scheduleId}:`, err);
-    });
-  }, ONE_SHOT_RETRY_DELAY_MS);
-  oneShotTimers.set(scheduleId, timer);
-  scheduleStore.updateNextRunAt(scheduleId, retryAt);
+  registerOneShotDeadline(scheduleId, new Date(Date.now() + ONE_SHOT_RETRY_DELAY_MS), scheduledFor);
   bus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId });
 }
 
 function clearAutomaticRetryTimers(scheduleId?: string): void {
   for (const [key, timer] of automaticRetryTimers) {
     if (scheduleId && !key.startsWith(`${scheduleId}:`)) continue;
-    clearTimeout(timer);
+    timer.cancel();
     automaticRetryTimers.delete(key);
   }
 }
@@ -310,16 +296,14 @@ function armAutomaticRetry(
   if (!schedule || !schedule.enabled) return;
 
   const retryKey = `${scheduleId}:${source}:${scheduledFor}`;
-  const existing = automaticRetryTimers.get(retryKey);
-  if (existing) clearTimeout(existing);
-
-  const timer = setTimeout(() => {
+  automaticRetryTimers.get(retryKey)?.cancel();
+  const retry = registerDeadlineJob(new Date(Date.now() + ONE_SHOT_RETRY_DELAY_MS), () => {
     automaticRetryTimers.delete(retryKey);
     triggerSchedule(scheduleId, { source, scheduledFor }).catch((err) => {
       console.error(`[scheduler] ${source} retry failed for ${scheduleId}:`, err);
     });
-  }, ONE_SHOT_RETRY_DELAY_MS);
-  automaticRetryTimers.set(retryKey, timer);
+  });
+  automaticRetryTimers.set(retryKey, retry);
 }
 
 /**

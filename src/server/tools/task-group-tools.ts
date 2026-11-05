@@ -1,6 +1,7 @@
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTaskGroup } from "./helpers.js";
+import { notesWriteRefusal, notesWriteTokenField } from "../task-note-pages.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -27,7 +28,7 @@ export function createTaskGroupToolDefinitions(ctx: AppContext): BridgeToolDefin
     description: "List all task groups with their IDs, names, and notes",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      return { groups: ctx.taskGroupStore.listGroups().map((g) => ({ id: g.id, name: g.name, color: g.color, notes: g.notes || undefined })) };
+      return { groups: ctx.taskGroupStore.listGroups().map((g) => ({ id: g.id, name: g.name, color: g.color, notes: g.notes || undefined, ...notesWriteTokenField(g.notes) })) };
     },
   }),
   defineBridgeTool("task_group_delete", {
@@ -50,16 +51,18 @@ export function createTaskGroupToolDefinitions(ctx: AppContext): BridgeToolDefin
   }),
   defineBridgeTool("task_group_update", {
     description: "Update a task group's name, color, and/or notes. Only provided fields are changed.",
-    parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to update" }, name: { type: "string", description: "New group name" }, color: { type: "string", description: "New color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." } }, required: ["groupId"] },
+    parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to update" }, name: { type: "string", description: "New group name" }, color: { type: "string", description: "New color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." }, notesWriteToken: { type: "string", description: "Required to replace long notes: the notesWriteToken from task_group_list or task_get_info." } }, required: ["groupId"] },
     handler: async (args: any) => {
       const group = ensureTaskGroup(ctx, args.groupId);
       if (!group.ok) return toolFailure(group.error);
+      const refusal = args.notes === undefined ? undefined : notesWriteRefusal(group.value.notes, args.notesWriteToken);
+      if (refusal) return toolFailure(refusal);
       const updates: any = {};
       if (args.name !== undefined) updates.name = args.name;
       if (args.color !== undefined) updates.color = args.color;
       if (args.notes !== undefined) updates.notes = args.notes;
       const updatedGroup = ctx.taskGroupStore.updateGroup(args.groupId, updates);
-      return { success: true, message: `Group "${updatedGroup.name}" updated`, groupId: updatedGroup.id };
+      return { success: true, message: `Group "${updatedGroup.name}" updated`, groupId: updatedGroup.id, ...notesWriteTokenField(updatedGroup.notes) };
     },
   }),
   ];

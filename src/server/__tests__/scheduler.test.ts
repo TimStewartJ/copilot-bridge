@@ -10,7 +10,8 @@ import {
   validateSupportedCronExpression,
 } from "../scheduler.js";
 import { createTestApp } from "./test-app.js";
-import { sessionsOnDisk } from "./helpers.js";
+import { sessionsOnDisk, setupTestDb } from "./helpers.js";
+import { createHelmThinkerStore } from "../helm/thinker/store.js";
 import { resolveScheduleRunsKeep } from "../session-meta-store.js";
 
 afterEach(() => {
@@ -1225,6 +1226,46 @@ describe("scheduler startup recovery", () => {
       expect(ctx.scheduleStore.getSchedule(schedule.id)?.nextRunAt).toBeUndefined();
     } finally {
       consoleError.mockRestore();
+    }
+  });
+
+  it("dispatches registered task and Helm deadlines without making Helm a task schedule", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const slot = new Date(2026, 9, 25, 18); // Sunday, in the Bridge's zone.
+    vi.setSystemTime(slot.getTime() - 30_000);
+    const db = setupTestDb();
+    const helmThinkerStore = createHelmThinkerStore(db);
+    // Startup's delayed replay of 17:59 must not also fire after the regular 18:00 slot.
+    helmThinkerStore.updateSettings({ times: ["17:59", "18:00"], rebuildWeekday: 0 });
+    const { ctx } = createTestApp({ helmThinkerStore });
+    const thinker = ctx.helmThinker!;
+    try {
+      const task = ctx.taskStore.createTask("Clock probe");
+      const scheduled = ctx.scheduleStore.createSchedule({ taskId: task.id, name: "Once", prompt: "Check", type: "once", runAt: slot.toISOString() });
+      const taskStart = vi.spyOn(ctx.sessionManager, "createTaskSession");
+      // Stand in for the model: publish its brief and finish the hidden session's turn.
+      vi.spyOn(ctx.sessionManager, "startWork").mockImplementation((sessionId) => {
+        const run = helmThinkerStore.getRunBySession(sessionId)!;
+        helmThinkerStore.publishRun(run.id, { summary: "Clock probe", items: [], proposals: [], watching: [] }, []);
+        ctx.globalBus.emit({ type: "session:idle", sessionId });
+      });
+      scheduler.initialize(ctx.sessionManager, ctx);
+      await scheduler.waitForMissedRunCatchUpForTests();
+      expect((await thinker.getBrief()).nextRunAt).toBe(slot.toISOString());
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(thinker.listRuns()).toHaveLength(0);
+      expect(taskStart).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(30_001);
+      await vi.waitFor(() => expect(helmThinkerStore.latestRun()?.status).toBe("done"));
+
+      expect(thinker.listRuns()).toMatchObject([{ trigger: "schedule", rebuild: true, startedAt: slot.toISOString() }]);
+      expect(await thinker.getBrief()).toMatchObject({ brief: { summary: "Clock probe" }, nextRunAt: new Date(2026, 9, 26, 17, 59).toISOString() });
+      expect(ctx.scheduleStore.listSchedules()).toMatchObject([{ id: scheduled.id, enabled: false, runCount: 1 }]);
+      expect(taskStart).toHaveBeenCalledTimes(1);
+      expect(ctx.taskStore.getTask(task.id)?.sessionIds).toEqual(["task-session"]);
+    } finally {
+      await thinker.dispose();
+      db.close();
     }
   });
 

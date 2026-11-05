@@ -13,6 +13,7 @@ import { defineBridgeTool, type BridgeToolInvocation } from "../../agent-tools-m
 import type { BridgeToolDefinition } from "../../agent-tools-mcp/server.js";
 import type { AgentModelInfo } from "../../agent-backend/types.js";
 import type { SessionConfigProfile } from "../../session-manager.js";
+import { registerDeadlineJob, type DeadlineJob } from "../../scheduler-deadlines.js";
 import { sendChatMessage } from "../../chat-message-delivery.js";
 import { toolFailure } from "../../tool-results.js";
 import {
@@ -55,7 +56,6 @@ const CATCH_UP_MS = 2 * 60 * 60_000;
 const KEEP_RUN_SESSIONS_MS = 7 * 86_400_000;
 const KEEP_RUNS_MS = 60 * 86_400_000;
 const KEEP_RECENT_SESSIONS = 5;
-const MAX_TIMER_MS = 2_147_000_000;
 /** Effort for a look when the Helm role doesn't set one. */
 const DEFAULT_LOOK_EFFORT = "high";
 
@@ -108,8 +108,7 @@ export class HelmThinker {
   private readonly connectSourceImpl: SourceConnector;
   private active?: ActiveRun;
   private activeExecution?: Promise<void>;
-  private timer?: NodeJS.Timeout;
-  private nextRunAt: Date | null = null;
+  private scheduledLook?: DeadlineJob;
   private tools?: BridgeToolDefinition[];
   private workingDirectory?: string;
   private disposed = false;
@@ -142,8 +141,7 @@ export class HelmThinker {
   /** Stops scheduling and ends a running look's source connections; resolves once they are closed. */
   async dispose(): Promise<void> {
     this.disposed = true;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
+    this.scheduledLook?.cancel();
     const active = this.active;
     if (!active) return;
     active.fenced = true;
@@ -541,10 +539,11 @@ export class HelmThinker {
   }
 
   /** Starts a run. Returns at once; the run carries on in the background. */
-  async think(options: { trigger: HelmRunTrigger; rebuild?: boolean }): Promise<HelmRunView> {
+  async think(options: { trigger: HelmRunTrigger; rebuild?: boolean }, stillDue?: () => boolean): Promise<HelmRunView> {
     if (this.active) throw new HelmError("Helm is already looking", 409);
     const selection = await this.chooseModel();
     if (this.active) throw new HelmError("Helm is already looking", 409);
+    if (stillDue && !stillDue()) throw new HelmError("The scheduled look is no longer due", 409);
     const run = this.store.createRun({
       sessionId: randomUUID(),
       trigger: options.trigger,
@@ -707,33 +706,29 @@ export class HelmThinker {
   // ── Schedule ──────────────────────────────────────────────
 
   private schedule(options: { catchUp: boolean }): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
-    this.nextRunAt = null;
+    this.scheduledLook?.cancel();
+    this.scheduledLook = undefined;
     const settings = this.store.getSettings();
     if (this.disposed || this.isPreview || !settings.enabled || settings.times.length === 0) return;
-    const now = this.now();
-    if (options.catchUp) {
-      const slot = previousScheduledRun(settings.times, now);
-      const latest = this.store.latestRun();
-      if (slot && now.getTime() - slot.getTime() < CATCH_UP_MS && (!latest || Date.parse(latest.startedAt) < slot.getTime())) {
-        setTimeout(() => void this.think({ trigger: "schedule", rebuild: isRebuildSlot(settings.times, slot, settings.rebuildWeekday) }).catch(() => undefined), 60_000).unref();
-      }
-    }
-    const next = nextScheduledRun(settings.times, now);
-    if (!next) return;
-    this.nextRunAt = next;
-    this.timer = setTimeout(() => {
-      this.timer = undefined;
-      if (this.now().getTime() + 1000 >= next.getTime()) {
-        const current = this.store.getSettings();
-        void this.think({ trigger: "schedule", rebuild: isRebuildSlot(current.times, next, current.rebuildWeekday) }).catch((error) => {
+    this.scheduledLook = registerDeadlineJob(
+      (now) => nextScheduledRun(settings.times, now),
+      (slot, stillDue) => {
+        void this.think({ trigger: "schedule", rebuild: isRebuildSlot(settings.times, slot, settings.rebuildWeekday) }, stillDue).catch((error) => {
           console.warn(`[helm-thinker] Scheduled run skipped: ${error instanceof Error ? error.message : String(error)}`);
         });
-      }
-      this.schedule({ catchUp: false });
-    }, Math.min(MAX_TIMER_MS, Math.max(1000, next.getTime() - now.getTime())));
-    this.timer.unref();
+      },
+      {
+        now: this.now, unref: true, minimumDelayMs: 1000,
+        startupReplay: options.catchUp ? {
+          previous: (now) => {
+            const current = this.store.getSettings();
+            return current.enabled ? previousScheduledRun(current.times, now) : null;
+          },
+          lastStartedAt: () => this.store.latestRun()?.startedAt,
+          graceMs: CATCH_UP_MS, delayMs: 60_000,
+        } : undefined,
+      },
+    );
   }
 
   // ── Brief ─────────────────────────────────────────────────
@@ -793,7 +788,7 @@ export class HelmThinker {
       proposed: this.store.listMemory().filter((entry) => entry.status === "proposed"),
       running: this.getRunning(),
       lastFailure: latest && latest.status === "failed" && (!done || latest.startedAt > done.startedAt) ? toRunView(latest) : null,
-      nextRunAt: this.nextRunAt?.toISOString() ?? null,
+      nextRunAt: this.scheduledLook?.nextRunAt?.toISOString() ?? null,
       since,
       settings,
       preview: this.isPreview,

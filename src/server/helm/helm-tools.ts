@@ -96,8 +96,10 @@ export function formatAgo(iso: string | undefined, now = Date.now()): string | u
   return `${Math.round(hours / 24)}d ago`;
 }
 
+const SESSION_REF_LENGTH = 8;
+
 function sessionRef(sessionId: string): string {
-  return sessionId.slice(0, 8);
+  return sessionId.slice(0, SESSION_REF_LENGTH);
 }
 
 function normalizeTitle(text: string): string {
@@ -126,14 +128,24 @@ export type SessionResolution =
   | { ok: true; session: HelmSessionSummary }
   | { ok: false; error: string; candidates?: HelmSessionSummary[] };
 
-/** Resolves a session by id, short ref, `bridge://session/…` link, or spoken title. */
-export function resolveSession(sessions: HelmSessionSummary[], reference: unknown): SessionResolution {
-  const raw = typeof reference === "string" ? reference.trim() : "";
-  const ref = raw.replace(/^bridge:\/\/sessions?\//i, "");
+function sessionReferenceId(reference: unknown): string {
+  return typeof reference === "string" ? reference.trim().replace(/^bridge:\/\/sessions?\//i, "") : "";
+}
+
+/** Reads may look up a spoken title; a destination must identify one particular session. */
+export function resolveSession(sessions: HelmSessionSummary[], reference: unknown, match: "lookup" | "destination" = "lookup"): SessionResolution {
+  const ref = sessionReferenceId(reference);
   if (!ref) return { ok: false, error: "A session reference is required." };
-  const byId = sessions.find((session) => session.sessionId === ref)
-    ?? (ref.length >= 4 ? sessions.filter((session) => session.sessionId.startsWith(ref.toLowerCase())) : [])[0];
+  const byId = sessions.find((session) => session.sessionId === ref);
   if (byId) return { ok: true, session: byId };
+  if (match === "destination" ? ref.length === SESSION_REF_LENGTH : ref.length >= 4) {
+    const matches = sessions.filter((session) => session.sessionId.startsWith(ref.toLowerCase()));
+    if (matches.length === 1) return { ok: true, session: matches[0]! };
+    if (matches.length > 1) return { ok: false, error: "That session ref matches several chats. Use a full session link.", candidates: matches.slice(0, 5) };
+  }
+  if (match === "destination" || (typeof reference === "string" && ref !== reference.trim())) {
+    return { ok: false, error: "Use the exact session ID, link or unique short ref from find or list_sessions." };
+  }
 
   const query = normalizeTitle(ref);
   const exact = sessions.filter((session) => normalizeTitle(session.title) === query);
@@ -274,10 +286,14 @@ export function createHelmToolDefinitions(
   facade: HelmBridgeFacade,
   runtime: HelmToolRuntime,
 ): BridgeToolDefinition[] {
-  const withSession = async (reference: unknown, options?: { includeArchived?: boolean }) => {
-    const sessions = await facade.listSessions(options);
-    return resolveSession(sessions, reference);
+  // An archived chat can share a short ref with an active one; check identity before filtering.
+  const destination = (sessions: HelmSessionSummary[], reference: unknown, allowArchived = false): SessionResolution => {
+    const result = resolveSession(sessions, reference, "destination");
+    return result.ok && result.session.archived && !allowArchived ? { ok: false, error: "That session is archived." } : result;
   };
+  const shortRef = (reference: unknown) => sessionReferenceId(reference).length === SESSION_REF_LENGTH;
+  const findDestination = async (reference: unknown, allowArchived = false) =>
+    destination(await facade.listSessions({ includeArchived: allowArchived || shortRef(reference) }), reference, allowArchived);
   /** Finds tasks by id, link or topic: every topic word first, then any of them. */
   const searchTasks = async (reference: string, limit: number, options: { anyWord?: boolean } = {}) => {
     const exact = ctx.taskStore.getTask(reference.replace(/^bridge:\/\/tasks?\//i, ""));
@@ -291,7 +307,7 @@ export function createHelmToolDefinitions(
   };
   const resolutionFailure = (resolution: Extract<SessionResolution, { ok: false }>) => toolFailure(resolution.error, {
     ...(resolution.candidates
-      ? { detail: `Candidates: ${resolution.candidates.map((session) => `"${session.title}" (${sessionRef(session.sessionId)})`).join(", ")}` }
+      ? { detail: `Candidates: ${resolution.candidates.map((session) => `"${session.title}" (${formatBridgeLink({ kind: "session", sessionId: session.sessionId })})`).join(", ")}` }
       : {}),
   });
 
@@ -459,13 +475,14 @@ export function createHelmToolDefinitions(
         properties: {
           session: { type: "string", description: "Session ref, id, link, or title words." },
           task: { type: "string", description: "Instead of session: a task id, link, or topic words." },
-          markRead: { type: "boolean", description: "Mark the session read: only when you are relaying this reply to the user. Defaults to false." },
+          markRead: { type: "boolean", description: "Mark this reply read when relaying it. Requires an exact session ID, link or unique short ref; defaults to false." },
           history: { type: "number", description: `Also return up to this many recent messages (max ${MAX_HISTORY_MESSAGES}).` },
         },
       },
       handler: async (args: any) => {
         let taskInfo: Record<string, unknown> | undefined;
         let resolution: SessionResolution;
+        if (args.markRead === true && !args.session) return toolFailure("To mark a reply read, pass its session link or ref. Look it up with read_session first.");
         if (!args.session && typeof args.task === "string" && args.task.trim()) {
           const [task, ...others] = await searchTasks(args.task.trim(), 3);
           if (!task) return toolFailure(`No task matches "${args.task}".`, { detail: "Try find or task_list." });
@@ -480,7 +497,7 @@ export function createHelmToolDefinitions(
           if (!latest) return { task: task.title, ...taskInfo, latestReply: null, note: "This task has no sessions." };
           resolution = { ok: true, session: latest };
         } else {
-          resolution = await withSession(args.session);
+          resolution = args.markRead === true ? await findDestination(args.session) : resolveSession(await facade.listSessions(), args.session);
         }
         if (!resolution.ok) return resolutionFailure(resolution);
         const { session } = resolution;
@@ -518,13 +535,13 @@ export function createHelmToolDefinitions(
       parameters: {
         type: "object",
         properties: {
-          session: { type: "string", description: "Session ref, id, link, or title words." },
+          session: { type: "string", description: "Exact session ID, link or unique short ref from find or list_sessions." },
           message: { type: "string", description: "The message to send, written as the user would type it." },
         },
         required: ["session", "message"],
       },
       handler: async (args: any, invocation: BridgeToolInvocation) => {
-        const resolution = await withSession(args.session, { includeArchived: true });
+        const resolution = await findDestination(args.session, true);
         if (!resolution.ok) return resolutionFailure(resolution);
         const message = String(args.message ?? "").trim();
         if (!message) return toolFailure("message is required");
@@ -602,14 +619,14 @@ export function createHelmToolDefinitions(
       parameters: {
         type: "object",
         properties: {
-          session: { type: "string", description: "Session ref, id, link, or title words." },
+          session: { type: "string", description: "Exact session ID, link or unique short ref from find or list_sessions." },
           confirmed: { type: "boolean", description: "Must be true: the user explicitly confirmed stopping it." },
         },
         required: ["session", "confirmed"],
       },
       handler: async (args: any) => {
         if (args.confirmed !== true) return toolFailure("Ask the user to confirm before stopping a session.");
-        const resolution = await withSession(args.session);
+        const resolution = await findDestination(args.session);
         if (!resolution.ok) return resolutionFailure(resolution);
         const aborted = await ctx.sessionManager.abortSession(resolution.session.sessionId);
         return aborted
@@ -622,13 +639,13 @@ export function createHelmToolDefinitions(
       parameters: {
         type: "object",
         properties: {
-          session: { type: "string", description: "Session ref, id, link, or title words." },
+          session: { type: "string", description: "Exact session ID, link or unique short ref from find or list_sessions." },
           answer: { type: "string", description: "The user's answer." },
         },
         required: ["session", "answer"],
       },
       handler: async (args: any, invocation: BridgeToolInvocation) => {
-        const resolution = await withSession(args.session);
+        const resolution = await findDestination(args.session);
         if (!resolution.ok) return resolutionFailure(resolution);
         const request = pendingQuestions(ctx, resolution.session.sessionId).userInputs[0];
         if (!request) return toolFailure(`${resolution.session.title} isn't waiting on a question. Forms must be answered in the Bridge UI.`);
@@ -656,18 +673,19 @@ export function createHelmToolDefinitions(
       parameters: {
         type: "object",
         properties: {
-          sessions: { type: "array", items: { type: "string" }, description: "Session refs, ids, links, or titles." },
+          sessions: { type: "array", items: { type: "string" }, description: "Exact session IDs, links or unique short refs from find or list_sessions." },
           allUnread: { type: "boolean", description: "Mark every unread session read." },
         },
       },
       handler: async (args: any) => {
-        const sessions = await facade.listSessions();
+        const references: unknown[] = Array.isArray(args.sessions) ? args.sessions : [];
+        const sessions = await facade.listSessions({ includeArchived: references.some(shortRef) });
         const ids = new Set<string>();
         if (args.allUnread === true) {
-          for (const session of sessions) if (session.unread) ids.add(session.sessionId);
+          for (const session of sessions) if (!session.archived && session.unread) ids.add(session.sessionId);
         }
-        for (const reference of Array.isArray(args.sessions) ? args.sessions : []) {
-          const resolution = resolveSession(sessions, reference);
+        for (const reference of references) {
+          const resolution = destination(sessions, reference);
           if (!resolution.ok) return resolutionFailure(resolution);
           ids.add(resolution.session.sessionId);
         }
@@ -681,7 +699,7 @@ export function createHelmToolDefinitions(
       parameters: {
         type: "object",
         properties: {
-          sessions: { type: "array", items: { type: "string" }, description: "Session refs, ids, links, or titles." },
+          sessions: { type: "array", items: { type: "string" }, description: "Exact session IDs, links or unique short refs from find or list_sessions." },
           archived: { type: "boolean", description: "True to archive (default), false to restore." },
         },
         required: ["sessions"],
@@ -691,7 +709,7 @@ export function createHelmToolDefinitions(
         const sessions = await facade.listSessions({ includeArchived: true });
         const targets: HelmSessionSummary[] = [];
         for (const reference of Array.isArray(args.sessions) ? args.sessions.slice(0, 25) : []) {
-          const resolution = resolveSession(sessions, reference);
+          const resolution = destination(sessions, reference, true);
           if (!resolution.ok) return resolutionFailure(resolution);
           if (archived && (resolution.session.runState !== "idle" || resolution.session.needsUserInput)) {
             return toolFailure(`${resolution.session.title} is still ${resolution.session.needsUserInput ? "waiting on the user" : "running"}.`);
@@ -845,7 +863,11 @@ export function createHelmToolDefinitions(
     .filter((definition) => isHelmBridgeToolName(definition.name) && !ownNames.has(definition.name))
     .map((definition): BridgeToolDefinition => ({
       ...definition,
-      handler: async (args, extra) => boundToolResult(await definition.handler(args, extra)) as Awaited<ReturnType<BridgeToolDefinition["handler"]>>,
+      handler: async (args, extra) => {
+        const result = await definition.handler(args, extra);
+        // A page of notes is already bounded, and its nextOffset only works if the page stays whole.
+        return (definition.name === "task_get_info" && args.notesSource ? result : boundToolResult(result)) as Awaited<ReturnType<BridgeToolDefinition["handler"]>>;
+      },
     }))
     ?? [];
   return [...tools, ...reused];

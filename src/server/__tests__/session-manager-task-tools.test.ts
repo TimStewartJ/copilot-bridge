@@ -4,6 +4,7 @@ import type { AppContext } from "../app-context.js";
 import { validateToolArguments } from "../agent-tools-mcp/validate-args.js";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createTaskToolDefinitions } from "../tools/task-tools.js";
+import { buildBridgeContextSections } from "../session-context-block.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./test-app.js";
 
@@ -105,6 +106,50 @@ describe("session manager task tools", () => {
     }));
   });
 
+  it.each(["task", "group"] as const)("only replaces long %s notes for an agent that read them to the end", async (source) => {
+    const { ctx } = createTestApp();
+    const group = ctx.taskGroupStore.createGroup("Review");
+    const task = ctx.taskStore.createTask("Release review", group.id);
+    const info = (args: Record<string, unknown>) => getTool(ctx, "task_get_info").handler({ taskId: task.id, notesSource: source, ...args }, createInvocation("task_get_info"));
+    const write = (args: Record<string, unknown>) => source === "task"
+      ? getTool(ctx, "task_update").handler({ taskId: task.id, ...args }, createInvocation("task_update"))
+      : getTool(ctx, "task_group_update").handler({ groupId: group.id, ...args }, createInvocation("task_group_update"));
+    const saved = () => (source === "task" ? ctx.taskStore.getTask(task.id)!.notes : ctx.taskGroupStore.getGroup(group.id)!.notes);
+    const set = (notes: string) => (source === "task" ? ctx.taskStore.updateTask(task.id, { notes }) : ctx.taskGroupStore.updateGroup(group.id, { notes }));
+    const long = `${"Keep this context. ".repeat(1000)}Rule at the end.`;
+
+    set(long);
+    const first = await info({});
+    expect(first.nextOffset).not.toBeNull();
+    expect(first).not.toHaveProperty("notesWriteToken");
+    expect(await write({ notes: "New" })).toMatchObject({ resultType: "failure" });
+    expect(await write({ notes: "New", notesWriteToken: first.revision })).toMatchObject({ resultType: "failure" });
+    expect(saved()).toBe(long);
+
+    const { notesWriteToken } = await info({ offset: first.nextOffset, revision: first.revision });
+    expect(notesWriteToken).toEqual(expect.any(String));
+    // Someone else's edit makes the token stale, and a fresh read gets a new one.
+    set(`${long} Edited.`);
+    expect(await write({ notes: "New", notesWriteToken })).toMatchObject({ resultType: "failure" });
+    expect(saved()).toBe(`${long} Edited.`);
+
+    const restart = await info({});
+    const reread = await info({ offset: restart.nextOffset, revision: restart.revision });
+    const rewritten = await write({ notes: `${long} Decided.`, notesWriteToken: reread.notesWriteToken });
+    expect(rewritten).toMatchObject({ success: true, notesWriteToken: expect.any(String) });
+    expect(await write({ notes: "Short again", notesWriteToken: rewritten.notesWriteToken })).toMatchObject({ success: true });
+    expect(saved()).toBe("Short again");
+    expect(await write({ notes: "No token needed" })).toMatchObject({ success: true });
+  });
+
+  it("a full read of long task notes also unlocks replacing them", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Release review");
+    ctx.taskStore.updateTask(task.id, { notes: "Keep this context. ".repeat(1000) });
+    const { notesWriteToken } = await getTool(ctx, "task_get_info").handler({ taskId: task.id }, createInvocation("task_get_info"));
+    expect(await getTool(ctx, "task_update").handler({ taskId: task.id, notes: "New", notesWriteToken }, createInvocation("task_update"))).toMatchObject({ success: true });
+  });
+
   it("task_get_info includes direct task tag summaries and an empty list when untagged", async () => {
     const { ctx } = createTestApp();
     const taggedTask = ctx.taskStore.createTask("Tagged info");
@@ -128,6 +173,49 @@ describe("session manager task tools", () => {
       color: "purple",
     }]);
     expect(untaggedInfo.tags).toEqual([]);
+  });
+
+  it("pages the current task or group notes without returning unrelated notes or task details", async () => {
+    const { ctx } = createTestApp();
+    const group = ctx.taskGroupStore.createGroup("Review");
+    const task = ctx.taskStore.createTask("Release review", group.id);
+    const prefix = `   ${"🔎 ".repeat(6000)}`;
+    const info = getTool(ctx, "task_get_info");
+    const read = (args: Record<string, unknown>) => info.handler({ taskId: task.id, ...args }, createInvocation("task_get_info"));
+    ctx.taskStore.updateTask(task.id, { notes: `${prefix}Use the blue sample.` });
+    ctx.taskGroupStore.updateGroup(group.id, { notes: `${prefix}Wait for approval.` });
+    expect(await read({})).toMatchObject({ id: task.id, notes: `${prefix}Use the blue sample.`, checklistItems: [] });
+    for (const [source, oldTail, newTail] of [["task", "Use the blue sample.", "Use the gold sample."], ["group", "Wait for approval.", "Wait for sign-off."]] as const) {
+      const first = await read({ notesSource: source });
+      const brief = buildBridgeContextSections(ctx, ctx.taskStore.getTask(task.id), {
+        groupName: group.name, notes: ctx.taskGroupStore.getGroup(group.id)!.notes,
+      }).find((section) => section.name === "task_notes");
+      expect(brief?.content).toContain(`revision ${first.revision}, notesSource: "${source}"`);
+      // Notes with leading space still continue exactly where the excerpt stopped.
+      const shownTo = Number(/nextOffset: (\d+)/.exec(brief!.content)![1]);
+      expect(brief?.content).toContain(`${prefix.slice(3, shownTo).trim()}…`);
+      expect((await read({ notesSource: source, offset: shownTo, revision: first.revision })).text.startsWith(prefix.slice(shownTo, shownTo + 40))).toBe(true);
+      expect(first).toMatchObject({ taskId: task.id, notesSource: source, nextOffset: first.text.length });
+      expect(first).not.toHaveProperty("checklistItems");
+      expect(first).not.toHaveProperty("notes");
+      expect(first.text).not.toContain(oldTail);
+      expect(first.text).not.toMatch(/[\ud800-\udbff]$/u);
+      const last = await read({ notesSource: source, offset: first.nextOffset, revision: first.revision });
+      expect(last).toMatchObject({ revision: first.revision, nextOffset: null });
+      expect(first.text + last.text).toBe(prefix + oldTail);
+
+      if (source === "task") ctx.taskStore.updateTask(task.id, { notes: prefix + newTail });
+      else ctx.taskGroupStore.updateGroup(group.id, { notes: prefix + newTail });
+      // Continuing across someone's edit is refused, so a reader can't stitch two versions together.
+      expect(await read({ notesSource: source, offset: first.nextOffset, revision: first.revision })).toMatchObject({ resultType: "failure" });
+      expect(await read({ notesSource: source, offset: 999_999, revision: (await read({ notesSource: source })).revision })).toMatchObject({ resultType: "failure" });
+      const edited = await read({ notesSource: source });
+      expect(edited.revision).not.toBe(first.revision);
+      expect(edited.text + (await read({ notesSource: source, offset: edited.nextOffset, revision: edited.revision })).text).toContain(newTail);
+    }
+    ctx.taskStore.updateTask(task.id, { groupId: null });
+    expect(await read({ notesSource: "group" })).toMatchObject({ groupId: null, text: "", nextOffset: null });
+    expect(await read({ offset: 1 })).toMatchObject({ resultType: "failure" });
   });
 
   it("task_update can change kind and rejects invalid kinds", async () => {
