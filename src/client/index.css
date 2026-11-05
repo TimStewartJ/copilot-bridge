@@ -218,6 +218,16 @@ html, body, #root {
   background: var(--color-bg-secondary);
 }
 
+/*
+ * The app's box. Hidden labels and other absolutely positioned content with no positioned ancestor
+ * stop here instead of making the page taller than a short window, which iOS scrolls when an input
+ * takes focus. Clip, unlike hidden, cannot be scrolled from code either.
+ */
+#root {
+  position: relative;
+  overflow: clip;
+}
+
 body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
