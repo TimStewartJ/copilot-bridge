@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openMemoryDatabase } from "../server/db.js";
 import { createGlobalBus } from "../server/global-bus.js";
 
+import { createSessionMetaStore } from "../server/session-meta-store.js";
 import { createTaskStore } from "../server/task-store.js";
 import {
   createVoiceJobManager,
@@ -31,7 +32,9 @@ function createManagerHarness(transcribe = vi.fn()) {
   const globalBus = createGlobalBus();
   const sessionManager = {
     isSessionBusy: vi.fn(() => false),
+    isSessionSettling: vi.fn(() => false),
     startWork: vi.fn(),
+    steerSession: vi.fn(async () => {}),
     readMessagesFromDisk: vi.fn(async () => ({ messages: [], total: 0, hasMore: false })),
   } as any;
   const manager = createVoiceJobManager({
@@ -48,6 +51,7 @@ function createManagerHarness(transcribe = vi.fn()) {
     },
     sessionManager,
     taskStore: createTaskStore(db, globalBus, { runtimePaths }),
+    chatDelivery: { sessionManager, sessionMetaStore: createSessionMetaStore(db), globalBus } as any,
   });
   return { runtimePaths, store, sessionManager, manager };
 }
@@ -87,6 +91,7 @@ describe("voice job restart gating", () => {
       },
       sessionManager,
       taskStore,
+      chatDelivery: { sessionManager, sessionMetaStore: createSessionMetaStore(db), globalBus } as any,
     });
     const sourceFilePath = join(runtimePaths.dataDir, "task-input.wav");
     writeFileSync(sourceFilePath, "test-audio");
@@ -133,12 +138,7 @@ describe("voice job restart gating", () => {
 
     it("keeps a sent recording until the audio retention window passes", async () => {
       const transcribe = vi.fn().mockResolvedValue({ text: "hello bridge", provider: "speech-engine" });
-      const { runtimePaths, store, sessionManager, manager } = createManagerHarness(transcribe);
-      sessionManager.readMessagesFromDisk.mockResolvedValue({
-        messages: [{ type: "message", role: "user", content: "hello bridge", timestamp: new Date().toISOString() }],
-        total: 1,
-        hasMore: false,
-      });
+      const { runtimePaths, store, manager } = createManagerHarness(transcribe);
       const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
       writeFileSync(sourceFilePath, "test-audio");
 
@@ -222,14 +222,9 @@ describe("voice job restart gating", () => {
 
   });
 
-  it("starts an Autopilot recording's run in Autopilot, including after a restart", async () => {
+  it("starts an Autopilot recording's run in Autopilot, once, including after a restart", async () => {
     const transcribe = vi.fn().mockResolvedValue({ text: "fix the flaky tests", provider: "speech-engine" });
     const { runtimePaths, store, sessionManager, manager } = createManagerHarness(transcribe);
-    sessionManager.readMessagesFromDisk.mockResolvedValue({
-      messages: [{ type: "message", role: "user", content: "fix the flaky tests", timestamp: new Date().toISOString() }],
-      total: 1,
-      hasMore: false,
-    });
     const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
     writeFileSync(sourceFilePath, "test-audio");
 
@@ -242,11 +237,11 @@ describe("voice job restart gating", () => {
     });
     await vi.waitFor(() => expect(store.getVoiceJob(accepted.id)?.status).toBe("done"));
     expect(accepted.mode).toBe("autopilot");
-    expect(sessionManager.startWork).toHaveBeenCalledWith(
+    expect(sessionManager.startWork).toHaveBeenCalledExactlyOnceWith(
       "existing-session",
       "fix the flaky tests",
       undefined,
-      { mode: "autopilot" },
+      { mode: "autopilot", clientMessageId: `voice-job-${accepted.id}`, keepUndelivered: true },
     );
 
     const id = randomUUID();
@@ -260,13 +255,67 @@ describe("voice job restart gating", () => {
     manager.resumePendingJobs();
     await manager.shutdown();
 
-    expect(sessionManager.startWork).toHaveBeenCalledWith(
+    expect(sessionManager.startWork).toHaveBeenCalledExactlyOnceWith(
       "existing-session",
       "fix the flaky tests",
       undefined,
-      { mode: "autopilot" },
+      expect.objectContaining({ mode: "autopilot", clientMessageId: `voice-job-${id}` }),
     );
     expect(store.getVoiceJob(id)).toMatchObject({ status: "done", mode: "autopilot" });
+  });
+
+  async function dictateTo(harness: ReturnType<typeof createManagerHarness>) {
+    const sourceFilePath = join(harness.runtimePaths.dataDir, "input.wav");
+    writeFileSync(sourceFilePath, "test-audio");
+    return harness.manager.acceptVoiceJob({
+      composerKey: "busy-session",
+      targetSessionId: "busy-session",
+      sourceFilePath,
+      originalFilename: "recording.wav",
+    });
+  }
+
+  it("sends a transcript into a busy chat as steering that sets open questions aside", async () => {
+    const transcribe = vi.fn().mockResolvedValue({ text: "skip that, do this", provider: "speech-engine" });
+    const harness = createManagerHarness(transcribe);
+    harness.sessionManager.isSessionBusy.mockReturnValue(true);
+
+    const accepted = await dictateTo(harness);
+    await harness.manager.shutdown();
+
+    expect(harness.sessionManager.steerSession).toHaveBeenCalledExactlyOnceWith(
+      "busy-session",
+      "skip that, do this",
+      undefined,
+      `voice-job-${accepted.id}`,
+      { skipOpenQuestions: true },
+    );
+    expect(harness.sessionManager.startWork).not.toHaveBeenCalled();
+    expect(harness.store.getVoiceJob(accepted.id)).toMatchObject({ status: "done", transcript: "skip that, do this" });
+  });
+
+  it("tries again while a busy chat refuses for a moment, and gives the transcript back when it stays closed", async () => {
+    const transcribe = vi.fn().mockResolvedValue({ text: "do this next", provider: "speech-engine" });
+    const harness = createManagerHarness(transcribe);
+    harness.sessionManager.isSessionBusy.mockReturnValue(true);
+    harness.sessionManager.steerSession.mockRejectedValueOnce(
+      new Error("Session is still starting the current turn; try again shortly"),
+    );
+
+    const retried = await dictateTo(harness);
+    await vi.waitFor(() => expect(harness.store.getVoiceJob(retried.id)?.status).toBe("done"));
+    expect(harness.sessionManager.steerSession).toHaveBeenCalledTimes(2);
+
+    harness.sessionManager.steerSession.mockClear();
+    harness.sessionManager.steerSession.mockRejectedValue(
+      new Error("Session is stalled and cannot be steered; stop it or wait for recovery"),
+    );
+    const refused = await dictateTo(harness);
+    await harness.manager.shutdown();
+
+    expect(harness.sessionManager.steerSession).toHaveBeenCalledOnce();
+    expect(harness.store.getVoiceJob(refused.id)).toMatchObject({ status: "error", transcript: "do this next" });
+    expect(harness.store.getVoiceJob(refused.id)?.error).toContain("Transcript was saved to the composer");
   });
 
   it("keeps restart-pending processing failures retryable instead of marking them terminal", async () => {

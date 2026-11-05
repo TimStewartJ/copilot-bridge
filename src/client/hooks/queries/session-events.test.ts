@@ -34,7 +34,6 @@ function fixture() {
     queries: { invalidateQueries: vi.fn(async () => undefined) },
     isHelmSession: vi.fn(() => false),
     onBusy: vi.fn(),
-    onIdle: vi.fn(),
     onArchived: vi.fn(),
     onHistoryTruncated: vi.fn(),
   } satisfies SessionEventEffects;
@@ -216,7 +215,6 @@ describe("session event projection", () => {
 
     effects.queries.invalidateQueries.mockClear();
     project({ type: "session:idle", sessionId: "one" });
-    expect(effects.onIdle).toHaveBeenCalledExactlyOnceWith("one");
     expect(effects.queries.invalidateQueries.mock.calls).toEqual([
       [{ queryKey: activeKey }], [{ queryKey: queryKeys.dashboard }],
     ]);

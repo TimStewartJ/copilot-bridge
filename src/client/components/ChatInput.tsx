@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from "react";
-import { ArrowUp, Check, Square, Paperclip, Loader2, Mic, MoreHorizontal, X } from "lucide-react";
+import { ArrowUp, Square, Paperclip, Loader2, Mic, MoreHorizontal, X } from "lucide-react";
 import type { BlobAttachment, Attachment, SlashCommandInfo } from "../api";
 import { uploadFile } from "../api";
 import {
@@ -10,9 +10,7 @@ import {
 import { useVoiceInput } from "../hooks/useVoiceInput";
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import {
-  canAutoSendVoiceTranscript,
   resolveVoiceSubmitMode,
-  resolveVoiceSubmitModeAfterRecording,
   type SubmitVoiceCapture,
   type VoiceSubmitMode,
 } from "../lib/voice-submit-mode";
@@ -182,7 +180,7 @@ export default function ChatInput({
   const inputRef = useRef(input);
   const attachmentsRef = useRef<Attachment[]>(attachments);
   const uploadingRef = useRef(uploading);
-  const sendBlockedRef = useRef(Boolean(disabled || onAbort));
+  const sendBlockedRef = useRef(Boolean(disabled));
   const agentBusyRef = useRef(Boolean(onAbort));
   /** The send mode an auto-sent transcript uses, so dictating with Autopilot on starts an Autopilot run. */
   const nextSendModeRef = useRef<SendMode>(defaultSendMode);
@@ -190,14 +188,14 @@ export default function ChatInput({
   /** Counts send-mode choices, so a recording finishing late never undoes a newer one. */
   const sendModeChoiceRef = useRef(0);
   const restoredForRef = useRef<string | null>(null);
-  const recordingStartModeRef = useRef<VoiceSubmitMode | null>(null);
   const pendingCaptureSubmitModeRef = useRef<VoiceSubmitMode | null>(null);
+  /** The composer whose finished recording goes out with the rest of its content once transcribed. */
+  const sendAfterTranscriptRef = useRef<string | null>(null);
   const acceptedFlashJobIdRef = useRef<string | null>(null);
   const acceptedFlashTimerRef = useRef<number | null>(null);
   const previousComposerKeyRef = useRef<string | null>(composerKey);
   const pendingAcceptedHandoffRef = useRef<{ originComposerKey: string; targetComposerKey: string } | null>(null);
   const previousVoiceJobRef = useRef<ActiveVoiceBackgroundJob | null>(null);
-  const [recordingStartMode, setRecordingStartMode] = useState<VoiceSubmitMode | null>(null);
   const [showAcceptedConfirmation, setShowAcceptedConfirmation] = useState(false);
   const [recordingCancelled, setRecordingCancelled] = useState<"user" | "nothing-heard" | null>(null);
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0);
@@ -224,7 +222,7 @@ export default function ChatInput({
   }, [uploading]);
 
   useEffect(() => {
-    sendBlockedRef.current = Boolean(disabled || onAbort);
+    sendBlockedRef.current = Boolean(disabled);
     agentBusyRef.current = Boolean(onAbort);
   }, [disabled, onAbort]);
 
@@ -264,11 +262,6 @@ export default function ChatInput({
     }
   }, []);
 
-  const updateRecordingStartMode = useCallback((next: VoiceSubmitMode | null) => {
-    recordingStartModeRef.current = next;
-    setRecordingStartMode(next);
-  }, []);
-
   const clearAcceptedFlash = useCallback(() => {
     acceptedFlashJobIdRef.current = null;
     if (acceptedFlashTimerRef.current !== null) {
@@ -301,9 +294,9 @@ export default function ChatInput({
   const voice = useVoiceInput({
     contextKey: composerKey,
     onAudioCaptured: async ({ audio, contextKey }) => {
-      const submitMode = contextKey === composerKey
-        ? (pendingCaptureSubmitModeRef.current ?? "insert")
-        : "insert";
+      // Finish was pressed in the chat this was recorded in. A recording ended any other way stays a draft.
+      const finishedMode = contextKey === composerKey ? pendingCaptureSubmitModeRef.current : null;
+      const submitMode = finishedMode ?? "insert";
       const capturedSendMode = submitMode === "autosend" ? pendingCaptureSendModeRef.current : null;
       const sendMode = capturedSendMode?.mode;
       pendingCaptureSubmitModeRef.current = null;
@@ -314,6 +307,7 @@ export default function ChatInput({
         submitMode,
         ...(sendMode ? { sendMode } : {}),
       });
+      if (finishedMode && delivered === "insert") sendAfterTranscriptRef.current = contextKey;
       // Like a typed send, an auto-sent recording uses up this message's mode choice.
       if (
         delivered === "autosend"
@@ -332,10 +326,9 @@ export default function ChatInput({
     if (!canCancelRecording || !voice.cancelRecording()) return false;
     pendingCaptureSubmitModeRef.current = null;
     pendingCaptureSendModeRef.current = null;
-    updateRecordingStartMode(null);
     setRecordingCancelled(reason);
     return true;
-  }, [canCancelRecording, updateRecordingStartMode, voice.cancelRecording]);
+  }, [canCancelRecording, voice.cancelRecording]);
   const cancelVoiceRecording = useCallback(() => {
     discardVoiceRecording("user");
   }, [discardVoiceRecording]);
@@ -362,13 +355,16 @@ export default function ChatInput({
   }, [composerKey]);
   // Pressing stop and running into the length limit end a recording the same way.
   stopVoiceRecordingRef.current = (sendMode) => {
-    pendingCaptureSubmitModeRef.current = resolveVoiceSubmitModeAfterRecording(recordingStartModeRef.current, {
+    pendingCaptureSubmitModeRef.current = resolveVoiceSubmitMode({
       text: inputRef.current,
       attachmentCount: attachmentsRef.current.length,
       sendBlocked: sendBlockedRef.current,
       uploadingCount: uploadingRef.current,
     });
-    pendingCaptureSendModeRef.current = { mode: sendMode ?? nextSendModeRef.current, choice: sendModeChoiceRef.current };
+    // Like a typed send, a message into a running turn has no mode of its own.
+    pendingCaptureSendModeRef.current = agentBusyRef.current
+      ? null
+      : { mode: sendMode ?? nextSendModeRef.current, choice: sendModeChoiceRef.current };
     void voice.stopRecording();
   };
 
@@ -381,11 +377,10 @@ export default function ChatInput({
 
   useEffect(() => {
     if (voice.phase === "idle" && !activeVoiceJob) {
-      updateRecordingStartMode(null);
       pendingCaptureSubmitModeRef.current = null;
       pendingCaptureSendModeRef.current = null;
     }
-  }, [activeVoiceJob, updateRecordingStartMode, voice.phase]);
+  }, [activeVoiceJob, voice.phase]);
 
   // The microphone starting and stopping is felt, so you know it is listening without looking.
   const recording = voice.phase === "recording";
@@ -724,6 +719,20 @@ export default function ChatInput({
     }
   }, [chooseSendMode, clearComposer, composerKey, defaultSendMode, disabled, manualSendBlockedByVoiceJob, nextSendMode, onAbort, onClearVoiceJobError, onSend, uploading]);
 
+  // The transcript has joined the composer's other content: it all goes, as if Enter was pressed.
+  useEffect(() => {
+    const target = sendAfterTranscriptRef.current;
+    if (!target) return;
+    if (target !== composerKey || (voiceJob?.status === "error" && voiceJob.retryable !== true)) {
+      sendAfterTranscriptRef.current = null;
+      return;
+    }
+    // A failure that can still be retried holds the send until the retry lands.
+    if (voice.phase !== "idle" || voiceJob || disabled || uploading > 0) return;
+    sendAfterTranscriptRef.current = null;
+    handleSend();
+  }, [composerKey, disabled, handleSend, uploading, voice.phase, voiceJob]);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     const intent = classifyComposerKey(e, {
       composing: composingRef.current,
@@ -761,14 +770,6 @@ export default function ChatInput({
 
   const hasContent = input.trim().length > 0 || attachments.length > 0;
   const canSend = hasContent && uploading === 0 && !disabled && !manualSendBlockedByVoiceJob;
-  const canAutoSendNewVoiceTranscript = canAutoSendVoiceTranscript({
-    text: input,
-    attachmentCount: attachments.length,
-    sendBlocked: Boolean(disabled || onAbort),
-    uploadingCount: uploading,
-  });
-  const canAutoSendStoppedRecording =
-    recordingStartMode === "autosend" && canAutoSendNewVoiceTranscript;
   const voiceUi = deriveVoiceUiState({
     browserSupported: voice.browserSupported,
     statusAvailable: voice.status?.available === true,
@@ -785,7 +786,6 @@ export default function ChatInput({
           serverOwned: activeVoiceJob.serverOwned,
         }
       : null,
-    canAutoSendStoppedRecording,
     hasPendingRecording: hasPendingVoiceRecording,
     persistWarning: voiceJob?.persistWarning ?? null,
     recordingSeconds: voice.elapsedSeconds,
@@ -803,13 +803,6 @@ export default function ChatInput({
     }
     setRecordingCancelled(null);
     onClearVoiceJobError?.(composerKey);
-    // A composer that is only loading or reconnecting may still send; stopping checks it again.
-    updateRecordingStartMode(resolveVoiceSubmitMode({
-      text: inputRef.current,
-      attachmentCount: attachmentsRef.current.length,
-      sendBlocked: agentBusyRef.current,
-      uploadingCount: uploadingRef.current,
-    }));
     pendingCaptureSubmitModeRef.current = null;
     void voice.startRecording();
   };
@@ -849,8 +842,8 @@ export default function ChatInput({
   // Steering goes into the run already going, and a new chat picks its mode on the launch panel.
   const showAutopilotToggle = !isDraft && !onAbort;
   const finishBindings = bindSendModeMenu("voice-finish", () => stopVoiceRecordingRef.current());
-  // Holding Finish offers what holding Send does, when Finish is going to send.
-  const finishMenuEnabled = voice.phase === "recording" && canAutoSendStoppedRecording && showAutopilotToggle;
+  // Holding Finish offers what holding Send does.
+  const finishMenuEnabled = voice.phase === "recording" && showAutopilotToggle;
   const finishWithAutopilot = () => {
     closeSendModeMenu();
     chooseSendMode("autopilot");
@@ -916,7 +909,10 @@ export default function ChatInput({
             {canDiscardVoiceRecording && (
               <button
                 type="button"
-                onClick={() => onDiscardVoiceRecording?.(composerKey)}
+                onClick={() => {
+                  sendAfterTranscriptRef.current = null;
+                  onDiscardVoiceRecording?.(composerKey);
+                }}
                 aria-label="Discard the unsent voice recording"
                 className="rounded-sm font-medium underline underline-offset-2 transition-colors hover:text-error-hover focus:outline-none focus:ring-2 focus:ring-error/40"
               >
@@ -1033,10 +1029,8 @@ export default function ChatInput({
               >
                 {voice.phase !== "recording" ? (
                   <Loader2 size={16} className="animate-spin motion-reduce:animate-none" />
-                ) : canAutoSendStoppedRecording ? (
-                  <ArrowUp size={17} strokeWidth={2.25} />
                 ) : (
-                  <Check size={17} strokeWidth={2.5} />
+                  <ArrowUp size={17} strokeWidth={2.25} />
                 )}
               </button>
               {autopilotToggle}

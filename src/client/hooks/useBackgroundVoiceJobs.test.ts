@@ -90,7 +90,6 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       rememberDraftSession: vi.fn(),
       clearDraftSession: vi.fn(),
       materializeSession: vi.fn().mockResolvedValue("session-1"),
-      isSessionBusy: vi.fn(() => false),
       navigateToSession: vi.fn(),
       refreshSessions: vi.fn(),
       refreshTasks: vi.fn(),
@@ -149,7 +148,6 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     await getHarness().act(async () => { result?.clearVoiceJobError("session-1"); });
     expect(result?.getJobForComposer("session-1")).toMatchObject({ status: "error", retryable: true });
     createVoiceJobMock.mockResolvedValueOnce(voiceJobSnapshot());
-    getDraftMock.mockReturnValue({ text: "Typed while offline" });
     await getHarness().act(async () => {
       result?.retryVoiceJobUpload("session-1");
       result?.retryVoiceJobUpload("session-1");
@@ -162,8 +160,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     expect(transcribeAudioMock).not.toHaveBeenCalled();
   });
 
-  it("drops the send mode when a recording is put in the composer instead of sent", async () => {
-    getDraftMock.mockReturnValue({ text: "Already typing" });
+  it("drops the send mode when a recording is put in the composer", async () => {
     transcribeAudioMock.mockResolvedValueOnce({ text: "more words", provider: "speech-engine" });
 
     let delivered: Awaited<ReturnType<UseBackgroundVoiceJobsResult["startBackgroundVoiceJob"]>> | undefined;
@@ -171,7 +168,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       delivered = await result?.startBackgroundVoiceJob({
         composerKey: "session-1",
         audio: new Blob(["voice"], { type: "audio/wav" }),
-        submitMode: "autosend",
+        submitMode: "insert",
         sendMode: "autopilot",
       });
     });
@@ -538,7 +535,6 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
         rememberDraftSession: vi.fn(),
         clearDraftSession: vi.fn(),
         materializeSession: vi.fn().mockResolvedValue("session-1"),
-        isSessionBusy: () => false,
         navigateToSession: vi.fn(),
         refreshSessions: vi.fn(),
         refreshTasks: vi.fn(),

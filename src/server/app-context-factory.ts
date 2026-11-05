@@ -296,6 +296,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     transcriptionService: ctx.transcriptionService,
     sessionManager,
     taskStore,
+    chatDelivery: ctx,
   });
   ctx.pushNotificationService = createPushNotificationService({
     subscriptionStore: pushSubscriptionStore,

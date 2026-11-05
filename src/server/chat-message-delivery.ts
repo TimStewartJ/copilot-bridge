@@ -49,7 +49,7 @@ export interface ChatMessageDelivery {
   deliveryId?: string;
 }
 
-type ChatMessageDeliveryContext = Pick<AppContext,
+export type ChatMessageDeliveryContext = Pick<AppContext,
   "sessionManager" | "sessionMetaStore" | "globalBus" | "deferredPromptStore" | "deferredPromptRunner"
 > & Partial<Pick<AppContext, "chatMessageIdStore" | "unsentMessageStore" | "eventBusRegistry">>;
 

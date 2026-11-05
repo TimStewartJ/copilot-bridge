@@ -10,7 +10,6 @@ import {
   type VoiceJobStatusResponse,
 } from "../api";
 import { getTaskIdFromDraftComposerKey, isDraftComposerKey } from "../lib/composer-key";
-import { resolveBackgroundVoiceSubmitMode } from "../lib/background-voice-delivery";
 import { whileHoldingVoiceCapture } from "../lib/voice-capture-guard";
 import { clearOwnedVoiceJobs, replaceVoiceJob, shouldHandleDraftVoiceTarget } from "../lib/voice-job-map";
 import { mergeTranscript } from "../lib/voice-transcript";
@@ -103,7 +102,6 @@ interface UseBackgroundVoiceJobsOptions {
   rememberDraftSession: (draftComposerKey: string, sessionId: string) => void;
   clearDraftSession: (draftComposerKey: string) => void;
   materializeSession: (taskId?: string) => Promise<string>;
-  isSessionBusy: (sessionId: string) => boolean;
   navigateToSession: (sessionId: string, taskId?: string, replace?: boolean) => void;
   refreshSessions: () => void;
   refreshTasks: () => void;
@@ -144,7 +142,6 @@ export function useBackgroundVoiceJobs({
   clearDraft,
   rememberDraftSession,
   clearDraftSession,
-  isSessionBusy,
   navigateToSession,
   refreshSessions,
   refreshTasks,
@@ -170,7 +167,6 @@ export function useBackgroundVoiceJobs({
     clearDraft,
     rememberDraftSession,
     clearDraftSession,
-    isSessionBusy,
     navigateToSession,
     refreshSessions,
     refreshTasks,
@@ -190,7 +186,6 @@ export function useBackgroundVoiceJobs({
     clearDraft,
     rememberDraftSession,
     clearDraftSession,
-    isSessionBusy,
     navigateToSession,
     refreshSessions,
     refreshTasks,
@@ -767,12 +762,7 @@ export function useBackgroundVoiceJobs({
     sessionOptions,
     sendMode,
   }: StartBackgroundVoiceJobOptions): Promise<VoiceSubmitMode | null> => {
-    const effectiveSubmitMode = resolveBackgroundVoiceSubmitMode({
-      submitMode,
-      hasDraftContent: draftHasContent(optionsRef.current.getDraft(composerKey)),
-      targetBusy: !isDraftComposerKey(composerKey) && optionsRef.current.isSessionBusy(composerKey),
-    });
-    const effectiveSendMode = effectiveSubmitMode === "autosend" ? sendMode : undefined;
+    const effectiveSendMode = submitMode === "autosend" ? sendMode : undefined;
 
     // Save the audio before touching the network so a crash, reload, or failed upload can never
     // destroy the only copy of the recording.
@@ -782,7 +772,7 @@ export function useBackgroundVoiceJobs({
       persistResult = await savePendingVoiceRecording({
         composerKey,
         recordingId,
-        submitMode: effectiveSubmitMode,
+        submitMode: submitMode,
         audio: await audio.arrayBuffer(),
         mimeType: audio.type || "audio/wav",
         ...(sessionOptions ? { sessionOptions } : {}),
@@ -795,7 +785,7 @@ export function useBackgroundVoiceJobs({
     if (persistResult.reason === "conflict") {
       // An earlier recording for this composer is still unsent; refuse rather than overwrite it.
       markError(composerKey, "Kept the earlier unsent recording — retry or discard it before recording again.", {
-        submitMode: effectiveSubmitMode,
+        submitMode: submitMode,
         retryable: true,
       });
       return null;
@@ -809,13 +799,13 @@ export function useBackgroundVoiceJobs({
       delete persistWarningsRef.current[composerKey];
     }
 
-    if (effectiveSubmitMode === "insert") {
+    if (submitMode === "insert") {
       startLocalInsertJob(composerKey, audio, recordingId);
     } else {
       startServerAutoSendJob(composerKey, audio, recordingId, sessionOptions, effectiveSendMode);
     }
-    return effectiveSubmitMode;
-  }, [draftHasContent, markError, startLocalInsertJob, startServerAutoSendJob]);
+    return submitMode;
+  }, [markError, startLocalInsertJob, startServerAutoSendJob]);
 
   const retryVoiceJobUpload = useCallback((composerKey: string) => {
     const existing = jobsRef.current[composerKey];

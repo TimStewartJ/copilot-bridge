@@ -1,6 +1,7 @@
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HELM_DRAFT_COMPOSER_KEY } from "../lib/composer-key";
 import { createReactDomHarness, findAllByTag, getReactProps, waitUntilAct, type ReactDomHarness } from "../test-react-harness";
 import type { HelmConversation, HelmState } from "./helm-api";
 
@@ -105,7 +106,7 @@ vi.mock("./helm-api", async () => {
   };
 });
 
-const { default: HelmView, HELM_DRAFT_COMPOSER_KEY } = await import("./HelmView");
+const { default: HelmView } = await import("./HelmView");
 
 function helmState(overrides: Partial<HelmState>): HelmState {
   return { current: null, resumable: null, recent: [], policy: POLICY, ...overrides };
@@ -198,8 +199,14 @@ describe("HelmView", () => {
     api.createHelmConversation.mockResolvedValue(conversation({ sessionId: SESSION_B, turnCount: 0 }));
     await render();
     const audio = { size: 1 } as Blob;
-    await harness.act(() => state.chatViewProps!.onSubmitVoiceCapture({ composerKey: HELM_DRAFT_COMPOSER_KEY, audio, submitMode: "send" }));
-    expect(props.startBackgroundVoiceJob).toHaveBeenCalledWith({ composerKey: SESSION_B, audio, submitMode: "send" });
+    await harness.act(() => state.chatViewProps!.onSubmitVoiceCapture({ composerKey: HELM_DRAFT_COMPOSER_KEY, audio, submitMode: "autosend" }));
+    expect(props.startBackgroundVoiceJob).toHaveBeenCalledWith({ composerKey: SESSION_B, audio, submitMode: "autosend" });
+
+    // Joining typed text starts no conversation: sending the whole message does that.
+    api.createHelmConversation.mockClear();
+    await harness.act(() => state.chatViewProps!.onSubmitVoiceCapture({ composerKey: HELM_DRAFT_COMPOSER_KEY, audio, submitMode: "insert" }));
+    expect(api.createHelmConversation).not.toHaveBeenCalled();
+    expect(props.startBackgroundVoiceJob).toHaveBeenLastCalledWith({ composerKey: HELM_DRAFT_COMPOSER_KEY, audio, submitMode: "insert" });
   });
 
   it("offers the way back after opening fresh, and resumes it", async () => {

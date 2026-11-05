@@ -6,6 +6,9 @@ export function getDraftComposerKey(taskId?: string | null): string {
   return taskId ? `${TASK_DRAFT_PREFIX}${taskId}` : QUICK_CHAT_DRAFT_KEY;
 }
 
+/** Helm's composer before its conversation exists. */
+export const HELM_DRAFT_COMPOSER_KEY = "draft:helm";
+
 export function isDraftComposerKey(composerKey: string): boolean {
   return composerKey.startsWith(DRAFT_PREFIX);
 }

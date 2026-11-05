@@ -175,6 +175,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     transcriptionService: ctx.transcriptionService,
     sessionManager: ctx.sessionManager,
     taskStore: ctx.taskStore,
+    chatDelivery: ctx,
   });
 
   const app = express();

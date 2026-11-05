@@ -244,7 +244,7 @@ describe("ChatInput voice retry", () => {
 
     useVoiceInputMock.mockReturnValue(voiceInputState({ phase: "recording", isRecording: true }));
     await renderChatInput({ extraTool, draft: { text: "hello", attachments: [] } });
-    expect(findButtonByAriaLabel(root, "Stop recording and transcribe")).toBeDefined();
+    expect(findButtonByAriaLabel(root, "Stop recording, transcribe, and send automatically")).toBeDefined();
     expect(queryButtonByAriaLabel(root, "More tools")).toBeUndefined();
   });
 
@@ -285,7 +285,7 @@ describe("ChatInput voice retry", () => {
 
     expect(findButtonByAriaLabel(
       getHarness().dom.container,
-      "Stop recording and transcribe",
+      "Stop recording, transcribe, and send automatically",
     )).toBeDefined();
   });
 
@@ -304,7 +304,7 @@ describe("ChatInput voice retry", () => {
     expect(container.textContent).toContain("1:23");
     expect(container.textContent).not.toContain("1:23 / 5:00");
     const liveRegion = findAllByTag(container, "SPAN").find((span) => getReactProps(span)?.role === "status");
-    expect(liveRegion.textContent).toBe("Recording… stop to transcribe.");
+    expect(liveRegion.textContent).toBe("Recording… stop to send.");
 
     const [{ onMaxDurationReached }] = useVoiceInputMock.mock.calls.at(-1) as [{ onMaxDurationReached: () => void }];
     await getHarness().act(async () => {
@@ -651,7 +651,6 @@ describe("ChatInput voice retry", () => {
       ...baseVoice,
       phase: voice.phase,
       isRecording: voice.phase === "recording",
-      startRecording: vi.fn(() => { voice.phase = "recording"; }),
       stopRecording,
       cancelRecording,
     }));
@@ -659,6 +658,8 @@ describe("ChatInput voice retry", () => {
     await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Record voice input"))?.onClick?.();
     });
+    voice.phase = "recording";
+    await renderChatInput({ onSubmitVoiceCapture });
     const finish = () => findButtonByAriaLabel(getHarness().dom.container, "Stop recording, transcribe, and send automatically");
     return { voice, stopRecording, cancelRecording, finish };
   }
@@ -696,10 +697,10 @@ describe("ChatInput voice retry", () => {
   });
 
   it("forgets a hold on Finish when the recording ends under it, so the next Send is not swallowed", async () => {
+    const { voice, finish } = await startAutoSendRecording();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const onSend = vi.fn();
-      const { voice, finish } = await startAutoSendRecording();
       await getHarness().act(async () => {
         getReactProps(finish())?.onTouchStart?.({ touches: [{ clientX: 10, clientY: 20 }] });
       });
@@ -737,8 +738,6 @@ describe("ChatInput voice retry", () => {
     await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Record voice input"))?.onClick?.();
     });
-    expect(() => findButtonByAriaLabel(getHarness().dom.container, "Stop recording and transcribe")).not.toThrow();
-
     await renderChatInput({ onSubmitVoiceCapture, disabled: false });
     await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Stop recording, transcribe, and send automatically"))?.onClick?.();
@@ -754,38 +753,106 @@ describe("ChatInput voice retry", () => {
     expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ submitMode: "autosend" }));
   });
 
-  it("keeps Autopilot on when an Autopilot recording is put in the composer instead of sent", async () => {
+  /** Records in the composer the props describe, presses Finish and hands over the captured audio. */
+  async function finishRecording(props: Partial<ComponentProps<typeof ChatInput>>, contextKey = "session-1") {
     let phase: "idle" | "recording" = "idle";
     const baseVoice = useVoiceInputMock();
     useVoiceInputMock.mockImplementation(() => ({
       ...baseVoice,
       phase,
       isRecording: phase === "recording",
-      startRecording: vi.fn(() => { phase = "recording"; }),
     }));
-    const onSubmitVoiceCapture = vi.fn(async () => "insert" as const);
-    await renderChatInput({ onSubmitVoiceCapture });
-
-    await getHarness().act(async () => {
-      getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Autopilot"))?.onClick?.();
-    });
+    await renderChatInput(props);
     await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Record voice input"))?.onClick?.();
     });
+    phase = "recording";
+    await renderChatInput(props);
     await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Stop recording, transcribe, and send automatically"))?.onClick?.();
     });
     const [{ onAudioCaptured }] = useVoiceInputMock.mock.calls.at(-1) as [{
       onAudioCaptured: (capture: { audio: Blob; contextKey: string }) => Promise<void>;
     }];
-    phase = "idle";
     await getHarness().act(async () => {
-      await onAudioCaptured({ audio: new Blob(["voice"]), contextKey: "session-1" });
+      await onAudioCaptured({ audio: new Blob(["voice"]), contextKey });
     });
-    await renderChatInput({ onSubmitVoiceCapture });
+    phase = "idle";
+  }
 
-    expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ submitMode: "autosend", sendMode: "autopilot" }));
-    expect(findButtonByAriaLabel(getHarness().dom.container, "Autopilot").getAttribute("aria-pressed")).toBe("true");
+  it("sends a recording into a busy chat like a typed steering note, without a mode of its own", async () => {
+    const onSubmitVoiceCapture = vi.fn(async () => "autosend" as const);
+    await finishRecording({ onSubmitVoiceCapture, onAbort: vi.fn() });
+
+    expect(onSubmitVoiceCapture).toHaveBeenCalledWith({ composerKey: "session-1", audio: expect.any(Blob), submitMode: "autosend" });
+  });
+
+  it("sends typed text and its transcript together once the transcript has landed, and only then", async () => {
+    const onSend = vi.fn();
+    const onSubmitVoiceCapture = vi.fn(async () => "insert" as const);
+    const transcribing = { composerKey: "session-1", status: "transcribing", submitMode: "insert" } as const;
+    const typed = { onSend, onSubmitVoiceCapture, draft: { text: "Look at this", attachments: [] } };
+    await finishRecording(typed);
+    expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ submitMode: "insert" }));
+
+    await renderChatInput({ ...typed, voiceJob: transcribing });
+    expect(onSend).not.toHaveBeenCalled();
+
+    // A failure that can be retried holds the send; the retry's transcript releases it.
+    const failed = { composerKey: "session-1", status: "error", submitMode: "insert", error: "Offline", retryable: true } as const;
+    await renderChatInput({ ...typed, voiceJob: failed });
+    expect(onSend).not.toHaveBeenCalled();
+
+    const landed = { ...typed, voiceJob: null, draft: { text: "Look at this and tell me", attachments: [] } };
+    await renderChatInput({ ...landed, disabled: true });
+    expect(onSend).not.toHaveBeenCalled();
+    await renderChatInput(landed);
+    await renderChatInput(landed);
+    expect(onSend).toHaveBeenCalledExactlyOnceWith("Look at this and tell me", undefined, "interactive");
+  });
+
+  it.each([
+    ["the recording is discarded", async (props: Partial<ComponentProps<typeof ChatInput>>) => {
+      await renderChatInput({
+        ...props,
+        voiceJob: { composerKey: "session-1", status: "error", submitMode: "insert", error: "Offline", retryable: true },
+        onRetryVoiceJobUpload: vi.fn(),
+        onDiscardVoiceRecording: vi.fn(),
+      });
+      await getHarness().act(async () => {
+        getReactProps(findButtonByText(getHarness().dom.container, "Discard"))?.onClick?.();
+      });
+    }],
+    ["the transcript cannot be recovered", async (props: Partial<ComponentProps<typeof ChatInput>>) => {
+      await renderChatInput({
+        ...props,
+        voiceJob: { composerKey: "session-1", status: "error", submitMode: "insert", error: "Gone" },
+      });
+    }],
+  ])("leaves the typed text alone when %s", async (_name, fail) => {
+    const onSend = vi.fn();
+    const props = { onSend, onSubmitVoiceCapture: vi.fn(async () => "insert" as const), draft: { text: "Typed", attachments: [] } };
+    await finishRecording(props);
+    await renderChatInput({ ...props, voiceJob: { composerKey: "session-1", status: "transcribing", submitMode: "insert" } });
+
+    await fail(props);
+    await renderChatInput({ ...props, voiceJob: null });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect((findTextarea(getHarness().dom.container) as HTMLTextAreaElement).value).toBe("Typed");
+  });
+
+  it("does not send the open chat's text when Finish ends a recording made in another chat", async () => {
+    const onSend = vi.fn();
+    const onSubmitVoiceCapture = vi.fn(async () => "insert" as const);
+    await finishRecording(
+      { onSend, onSubmitVoiceCapture, draft: { text: "For this chat", attachments: [] } },
+      "other-session",
+    );
+    await renderChatInput({ onSend, onSubmitVoiceCapture, draft: { text: "For this chat", attachments: [] } });
+
+    expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ composerKey: "other-session", submitMode: "insert" }));
+    expect(onSend).not.toHaveBeenCalled();
   });
 
   it("keeps a newer Autopilot choice made while an earlier recording was still being handed off", async () => {
@@ -809,6 +876,7 @@ describe("ChatInput voice retry", () => {
     await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Record voice input"))?.onClick?.();
     });
+    await renderChatInput({ onSubmitVoiceCapture });
     await getHarness().act(async () => {
       getReactProps(findButtonByAriaLabel(getHarness().dom.container, "Stop recording, transcribe, and send automatically"))?.onClick?.();
     });

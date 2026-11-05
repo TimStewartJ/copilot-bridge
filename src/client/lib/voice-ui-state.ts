@@ -20,7 +20,6 @@ export interface VoiceUiStateContext {
   recorderPhase: VoiceRecorderPhase;
   isCheckingStatus: boolean;
   activeVoiceJob: VoiceUiJobState | null;
-  canAutoSendStoppedRecording: boolean;
   /** An unsent recording is still stored for this composer and must be retried or discarded. */
   hasPendingRecording?: boolean;
   /** Set when the recording could not be written to durable client storage. */
@@ -75,7 +74,6 @@ export function deriveVoiceUiState({
   recorderPhase,
   isCheckingStatus,
   activeVoiceJob,
-  canAutoSendStoppedRecording,
   hasPendingRecording = false,
   persistWarning = null,
   recordingSeconds,
@@ -144,7 +142,7 @@ export function deriveVoiceUiState({
     message = "Sending…";
     tone = "accent";
   } else if (activeVoiceJob?.status === "transcribing") {
-    message = "Transcribing…";
+    message = "Transcribing… stay here.";
     tone = "accent";
   } else if (isFinishing) {
     message = "Finishing…";
@@ -159,12 +157,10 @@ export function deriveVoiceUiState({
       message = "Can't hear anything. Check your microphone.";
       silenceNotice = "Can't hear you";
     } else if (secondsLeft <= LIMIT_NOTICE_SECONDS) {
-      message = `Recording… stops and ${canAutoSendStoppedRecording ? "sends" : "transcribes"} at ${limit}.`;
-      limitNotice = `${canAutoSendStoppedRecording ? "Sends" : "Transcribes"} at ${limit}`;
+      message = `Recording… stops and sends at ${limit}.`;
+      limitNotice = `Sends at ${limit}`;
     } else {
-      message = canAutoSendStoppedRecording
-        ? "Recording… stop to send."
-        : "Recording… stop to transcribe.";
+      message = "Recording… stop to send.";
     }
     if (recordingSeconds !== undefined) {
       recordingClock = formatClock(recordingSeconds);
@@ -200,9 +196,7 @@ export function deriveVoiceUiState({
   } else if (isStarting) {
     buttonTitle = "Starting microphone";
   } else if (isRecording) {
-    buttonTitle = canAutoSendStoppedRecording
-      ? "Stop recording, transcribe, and send automatically"
-      : "Stop recording and transcribe";
+    buttonTitle = "Stop recording, transcribe, and send automatically";
   } else if (hasPendingRecording) {
     buttonTitle = "Retry or discard the unsent voice recording first";
   } else if (statusError) {

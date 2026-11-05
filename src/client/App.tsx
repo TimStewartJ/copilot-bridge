@@ -52,7 +52,7 @@ import {
   type DraftLaunchOptions,
 } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
-import { getComposerKeyFromPathname, getDraftComposerKey } from "./lib/composer-key";
+import { getComposerKeyFromPathname, getDraftComposerKey, HELM_DRAFT_COMPOSER_KEY } from "./lib/composer-key";
 import { looksUntouched } from "./lib/untouched-task";
 import { getRememberedDashboardPath, isDashboardRoutePath } from "./lib/dashboard-routes";
 import { haptic } from "./lib/haptics";
@@ -144,7 +144,6 @@ import { DS, cx } from "./design/tokens";
 import { useToast } from "./useToast";
 import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
 
-const SESSION_BUSY_SIGNAL_GRACE_MS = 10_000;
 
 interface StartPromptSessionOptions {
   navigateOnError?: boolean;
@@ -280,7 +279,6 @@ function AppShell() {
   // Incremented per-session when an external source (e.g. schedule) starts work
   const [sessionBusySignals, setSessionBusySignals] = useState<Record<string, number>>({});
   const [sessionHistorySignals, setSessionHistorySignals] = useState<Record<string, number>>({});
-  const sessionBusyHintExpiresAtRef = useRef<Record<string, number>>({});
 
   // Settings query (shared with useTheme, SettingsView, etc.)
   const { data: settings, isLoading: settingsLoading } = useSettingsQuery();
@@ -544,15 +542,10 @@ function AppShell() {
   }, [queryClient, sessions]);
   const bumpSessionBusySignal = useCallback((sessionId?: string) => {
     if (!sessionId) return;
-    sessionBusyHintExpiresAtRef.current[sessionId] = Date.now() + SESSION_BUSY_SIGNAL_GRACE_MS;
     setSessionBusySignals((prev) => ({
       ...prev,
       [sessionId]: (prev[sessionId] ?? 0) + 1,
     }));
-  }, []);
-  const clearSessionBusyHint = useCallback((sessionId?: string) => {
-    if (!sessionId) return;
-    delete sessionBusyHintExpiresAtRef.current[sessionId];
   }, []);
   const bumpSessionHistorySignal = useCallback((sessionId?: string) => {
     if (!sessionId) return;
@@ -567,7 +560,6 @@ function AppShell() {
       queries: eventQueries,
       isHelmSession: (sessionId) => helmSessionIdsRef.current.has(sessionId),
       onBusy: bumpSessionBusySignal,
-      onIdle: clearSessionBusyHint,
       onArchived: trackArchiveTransitions,
       onHistoryTruncated: bumpSessionHistorySignal,
     })) return;
@@ -621,7 +613,7 @@ function AppShell() {
         fetchReadState().then((state) => applyServerStateRef.current(state)).catch(() => undefined);
         break;
     }
-  }, [queryClient, bumpSessionBusySignal, bumpSessionHistorySignal, clearSessionBusyHint, trackArchiveTransitions, eventQueries, refetchRestartStatus, taskChangeInvalidator]));
+  }, [queryClient, bumpSessionBusySignal, bumpSessionHistorySignal, trackArchiveTransitions, eventQueries, refetchRestartStatus, taskChangeInvalidator]));
   const restarted = restartNotice?.kind === "restarted";
   useEffect(() => {
     if (!restarted) return;
@@ -836,14 +828,11 @@ function AppShell() {
   }, [addOptimisticSession, bumpSessionBusySignal, linkOptimisticTaskSession, queryClient]);
 
   const handleVoiceSessionSettled = useCallback((settled: VoiceSessionSettled) => {
-    if (settled.status !== "done") {
-      clearSessionBusyHint(settled.sessionId);
-    }
     void invalidateSessions();
     if (settled.taskId) {
       void invalidateTasks();
     }
-  }, [clearSessionBusyHint, invalidateSessions, invalidateTasks]);
+  }, [invalidateSessions, invalidateTasks]);
 
   // Sessions not linked to any task
   const globalSessions = useMemo(() => {
@@ -1060,9 +1049,8 @@ function AppShell() {
     markRead(sessionId);
   }, [addOptimisticSession, bumpSessionBusySignal, markRead]);
   const clearPendingPromptSession = useCallback((sessionId: string) => {
-    clearSessionBusyHint(sessionId);
     patchSessionInCache(sessionId, { runState: "idle", intentText: null });
-  }, [clearSessionBusyHint, patchSessionInCache]);
+  }, [patchSessionInCache]);
 
   const cleanupRejectedFirstSendSession = useCallback((sessionId: string, taskId?: string) =>
     cleanupFailedFirstSendSession({
@@ -1127,17 +1115,10 @@ function AppShell() {
     return newSessionId;
   }, [cleanupRejectedFirstSendSession, materializeSession, navigate, restoreDraft]);
 
-  const isSessionBusy = useCallback((sessionId: string) => {
-    const busyHintExpiresAt = sessionBusyHintExpiresAtRef.current[sessionId];
-    if (busyHintExpiresAt && busyHintExpiresAt > Date.now()) {
-      return true;
-    }
-    if (busyHintExpiresAt) {
-      delete sessionBusyHintExpiresAtRef.current[sessionId];
-    }
-    return sessions.some((session) => session.sessionId === sessionId && isSessionActive(session));
-  }, [sessions]);
-
+  // Helm's route names no chat, so a recording's recovery has to be told whose composer is on screen.
+  const voiceComposerKey = helmTalkVisible
+    ? helmStateQuery.data?.current?.sessionId ?? HELM_DRAFT_COMPOSER_KEY
+    : activeComposerKey;
   const {
     getJobForComposer,
     startBackgroundVoiceJob,
@@ -1147,7 +1128,7 @@ function AppShell() {
     discardVoiceRecording,
     migrateVoiceRecording,
   } = useBackgroundVoiceJobs({
-    activeComposerKey,
+    activeComposerKey: voiceComposerKey,
     getDraft,
     setDraft,
     setDraftImmediate,
@@ -1155,7 +1136,6 @@ function AppShell() {
     rememberDraftSession,
     clearDraftSession,
     materializeSession,
-    isSessionBusy,
     navigateToSession,
     refreshSessions: invalidateSessions,
     refreshTasks: () => {

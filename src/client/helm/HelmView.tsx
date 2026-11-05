@@ -28,6 +28,7 @@ import { sendMaterializedFirstPrompt } from "../first-send-session-cleanup";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import type { UseBackgroundVoiceJobsResult, VoiceBackgroundJob } from "../hooks/useBackgroundVoiceJobs";
+import { HELM_DRAFT_COMPOSER_KEY } from "../lib/composer-key";
 import type { VoiceCaptureSubmission } from "../lib/voice-submit-mode";
 import { timeAgo } from "../time";
 import type { Draft } from "../useDrafts";
@@ -52,7 +53,6 @@ import { DS, cx } from "../design/tokens";
 import { IconButton, StatusIcon } from "../design/primitives";
 import Sheet from "../design/Sheet";
 
-export const HELM_DRAFT_COMPOSER_KEY = "draft:helm";
 
 const SUGGESTIONS = [
   "What needs me right now?",
@@ -445,6 +445,8 @@ export default function HelmView({
 
   /** A recording made before any conversation exists still belongs to Helm, not to a new quick chat. */
   const handleSubmitVoiceCapture = useCallback(async (capture: VoiceCaptureSubmission) => {
+    // A transcript headed for the composer stays with what is there; sending that starts the conversation.
+    if (capture.submitMode === "insert") return startBackgroundVoiceJob(capture);
     const target = await ensureConversation();
     return startBackgroundVoiceJob({ ...capture, composerKey: target });
   }, [ensureConversation, startBackgroundVoiceJob]);

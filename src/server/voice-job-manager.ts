@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { copyFile, readdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isBridgeRestartingError } from "./backend-availability.js";
+import { sendChatMessage, type ChatMessageDeliveryContext } from "./chat-message-delivery.js";
 import type { SessionManager } from "./session-manager.js";
 import type { TaskStore } from "./task-store.js";
 import type { TranscriptionService } from "./transcription-service.js";
@@ -38,6 +39,7 @@ interface CreateVoiceJobManagerOptions {
   transcriptionService: TranscriptionService;
   sessionManager: SessionManager;
   taskStore: TaskStore;
+  chatDelivery: ChatMessageDeliveryContext;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -62,6 +64,7 @@ export function createVoiceJobManager({
   transcriptionService,
   sessionManager,
   taskStore,
+  chatDelivery,
 }: CreateVoiceJobManagerOptions) {
   const voiceJobsDir = join(dataDir, "voice-jobs");
   mkdirSync(voiceJobsDir, { recursive: true });
@@ -69,8 +72,10 @@ export function createVoiceJobManager({
   const processingJobRuns = new Map<string, Promise<void>>();
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const creatingJobIds = new Set<string>();
-  const SEND_ACCEPTANCE_TIMEOUT_MS = 15_000;
-  const SEND_ACCEPTANCE_POLL_MS = 250;
+  const SEND_REFUSED_RETRY_MS = 30_000;
+  const SEND_REFUSED_POLL_MS = 500;
+  /** Refused before reaching the agent, for a moment: the turn is starting, or just ended. */
+  const SEND_REFUSED_FOR_NOW = /still starting|still reconnecting|not accepting steering|not busy|ended before steering|busy processing another message/i;
   const RESTART_RETRY_DELAY_MS = 30_000;
   let maintenanceRun: Promise<VoiceJobMaintenanceResult> | undefined;
   let maintenanceTimer: ReturnType<typeof setInterval> | undefined;
@@ -273,44 +278,16 @@ export function createVoiceJobManager({
       return;
     }
 
-    if (sessionManager.isSessionBusy(targetSessionId)) {
-      if (isResumingSend) {
-        try {
-          await waitForTranscriptAcceptance(targetSessionId, transcript, job.updatedAt);
-          await markJobDone(job.id, transcript);
-        } catch (error) {
-          await markJobError(
-            job.id,
-            `Auto-send failed. Transcript was saved to the composer instead. (${error instanceof Error ? error.message : String(error)})`,
-            transcript,
-          );
-        }
-        return;
-      }
-
-      await markJobError(
-        job.id,
-        "Auto-send failed. Transcript was saved to the composer instead. (Session is busy, please wait)",
+    if (!isResumingSend) {
+      store.updateVoiceJob(job.id, {
+        status: "sending",
         transcript,
-      );
-      return;
+        error: undefined,
+      });
     }
 
-    const sendingJob = isResumingSend
-      ? job
-      : (store.updateVoiceJob(job.id, {
-          status: "sending",
-          transcript,
-          error: undefined,
-        }) ?? job);
-
     try {
-      if (job.mode) {
-        sessionManager.startWork(targetSessionId, transcript, undefined, { mode: job.mode });
-      } else {
-        sessionManager.startWork(targetSessionId, transcript);
-      }
-      await waitForTranscriptAcceptance(targetSessionId, transcript, sendingJob.updatedAt);
+      await sendTranscript(targetSessionId, transcript, job);
       // A dictated message is Tim's own words, like a typed one: it counts toward task states.
       try { taskStore.recordUserMessage?.(targetSessionId); } catch (error) { console.warn("[voice] Could not record a sent message:", error); }
       await markJobDone(job.id, transcript);
@@ -357,24 +334,30 @@ export function createVoiceJobManager({
     return latestTimestamp >= notBeforeTimestamp - 2_000;
   }
 
-  async function waitForTranscriptAcceptance(
-    sessionId: string,
-    transcript: string,
-    notBefore: string,
-  ): Promise<void> {
-    const deadline = Date.now() + SEND_ACCEPTANCE_TIMEOUT_MS;
-
-    while (Date.now() < deadline) {
-      if (await sessionHasAcceptedTranscript(sessionId, transcript, notBefore)) {
+  /**
+   * Sends the transcript the way a typed message goes: into a busy chat as steering, past an open
+   * question, kept in the chat as not sent if its run never delivers it. Nothing here queues it,
+   * since a queued voice message would show nowhere; a chat that stays closed fails the job, which
+   * puts the transcript back in the composer.
+   */
+  async function sendTranscript(sessionId: string, transcript: string, job: StoredVoiceJob): Promise<void> {
+    const deadline = Date.now() + SEND_REFUSED_RETRY_MS;
+    for (;;) {
+      try {
+        await sendChatMessage(chatDelivery, sessionId, transcript, {
+          clientMessageId: `voice-job-${job.id}`,
+          keepUndelivered: true,
+          skipOpenQuestions: true,
+          queue: "none",
+          ...(job.mode ? { mode: job.mode } : {}),
+        });
         return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!SEND_REFUSED_FOR_NOW.test(message) || Date.now() >= deadline || shuttingDown) throw error;
+        await new Promise((resolve) => setTimeout(resolve, SEND_REFUSED_POLL_MS));
       }
-      if (!sessionManager.isSessionBusy(sessionId)) {
-        throw new Error("Message was not accepted by the session.");
-      }
-      await new Promise((resolve) => setTimeout(resolve, SEND_ACCEPTANCE_POLL_MS));
     }
-
-    throw new Error("Timed out waiting for the session to accept the message.");
   }
 
   async function createTargetSession(

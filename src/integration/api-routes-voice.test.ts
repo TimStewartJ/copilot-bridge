@@ -257,7 +257,10 @@ describe("Voice job routes", () => {
     await ctx.voiceJobManager.shutdown();
 
     expect(transcribe).toHaveBeenCalledOnce();
-    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Hello bridge");
+    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Hello bridge", undefined, expect.objectContaining({
+      clientMessageId: `voice-job-${res.body.id}`,
+      keepUndelivered: true,
+    }));
 
     const jobRes = await request(app).get(`/api/voice-jobs/${res.body.id}`);
     expect(jobRes.status).toBe(200);
@@ -307,7 +310,7 @@ describe("Voice job routes", () => {
     await ctx.voiceJobManager.shutdown();
 
     expect(transcribe).toHaveBeenCalledOnce();
-    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Keep going", undefined, { mode: "autopilot" });
+    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Keep going", undefined, expect.objectContaining({ mode: "autopilot" }));
   });
 
   it("POST /api/voice-jobs accepts draft-session autosend while restart is active in persisted state", async () => {

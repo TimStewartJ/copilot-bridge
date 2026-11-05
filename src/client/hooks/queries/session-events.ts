@@ -49,7 +49,6 @@ export interface SessionEventEffects {
   queries: Pick<QueryClient, "invalidateQueries">;
   isHelmSession(sessionId: string): boolean;
   onBusy(sessionId?: string): void;
-  onIdle(sessionId?: string): void;
   onArchived(sessionIds: readonly string[], archived: boolean): void;
   onHistoryTruncated(sessionId?: string): void;
 }
@@ -86,7 +85,6 @@ export function projectSessionEvent(
       patch({ agentMode: event.agentMode === "autopilot" ? "autopilot" : null });
       break;
     case "session:idle":
-      effects.onIdle(sessionId);
       patch({ runState: "idle", intentText: null });
       if (isHelmSession) refetch(helmStateQueryKey);
       refetch(activeSessionsKey, queryKeys.dashboard);

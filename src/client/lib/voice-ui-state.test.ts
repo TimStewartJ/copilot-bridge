@@ -11,7 +11,6 @@ const baseState = {
   recorderPhase: "idle" as const,
   isCheckingStatus: false,
   activeVoiceJob: null,
-  canAutoSendStoppedRecording: false,
 };
 
 describe("deriveVoiceUiState", () => {
@@ -24,12 +23,8 @@ describe("deriveVoiceUiState", () => {
       buttonState: "spinner", buttonDisabled: true, message: "Finishing…", tone: "accent",
     });
 
-    // recording — message differs by auto-send eligibility
-    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording", canAutoSendStoppedRecording: true })).toMatchObject({
+    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording" })).toMatchObject({
       buttonState: "stop", buttonDisabled: false, message: "Recording… stop to send.", tone: "accent",
-    });
-    expect(deriveVoiceUiState({ ...baseState, recorderPhase: "recording", canAutoSendStoppedRecording: false })).toMatchObject({
-      message: "Recording… stop to transcribe.",
     });
 
     // server job phases
@@ -55,7 +50,7 @@ describe("deriveVoiceUiState", () => {
   it("falls back to local transcription copy for insert mode and surfaces errors ahead of idle", () => {
     // insert mode → local transcription label
     expect(deriveVoiceUiState({ ...baseState, activeVoiceJob: { status: "transcribing", submitMode: "insert" } })).toMatchObject({
-      message: "Transcribing…", tone: "accent",
+      message: "Transcribing… stay here.", tone: "accent",
     });
 
     // job error takes priority over status error
@@ -113,14 +108,14 @@ describe("deriveVoiceUiState", () => {
   it("shows the recording clock against the limit and says what happens there as it nears", () => {
     const recording = { ...baseState, recorderPhase: "recording" as const, maxRecordingSeconds: 300 };
 
-    expect(deriveVoiceUiState({ ...recording, recordingSeconds: 83, canAutoSendStoppedRecording: true })).toMatchObject({
+    expect(deriveVoiceUiState({ ...recording, recordingSeconds: 83 })).toMatchObject({
       message: "Recording… stop to send.", detail: "1:23 / 5:00", recordingClock: "1:23", limitNotice: null,
     });
-    expect(deriveVoiceUiState({ ...recording, recordingSeconds: 270, canAutoSendStoppedRecording: true })).toMatchObject({
+    expect(deriveVoiceUiState({ ...recording, recordingSeconds: 270 })).toMatchObject({
       message: "Recording… stops and sends at 5:00.", detail: "4:30 / 5:00", recordingClock: "4:30", limitNotice: "Sends at 5:00",
     });
     expect(deriveVoiceUiState({ ...recording, recordingSeconds: 299 })).toMatchObject({
-      message: "Recording… stops and transcribes at 5:00.", detail: "4:59 / 5:00", limitNotice: "Transcribes at 5:00",
+      message: "Recording… stops and sends at 5:00.", detail: "4:59 / 5:00", limitNotice: "Sends at 5:00",
     });
 
     // Without a known limit the clock still runs; without a clock there is nothing to show.

@@ -17,26 +17,22 @@ export type SubmitVoiceCapture = (capture: VoiceCaptureSubmission) => Promise<Vo
 export interface VoiceSubmitModeContext {
   text: string;
   attachmentCount: number;
+  /** The composer cannot send yet, such as while the chat loads. */
   sendBlocked?: boolean;
   uploadingCount?: number;
 }
 
-export function canAutoSendVoiceTranscript({
+/**
+ * How a finished recording reaches the agent; it always does. Alone in a ready composer it goes as
+ * a server job, safe to leave. Otherwise it joins the composer first and is sent from there.
+ */
+export function resolveVoiceSubmitMode({
   text,
   attachmentCount,
   sendBlocked = false,
   uploadingCount = 0,
-}: VoiceSubmitModeContext): boolean {
-  return text.trim().length === 0 && attachmentCount === 0 && !sendBlocked && uploadingCount === 0;
-}
-
-export function resolveVoiceSubmitMode(context: VoiceSubmitModeContext): VoiceSubmitMode {
-  return canAutoSendVoiceTranscript(context) ? "autosend" : "insert";
-}
-
-export function resolveVoiceSubmitModeAfterRecording(
-  startedMode: VoiceSubmitMode | null,
-  context: VoiceSubmitModeContext,
-): VoiceSubmitMode {
-  return startedMode === "autosend" && canAutoSendVoiceTranscript(context) ? "autosend" : "insert";
+}: VoiceSubmitModeContext): VoiceSubmitMode {
+  return text.trim().length === 0 && attachmentCount === 0 && !sendBlocked && uploadingCount === 0
+    ? "autosend"
+    : "insert";
 }
