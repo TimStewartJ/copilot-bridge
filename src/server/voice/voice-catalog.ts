@@ -2,6 +2,7 @@
 import { join } from "node:path";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { HELM_SETTINGS_DEFAULTS } from "../../shared/helm-settings.js";
+import { DEFAULT_SPEECH_MODEL_ID, type SpeechModelId } from "../../shared/chat-mic.js";
 
 /** Bump when the on-disk layout or pinned asset set changes incompatibly. */
 export const VOICE_ENGINE_LAYOUT_VERSION = 1;
@@ -113,6 +114,8 @@ export const VOICE_ENGINE_PACKAGES: VoiceNpmPackageAsset[] = [
   },
 ];
 
+const UNIFIED_ENGLISH_DIR = "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming";
+
 export const VOICE_MODELS: VoiceModelAsset[] = [
   {
     kind: "model",
@@ -136,17 +139,17 @@ export const VOICE_MODELS: VoiceModelAsset[] = [
   },
   {
     kind: "model",
-    id: "parakeet-v3",
-    label: "Parakeet TDT 0.6B v3 speech recognition",
-    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
-    sha256: "5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf",
-    sizeBytes: 487_170_055,
+    id: "parakeet-unified-en",
+    label: "Parakeet Unified English speech recognition",
+    url: `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${UNIFIED_ENGLISH_DIR}.tar.bz2`,
+    sha256: "99f63605b3a85a54c250c0869670a687b7d6598a47bf2421515e1f839a76e150",
+    sizeBytes: 501_350_460,
     archive: "tar.bz2",
     verifyFiles: [
-      "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx",
-      "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/decoder.int8.onnx",
-      "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/joiner.int8.onnx",
-      "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/tokens.txt",
+      `${UNIFIED_ENGLISH_DIR}/encoder.int8.onnx`,
+      `${UNIFIED_ENGLISH_DIR}/decoder.int8.onnx`,
+      `${UNIFIED_ENGLISH_DIR}/joiner.int8.onnx`,
+      `${UNIFIED_ENGLISH_DIR}/tokens.txt`,
     ],
   },
   {
@@ -173,6 +176,50 @@ export const VOICE_MODEL_FILES = {
   asrDir: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
   ttsDir: "kokoro-multi-lang-v1_0",
 } as const;
+
+/** Models installed only when someone chooses them, so they never join the required set. */
+export const OPTIONAL_VOICE_MODELS: VoiceModelAsset[] = [
+  {
+    kind: "model",
+    id: "parakeet-v3",
+    label: "Parakeet TDT 0.6B v3 speech recognition",
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
+    sha256: "5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf",
+    sizeBytes: 487_170_055,
+    archive: "tar.bz2",
+    verifyFiles: [
+      "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx",
+      "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/decoder.int8.onnx",
+      "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/joiner.int8.onnx",
+      "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/tokens.txt",
+    ],
+  },
+];
+
+/** Every recognizer that can be chosen. A setup needs one of them on disk to run. */
+export const SPEECH_MODEL_ASSETS: VoiceModelAsset[] = [
+  VOICE_MODELS.find((asset) => asset.id === DEFAULT_SPEECH_MODEL_ID)!,
+  ...OPTIONAL_VOICE_MODELS,
+];
+
+export interface SpeechModel {
+  id: SpeechModelId;
+  /** The model's name in the transcription status. */
+  label: string;
+  /** Where its files are, under the models directory. */
+  dir: string;
+  /** Longest piece of speech the recognizer sees at once. The window was tested with this model. */
+  maxChunkSeconds: number;
+}
+
+export const SPEECH_MODELS: readonly SpeechModel[] = [
+  { id: "parakeet-v3", label: "Parakeet v3 (local)", dir: VOICE_MODEL_FILES.asrDir, maxChunkSeconds: 20 },
+  { id: "parakeet-unified-en", label: "Parakeet Unified English (local)", dir: UNIFIED_ENGLISH_DIR, maxChunkSeconds: 12 },
+];
+
+export function resolveSpeechModel(id: SpeechModelId = DEFAULT_SPEECH_MODEL_ID): SpeechModel {
+  return SPEECH_MODELS.find((model) => model.id === id)!;
+}
 
 export function currentVoiceTarget(platform: NodeJS.Platform = process.platform, arch: string = process.arch): string {
   return `${platform}-${arch}`;

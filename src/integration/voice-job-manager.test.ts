@@ -15,6 +15,7 @@ import {
   VOICE_JOB_ORPHAN_GRACE_MS,
 } from "../server/voice-job-manager.js";
 import { createVoiceJobStore } from "../server/voice-job-store.js";
+import type { ChatMicSettings } from "../shared/chat-mic.js";
 
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
@@ -25,7 +26,9 @@ function createRestartRuntimePaths() {
   return makeTestRuntimePaths("voice-jobs");
 }
 
-function createManagerHarness(transcribe = vi.fn()) {
+const CLEAN_COVERAGE = { largestGapSeconds: 0.4, gapStartSeconds: 0 };
+
+function createManagerHarness(transcribe = vi.fn(), chatMic?: ChatMicSettings) {
   const runtimePaths = createRestartRuntimePaths();
   const db = openMemoryDatabase();
   const store = createVoiceJobStore(db);
@@ -37,6 +40,7 @@ function createManagerHarness(transcribe = vi.fn()) {
     steerSession: vi.fn(async () => {}),
     readMessagesFromDisk: vi.fn(async () => ({ messages: [], total: 0, hasMore: false })),
   } as any;
+  const settingsStore = { getSettings: () => ({ chatMic }) } as any;
   const manager = createVoiceJobManager({
     dataDir: runtimePaths.dataDir,
     store,
@@ -52,8 +56,9 @@ function createManagerHarness(transcribe = vi.fn()) {
     sessionManager,
     taskStore: createTaskStore(db, globalBus, { runtimePaths }),
     chatDelivery: { sessionManager, sessionMetaStore: createSessionMetaStore(db), globalBus } as any,
+    settingsStore,
   });
-  return { runtimePaths, store, sessionManager, manager };
+  return { runtimePaths, store, sessionManager, manager, settingsStore };
 }
 
 beforeEach(async () => {
@@ -137,7 +142,7 @@ describe("voice job restart gating", () => {
     });
 
     it("keeps a sent recording until the audio retention window passes", async () => {
-      const transcribe = vi.fn().mockResolvedValue({ text: "hello bridge", provider: "speech-engine" });
+      const transcribe = vi.fn().mockResolvedValue({ text: "hello bridge", provider: "speech-engine", coverage: CLEAN_COVERAGE });
       const { runtimePaths, store, manager } = createManagerHarness(transcribe);
       const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
       writeFileSync(sourceFilePath, "test-audio");
@@ -223,7 +228,7 @@ describe("voice job restart gating", () => {
   });
 
   it("starts an Autopilot recording's run in Autopilot, once, including after a restart", async () => {
-    const transcribe = vi.fn().mockResolvedValue({ text: "fix the flaky tests", provider: "speech-engine" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "fix the flaky tests", provider: "speech-engine", coverage: CLEAN_COVERAGE });
     const { runtimePaths, store, sessionManager, manager } = createManagerHarness(transcribe);
     const sourceFilePath = join(runtimePaths.dataDir, "input.wav");
     writeFileSync(sourceFilePath, "test-audio");
@@ -249,7 +254,7 @@ describe("voice job restart gating", () => {
     mkdirSync(dirname(audioPath), { recursive: true });
     writeFileSync(audioPath, "test-audio");
     store.createVoiceJob({ id, composerKey: "existing-session", targetSessionId: "existing-session", audioPath, mode: "autopilot" });
-    store.updateVoiceJob(id, { transcript: "fix the flaky tests" });
+    store.updateVoiceJob(id, { transcript: "fix the flaky tests", speechGapSeconds: 0.4 });
     sessionManager.startWork.mockClear();
 
     manager.resumePendingJobs();
@@ -276,7 +281,7 @@ describe("voice job restart gating", () => {
   }
 
   it("sends a transcript into a busy chat as steering that sets open questions aside", async () => {
-    const transcribe = vi.fn().mockResolvedValue({ text: "skip that, do this", provider: "speech-engine" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "skip that, do this", provider: "speech-engine", coverage: CLEAN_COVERAGE });
     const harness = createManagerHarness(transcribe);
     harness.sessionManager.isSessionBusy.mockReturnValue(true);
 
@@ -295,7 +300,7 @@ describe("voice job restart gating", () => {
   });
 
   it("tries again while a busy chat refuses for a moment, and gives the transcript back when it stays closed", async () => {
-    const transcribe = vi.fn().mockResolvedValue({ text: "do this next", provider: "speech-engine" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "do this next", provider: "speech-engine", coverage: CLEAN_COVERAGE });
     const harness = createManagerHarness(transcribe);
     harness.sessionManager.isSessionBusy.mockReturnValue(true);
     harness.sessionManager.steerSession.mockRejectedValueOnce(
@@ -343,5 +348,145 @@ describe("voice job restart gating", () => {
 
     expect(store.getVoiceJob("job-restart-pending")?.status).toBe("accepted");
     await manager.shutdown();
+  });
+
+  describe("holding a dictation for review", () => {
+    async function dictate(harness: ReturnType<typeof createManagerHarness>) {
+      const sourceFilePath = join(harness.runtimePaths.dataDir, `input-${randomUUID()}.wav`);
+      writeFileSync(sourceFilePath, "test-audio");
+      return harness.manager.acceptVoiceJob({
+        composerKey: "existing-session",
+        targetSessionId: "existing-session",
+        sourceFilePath,
+        originalFilename: "recording.wav",
+      });
+    }
+
+    it.each([
+      {
+        name: "a speech gap",
+        coverage: { largestGapSeconds: 2.5, gapStartSeconds: 7 },
+        reason: "coverage",
+      },
+      {
+        name: "a transcript whose coverage could not be measured",
+        coverage: null,
+        reason: "unchecked",
+      },
+    ])("holds $name and sends nothing", async ({ coverage, reason }) => {
+      const transcribe = vi.fn().mockResolvedValue({ text: "hello bridge", provider: "speech-engine", coverage });
+      const harness = createManagerHarness(transcribe);
+
+      const accepted = await dictate(harness);
+      await vi.waitFor(() => expect(harness.store.getVoiceJob(accepted.id)?.status).toBe("held"));
+
+      expect(harness.sessionManager.startWork).not.toHaveBeenCalled();
+      expect(harness.store.getVoiceJob(accepted.id)).toMatchObject({ transcript: "hello bridge", reviewReason: reason });
+      await harness.manager.shutdown();
+    });
+
+    it("lists running and held dictations for a client catching up, until the held one's chat is deleted", async () => {
+      const harness = createManagerHarness();
+      for (const [id, status] of [["running", "transcribing"], ["held", "held"], ["sent", "done"], ["opened", "recovered"]] as const) {
+        harness.store.createVoiceJob({ id, composerKey: "chat", targetSessionId: "chat", audioPath: join(harness.runtimePaths.dataDir, id) });
+        harness.store.updateVoiceJob(id, { status });
+      }
+      harness.store.createVoiceJob({ id: "held-elsewhere", composerKey: "other", targetSessionId: "other", audioPath: join(harness.runtimePaths.dataDir, "elsewhere") });
+      harness.store.updateVoiceJob("held-elsewhere", { status: "held" });
+
+      expect(harness.manager.listOpenVoiceJobs().map((job) => job.id).sort()).toEqual(["held", "held-elsewhere", "running"]);
+
+      harness.manager.forgetHeldForChat("chat");
+
+      expect(harness.manager.listOpenVoiceJobs().map((job) => job.id).sort()).toEqual(["held-elsewhere", "running"]);
+      await harness.manager.shutdown();
+    });
+
+    it("still sweeps old jobs when the settings cannot be read", async () => {
+      const harness = createManagerHarness();
+      harness.settingsStore.getSettings = () => { throw new Error("settings row unreadable"); };
+
+      await expect(harness.manager.runMaintenance()).resolves.toBeDefined();
+      await harness.manager.shutdown();
+    });
+
+    it("holds a dictation into a busy chat instead of steering with it", async () => {
+      const transcribe = vi.fn().mockResolvedValue({
+        text: "skip that",
+        provider: "speech-engine",
+        coverage: { largestGapSeconds: 2.5, gapStartSeconds: 7 },
+      });
+      const harness = createManagerHarness(transcribe);
+      harness.sessionManager.isSessionBusy.mockReturnValue(true);
+
+      const accepted = await dictate(harness);
+      await vi.waitFor(() => expect(harness.store.getVoiceJob(accepted.id)?.status).toBe("held"));
+
+      expect(harness.sessionManager.steerSession).not.toHaveBeenCalled();
+      expect(harness.sessionManager.startWork).not.toHaveBeenCalled();
+      await harness.manager.shutdown();
+    });
+
+    it("sends a dictation with clean coverage", async () => {
+      const transcribe = vi.fn().mockResolvedValue({ text: "hello bridge", provider: "speech-engine", coverage: CLEAN_COVERAGE });
+      const harness = createManagerHarness(transcribe);
+      harness.sessionManager.readMessagesFromDisk.mockResolvedValue({
+        messages: [{ type: "message", role: "user", content: "hello bridge", timestamp: new Date().toISOString() }],
+        total: 1,
+        hasMore: false,
+      });
+
+      const accepted = await dictate(harness);
+      await vi.waitFor(() => expect(harness.store.getVoiceJob(accepted.id)?.status).toBe("done"));
+
+      expect(harness.sessionManager.startWork).toHaveBeenCalledOnce();
+      expect(harness.sessionManager.startWork.mock.calls[0].slice(0, 2)).toEqual(["existing-session", "hello bridge"]);
+      await harness.manager.shutdown();
+    });
+
+    it.each([
+      { name: "a saved verdict", fields: { speechGapSeconds: 2.5, reviewReason: "coverage" as const }, reason: "coverage" },
+      { name: "a transcript saved before verdicts existed", fields: {}, reason: "unchecked" },
+    ])("still holds after a restart with $name", async ({ fields, reason }) => {
+      const transcribe = vi.fn();
+      const harness = createManagerHarness(transcribe);
+      const id = randomUUID();
+      const audioPath = join(harness.runtimePaths.dataDir, "voice-jobs", id, "recording.wav");
+      mkdirSync(dirname(audioPath), { recursive: true });
+      writeFileSync(audioPath, "test-audio");
+      harness.store.createVoiceJob({ id, composerKey: "existing-session", targetSessionId: "existing-session", audioPath });
+      harness.store.updateVoiceJob(id, { transcript: "hello bridge", ...fields });
+
+      harness.manager.resumePendingJobs();
+      await harness.manager.shutdown();
+
+      expect(harness.store.getVoiceJob(id)).toMatchObject({ status: "held", transcript: "hello bridge", reviewReason: reason });
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(harness.sessionManager.startWork).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { keepHeldRecordings: false, keptAfterOpening: false },
+      { keepHeldRecordings: true, keptAfterOpening: true },
+    ])("keeps a held recording until it is opened, then for 2 days unless asked: $keepHeldRecordings", async ({ keepHeldRecordings, keptAfterOpening }) => {
+      const transcribe = vi.fn().mockResolvedValue({ text: "hello bridge", provider: "speech-engine", coverage: null });
+      const harness = createManagerHarness(transcribe, { keepHeldRecordings });
+
+      const accepted = await dictate(harness);
+      await vi.waitFor(() => expect(harness.store.getVoiceJob(accepted.id)?.status).toBe("held"));
+      const recording = harness.manager.getRecordingPath(accepted.id)!;
+      expect(existsSync(recording)).toBe(true);
+
+      const heldAt = Date.parse(harness.store.getVoiceJob(accepted.id)!.updatedAt);
+      await harness.manager.runMaintenance(heldAt + VOICE_JOB_AUDIO_RETENTION_MS + 1);
+      expect(existsSync(recording)).toBe(true);
+
+      harness.store.markRecovered(accepted.id);
+      const openedAt = Date.parse(harness.store.getVoiceJob(accepted.id)!.updatedAt);
+      await harness.manager.runMaintenance(openedAt + VOICE_JOB_AUDIO_RETENTION_MS + 1);
+
+      expect(existsSync(recording)).toBe(keptAfterOpening);
+      await harness.manager.shutdown();
+    });
   });
 });

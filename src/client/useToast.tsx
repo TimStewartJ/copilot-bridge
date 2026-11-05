@@ -166,7 +166,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               toast={toast}
               actionPending={pendingActionIds.includes(toast.id)}
               onAction={() => runAction(toast)}
-              onDismiss={() => dismissToast(toast.id)}
+              onDismiss={() => {
+                toast.onClosed?.();
+                dismissToast(toast.id);
+              }}
             />
           ))}
         </div>

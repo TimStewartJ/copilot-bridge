@@ -15,6 +15,7 @@ function installStatus(overrides: Partial<VoiceInstallStatus> = {}): VoiceInstal
     totalBytes: 100,
     remainingBytes: 0,
     assets: [],
+    speechModels: [],
     ...overrides,
   };
 }
@@ -23,7 +24,7 @@ function createEngine(result: Partial<Awaited<ReturnType<TranscriptionSpeechEngi
   const release = vi.fn();
   const engine = {
     retain: vi.fn(() => release),
-    transcribeFile: vi.fn(async () => ({ text: " Hello bridge ", audioSeconds: 2, speechSeconds: 1.5, chunks: 1, ms: 40, format: "opus" as const, bytes: 8_192, ...result })),
+    transcribeFile: vi.fn(async () => ({ text: " Hello bridge ", audioSeconds: 2, speechSeconds: 1.5, chunks: 1, ms: 40, format: "opus" as const, bytes: 8_192, coverage: { largestGapSeconds: 0.4, gapStartSeconds: 1 }, ...result })),
   };
   return { engine, release };
 }
@@ -53,7 +54,7 @@ describe("transcription service", () => {
     expect(service.getStatus()).toEqual({
       available: true,
       provider: "speech-engine",
-      label: "Parakeet v3 (local)",
+      label: "Parakeet Unified English (local)",
       maxDurationSeconds: 300,
       opusUploads: true,
     });
@@ -101,11 +102,16 @@ describe("transcription service", () => {
         { startSeconds: 0, endSeconds: 19.9, words: 43 },
         { startSeconds: 19.9, endSeconds: 23.81, words: 0 },
       ],
+      peakMemoryBytes: 950_000_000,
     });
     const logger = { log: vi.fn() };
     const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {}, logger });
 
-    await expect(service.transcribe({ filePath: "clip.ogg", label: "job abc" })).resolves.toEqual({ text: "Hello bridge", provider: "speech-engine" });
+    await expect(service.transcribe({ filePath: "clip.ogg", label: "job abc" })).resolves.toEqual({
+      text: "Hello bridge",
+      provider: "speech-engine",
+      coverage: { largestGapSeconds: 0.4, gapStartSeconds: 1 },
+    });
     expect(engine.retain).toHaveBeenCalledOnce();
     expect(engine.transcribeFile).toHaveBeenCalledWith("clip.ogg", { timeoutMs: 1_500_000 });
     expect(release).toHaveBeenCalledOnce();
@@ -116,14 +122,18 @@ describe("transcription service", () => {
     expect(diagnostic).toContain("40ms");
     expect(diagnostic).toMatch(/0-19\.9s.*43w/);
     expect(diagnostic).toMatch(/19\.9-23\.81s.*0w/);
+    expect(diagnostic).toMatch(/largest speech gap 0\.4s at 1s; peak 950 MB/);
   });
 
-  it("fails clearly when the recording has no speech and still releases the engine", async () => {
-    const { engine, release } = createEngine({ text: "  " });
-    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine, env: {} });
+  it("says speech was heard when words did not come back, and that nothing was heard otherwise", async () => {
+    const heard = createEngine({ text: "  ", speechSeconds: 4 });
+    const service = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine: heard.engine, env: {} });
+    await expect(service.transcribe({ filePath: "lost.wav" })).rejects.toThrow("Speech was heard but no words came back");
+    expect(heard.release).toHaveBeenCalledOnce();
 
-    await expect(service.transcribe({ filePath: "quiet.wav" })).rejects.toThrow("No speech was detected");
-    expect(release).toHaveBeenCalledOnce();
+    const silent = createEngine({ text: "  ", speechSeconds: 0 });
+    const quiet = createTranscriptionService({ installer: { getStatus: () => installStatus() }, engine: silent.engine, env: {} });
+    await expect(quiet.transcribe({ filePath: "quiet.wav" })).rejects.toThrow("No speech was detected");
   });
 
   it("reports in-flight transcription until it settles, including a failure", async () => {

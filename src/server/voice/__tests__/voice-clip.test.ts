@@ -1,5 +1,57 @@
 import { describe, expect, it } from "vitest";
-import { CLIP_CHUNK_PLAN, decodeWav, joinTranscripts, planSpeechChunks, WavDecodeError } from "../voice-clip.js";
+import { CLIP_CHUNK_PLAN, decodeWav, joinTranscripts, measureSpeechCoverage, planSpeechChunks, WavDecodeError } from "../voice-clip.js";
+
+describe("measureSpeechCoverage", () => {
+  const RATE = 1_000;
+  const speech = (fromSeconds: number, toSeconds: number) => ({ start: fromSeconds * RATE, end: toSeconds * RATE });
+
+  it.each([
+    {
+      name: "words all the way through",
+      segments: [speech(0, 3)],
+      tokens: [0.1, 0.4, 0.7, 1, 1.3, 1.6, 1.9, 2.2, 2.5, 2.8],
+      gap: 0.1,
+      at: 0,
+    },
+    {
+      name: "a silent pause between words, which is not missing speech",
+      segments: [speech(0, 1), speech(6, 7)],
+      tokens: [0, 0.3, 0.6, 6, 6.3, 6.6, 6.75],
+      gap: 0.1,
+      at: 0.9,
+    },
+    {
+      name: "speech with nothing recognized in the middle",
+      segments: [speech(0, 10)],
+      tokens: [0, 0.3, 7, 7.3, 7.6, 7.9, 8.2, 8.5, 8.8, 9.1, 9.4, 9.7],
+      gap: 6.4,
+      at: 0.6,
+    },
+    {
+      name: "speech lost after the last word",
+      segments: [speech(0, 8)],
+      tokens: [0, 0.3],
+      gap: 7.4,
+      at: 0.6,
+    },
+    {
+      name: "speech with no words at all",
+      segments: [speech(1, 4)],
+      tokens: [],
+      gap: 3,
+      at: 0,
+    },
+  ])("measures $name", ({ segments, tokens, gap, at }) => {
+    const total = Math.max(...segments.map((segment) => segment.end));
+    expect(measureSpeechCoverage(segments, tokens, total, RATE)).toEqual({ largestGapSeconds: gap, gapStartSeconds: at });
+  });
+
+  it("counts only the speech inside a gap when the gap spans a pause", () => {
+    const coverage = measureSpeechCoverage([speech(0, 2), speech(10, 11)], [0, 10.9], 11 * RATE, RATE);
+    expect(coverage.largestGapSeconds).toBeCloseTo(2.6, 5);
+    expect(coverage.gapStartSeconds).toBe(0.3);
+  });
+});
 
 interface WavOptions {
   format?: number;

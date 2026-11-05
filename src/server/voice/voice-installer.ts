@@ -16,6 +16,7 @@ import { createNpmClient, describeNpmError, type NpmClient } from "./voice-npm-c
 import {
   currentVoiceTarget,
   isVoiceTargetSupported,
+  SPEECH_MODEL_ASSETS,
   selectVoiceEnginePackages,
   VOICE_ENGINE_LAYOUT_VERSION,
   VOICE_MODELS,
@@ -52,6 +53,8 @@ export interface VoiceInstallStatus {
   totalBytes: number;
   remainingBytes: number;
   assets: VoiceInstallAssetStatus[];
+  /** Models installed only when chosen; they do not count toward `installed`. */
+  speechModels: VoiceInstallAssetStatus[];
 }
 
 export type ExtractArchive = (archivePath: string, destination: string, options: {
@@ -168,25 +171,31 @@ export class VoiceInstaller {
 
   getStatus(): VoiceInstallStatus {
     const supported = isVoiceTargetSupported(this.target);
-    const assets = this.assets().map((asset): VoiceInstallAssetStatus => ({
+    const describe = (asset: VoiceAsset): VoiceInstallAssetStatus => ({
       id: asset.id,
       label: assetLabel(asset),
       kind: asset.kind,
       sizeBytes: asset.sizeBytes,
       installed: this.isAssetInstalled(asset),
-    }));
+    });
+    const assets = this.assets().map(describe);
+    const speechModels = SPEECH_MODEL_ASSETS.map(describe);
     const totalBytes = assets.reduce((sum, asset) => sum + asset.sizeBytes, 0);
     const remainingBytes = assets.filter((asset) => !asset.installed).reduce((sum, asset) => sum + asset.sizeBytes, 0);
+    // A setup from when another recognizer was the default keeps working while the default downloads.
+    const ready = speechModels.some((asset) => asset.installed)
+      && assets.every((asset) => asset.installed || speechModels.some((speech) => speech.id === asset.id));
     return {
       supported,
       target: this.target,
-      installed: supported && assets.every((asset) => asset.installed),
+      installed: supported && ready,
       installing: !!this.installPromise,
       ...(this.progress ? { progress: this.progress } : {}),
       ...(this.lastError ? { error: this.lastError } : {}),
       totalBytes,
       remainingBytes,
       assets,
+      speechModels,
     };
   }
 
@@ -206,13 +215,15 @@ export class VoiceInstaller {
     }
   }
 
-  install(): Promise<void> {
+  /** Installs whatever the required set is missing, plus any speech models named here. */
+  install(speechModelIds: readonly string[] = []): Promise<void> {
     if (this.installPromise) return this.installPromise;
     if (!isVoiceTargetSupported(this.target)) {
       return Promise.reject(new Error(`Voice mode is not supported on ${this.target}`));
     }
     this.lastError = undefined;
-    const run = this.runInstall()
+    const named = SPEECH_MODEL_ASSETS.filter((asset) => speechModelIds.includes(asset.id));
+    const run = this.runInstall(named)
       .catch((error: unknown) => {
         this.lastError = error instanceof Error ? error.message : String(error);
         this.logger.error(`[voice-install] ${this.lastError}`);
@@ -228,7 +239,7 @@ export class VoiceInstaller {
     return run;
   }
 
-  private async runInstall(): Promise<void> {
+  private async runInstall(named: readonly VoiceModelAsset[]): Promise<void> {
     const { paths } = this.options;
     await mkdir(join(paths.engineDir, "node_modules"), { recursive: true });
     await mkdir(paths.modelsDir, { recursive: true });
@@ -239,7 +250,7 @@ export class VoiceInstaller {
       await writeFile(enginePackageJson, `${JSON.stringify({ name: "bridge-voice-engine", private: true }, null, 2)}\n`);
     }
 
-    const pending = this.assets().filter((asset) => !this.isAssetInstalled(asset));
+    const pending = [...new Set([...this.assets(), ...named])].filter((asset) => !this.isAssetInstalled(asset));
     const totalBytes = pending.reduce((sum, asset) => sum + asset.sizeBytes, 0) || 1;
     let completedBytes = 0;
     for (const asset of pending) {

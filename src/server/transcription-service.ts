@@ -1,6 +1,7 @@
 // Chat mic transcription, backed by the local speech engine that also powers Helm's hands-free mode.
 import type { VoiceClipChunk, VoiceClipTranscription } from "./voice/voice-engine-protocol.js";
 import type { VoiceInstallStatus } from "./voice/voice-installer.js";
+import type { SpeechCoverage } from "../shared/chat-mic.js";
 
 export const TRANSCRIPTION_PROVIDER = "speech-engine";
 
@@ -17,6 +18,8 @@ export interface TranscriptionStatus {
 export interface TranscriptionResult {
   text: string;
   provider: typeof TRANSCRIPTION_PROVIDER;
+  /** How well the words cover the detected speech; null when that could not be checked. */
+  coverage: SpeechCoverage | null;
 }
 
 export interface TranscriptionRequest {
@@ -34,6 +37,8 @@ export interface TranscriptionService {
 export interface TranscriptionSpeechEngine {
   retain(): () => void;
   transcribeFile(filePath: string, options?: { timeoutMs?: number }): Promise<VoiceClipTranscription>;
+  /** The recognizer in use; unset in tests that do not care. */
+  speechModel?: { label: string };
 }
 
 export interface TranscriptionServiceDeps {
@@ -47,11 +52,16 @@ const DEFAULT_MAX_DURATION_SECONDS = 300;
 const MIN_TIMEOUT_MS = 120_000;
 const SETUP_HINT = "Set up the speech engine in Settings → Voice, or from Helm's hands-free mode.";
 
-export const TRANSCRIPTION_LABEL = "Parakeet v3 (local)";
+export const TRANSCRIPTION_LABEL = "Parakeet Unified English (local)";
 
 function describeChunks(chunks: readonly VoiceClipChunk[] | undefined): string {
   if (!chunks?.length) return "";
   return `; chunks ${chunks.map((chunk) => `${chunk.startSeconds}-${chunk.endSeconds}s ${chunk.words}w`).join(", ")}`;
+}
+
+function describeCoverage(coverage: SpeechCoverage | null | undefined): string {
+  if (coverage === undefined) return "";
+  return coverage ? `; largest speech gap ${coverage.largestGapSeconds}s at ${coverage.gapStartSeconds}s` : "; no word timing";
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
@@ -84,7 +94,7 @@ export function createTranscriptionService({ installer, engine, env = process.en
     const reason = describeTranscriptionUnavailable(installer.getStatus());
     return reason
       ? { available: false, provider: "disabled", label: "Unavailable", reason, maxDurationSeconds, opusUploads }
-      : { available: true, provider: TRANSCRIPTION_PROVIDER, label: TRANSCRIPTION_LABEL, maxDurationSeconds, opusUploads };
+      : { available: true, provider: TRANSCRIPTION_PROVIDER, label: engine.speechModel?.label ?? TRANSCRIPTION_LABEL, maxDurationSeconds, opusUploads };
   };
 
   return {
@@ -97,10 +107,14 @@ export function createTranscriptionService({ installer, engine, env = process.en
       activeTranscriptions++;
       try {
         const result = await engine.transcribeFile(filePath, { timeoutMs });
-        logger?.log(`[transcription] ${label ? `${label} ` : ""}${result.audioSeconds}s clip (${result.format}, ${Math.round(result.bytes / 1024)} KB; ${result.speechSeconds}s speech, ${result.chunks} chunk${result.chunks === 1 ? "" : "s"}) in ${result.ms}ms${describeChunks(result.chunkDetails)}`);
+        logger?.log(`[transcription] ${label ? `${label} ` : ""}${result.audioSeconds}s clip (${result.format}, ${Math.round(result.bytes / 1024)} KB; ${result.speechSeconds}s speech, ${result.chunks} chunk${result.chunks === 1 ? "" : "s"}) in ${result.ms}ms${describeChunks(result.chunkDetails)}${describeCoverage(result.coverage)}${result.peakMemoryBytes ? `; peak ${Math.round(result.peakMemoryBytes / 1e6)} MB` : ""}`);
         const text = result.text.trim();
-        if (!text) throw new Error("No speech was detected in the recording.");
-        return { text, provider: TRANSCRIPTION_PROVIDER };
+        if (!text) {
+          throw new Error(result.speechSeconds >= 1
+            ? "Speech was heard but no words came back. Try again."
+            : "No speech was detected in the recording.");
+        }
+        return { text, provider: TRANSCRIPTION_PROVIDER, coverage: result.coverage };
       } finally {
         activeTranscriptions--;
         release();

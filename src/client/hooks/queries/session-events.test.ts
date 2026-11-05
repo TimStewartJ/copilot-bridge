@@ -6,7 +6,7 @@ import { queryKeys } from "../../queryClient";
 import { helmStateQueryKey } from "../../helm/helm-api";
 import { emptyBackgroundAgentsSummary } from "../../../shared/session-agents.js";
 import { TASK_OVERVIEW_KEY } from "./useTaskOverview";
-import { projectSessionEvent, projectVoiceSessionActivity, type SessionEventEffects } from "./session-events";
+import { projectSessionEvent, projectVoiceSessionActivity, settleVoiceSessionActivity, type SessionEventEffects } from "./session-events";
 
 const clients: QueryClient[] = [];
 afterEach(() => { for (const client of clients.splice(0)) client.clear(); });
@@ -61,6 +61,19 @@ describe("session event projection", () => {
       expect(queryClient.getQueryData<Session[]>(allKey)?.[0]).toMatchObject({ intentText, runState });
       expect(queryClient.getQueryData<InfiniteData<TaskArchivedSessionsResponse>>(pagesKey)?.pages[0].sessions[0])
         .toMatchObject({ intentText: "Sending voice message", runState: "busy" });
+    },
+  );
+
+  it.each([
+    [{ runState: "busy", intentText: "Processing voice input" }, { runState: "idle", intentText: null }],
+    [{ runState: "busy", intentText: "Checking results" }, { runState: "busy", intentText: "Checking results" }],
+  ] satisfies [Partial<Session>, Partial<Session>][])(
+    "clears a chat's dictation activity when no run started, and leaves a real run alone: %j",
+    (initial, expected) => {
+      const { queryClient, activeKey } = fixture();
+      queryClient.setQueryData<Session[]>(activeKey, (rows) => rows?.map((row) => ({ ...row, ...initial })));
+      settleVoiceSessionActivity(queryClient, "one");
+      expect(queryClient.getQueryData<Session[]>(activeKey)?.[0]).toMatchObject(expected);
     },
   );
 

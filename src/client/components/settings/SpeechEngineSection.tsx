@@ -3,11 +3,12 @@ import { Link } from "react-router-dom";
 import { AudioLines, Check, Cpu, Download, Loader2, Mic, RotateCw } from "lucide-react";
 import { fetchTranscriptionStatus, type TranscriptionStatus } from "../../api";
 import { describeRecordingLimit } from "../../lib/voice-ui-state";
-import { fetchVoiceStatus, startVoiceInstall, type VoiceEngineCapability, type VoiceInstallStatus, type VoiceStatus } from "../../voice/voice-api";
+import { fetchVoiceStatus, patchChatMic, startVoiceInstall, type ChatMicStatus, type VoiceEngineCapability, type VoiceInstallStatus, type VoiceStatus } from "../../voice/voice-api";
 import { formatBytes } from "../../voice/voice-view-model";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
-import { Button, Details, Notice, SettingList, SettingRow } from "../../design/primitives";
+import { Button, Details, Notice, Select, SettingList, SettingRow, Switch } from "../../design/primitives";
+import type { ChatMicSettings, SpeechModelId } from "../../../shared/chat-mic.js";
 
 const CAPABILITY_NAMES: Record<VoiceEngineCapability, string> = {
   asr: "speech recognition",
@@ -46,6 +47,17 @@ export function describeEngineState(engine: VoiceStatus["engine"]): string {
 }
 
 const PHASE_LABELS = { downloading: "Downloading", verifying: "Verifying", extracting: "Unpacking" } as const;
+
+/** The model's name without the "(local)" every model carries, for the engine's own row. */
+function speechModelName(chatMic: ChatMicStatus | undefined): string {
+  const label = chatMic?.models.find((model) => model.id === chatMic.speechModel)?.label ?? "Parakeet";
+  return label.replace(/\s*\(local\)$/, "");
+}
+
+export function describeSpeechModelOption(model: ChatMicStatus["models"][number]): string {
+  const name = model.label.replace(/\s*\(local\)$/, "");
+  return model.installed || !model.sizeBytes ? name : `${name} (download ${formatBytes(model.sizeBytes)})`;
+}
 
 export function SpeechEngineSection() {
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
@@ -91,10 +103,20 @@ export function SpeechEngineSection() {
     }
   }, [refresh]);
 
+  const changeChatMic = useCallback(async (patch: ChatMicSettings) => {
+    setError(null);
+    try {
+      setVoiceStatus(await patchChatMic(patch));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
   const installStatus = voiceStatus?.install;
   const badge = installStatus ? describeInstallBadge(installStatus) : { text: loading ? "Checking…" : "Unknown", className: "bg-bg-surface text-text-muted" };
   const progress = installStatus?.installing ? installStatus.progress : undefined;
   const assets = installStatus?.assets ?? [];
+  const chatMic = voiceStatus?.chatMic;
 
   return (
     <SettingsSection
@@ -109,7 +131,7 @@ export function SpeechEngineSection() {
     >
       <SettingList>
         <SettingRow
-          label="Parakeet v3 · Smart Turn · Kokoro"
+          label={`${speechModelName(chatMic)} · Smart Turn · Kokoro`}
           control={<span className={cx("text-xs font-medium", badge.text === "Setup failed" ? "text-error" : "text-text-secondary")}>{badge.text}</span>}
         >
           {installStatus && !installStatus.supported && (
@@ -135,7 +157,11 @@ export function SpeechEngineSection() {
             </Button>
           )}
           {installStatus?.error && !installStatus.installing && (
-            <p className="mt-2 break-words text-xs text-error">Setup failed: {installStatus.error}</p>
+            <p className="mt-2 break-words text-xs text-error">
+              {installStatus.installed
+                ? `Couldn't download a speech model, so the current one stays in use: ${installStatus.error}`
+                : `Setup failed: ${installStatus.error}`}
+            </p>
           )}
         </SettingRow>
 
@@ -147,6 +173,31 @@ export function SpeechEngineSection() {
                 ? `Ready. Up to ${describeRecordingLimit(micStatus.maxDurationSeconds)} per recording.`
                 : micStatus?.reason ?? "Unavailable."}
             />
+            {installStatus?.installed && chatMic && (
+              <>
+                <SettingRow
+                  label="Speech model"
+                  htmlFor="chat-mic-speech-model"
+                  hint={chatMic.pendingSpeechModel ? "Downloading. The current model works until it's ready." : "Choose Parakeet v3 if you dictate in other languages."}
+                  control={(
+                    <Select
+                      id="chat-mic-speech-model"
+                      inputSize="sm"
+                      value={chatMic.pendingSpeechModel ?? chatMic.speechModel}
+                      disabled={installStatus.installing}
+                      onChange={(event) => void changeChatMic({ speechModel: event.target.value as SpeechModelId })}
+                    >
+                      {chatMic.models.map((model) => <option key={model.id} value={model.id}>{describeSpeechModelOption(model)}</option>)}
+                    </Select>
+                  )}
+                />
+                <SettingRow
+                  label="Keep held recordings for 30 days"
+                  hint="Otherwise they are deleted after 2 days."
+                  control={<Switch aria-label="Keep held recordings for 30 days" checked={chatMic.keepHeldRecordings} onChange={(event) => void changeChatMic({ keepHeldRecordings: event.target.checked })} />}
+                />
+              </>
+            )}
             <SettingRow
               label={<span className="inline-flex items-center gap-1.5"><AudioLines size={13} className="text-text-secondary" />Hands-free (Helm)</span>}
               hint={installStatus?.installed ? "Ready." : "Needs the speech engine."}

@@ -16,6 +16,7 @@ import { useBackgroundVoiceJobs, type UseBackgroundVoiceJobsResult } from "./use
 
 const createVoiceJobMock = vi.hoisted(() => vi.fn());
 const fetchLatestVoiceJobMock = vi.hoisted(() => vi.fn());
+const fetchOpenVoiceJobsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 const fetchVoiceJobMock = vi.hoisted(() => vi.fn());
 const markVoiceJobRecoveredMock = vi.hoisted(() => vi.fn());
 const transcribeAudioMock = vi.hoisted(() => vi.fn());
@@ -26,6 +27,7 @@ vi.mock("../api", async (importOriginal) => {
     ...actual,
     createVoiceJob: (...args: unknown[]) => createVoiceJobMock(...args),
     fetchLatestVoiceJob: (...args: unknown[]) => fetchLatestVoiceJobMock(...args),
+    fetchOpenVoiceJobs: () => fetchOpenVoiceJobsMock(),
     fetchVoiceJob: (...args: unknown[]) => fetchVoiceJobMock(...args),
     markVoiceJobRecovered: (...args: unknown[]) => markVoiceJobRecoveredMock(...args),
     transcribeAudio: (...args: unknown[]) => transcribeAudioMock(...args),
@@ -36,7 +38,9 @@ type HookOptions = Parameters<typeof useBackgroundVoiceJobs>[0];
 type GetDraft = HookOptions["getDraft"];
 type SetDraft = HookOptions["setDraft"];
 
-type VoiceJobSnapshotStatus = "accepted" | "transcribing" | "sending" | "done" | "error" | "recovered";
+const CLEAN_COVERAGE = { largestGapSeconds: 0.4, gapStartSeconds: 0 };
+
+type VoiceJobSnapshotStatus = "accepted" | "transcribing" | "sending" | "done" | "error" | "held" | "recovered";
 
 function voiceJobSnapshot(overrides: Partial<{
   id: string;
@@ -49,6 +53,9 @@ function voiceJobSnapshot(overrides: Partial<{
   updatedAt: string;
   error: string;
   transcript: string;
+  reviewReason: "coverage" | "unchecked";
+  speechGapStart: number;
+  mode: "interactive" | "autopilot";
 }> = {}) {
   return {
     id: "voice-job-1",
@@ -264,6 +271,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       statusChanged: true,
     });
     expect(options.onVoiceSessionSettled).toHaveBeenCalledWith({
+      jobId: "voice-job-1",
       sessionId: "session-1",
       status: "done",
     });
@@ -289,7 +297,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
       retryable: true,
     });
 
-    transcribeAudioMock.mockResolvedValueOnce({ text: "Retried transcript", provider: "speech-engine" });
+    transcribeAudioMock.mockResolvedValueOnce({ text: "Retried transcript", provider: "speech-engine", coverage: CLEAN_COVERAGE });
     await getHarness().act(async () => {
       result?.retryVoiceJobUpload("session-1");
     });
@@ -342,7 +350,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     });
 
     let insertUpload: UploadOptions | undefined;
-    let finishInsert = (_result: { text: string; provider: string }) => {};
+    let finishInsert = (_result: { text: string; provider: string; coverage?: unknown }) => {};
     transcribeAudioMock.mockImplementationOnce((_audio: Blob, uploadOptions: UploadOptions) => {
       insertUpload = uploadOptions;
       return new Promise((resolve) => {
@@ -364,7 +372,7 @@ describe("useBackgroundVoiceJobs retry uploads", () => {
     });
     expect(result?.getJobForComposer("session-2")).toMatchObject({ status: "transcribing", submitMode: "insert" });
     expect(reloadAfterInsert).not.toHaveBeenCalled();
-    finishInsert({ text: "Done", provider: "speech-engine" });
+    finishInsert({ text: "Done", provider: "speech-engine", coverage: CLEAN_COVERAGE });
     await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-2") === null);
     expect(reloadAfterInsert).toHaveBeenCalledOnce();
   });
@@ -523,7 +531,7 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
     __resetVoiceRecordingStoreForTests();
   });
 
-  async function renderWithActiveComposer(activeComposerKey: string) {
+  async function renderWithActiveComposer(activeComposerKey: string, overrides: Partial<HookOptions> = {}) {
     harness = await createReactDomHarness();
     function Harness() {
       result = useBackgroundVoiceJobs({
@@ -538,6 +546,7 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
         navigateToSession: vi.fn(),
         refreshSessions: vi.fn(),
         refreshTasks: vi.fn(),
+        ...overrides,
       });
       return null;
     }
@@ -630,6 +639,179 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
 
     expect(result?.getJobForComposer("session-1")).toBeNull();
     expect(markVoiceJobRecoveredMock).toHaveBeenCalledExactlyOnceWith("voice-job-1");
+  });
+
+  it("puts a held dictation in the open draft once and says why it was held", async () => {
+    fetchLatestVoiceJobMock.mockResolvedValue(voiceJobSnapshot({
+      status: "held",
+      transcript: "words to check",
+      reviewReason: "coverage",
+      speechGapStart: 7,
+      mode: "autopilot",
+    }));
+    markVoiceJobRecoveredMock.mockResolvedValue(null);
+    const setDraftImmediate = vi.fn();
+    const onVoiceSessionSettled = vi.fn();
+
+    await renderWithActiveComposer("session-1", { setDraftImmediate, onVoiceSessionSettled });
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "review");
+
+    expect(result?.getJobForComposer("session-1")?.sendMode).toBe("autopilot");
+    expect(onVoiceSessionSettled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sessionId: "session-1", status: "recovered" }));
+    expect(setDraftImmediate).toHaveBeenCalledExactlyOnceWith("session-1", "words to check", undefined);
+    expect(markVoiceJobRecoveredMock).toHaveBeenCalledExactlyOnceWith("voice-job-1");
+    expect(result?.getJobForComposer("session-1")?.review).toEqual({
+      reason: "coverage",
+      recordingJobId: "voice-job-1",
+      gapStartSeconds: 7,
+    });
+
+    await getHarness().act(async () => {
+      result?.clearVoiceJobError("session-1");
+    });
+    expect(result?.getJobForComposer("session-1")).toBeNull();
+    expect(markVoiceJobRecoveredMock).toHaveBeenCalledOnce();
+  });
+
+  it("leaves a held dictation on the server until its conversation is open", async () => {
+    fetchLatestVoiceJobMock.mockResolvedValue(voiceJobSnapshot({
+      composerKey: "session-2",
+      targetSessionId: "session-2",
+      status: "held",
+      transcript: "words to check",
+      reviewReason: "coverage",
+    }));
+    const setDraftImmediate = vi.fn();
+    const onVoiceSessionSettled = vi.fn();
+
+    await renderWithActiveComposer("session-1", { setDraftImmediate, onVoiceSessionSettled });
+    await waitUntilAct(getHarness().act, () => onVoiceSessionSettled.mock.calls.length > 0);
+
+    expect(onVoiceSessionSettled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sessionId: "session-2", status: "held" }));
+    expect(setDraftImmediate).not.toHaveBeenCalled();
+    expect(markVoiceJobRecoveredMock).not.toHaveBeenCalled();
+    expect(result?.getJobForComposer("session-2")).toBeNull();
+  });
+
+  it("tells about a dictation held while the app was not running, even after following it to the end", async () => {
+    const heldElsewhere = { composerKey: "session-2", targetSessionId: "session-2", transcript: "words to check", reviewReason: "coverage" as const };
+    fetchOpenVoiceJobsMock.mockResolvedValueOnce([
+      voiceJobSnapshot({ ...heldElsewhere, id: "already-held", status: "held" }),
+      voiceJobSnapshot({ ...heldElsewhere, id: "still-running", status: "transcribing" }),
+    ]);
+    fetchVoiceJobMock.mockResolvedValue(voiceJobSnapshot({ ...heldElsewhere, id: "still-running", status: "held" }));
+    const setDraftImmediate = vi.fn();
+    const onVoiceSessionSettled = vi.fn();
+
+    await renderWithActiveComposer("session-1", { setDraftImmediate, onVoiceSessionSettled });
+    await waitUntilAct(getHarness().act, () => onVoiceSessionSettled.mock.calls.length === 2);
+
+    expect(onVoiceSessionSettled.mock.calls.map(([settled]) => [settled.jobId, settled.status])).toEqual([
+      ["already-held", "held"],
+      ["still-running", "held"],
+    ]);
+    expect(setDraftImmediate).not.toHaveBeenCalled();
+    expect(markVoiceJobRecoveredMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps this device's failed upload when a job found at start finishes in the same chat", async () => {
+    await savePendingVoiceRecording({
+      composerKey: "session-2",
+      recordingId: "failed-upload",
+      submitMode: "autosend",
+      audio: new TextEncoder().encode("voice").buffer as ArrayBuffer,
+      mimeType: "audio/ogg",
+    });
+    const job = { composerKey: "session-2", targetSessionId: "session-2", id: "found-at-start" };
+    fetchOpenVoiceJobsMock.mockResolvedValueOnce([voiceJobSnapshot({ ...job, status: "transcribing" })]);
+    fetchVoiceJobMock.mockResolvedValue(voiceJobSnapshot({ ...job, status: "done", transcript: "words" }));
+    const onVoiceSessionSettled = vi.fn();
+
+    await renderWithActiveComposer("session-1", { onVoiceSessionSettled });
+    await waitUntilAct(getHarness().act, () => onVoiceSessionSettled.mock.calls.length > 0);
+
+    expect(await getPendingVoiceRecording("session-2")).toMatchObject({ recordingId: "failed-upload" });
+  });
+
+  it("does not put a held dictation in another chat's draft when a new draft is open", async () => {
+    fetchLatestVoiceJobMock.mockResolvedValue(voiceJobSnapshot({
+      composerKey: "draft:task:task-1",
+      targetSessionId: "session-9",
+      status: "held",
+      transcript: "words to check",
+      reviewReason: "coverage",
+    }));
+    const setDraftImmediate = vi.fn();
+    const onVoiceSessionSettled = vi.fn();
+
+    // The person has started typing something new in the draft the dictation came from.
+    await renderWithActiveComposer("draft:task:task-1", {
+      getDraft: () => ({ text: "something else", attachments: [] }) as ReturnType<GetDraft>,
+      setDraftImmediate,
+      onVoiceSessionSettled,
+    });
+    await waitUntilAct(getHarness().act, () => onVoiceSessionSettled.mock.calls.length > 0);
+
+    expect(onVoiceSessionSettled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sessionId: "session-9", status: "held" }));
+    expect(setDraftImmediate).not.toHaveBeenCalled();
+    expect(markVoiceJobRecoveredMock).not.toHaveBeenCalled();
+  });
+
+  it("inserts a held dictation once when the server could not be told and the chat is opened again", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fetchLatestVoiceJobMock.mockImplementation(async (composerKey: string) => composerKey === "session-1"
+      ? voiceJobSnapshot({ status: "held", transcript: "words to check", reviewReason: "coverage" })
+      : null);
+    markVoiceJobRecoveredMock.mockRejectedValue(new Error("offline"));
+    const setDraftImmediate = vi.fn();
+    let activeComposerKey = "session-1";
+    harness = await createReactDomHarness();
+    function Harness() {
+      result = useBackgroundVoiceJobs({
+        activeComposerKey,
+        getDraft: () => null,
+        setDraft: vi.fn(),
+        setDraftImmediate,
+        clearDraft: vi.fn(),
+        rememberDraftSession: vi.fn(),
+        clearDraftSession: vi.fn(),
+        materializeSession: vi.fn().mockResolvedValue("session-1"),
+        navigateToSession: vi.fn(),
+        refreshSessions: vi.fn(),
+        refreshTasks: vi.fn(),
+      });
+      return null;
+    }
+    try {
+      await harness.render(createElement(Harness));
+      await waitUntilAct(getHarness().act, () => markVoiceJobRecoveredMock.mock.calls.length === 1);
+      activeComposerKey = "session-2";
+      await harness.render(createElement(Harness));
+      activeComposerKey = "session-1";
+      await harness.render(createElement(Harness));
+      await waitUntilAct(getHarness().act, () => markVoiceJobRecoveredMock.mock.calls.length === 2);
+
+      expect(setDraftImmediate).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("warns when a dictation that went straight to the draft may be missing speech", async () => {
+    transcribeAudioMock.mockResolvedValueOnce({
+      text: "partial words",
+      provider: "speech-engine",
+      coverage: { largestGapSeconds: 4.2, gapStartSeconds: 5 },
+    });
+    fetchLatestVoiceJobMock.mockResolvedValue(null);
+    await renderWithActiveComposer("session-1");
+
+    await getHarness().act(async () => {
+      await result?.startBackgroundVoiceJob({ composerKey: "session-1", audio: new Blob(["voice"], { type: "audio/wav" }), submitMode: "insert" });
+    });
+    await waitUntilAct(getHarness().act, () => result?.getJobForComposer("session-1")?.status === "review");
+
+    expect(result?.getJobForComposer("session-1")?.review).toEqual({ reason: "coverage", gapStartSeconds: 5 });
   });
 
   it("retires a failed server job without a transcript when its error is dismissed", async () => {

@@ -1,8 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeTestDir } from "../../__tests__/helpers.js";
-import { resolveVoicePaths } from "../voice-catalog.js";
+import { resolveSpeechModel, resolveVoicePaths } from "../voice-catalog.js";
 import { VoiceEngine, type VoiceEngineStatus } from "../voice-engine.js";
 import type { VoiceEngineCapability, VoiceEngineRequest } from "../voice-engine-protocol.js";
 
@@ -140,5 +140,50 @@ describe("VoiceEngine on-demand models", () => {
     expect(children).toHaveLength(2);
     expect(children[1]!.sent.map((message) => message.type)).toEqual(["init", "load"]);
     expect(engine.status).toMatchObject({ state: "ready", loaded: ["asr"] });
+  });
+
+  it("starts on the English model, with the chunk length it was tested with", async () => {
+    const { engine, children } = createEngine();
+
+    await engine.ensureCapabilities(["asr"]);
+
+    expect(engine.speechModel.id).toBe("parakeet-unified-en");
+    expect(children[0]!.sent[0]).toMatchObject({ type: "init", options: { asr: { maxChunkSeconds: 12, dir: resolveSpeechModel("parakeet-unified-en").dir } } });
+  });
+
+  it("restarts an idle engine for a new speech model", async () => {
+    const { engine, children } = createEngine();
+    await engine.ensureCapabilities(["asr"]);
+
+    engine.useSpeechModel(resolveSpeechModel("parakeet-v3"));
+    await vi.waitFor(() => expect(engine.status.state).toBe("stopped"));
+
+    await engine.ensureCapabilities(["asr"]);
+    expect(children).toHaveLength(2);
+    expect(children[1]!.sent[0]).toMatchObject({ options: { asr: { maxChunkSeconds: 20, dir: resolveSpeechModel("parakeet-v3").dir } } });
+  });
+
+  it("finishes the work in hand before changing speech model", async () => {
+    const { engine, children } = createEngine();
+    await engine.ensureCapabilities(["asr"]);
+    const release = engine.retain();
+
+    engine.useSpeechModel(resolveSpeechModel("parakeet-v3"));
+    await Promise.resolve();
+    expect(engine.status.state).toBe("ready");
+    expect(children[0]!.connected).toBe(true);
+
+    release();
+    await vi.waitFor(() => expect(engine.status.state).toBe("stopped"));
+  });
+
+  it("leaves a running engine alone when the same model is chosen again", async () => {
+    const { engine, children } = createEngine();
+    await engine.ensureCapabilities(["asr"]);
+
+    engine.useSpeechModel(resolveSpeechModel("parakeet-unified-en"));
+
+    expect(engine.status.state).toBe("ready");
+    expect(children).toHaveLength(1);
   });
 });

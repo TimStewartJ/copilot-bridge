@@ -130,6 +130,23 @@ describe("fresh database schema", () => {
     migrated.close();
   });
 
+  it("adds the review columns to existing voice jobs without judging old transcripts", () => {
+    const dataDir = makeTestDir("voice-job-review-migration");
+    const legacy = openDatabase(dataDir);
+    legacy.exec(`
+      ALTER TABLE voice_jobs DROP COLUMN speechGapSeconds;
+      ALTER TABLE voice_jobs DROP COLUMN speechGapStart;
+      ALTER TABLE voice_jobs DROP COLUMN reviewReason;
+      INSERT INTO voice_jobs(id,composerKey,status,audioPath,transcript,createdAt,updatedAt)
+      VALUES('old-voice','session-1','done','old.wav','sent long ago','2026-01-01','2026-01-01');
+    `);
+    legacy.close();
+    const migrated = openDatabase(dataDir);
+    expect(migrated.prepare("SELECT id, status, speechGapSeconds, speechGapStart, reviewReason FROM voice_jobs").get())
+      .toEqual({ id: "old-voice", status: "done", speechGapSeconds: null, speechGapStart: null, reviewReason: null });
+    migrated.close();
+  });
+
   it("adds the process ID column to existing background command markers without inventing one", () => {
     const dataDir = makeTestDir("background-command-pid-migration");
     const legacy = openDatabase(dataDir);

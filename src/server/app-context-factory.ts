@@ -42,7 +42,7 @@ import { createGlobalBus } from "./global-bus.js";
 import type { AppContext } from "./app-context.js";
 import { createTranscriptionService } from "./transcription-service.js";
 import { createVoiceJobManager } from "./voice-job-manager.js";
-import { createVoiceRuntime } from "./voice/voice-runtime.js";
+import { createVoiceRuntime, followSelectedSpeechModel } from "./voice/voice-runtime.js";
 import { createHelmStore } from "./helm/helm-store.js";
 import { createHelmThinkerStore } from "./helm/thinker/store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
@@ -168,6 +168,10 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const deferDeliveryGuard = createDeferDeliveryGuard();
   const copilotHome = runtimePaths.copilotHome;
   const voiceRuntime = createVoiceRuntime(runtimePaths);
+  // A preview pointed at the production voice folder must leave what is in it alone.
+  followSelectedSpeechModel(voiceRuntime, () => settingsStore.getSettings().chatMic, {
+    fetchMissing: !(options.isStaging && runtimePaths.env.BRIDGE_VOICE_DIR?.trim()),
+  });
   const helmStore = createHelmStore(db);
   const helmThinkerStore = createHelmThinkerStore(db);
 
@@ -297,6 +301,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     sessionManager,
     taskStore,
     chatDelivery: ctx,
+    settingsStore,
   });
   ctx.pushNotificationService = createPushNotificationService({
     subscriptionStore: pushSubscriptionStore,

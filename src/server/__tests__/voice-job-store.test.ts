@@ -146,6 +146,24 @@ describe("voice-job-store composer recovery", () => {
     });
   });
 
+  it("surfaces a held dictation until its transcript reaches a draft, then stops", () => {
+    const voiceJobs = createVoiceJobStore(db);
+    createJob(voiceJobs, "held", "2026-09-27T19:03:00.000Z");
+    voiceJobs.updateVoiceJob("held", { status: "held", transcript: "dictated words", reviewReason: "coverage", speechGapSeconds: 3.2, speechGapStart: 7 });
+
+    expect(voiceJobs.findLatestRelevantForComposer("session-1")).toMatchObject({
+      id: "held",
+      transcript: "dictated words",
+      reviewReason: "coverage",
+      speechGapSeconds: 3.2,
+      speechGapStart: 7,
+    });
+    expect(voiceJobs.listPendingVoiceJobs()).toEqual([]);
+
+    expect(voiceJobs.markRecovered("held")).toMatchObject({ status: "recovered", reviewReason: "coverage" });
+    expect(voiceJobs.findLatestRelevantForComposer("session-1")).toBeUndefined();
+  });
+
   it("recovers only failed jobs so an in-flight job stays resumable", () => {
     const voiceJobs = createVoiceJobStore(db);
     createJob(voiceJobs, "active", "2026-09-27T19:03:00.000Z");

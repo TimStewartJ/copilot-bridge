@@ -21,6 +21,8 @@ export interface ToastData {
   loading?: boolean;
   /** Auto-dismiss delay. Omit to use the provider default; 0 disables auto-dismiss. */
   durationMs?: number;
+  /** Runs when the person closes the toast, not when code removes it or its timer runs out. */
+  onClosed?: () => void;
 }
 
 const TONE_STYLES: Record<ToastTone, { border: string; icon: string }> = {

@@ -1,5 +1,6 @@
 // Pure helpers for transcribing recorded clips: WAV decoding and splitting speech into
 // chunks the recognizer can handle without holding up live voice conversations.
+import type { SpeechCoverage } from "../../shared/chat-mic.js";
 
 export class WavDecodeError extends Error {}
 
@@ -207,4 +208,43 @@ export function planSpeechChunks(segments: readonly SampleRange[], totalSamples:
 
 export function joinTranscripts(parts: readonly string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+
+/** How long one recognized token is taken to cover. Not every model reports a token's duration. */
+const TOKEN_SPAN_SECONDS = 0.3;
+
+/** Tokens with a letter or digit are evidence of speech; punctuation alone is not. */
+export function isLexicalToken(token: string): boolean {
+  return /[\p{L}\p{N}]/u.test(token);
+}
+
+/**
+ * Finds the longest stretch of detected speech with no recognized words in it. Silence between
+ * words does not count, and the walk runs across chunk boundaries, so words lost at a cut are seen too.
+ */
+export function measureSpeechCoverage(
+  speech: readonly SampleRange[],
+  tokenStartSeconds: readonly number[],
+  totalSamples: number,
+  sampleRate: number,
+): SpeechCoverage {
+  const speechBetween = (from: number, to: number) => speech.reduce(
+    (sum, segment) => sum + Math.max(0, Math.min(to, segment.end / sampleRate) - Math.max(from, segment.start / sampleRate)),
+    0,
+  );
+  const coverage: SpeechCoverage = { largestGapSeconds: 0, gapStartSeconds: 0 };
+  const observe = (from: number, to: number) => {
+    const gap = speechBetween(from, to);
+    if (gap > coverage.largestGapSeconds) {
+      coverage.largestGapSeconds = Math.round(gap * 100) / 100;
+      coverage.gapStartSeconds = Math.round(from * 100) / 100;
+    }
+  };
+  let covered = 0;
+  for (const start of [...tokenStartSeconds].sort((a, b) => a - b)) {
+    observe(covered, start);
+    covered = Math.max(covered, start + TOKEN_SPAN_SECONDS);
+  }
+  observe(covered, totalSamples / sampleRate);
+  return coverage;
 }

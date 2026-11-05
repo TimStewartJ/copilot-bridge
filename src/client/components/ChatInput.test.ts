@@ -898,6 +898,40 @@ describe("ChatInput voice retry", () => {
     expect(toggle().getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("sends a held dictation in the mode it was recorded for", async () => {
+    const onSend = vi.fn();
+    await renderChatInput({
+      onSend,
+      draft: { text: "finish the task", attachments: [] },
+      voiceJob: { composerKey: "session-1", status: "review", submitMode: "insert", sendMode: "autopilot", review: { reason: "coverage" } },
+    });
+
+    const sendButton = findButtonByAriaLabel(getHarness().dom.container, "Start Autopilot");
+    await getHarness().act(async () => {
+      getReactProps(sendButton.parentNode)?.onClick?.();
+    });
+
+    expect(onSend).toHaveBeenCalledWith("finish the task", undefined, "autopilot");
+  });
+
+  it("leaves a dictation held for review in the draft, even after the notice is cleared", async () => {
+    const onSend = vi.fn();
+    const props = { onSend, onSubmitVoiceCapture: vi.fn(async () => "insert" as const), draft: { text: "Look at this and tell me", attachments: [] } };
+    await finishRecording(props);
+    await renderChatInput({ ...props, voiceJob: { composerKey: "session-1", status: "transcribing", submitMode: "insert" } });
+
+    await renderChatInput({
+      ...props,
+      voiceJob: { composerKey: "session-1", status: "review", submitMode: "insert", review: { reason: "coverage", gapStartSeconds: 3 } },
+    });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(getHarness().dom.container.textContent).toContain("Not sent. Some speech may be missing.");
+
+    await renderChatInput({ ...props, voiceJob: null });
+    expect(onSend).not.toHaveBeenCalled();
+    expect((findTextarea(getHarness().dom.container) as HTMLTextAreaElement).value).toBe("Look at this and tell me");
+  });
+
   it("does not send the open chat's text when Finish ends a recording made in another chat", async () => {
     const onSend = vi.fn();
     const onSubmitVoiceCapture = vi.fn(async () => "insert" as const);

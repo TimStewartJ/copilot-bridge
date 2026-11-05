@@ -1,4 +1,5 @@
 import { API_BASE } from "../api";
+import type { ChatMicSettings, SpeechModelId } from "../../shared/chat-mic.js";
 
 export type VoiceState = "starting" | "listening" | "hearing" | "endpointing" | "thinking" | "speaking" | "asleep" | "ended";
 export type VoiceAnnounceMode = "watched" | "all" | "off";
@@ -48,12 +49,21 @@ export interface VoiceInstallStatus {
 
 export type VoiceEngineCapability = "asr" | "turn" | "tts";
 
+export interface ChatMicStatus {
+  speechModel: SpeechModelId;
+  /** A model being downloaded; it takes over once it is verified. */
+  pendingSpeechModel?: SpeechModelId;
+  models: Array<{ id: SpeechModelId; label: string; installed: boolean; sizeBytes?: number }>;
+  keepHeldRecordings: boolean;
+}
+
 export interface VoiceStatus {
   install: VoiceInstallStatus;
   engine: { state: "stopped" | "starting" | "ready" | "failed"; detail?: string; loaded?: VoiceEngineCapability[] };
   voices: KokoroVoice[];
   defaults: VoiceSettings;
   activeConversations: number;
+  chatMic: ChatMicStatus;
 }
 
 export interface VoiceConversationTicket {
@@ -76,6 +86,16 @@ export async function startVoiceInstall(): Promise<VoiceInstallStatus> {
   const res = await fetch(`${API_BASE}/api/voice/install`, { method: "POST" });
   if (!res.ok) throw new Error(await readError(res));
   return res.json() as Promise<VoiceInstallStatus>;
+}
+
+export async function patchChatMic(patch: ChatMicSettings): Promise<VoiceStatus> {
+  const res = await fetch(`${API_BASE}/api/voice/chat-mic`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  return res.json() as Promise<VoiceStatus>;
 }
 
 /** Starts hands-free for a chat; the voice side holds no context of its own. */

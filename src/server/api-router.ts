@@ -1071,6 +1071,10 @@ export function createApiRouter(
     res.json(job);
   });
 
+  router.get("/voice-jobs/open", (_req, res) => {
+    res.json(voiceJobManager.listOpenVoiceJobs());
+  });
+
   router.get("/voice-jobs/:id", (req, res) => {
     const job = voiceJobManager.getVoiceJob(req.params.id);
     if (!job) {
@@ -1085,6 +1089,14 @@ export function createApiRouter(
       return res.status(404).json({ error: "Voice job not found" });
     }
     res.json(job);
+  });
+
+  router.get("/voice-jobs/:id/recording", (req, res) => {
+    const recordingPath = voiceJobManager.getRecordingPath(req.params.id);
+    if (!recordingPath) return res.status(404).json({ error: "Voice job not found" });
+    res.sendFile(recordingPath, { dotfiles: "allow", headers: { "Cache-Control": "no-store" } }, (error) => {
+      if (error && !res.headersSent) res.status(404).json({ error: "The recording is no longer available." });
+    });
   });
 
   // The files a person picked on their own device for a file chooser of a live browser view.

@@ -16,7 +16,11 @@ import type {
 } from "./voice-engine-protocol.js";
 import type { SpeechSynthesisHandle, SpeechSynthesisRequest, VoiceEngineApi } from "./voice-conversation.js";
 import type { VoicePaths } from "./voice-catalog.js";
-import { currentVoiceTarget } from "./voice-catalog.js";
+import {
+  currentVoiceTarget,
+  resolveSpeechModel,
+  type SpeechModel,
+} from "./voice-catalog.js";
 
 export type VoiceEngineState = "stopped" | "starting" | "ready" | "failed";
 
@@ -109,6 +113,9 @@ export class VoiceEngine implements VoiceEngineApi {
   private retainCount = 0;
   private idleTimer?: NodeJS.Timeout;
   private shuttingDown = false;
+  private speechModelValue: SpeechModel = resolveSpeechModel();
+  /** A retained engine finishes what it is doing before it reloads with another recognizer. */
+  private reloadWhenReleased = false;
   private readonly logger: Pick<Console, "log" | "warn" | "error">;
 
   constructor(private readonly options: VoiceEngineOptions) {
@@ -117,6 +124,19 @@ export class VoiceEngine implements VoiceEngineApi {
 
   get status(): VoiceEngineStatus {
     return this.statusValue;
+  }
+
+  get speechModel(): SpeechModel {
+    return this.speechModelValue;
+  }
+
+  /** Chooses the recognizer. One loaded at a time: a running engine stops, and the next use starts with this one. */
+  useSpeechModel(model: SpeechModel): void {
+    if (model.id === this.speechModelValue.id) return;
+    this.speechModelValue = model;
+    if (!this.child) return;
+    if (this.retainCount > 0) this.reloadWhenReleased = true;
+    else void this.stop("speech model changed");
   }
 
   onStatus(listener: (status: VoiceEngineStatus) => void): () => void {
@@ -136,7 +156,10 @@ export class VoiceEngine implements VoiceEngineApi {
       if (released) return;
       released = true;
       this.retainCount = Math.max(0, this.retainCount - 1);
-      if (this.retainCount === 0 && this.child) {
+      if (this.retainCount === 0 && this.child && this.reloadWhenReleased) {
+        this.reloadWhenReleased = false;
+        void this.stop("speech model changed");
+      } else if (this.retainCount === 0 && this.child) {
         this.idleTimer = setTimeout(() => void this.stop("idle"), this.options.idleShutdownMs ?? DEFAULT_IDLE_SHUTDOWN_MS);
         this.idleTimer.unref();
       }
@@ -248,6 +271,7 @@ export class VoiceEngine implements VoiceEngineApi {
         options: {
           engineDir: this.options.paths.engineDir,
           modelsDir: this.options.paths.modelsDir,
+          asr: { dir: this.speechModelValue.dir, maxChunkSeconds: this.speechModelValue.maxChunkSeconds },
           audioRetentionSeconds: 90,
           ...defaultEngineThreads(),
         },

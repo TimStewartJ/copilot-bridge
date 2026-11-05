@@ -36,7 +36,7 @@ describe("Transcription routes", () => {
   });
 
   it("POST /api/transcribe returns a transcript for uploaded wav audio", async () => {
-    const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine", coverage: { largestGapSeconds: 0.4, gapStartSeconds: 0 } });
     ({ app, ctx } = createTestApp({
       transcriptionService: createMockTranscriptionService({
         getStatus: () => ({
@@ -57,7 +57,7 @@ describe("Transcription routes", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ text: "Hello bridge", provider: "speech-engine" });
+    expect(res.body).toEqual({ text: "Hello bridge", provider: "speech-engine", coverage: { largestGapSeconds: 0.4, gapStartSeconds: 0 } });
     expect(transcribe).toHaveBeenCalledOnce();
     expect(transcribe).toHaveBeenCalledWith({
       filePath: expect.stringContaining("recording.wav"),
@@ -153,7 +153,7 @@ describe("Transcription routes", () => {
     }));
 
     function createAppWithLimit(maxDurationSeconds: number) {
-      const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine" });
+      const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine", coverage: { largestGapSeconds: 0.4, gapStartSeconds: 0 } });
       ({ app } = createTestApp({
         transcriptionService: createMockTranscriptionService({
           getStatus: () => ({ available: true, provider: "speech-engine", label: "Parakeet v3 (local)", maxDurationSeconds, opusUploads: true }),
@@ -184,7 +184,7 @@ describe("Transcription routes", () => {
         .post("/api/transcribe")
         .attach("audio", atTheLimit, { filename: "voice-input.ogg", contentType: "audio/ogg" });
       expect(fits.status).toBe(200);
-      expect(fits.body).toEqual({ text: "Hello bridge", provider: "speech-engine" });
+      expect(fits.body).toEqual({ text: "Hello bridge", provider: "speech-engine", coverage: { largestGapSeconds: 0.4, gapStartSeconds: 0 } });
       expect(transcribe).toHaveBeenCalledOnce();
       expect(transcribe).toHaveBeenCalledWith({ filePath: expect.stringMatching(/voice-input\.ogg$/) });
     });
@@ -223,7 +223,7 @@ describe("Voice job routes", () => {
       total: 1,
       hasMore: false,
     }));
-    const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "Hello bridge", provider: "speech-engine", coverage: { largestGapSeconds: 0.4, gapStartSeconds: 0 } });
     ({ app, ctx } = createTestApp({
       sessionManager,
       transcriptionService: createMockTranscriptionService({
@@ -275,7 +275,7 @@ describe("Voice job routes", () => {
       total: 1,
       hasMore: false,
     }));
-    const transcribe = vi.fn().mockResolvedValue({ text: "Keep going", provider: "speech-engine" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "Keep going", provider: "speech-engine", coverage: { largestGapSeconds: 0.4, gapStartSeconds: 0 } });
     ({ app, ctx } = createTestApp({
       sessionManager,
       transcriptionService: createMockTranscriptionService({
@@ -370,7 +370,7 @@ describe("Voice job routes", () => {
     sessionManager.startWork = vi.fn(() => {
       throw new Error("Session is busy, please wait");
     });
-    const transcribe = vi.fn().mockResolvedValue({ text: "Hello draft route", provider: "speech-engine" });
+    const transcribe = vi.fn().mockResolvedValue({ text: "Hello draft route", provider: "speech-engine", coverage: { largestGapSeconds: 0.4, gapStartSeconds: 0 } });
     ({ app, ctx } = createTestApp({
       sessionManager,
       transcriptionService: createMockTranscriptionService({
@@ -457,6 +457,45 @@ describe("Voice job routes", () => {
     expect(recovered.status).toBe(200);
     expect(recovered.body.status).toBe("recovered");
     expect(existsSync(audioPath)).toBe(true);
+  });
+
+  it("plays back a held dictation's recording and refuses a job it does not have", async () => {
+    const id = randomUUID();
+    const dataDir = ctx.runtimePaths!.dataDir;
+    const audioPath = join(dataDir, "voice-jobs", id, "recording.wav");
+    mkdirSync(join(dataDir, "voice-jobs", id), { recursive: true });
+    writeFileSync(audioPath, "test-audio");
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO voice_jobs (id, composerKey, targetSessionId, status, audioPath, transcript, reviewReason, createdAt, updatedAt)
+      VALUES (?, 'existing-session', 'existing-session', 'held', ?, 'Held transcript', 'coverage', ?, ?)
+    `).run(id, audioPath, now, now);
+
+    const recording = await request(app).get(`/api/voice-jobs/${id}/recording`);
+    expect(recording.status).toBe(200);
+    expect(Buffer.from(recording.body).toString()).toBe("test-audio");
+
+    const open = await request(app).get("/api/voice-jobs/open");
+    expect(open.status).toBe(200);
+    expect(open.body).toEqual([expect.objectContaining({ id, status: "held", reviewReason: "coverage" })]);
+
+    await request(app).delete("/api/sessions/existing-session").expect(200);
+    expect((await request(app).get("/api/voice-jobs/open")).body).toEqual([]);
+
+    const missing = await request(app).get(`/api/voice-jobs/${randomUUID()}/recording`);
+    expect(missing.status).toBe(404);
+  });
+
+  it("PATCH /api/voice/chat-mic changes what was asked and rejects a bad value", async () => {
+    const kept = await request(app).patch("/api/voice/chat-mic").send({ keepHeldRecordings: true });
+    expect(kept.status).toBe(200);
+    expect(kept.body.chatMic.keepHeldRecordings).toBe(true);
+
+    const invalid = await request(app).patch("/api/voice/chat-mic").send({ keepHeldRecordings: "yes" });
+    expect(invalid.status).toBe(400);
+
+    const unknown = await request(app).patch("/api/voice/chat-mic").send({ speechModel: "not-a-model" });
+    expect(unknown.status).toBe(400);
   });
 });
 

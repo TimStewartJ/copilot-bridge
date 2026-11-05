@@ -87,6 +87,23 @@ describe("ToastProvider", () => {
     expect(toastTitles(harness)).toHaveLength(0);
   });
 
+  it("runs onClosed when the person closes a toast, not when code removes it", async () => {
+    const harness = await mountProvider();
+    const onClosed = vi.fn();
+    const action = { label: "Open", onAction: vi.fn() };
+
+    const removedByCode = await show(harness, { id: "by-code", title: "Removed", durationMs: 0, onClosed, action });
+    await harness.act(async () => { api!.dismissToast(removedByCode); });
+    expect(onClosed).not.toHaveBeenCalled();
+
+    await show(harness, { id: "by-person", title: "Closed", durationMs: 0, onClosed, action });
+    const dismiss = findActionButton(harness, "Dismiss");
+    await harness.act(async () => { getReactProps(dismiss)?.onClick?.({ currentTarget: dismiss }); });
+
+    expect(onClosed).toHaveBeenCalledOnce();
+    expect(toastTitles(harness)).toHaveLength(0);
+  });
+
   it("replaces a toast that reuses the same id instead of stacking", async () => {
     const harness = await mountProvider();
 

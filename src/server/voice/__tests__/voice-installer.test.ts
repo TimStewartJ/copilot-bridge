@@ -5,7 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { makeTestDir } from "../../__tests__/helpers.js";
 import { testPosixPath, testWindowsPath } from "../../__tests__/test-paths.js";
 import { moveFreshPath, preferHighPerformanceScheduling, resolveNpmInvocation, resolveTarCommand } from "../../platform.js";
-import { isVoiceTargetSupported, resolveVoicePaths, selectVoiceEnginePackages, VOICE_ENGINE_PACKAGES, VOICE_MODELS, type VoiceAsset } from "../voice-catalog.js";
+import { isVoiceTargetSupported, OPTIONAL_VOICE_MODELS, resolveVoicePaths, selectVoiceEnginePackages, VOICE_ENGINE_PACKAGES, VOICE_MODELS, type VoiceAsset, type VoiceModelAsset } from "../voice-catalog.js";
+import { DEFAULT_SPEECH_MODEL_ID } from "../../../shared/chat-mic.js";
 import { VoiceInstaller, type ExtractArchive, type VoiceInstallerOptions } from "../voice-installer.js";
 import { CommandError, type NpmClient } from "../voice-npm-client.js";
 
@@ -278,6 +279,96 @@ describe("VoiceInstaller", () => {
     expect(installer.getStatus().installed).toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(readdirSync(paths.downloadsDir)).toEqual([]);
+  });
+
+  /** Pins one speech model to a small fake archive that unpacks into its real file names. */
+  function pinSpeechModel(asset: VoiceModelAsset) {
+    const body = Buffer.from(`model:${asset.id}`);
+    const pinned = asset as { sha256: string };
+    const originalDigest = pinned.sha256;
+    pinned.sha256 = createHash("sha256").update(body).digest("hex");
+    const extract: ExtractArchive = vi.fn(async (_archive, destination) => {
+      for (const file of asset.verifyFiles) {
+        mkdirSync(dirname(join(destination, file)), { recursive: true });
+        writeFileSync(join(destination, file), "x");
+      }
+    });
+    return { fetchImpl: vi.fn(async () => fakeResponse(body)), extract, restore: () => { pinned.sha256 = originalDigest; } };
+  }
+
+  it("keeps a setup from before English was the default working, then fetches English as the rest of the required set", async () => {
+    const english = VOICE_MODELS.find((asset) => asset.id === DEFAULT_SPEECH_MODEL_ID)!;
+    const v3 = OPTIONAL_VOICE_MODELS.find((asset) => asset.id === "parakeet-v3")!;
+    const { fetchImpl, extract, restore } = pinSpeechModel(english);
+    try {
+      const { paths, installer } = createInstaller("voice-install-migrate", {
+        only: [english.id],
+        fetch: fetchImpl as unknown as typeof fetch,
+        extract,
+        npmClient: fakeNpmClient(new Map()),
+      });
+      expect(installer.getStatus().installed).toBe(false);
+
+      writeFileSync(join(paths.voiceDir, "installed", `${v3.id}.json`), "{}");
+      for (const file of v3.verifyFiles) {
+        mkdirSync(dirname(join(paths.modelsDir, file)), { recursive: true });
+        writeFileSync(join(paths.modelsDir, file), "x");
+      }
+      expect(installer.getStatus()).toMatchObject({
+        installed: true,
+        remainingBytes: english.sizeBytes,
+        speechModels: [{ id: english.id, installed: false }, { id: v3.id, installed: true }],
+      });
+
+      await installer.install([english.id]);
+      expect(fetchImpl.mock.calls.map(([url]: unknown[]) => String(url))).toEqual([english.url]);
+      expect(installer.getStatus()).toMatchObject({
+        installed: true,
+        remainingBytes: 0,
+        speechModels: [{ id: english.id, installed: true }, { id: v3.id, installed: true }],
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("adds Parakeet v3 only when asked", async () => {
+    const v3 = OPTIONAL_VOICE_MODELS.find((asset) => asset.id === "parakeet-v3")!;
+    const { fetchImpl, extract, restore } = pinSpeechModel(v3);
+    try {
+      const { paths, installer } = createInstaller("voice-install-optional", {
+        only: [],
+        fetch: fetchImpl as unknown as typeof fetch,
+        extract,
+        npmClient: fakeNpmClient(new Map()),
+      });
+
+      await installer.install();
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(installer.getStatus().installed).toBe(true);
+      expect(installer.getStatus().assets.map((asset) => asset.id)).not.toContain(v3.id);
+
+      await installer.install([v3.id]);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(installer.getStatus().speechModels.find((asset) => asset.id === v3.id)?.installed).toBe(true);
+      expect(existsSync(join(paths.modelsDir, v3.verifyFiles[0]!))).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("refuses a speech model that fails its digest and keeps the engine usable", async () => {
+    const v3 = OPTIONAL_VOICE_MODELS.find((asset) => asset.id === "parakeet-v3")!;
+    const fetchImpl = vi.fn(async () => fakeResponse(Buffer.from("tampered")));
+    const { installer } = createInstaller("voice-install-optional-tampered", {
+      only: [],
+      fetch: fetchImpl as unknown as typeof fetch,
+      npmClient: fakeNpmClient(new Map()),
+    });
+
+    await expect(installer.install([v3.id])).rejects.toThrow("Integrity check failed");
+    expect(installer.getStatus().installed).toBe(true);
+    expect(installer.getStatus().speechModels.find((asset) => asset.id === v3.id)?.installed).toBe(false);
   });
 });
 describe("platform helpers for voice", () => {

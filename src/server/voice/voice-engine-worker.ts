@@ -1,7 +1,7 @@
 // Speech engine child process. Loads the runtime-installed native speech packages
 // (sherpa-onnx, onnxruntime) so a native crash or heavy CPU work never takes down Bridge.
 // Model groups load on demand: the chat mic only needs speech recognition, voice mode needs all three.
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
@@ -18,7 +18,7 @@ import {
   type VoiceEngineRequest,
   type VoiceEngineResponse,
 } from "./voice-engine-protocol.js";
-import { CLIP_CHUNK_PLAN, joinTranscripts, planSpeechChunks, type SampleRange } from "./voice-clip.js";
+import { CLIP_CHUNK_PLAN, isLexicalToken, joinTranscripts, measureSpeechCoverage, planSpeechChunks, type SampleRange } from "./voice-clip.js";
 import { decodeRecording } from "./voice-recording.js";
 import { VOICE_MODEL_FILES } from "./voice-catalog.js";
 import { createSmartTurnDetector, type SmartTurnDetector } from "../../packages/smart-turn/src/index.js";
@@ -29,6 +29,11 @@ const VAD_WINDOW = 512;
 const VAD_YIELD_WINDOWS = 64;
 /** Clips this short are still decoded when the detector hears no speech, in case it missed quiet talking. */
 const CLIP_FALLBACK_MAX_SAMPLES = 30 * SAMPLE_RATE;
+/**
+ * The recognizer's ONNX sessions allocate per request instead of keeping a growing arena: peak
+ * resident memory on a five-minute clip fell from 1.14 GB to under 1 GB, at no cost in speed.
+ */
+const ASR_SESSION_CONFIG = "EnableCpuMemArena=0\nEnableMemPattern=0\n";
 
 interface SherpaVad {
   acceptWaveform(samples: Float32Array): void;
@@ -47,7 +52,14 @@ interface SherpaOfflineStream {
 interface SherpaRecognizer {
   createStream(): SherpaOfflineStream;
   decodeAsync(stream: SherpaOfflineStream): Promise<void>;
-  getResult(stream: SherpaOfflineStream): { text: string };
+  getResult(stream: SherpaOfflineStream): { text: string; tokens?: string[]; timestamps?: number[] };
+}
+
+/** What the recognizer returned for one piece of audio, with its timing when it gave any. */
+interface RecognizedSpeech {
+  text: string;
+  tokens: string[];
+  timestamps: number[];
 }
 
 interface SherpaTts {
@@ -92,7 +104,7 @@ type AsrPriority = "live" | "clip";
 
 interface AsrJob {
   samples: Float32Array;
-  resolve(text: string): void;
+  resolve(speech: RecognizedSpeech): void;
   reject(error: unknown): void;
 }
 
@@ -116,6 +128,9 @@ const loading = new Map<VoiceEngineCapability, Promise<number>>();
 const asrQueues: Record<AsrPriority, AsrJob[]> = { live: [], clip: [] };
 let asrRunning = false;
 let ttsChain: Promise<unknown> = Promise.resolve();
+/** Recordings run one at a time, from reading the file to the last chunk: they share one speech detector. */
+let clipChain: Promise<unknown> = Promise.resolve();
+let clipVad: SherpaVad | undefined;
 
 function modelPath(...segments: string[]): string {
   return join(options!.modelsDir, ...segments);
@@ -187,7 +202,9 @@ async function loadCapability(capability: VoiceEngineCapability): Promise<number
       return performance.now() - warmupStarted;
     }
     case "asr": {
-      const asrDir = VOICE_MODEL_FILES.asrDir;
+      const asrDir = settings.asr.dir;
+      const sessionConfig = join(settings.engineDir, "asr-session.conf");
+      await writeFile(sessionConfig, ASR_SESSION_CONFIG);
       const created = await sherpaModule.OfflineRecognizer.createAsync({
         featConfig: { sampleRate: SAMPLE_RATE, featureDim: 80 },
         modelConfig: {
@@ -198,7 +215,7 @@ async function loadCapability(capability: VoiceEngineCapability): Promise<number
           },
           tokens: modelPath(asrDir, "tokens.txt"),
           numThreads: settings.asrThreads,
-          provider: "cpu",
+          provider: `cpu:${sessionConfig}`,
           debug: 0,
           modelType: "nemo_transducer",
         },
@@ -310,17 +327,18 @@ async function predict(samples: Float32Array): Promise<number> {
   return (await turnDetector!.predict(samples)).probability;
 }
 
-async function decodeNow(target: SherpaRecognizer, samples: Float32Array): Promise<string> {
+async function decodeNow(target: SherpaRecognizer, samples: Float32Array): Promise<RecognizedSpeech> {
   const stream = target.createStream();
   stream.acceptWaveform({ sampleRate: SAMPLE_RATE, samples });
   await target.decodeAsync(stream);
-  return target.getResult(stream).text.trim();
+  const result = target.getResult(stream);
+  return { text: result.text.trim(), tokens: result.tokens ?? [], timestamps: result.timestamps ?? [] };
 }
 
 /** One recognizer call at a time; live conversation turns go ahead of queued clip chunks. */
-function decode(samples: Float32Array, priority: AsrPriority): Promise<string> {
+function decode(samples: Float32Array, priority: AsrPriority): Promise<RecognizedSpeech> {
   requireCapability("asr");
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<RecognizedSpeech>((resolve, reject) => {
     asrQueues[priority].push({ samples, resolve, reject });
     void pumpAsr();
   });
@@ -350,24 +368,38 @@ async function decodeSpeech(
   samples: Float32Array,
   speech: readonly SampleRange[],
   priority: AsrPriority,
-): Promise<{ text: string; chunks: number; chunkDetails: VoiceClipChunk[] }> {
-  const chunks = planSpeechChunks(speech, samples.length, { sampleRate: SAMPLE_RATE, ...CLIP_CHUNK_PLAN, samples });
+): Promise<{ text: string; chunks: number; chunkDetails: VoiceClipChunk[]; tokenStarts: number[] | null }> {
+  const chunks = planSpeechChunks(speech, samples.length, {
+    sampleRate: SAMPLE_RATE,
+    ...CLIP_CHUNK_PLAN,
+    maxChunkSeconds: options!.asr.maxChunkSeconds,
+    samples,
+  });
   const parts: string[] = [];
   const chunkDetails: VoiceClipChunk[] = [];
+  let tokenStarts: number[] | null = [];
   for (const chunk of chunks) {
     const part = await decode(samples.slice(chunk.start, chunk.end), priority);
-    parts.push(part);
+    parts.push(part.text);
     chunkDetails.push({
       startSeconds: Math.round((chunk.start / SAMPLE_RATE) * 100) / 100,
       endSeconds: Math.round((chunk.end / SAMPLE_RATE) * 100) / 100,
-      words: part.split(/\s+/).filter(Boolean).length,
+      words: part.text.split(/\s+/).filter(Boolean).length,
     });
+    // Text with no timing to match cannot be checked against the detected speech.
+    if (part.text && (part.tokens.length === 0 || part.tokens.length !== part.timestamps.length)) tokenStarts = null;
+    if (tokenStarts) {
+      for (let i = 0; i < part.tokens.length; i++) {
+        if (isLexicalToken(part.tokens[i]!)) tokenStarts.push(chunk.start / SAMPLE_RATE + part.timestamps[i]!);
+      }
+    }
   }
-  return { text: joinTranscripts(parts), chunks: chunks.length, chunkDetails };
+  return { text: joinTranscripts(parts), chunks: chunks.length, chunkDetails, tokenStarts };
 }
 
 async function detectSpeech(samples: Float32Array): Promise<SampleRange[]> {
-  const vad = createVad({ minSilenceDuration: 0.3, maxSpeechDuration: CLIP_CHUNK_PLAN.maxChunkSeconds });
+  const vad = clipVad ??= createVad({ minSilenceDuration: 0.3, maxSpeechDuration: options!.asr.maxChunkSeconds });
+  vad.reset();
   const segments: SampleRange[] = [];
   const drain = () => {
     while (!vad.isEmpty()) {
@@ -391,7 +423,13 @@ async function detectSpeech(samples: Float32Array): Promise<SampleRange[]> {
   return segments;
 }
 
-async function transcribeFile(filePath: string): Promise<VoiceClipTranscription> {
+function transcribeFile(filePath: string): Promise<VoiceClipTranscription> {
+  const run = clipChain.then(() => transcribeClip(filePath));
+  clipChain = run.catch(() => undefined);
+  return run;
+}
+
+async function transcribeClip(filePath: string): Promise<VoiceClipTranscription> {
   requireCapability("asr");
   const started = performance.now();
   const file = await readFile(filePath);
@@ -410,6 +448,8 @@ async function transcribeFile(filePath: string): Promise<VoiceClipTranscription>
     speechSeconds: Math.round((segments.reduce((sum, segment) => sum + segment.end - segment.start, 0) / SAMPLE_RATE) * 100) / 100,
     chunks: speech.chunks,
     chunkDetails: speech.chunkDetails,
+    coverage: speech.tokenStarts ? measureSpeechCoverage(segments, speech.tokenStarts, samples.length, SAMPLE_RATE) : null,
+    peakMemoryBytes: process.resourceUsage().maxRSS * 1024,
     ms: Math.round(performance.now() - started),
     format: recording.format,
     bytes: file.length,

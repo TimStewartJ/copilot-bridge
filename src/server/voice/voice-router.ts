@@ -1,5 +1,7 @@
 // REST routes for the local speech engine and Helm's hands-free voice (mounted under /api/voice).
 import express from "express";
+import { SPEECH_MODEL_IDS, type ChatMicSettings, type SpeechModelId } from "../../shared/chat-mic.js";
+import { SettingsValidationError } from "../settings-store.js";
 import { openSseConnection } from "../sse-response.js";
 import { VoiceConversationNotFoundError, type VoiceGateway } from "./voice-gateway.js";
 
@@ -32,6 +34,23 @@ export function createVoiceRouter(gateway: VoiceGateway): express.Router {
     }
     void gateway.installer.install().catch(() => undefined);
     res.status(202).json(gateway.installer.getStatus());
+  });
+
+  router.patch("/chat-mic", (req, res) => {
+    if (rejectCrossSite(req, res)) return;
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const patch: ChatMicSettings = {};
+    if ("speechModel" in body) {
+      if (!SPEECH_MODEL_IDS.includes(body.speechModel as SpeechModelId)) return res.status(400).json({ error: "Unknown speech model." });
+      patch.speechModel = body.speechModel as SpeechModelId;
+    }
+    if ("keepHeldRecordings" in body) patch.keepHeldRecordings = body.keepHeldRecordings as boolean;
+    try {
+      gateway.updateChatMic(patch);
+      res.json(gateway.getStatus());
+    } catch (error) {
+      res.status(error instanceof SettingsValidationError ? 400 : 409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   router.post("/conversations", async (req, res) => {

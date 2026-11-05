@@ -30,6 +30,17 @@ function readRawSettings(): string {
 }
 
 describe("settings-store", () => {
+  it("keeps chat mic settings when other settings change, and refuses invalid ones", () => {
+    store.updateSettings({ chatMic: { speechModel: "parakeet-unified-en", keepHeldRecordings: true } });
+    store.updateSettings({ theme: "dark" });
+    expect(createSettingsStore(db).getSettings().chatMic).toEqual({ speechModel: "parakeet-unified-en", keepHeldRecordings: true });
+
+    const before = readRawSettings();
+    for (const chatMic of [{ speechModel: "whisper" }, { keepHeldRecordings: "yes" }]) {
+      expect(() => store.updateSettings({ chatMic } as never)).toThrow("chatMic.");
+    }
+    expect(readRawSettings()).toBe(before);
+  });
   it("persists response-style settings without changing identity, custom instructions, or other preferences", () => {
     store.updateSettings({ identity: "Bridge", customInstructions: "Prefer TypeScript.", theme: "dark" });
     const responseStyle = { detail: "detailed" as const, guidance: "Use precise terms.\nKeep useful examples." };

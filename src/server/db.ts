@@ -547,6 +547,9 @@ function initSchema(db: DatabaseSync): void {
       transcript TEXT,
       error TEXT,
       mode TEXT,
+      speechGapSeconds REAL,
+      speechGapStart REAL,
+      reviewReason TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     );
@@ -1067,9 +1070,10 @@ function initSchema(db: DatabaseSync): void {
   }
 
   const voiceJobColumns = db.prepare("PRAGMA table_info(voice_jobs)").all() as Array<{ name: string }>;
-  if (!voiceJobColumns.some((column) => column.name === "mode")) {
+  for (const [column, type] of [["mode", "TEXT"], ["speechGapSeconds", "REAL"], ["speechGapStart", "REAL"], ["reviewReason", "TEXT"]] as const) {
+    if (voiceJobColumns.some((existing) => existing.name === column)) continue;
     try {
-      db.exec("ALTER TABLE voice_jobs ADD COLUMN mode TEXT");
+      db.exec(`ALTER TABLE voice_jobs ADD COLUMN ${column} ${type}`);
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;

@@ -1,8 +1,11 @@
 // Messages exchanged between Bridge and the isolated speech engine child process.
+import type { SpeechCoverage } from "../../shared/chat-mic.js";
 
 export interface VoiceEngineInitOptions {
   engineDir: string;
   modelsDir: string;
+  /** The recognizer to load: its directory under modelsDir and the window it was tested with. */
+  asr: { dir: string; maxChunkSeconds: number };
   asrThreads: number;
   ttsThreads: number;
   turnThreads: number;
@@ -52,6 +55,10 @@ export interface VoiceClipTranscription {
   chunks: number;
   /** Where each recognizer chunk sat in the recording and how many words it returned. */
   chunkDetails?: VoiceClipChunk[];
+  /** How well the words cover the detected speech; null when the recognizer gave no usable timing. */
+  coverage: SpeechCoverage | null;
+  /** The engine process's highest resident memory so far, in bytes. */
+  peakMemoryBytes?: number;
   ms: number;
   /** How the recording arrived: compressed by the browser, or the WAV every browser can send. */
   format: "wav" | "opus";

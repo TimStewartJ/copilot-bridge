@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createVoiceJob,
   fetchLatestVoiceJob,
+  fetchOpenVoiceJobs,
   fetchVoiceJob,
   markVoiceJobRecovered,
   transcribeAudio,
@@ -13,6 +14,7 @@ import { getTaskIdFromDraftComposerKey, isDraftComposerKey } from "../lib/compos
 import { whileHoldingVoiceCapture } from "../lib/voice-capture-guard";
 import { clearOwnedVoiceJobs, replaceVoiceJob, shouldHandleDraftVoiceTarget } from "../lib/voice-job-map";
 import { mergeTranscript } from "../lib/voice-transcript";
+import { reviewForInsertedTranscript, type VoiceReviewNotice } from "../lib/voice-review";
 import {
   createVoiceRecordingId,
   deletePendingVoiceRecording,
@@ -27,10 +29,10 @@ import type { VoiceSubmitMode } from "../lib/voice-submit-mode";
 import type { SendMode } from "../../shared/send-mode.js";
 import type { Draft } from "../useDrafts";
 
-export type VoiceBackgroundJobStatus = "uploading" | "accepted" | "transcribing" | "sending" | "error";
+export type VoiceBackgroundJobStatus = "uploading" | "accepted" | "transcribing" | "sending" | "error" | "review";
 type VoiceServerActivityStatus = Extract<VoiceJobStatusResponse["status"], "accepted" | "transcribing" | "sending">;
 export type VoiceSessionActivityStatus = "uploading" | VoiceServerActivityStatus;
-export type VoiceSessionSettledStatus = "done" | "recovered" | "error";
+export type VoiceSessionSettledStatus = "done" | "recovered" | "held" | "error";
 
 export interface VoiceSessionActivity {
   sessionId: string;
@@ -40,6 +42,8 @@ export interface VoiceSessionActivity {
 }
 
 export interface VoiceSessionSettled {
+  /** The server job that settled. Missing when the upload failed before the server accepted it. */
+  jobId?: string;
   sessionId: string;
   taskId?: string;
   status: VoiceSessionSettledStatus;
@@ -71,17 +75,19 @@ export interface VoiceBackgroundJob {
    * error can retire it on the server. Unset while a transcript may still need to reach the draft.
    */
   serverFailedWithoutTranscript?: boolean;
+  /** Set with status "review": why the transcript in the draft should be read before it goes out. */
+  review?: VoiceReviewNotice;
 }
 
-/** A voice job that is still in flight, narrowed away from the terminal `error` status. */
+/** A voice job that is still in flight, narrowed away from the terminal statuses. */
 export type ActiveVoiceBackgroundJob = VoiceBackgroundJob & {
-  status: Exclude<VoiceBackgroundJobStatus, "error">;
+  status: Exclude<VoiceBackgroundJobStatus, "error" | "review">;
 };
 
 export function isActiveVoiceBackgroundJob(
   job: VoiceBackgroundJob | null | undefined,
 ): job is ActiveVoiceBackgroundJob {
-  return !!job && job.status !== "error";
+  return !!job && job.status !== "error" && job.status !== "review";
 }
 
 export interface StartBackgroundVoiceJobOptions {
@@ -159,6 +165,8 @@ export function useBackgroundVoiceJobs({
   const pollTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const claimedOriginServerJobIdsRef = useRef<Record<string, string>>({});
   const lastNotifiedActivityStatusRef = useRef<Record<string, VoiceSessionActivityStatus>>({});
+  const insertedHeldJobIdsRef = useRef(new Set<string>());
+  const jobsFoundOnStartRef = useRef(new Set<string>());
   const optionsRef = useRef({
     activeComposerKey,
     getDraft,
@@ -253,12 +261,13 @@ export function useBackgroundVoiceJobs({
 
   /**
    * Deletes the stored recording only when it belongs to the server job that just settled. A stale
-   * recovery response must never destroy a recording made after that job started.
+   * recovery response must never destroy a recording made after that job started, and a job only
+   * found on the server at start says nothing about an upload that failed on this device.
    */
   const forgetRecordingForServerJob = useCallback(async (composerKey: string, serverJobId: string) => {
     const record = await getPendingVoiceRecording(composerKey).catch(() => null);
     if (!record) return;
-    if (record.serverJobId && record.serverJobId !== serverJobId) return;
+    if (record.serverJobId ? record.serverJobId !== serverJobId : jobsFoundOnStartRef.current.has(serverJobId)) return;
     await forgetPendingRecording(composerKey, record.recordingId);
   }, [forgetPendingRecording]);
 
@@ -304,7 +313,7 @@ export function useBackgroundVoiceJobs({
 
   const clearVoiceJobError = useCallback((composerKey: string) => {
     const existing = jobsRef.current[composerKey];
-    if (existing?.status !== "error") return;
+    if (existing?.status !== "error" && existing?.status !== "review") return;
     // Never silently drop audio that has not been delivered yet — that needs an explicit discard.
     if (existing.retryable === true) return;
     retireFailedServerJob(existing);
@@ -312,7 +321,7 @@ export function useBackgroundVoiceJobs({
     retryingComposerKeysRef.current.delete(composerKey);
     setJobsState((prev) => {
       const current = prev[composerKey];
-      if (!current || current.status !== "error" || current.retryable === true) return prev;
+      if (!current || (current.status !== "error" && current.status !== "review") || current.retryable === true) return prev;
       const next = { ...prev };
       delete next[composerKey];
       return next;
@@ -400,7 +409,7 @@ export function useBackgroundVoiceJobs({
 
   const notifyVoiceSessionSettled = useCallback((jobId: string, settled: VoiceSessionSettled) => {
     delete lastNotifiedActivityStatusRef.current[jobId];
-    optionsRef.current.onVoiceSessionSettled?.(settled);
+    optionsRef.current.onVoiceSessionSettled?.({ ...settled, jobId });
   }, []);
 
   const notifySnapshotVoiceSessionActivity = useCallback((snapshot: VoiceJobStatusResponse) => {
@@ -467,7 +476,9 @@ export function useBackgroundVoiceJobs({
         insertTranscriptIntoDraft(composerKey, transcript, true);
         await forgetPendingRecording(composerKey, ownedRecordingId);
         clearUploadTracking(composerKey);
-        clearJob(composerKey);
+        const review = reviewForInsertedTranscript(result.coverage);
+        if (review) setJob(composerKey, { composerKey, status: "review", submitMode: "insert", review });
+        else clearJob(composerKey);
       } catch (err) {
         markError(composerKey, err instanceof Error ? err.message : String(err), {
           submitMode: "insert",
@@ -550,6 +561,61 @@ export function useBackgroundVoiceJobs({
           taskId,
           status: snapshot.status,
         });
+      }
+      if (navigateTargetSessionId) {
+        optionsRef.current.navigateToSession(navigateTargetSessionId, taskId, true);
+      }
+      return false;
+    }
+
+    if (snapshot.status === "held") {
+      stopPolling(snapshot.id);
+      // The transcript goes to the target chat's draft, so an origin draft only counts when we go there.
+      const canReviewNow =
+        optionsRef.current.activeComposerKey === displayKey
+        || (optionsRef.current.activeComposerKey === originComposerKey && !!navigateTargetSessionId);
+      const reachedDraft = canReviewNow && !!snapshot.transcript;
+      if (reachedDraft) {
+        // Reaches the draft once, even if the server was not told and the job comes back as held.
+        if (!insertedHeldJobIdsRef.current.has(snapshot.id)) {
+          insertedHeldJobIdsRef.current.add(snapshot.id);
+          insertTranscriptIntoDraft(displayKey, snapshot.transcript!, true);
+        }
+        await markVoiceJobRecovered(snapshot.id).catch(() => {});
+        if (isDraftComposerKey(originComposerKey) && snapshot.targetSessionId) {
+          optionsRef.current.clearDraftSession(originComposerKey);
+        }
+        await forgetRecordingForServerJob(displayKey, snapshot.id);
+        await forgetRecordingForServerJob(originComposerKey, snapshot.id);
+        setJobsState((prev) => replaceVoiceJob(prev, snapshot.id, originComposerKey, {
+          composerKey: displayKey,
+          status: "review",
+          submitMode: "insert",
+          serverOwned: true,
+          serverJobId: snapshot.id,
+          originComposerKey,
+          targetSessionId: snapshot.targetSessionId,
+          safeToLeave: snapshot.safeToLeave,
+          ...(snapshot.mode ? { sendMode: snapshot.mode } : {}),
+          review: {
+            reason: snapshot.reviewReason ?? "unchecked",
+            recordingJobId: snapshot.id,
+            gapStartSeconds: snapshot.speechGapStart,
+          },
+        }, claimedOriginServerJobId));
+      } else {
+        // The transcript waits on the server and reaches the draft when this conversation next opens.
+        setJobsState((prev) => clearOwnedVoiceJobs(
+          prev,
+          { composerKey: originComposerKey, serverJobId: snapshot.id, claimedServerJobId: claimedOriginServerJobId },
+          { composerKey: displayKey, serverJobId: snapshot.id },
+        ));
+      }
+      if (claimedOriginServerJobIdsRef.current[originComposerKey] === snapshot.id) {
+        delete claimedOriginServerJobIdsRef.current[originComposerKey];
+      }
+      if (snapshot.targetSessionId) {
+        notifyVoiceSessionSettled(snapshot.id, { sessionId: snapshot.targetSessionId, taskId, status: reachedDraft ? "recovered" : "held" });
       }
       if (navigateTargetSessionId) {
         optionsRef.current.navigateToSession(navigateTargetSessionId, taskId, true);
@@ -995,6 +1061,28 @@ export function useBackgroundVoiceJobs({
       cancelled = true;
     };
   }, [activeComposerKey, applyServerSnapshot, pollServerJob, setJob]);
+
+  // A tab the phone evicted polled nothing, so a dictation held meanwhile would wait where nobody looks.
+  useEffect(() => {
+    let cancelled = false;
+    const catchUp = async () => {
+      const snapshots = await fetchOpenVoiceJobs().catch(() => []);
+      for (const snapshot of snapshots) {
+        if (cancelled) return;
+        // The composer on screen recovers its own job.
+        const activeKey = optionsRef.current.activeComposerKey;
+        if (activeKey === snapshot.composerKey || activeKey === snapshot.targetSessionId) continue;
+        if (findDisplayKeyForServerJob(snapshot.id)) continue;
+        jobsFoundOnStartRef.current.add(snapshot.id);
+        const keepPolling = await applyServerSnapshot(snapshot, snapshot.composerKey);
+        if (keepPolling && !cancelled) pollServerJob(snapshot.id, snapshot.composerKey);
+      }
+    };
+    void catchUp();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyServerSnapshot, findDisplayKeyForServerJob, pollServerJob]);
 
   useEffect(() => {
     return () => {

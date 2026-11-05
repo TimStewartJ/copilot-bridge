@@ -67,6 +67,7 @@ import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidat
 
 import { setTaskInQueryCaches, updateTaskInQueryCaches } from "./lib/task-query-cache";
 import { schedulePageReloadWhenSafe } from "./lib/voice-capture-guard";
+import { isHeldNoticeClosed, rememberHeldNoticeClosed } from "./lib/voice-review";
 import { createBackendStatusBannerState, reduceBackendStatusBannerState } from "./lib/backend-status-banner-state";
 import { cleanupFailedFirstSendSession, sendMaterializedFirstPrompt } from "./first-send-session-cleanup";
 import { describeRestartNotice, useRestartStatusQuery } from "./hooks/queries/useRestartStatus";
@@ -88,7 +89,7 @@ import SessionPlaybookChip from "./components/SessionPlaybookChip";
 import { useActiveTask } from "./hooks/queries/useActiveTask";
 import { useTaskGroupsQuery } from "./hooks/queries/useTaskGroups";
 import { addOptimisticSessionToCache, mergeActiveAndArchivedSessions, patchSessionQueryData, useSessionsQuery } from "./hooks/queries/useSessions";
-import { getVoiceSessionIntent, projectSessionEvent, projectVoiceSessionActivity } from "./hooks/queries/session-events";
+import { getVoiceSessionIntent, projectSessionEvent, projectVoiceSessionActivity, settleVoiceSessionActivity } from "./hooks/queries/session-events";
 import { useCachedTaskArchivedSessions } from "./hooks/queries/useTaskArchivedSessions";
 import PaneResizeHandle, { usePaneWidth, useViewportWidth } from "./components/shared/PaneResizeHandle";
 import { useExternalSessionUseQuery } from "./hooks/queries/useExternalSessionUse";
@@ -247,6 +248,8 @@ function AppShell() {
   const archivedLoading = archivedLoaded && !archivedSessionsFetched;
   const tasksQuery = useTasksQuery();
   const tasks = tasksQuery.data ?? [];
+  const sessionLinksRef = useRef({ tasks, sessions });
+  sessionLinksRef.current = { tasks, sessions };
   const { data: taskGroups = [] } = useTaskGroupsQuery();
 
   const [railExpanded, setRailExpanded] = useState(true);
@@ -828,11 +831,12 @@ function AppShell() {
   }, [addOptimisticSession, bumpSessionBusySignal, linkOptimisticTaskSession, queryClient]);
 
   const handleVoiceSessionSettled = useCallback((settled: VoiceSessionSettled) => {
+    if (settled.status !== "done") settleVoiceSessionActivity(queryClient, settled.sessionId);
     void invalidateSessions();
     if (settled.taskId) {
       void invalidateTasks();
     }
-  }, [invalidateSessions, invalidateTasks]);
+  }, [invalidateSessions, invalidateTasks, queryClient]);
 
   // Sessions not linked to any task
   const globalSessions = useMemo(() => {
@@ -1142,7 +1146,37 @@ function AppShell() {
       void invalidateTasks();
     },
     onVoiceSessionActivity: handleVoiceSessionActivity,
-    onVoiceSessionSettled: handleVoiceSessionSettled,
+    onVoiceSessionSettled: (settled) => {
+      handleVoiceSessionSettled(settled);
+      const heldToastId = `voice-held-${settled.sessionId}`;
+      if (settled.status !== "held") {
+        dismissToast(heldToastId);
+        return;
+      }
+      const { jobId } = settled;
+      if (jobId && isHeldNoticeClosed(jobId)) return;
+      // Whoever left this chat is waiting for a reply that will not come until they check the words.
+      showToast({
+        id: heldToastId,
+        ...(jobId ? { onClosed: () => rememberHeldNoticeClosed(jobId) } : {}),
+        tone: "info",
+        title: "Dictation not sent",
+        description: "It's waiting in its chat for you to check.",
+        durationMs: 0,
+        haptic: false,
+        action: {
+          label: "Open",
+          icon: "open",
+          onAction: () => {
+            dismissToast(heldToastId);
+            // Read now: the app may have raised this before tasks loaded, and a dictation into a task chat names no task.
+            const links = sessionLinksRef.current;
+            const session = links.sessions.find((entry) => entry.sessionId === settled.sessionId);
+            navigateToSession(settled.sessionId, settled.taskId ?? findTaskForSession(links.tasks, settled.sessionId, session)?.id);
+          },
+        },
+      });
+    },
   });
 
   /**

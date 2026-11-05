@@ -2,6 +2,7 @@
 
 import type { DatabaseSync } from "./db.js";
 import { validateHelmSettingsPatch, type HelmLegacySettings, type HelmLegacySettingKey, type UnifiedHelmSettings } from "../shared/helm-settings.js";
+import { SPEECH_MODEL_IDS, type ChatMicSettings, type SpeechModelId } from "../shared/chat-mic.js";
 
 import type { ProvidersConfig } from "./providers/types.js";
 import type { McpServerConfig } from "./mcp-config.js";
@@ -136,6 +137,8 @@ export interface AppSettings {
   computerUse?: ComputerUseSettings;
   imageGeneration?: ImageGenerationSettings;
   helm?: HelmSettings;
+  /** The chat mic's speech model and how dictations are reviewed; read and written through /api/voice/chat-mic. */
+  chatMic?: ChatMicSettings;
   /** Early compaction for models whose provider rejects large requests; unset uses the defaults. */
   imageBudget?: ImageBudgetSettings;
   /** Opt-in features that may change or go away; unset is all off. */
@@ -370,6 +373,22 @@ function normalizeDeployGuards(value: unknown): DeployGuardSettings | undefined 
   } catch (error) {
     validationError(error instanceof Error ? error.message : String(error));
   }
+}
+
+function normalizeChatMicSettings(value: unknown): ChatMicSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("chatMic must be an object");
+  const { speechModel, keepHeldRecordings } = value;
+  const normalized: ChatMicSettings = {};
+  if (speechModel !== undefined) {
+    if (!SPEECH_MODEL_IDS.includes(speechModel as SpeechModelId)) validationError(`chatMic.speechModel must be one of: ${SPEECH_MODEL_IDS.join(", ")}`);
+    normalized.speechModel = speechModel as SpeechModelId;
+  }
+  if (keepHeldRecordings !== undefined) {
+    if (typeof keepHeldRecordings !== "boolean") validationError("chatMic.keepHeldRecordings must be true or false");
+    if (keepHeldRecordings) normalized.keepHeldRecordings = true;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 function normalizeHelmSettings(value: unknown): HelmSettings | undefined {
@@ -779,6 +798,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
     normalized.imageGeneration = normalizeImageGenerationSettings(value.imageGeneration);
   }
   if ("helm" in value) normalized.helm = normalizeHelmSettings(value.helm);
+  if ("chatMic" in value) normalized.chatMic = normalizeChatMicSettings(value.chatMic);
   if ("imageBudget" in value) normalized.imageBudget = normalizeImageBudgetSettings(value.imageBudget);
   if ("experimental" in value) normalized.experimental = normalizeExperimentalSettings(value.experimental);
   if ("deployGuards" in value) normalized.deployGuards = normalizeDeployGuards(value.deployGuards);

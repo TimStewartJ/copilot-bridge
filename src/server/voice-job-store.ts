@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import { toSendMode, type SendMode } from "../shared/send-mode.js";
+import type { VoiceReviewReason } from "../shared/chat-mic.js";
 
 export type VoiceJobStatus =
   | "accepted"
@@ -7,6 +8,8 @@ export type VoiceJobStatus =
   | "sending"
   | "done"
   | "error"
+  /** Waiting for a person to read the transcript. Nothing was sent. */
+  | "held"
   | "recovered";
 
 export interface VoiceJob {
@@ -19,6 +22,11 @@ export interface VoiceJob {
   error?: string;
   /** How the transcript is sent; unset sends it the way a plain message goes. */
   mode?: SendMode;
+  /** The longest detected speech with no words, and where it starts. Saved with the transcript. */
+  speechGapSeconds?: number;
+  speechGapStart?: number;
+  /** Set when the transcript was held for review. Kept after it reaches the draft, for retention and analysis. */
+  reviewReason?: VoiceReviewReason;
   createdAt: string;
   updatedAt: string;
 }
@@ -36,8 +44,8 @@ interface VoiceJobCreate {
   mode?: SendMode;
 }
 
-const RELEVANT_STATUSES: readonly VoiceJobStatus[] = ["accepted", "transcribing", "sending", "error"];
-const TERMINAL_STATUSES: readonly VoiceJobStatus[] = ["done", "error", "recovered"];
+const RELEVANT_STATUSES: readonly VoiceJobStatus[] = ["accepted", "transcribing", "sending", "error", "held"];
+const TERMINAL_STATUSES: readonly VoiceJobStatus[] = ["done", "error", "held", "recovered"];
 
 export function createVoiceJobStore(db: DatabaseSync) {
   function hydrate(row: any): StoredVoiceJob {
@@ -51,6 +59,9 @@ export function createVoiceJobStore(db: DatabaseSync) {
       transcript: row.transcript ?? undefined,
       error: row.error ?? undefined,
       mode: toSendMode(row.mode),
+      speechGapSeconds: row.speechGapSeconds ?? undefined,
+      speechGapStart: row.speechGapStart ?? undefined,
+      reviewReason: row.reviewReason ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -82,7 +93,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
 
   function updateVoiceJob(
     id: string,
-    updates: Partial<Pick<StoredVoiceJob, "status" | "targetSessionId" | "audioPath" | "transcript" | "error">>,
+    updates: Partial<Pick<StoredVoiceJob, "status" | "targetSessionId" | "audioPath" | "transcript" | "error" | "speechGapSeconds" | "speechGapStart" | "reviewReason">>,
   ): StoredVoiceJob | undefined {
     const existing = getVoiceJob(id);
     if (!existing) return undefined;
@@ -95,7 +106,8 @@ export function createVoiceJobStore(db: DatabaseSync) {
 
     db.prepare(`
       UPDATE voice_jobs
-      SET targetSessionId = ?, status = ?, audioPath = ?, transcript = ?, error = ?, updatedAt = ?
+      SET targetSessionId = ?, status = ?, audioPath = ?, transcript = ?, error = ?,
+          speechGapSeconds = ?, speechGapStart = ?, reviewReason = ?, updatedAt = ?
       WHERE id = ?
     `).run(
       next.targetSessionId ?? null,
@@ -103,6 +115,9 @@ export function createVoiceJobStore(db: DatabaseSync) {
       next.audioPath,
       next.transcript ?? null,
       next.error ?? null,
+      next.speechGapSeconds ?? null,
+      next.speechGapStart ?? null,
+      next.reviewReason ?? null,
       next.updatedAt,
       id,
     );
@@ -120,10 +135,10 @@ export function createVoiceJobStore(db: DatabaseSync) {
     });
   }
 
-  /** Only a failed job can be recovered; an in-flight one must stay resumable after a restart. */
+  /** Only a failed or held job can be recovered; an in-flight one must stay resumable after a restart. */
   function markRecovered(id: string): StoredVoiceJob | undefined {
     const existing = getVoiceJob(id);
-    if (!existing || existing.status !== "error") return existing;
+    if (!existing || (existing.status !== "error" && existing.status !== "held")) return existing;
     return updateVoiceJob(id, {
       status: "recovered",
       error: undefined,
@@ -134,6 +149,15 @@ export function createVoiceJobStore(db: DatabaseSync) {
     const rows = db.prepare(`
       SELECT * FROM voice_jobs
       WHERE status IN ('accepted', 'transcribing', 'sending')
+      ORDER BY createdAt ASC
+    `).all() as any[];
+    return rows.map(hydrate);
+  }
+
+  function listHeldVoiceJobs(): StoredVoiceJob[] {
+    const rows = db.prepare(`
+      SELECT * FROM voice_jobs
+      WHERE status = 'held'
       ORDER BY createdAt ASC
     `).all() as any[];
     return rows.map(hydrate);
@@ -198,6 +222,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
     markError,
     markRecovered,
     listPendingVoiceJobs,
+    listHeldVoiceJobs,
     listTerminalVoiceJobs,
     listVoiceJobIds,
     pruneTerminalVoiceJobs,

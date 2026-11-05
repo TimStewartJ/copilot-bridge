@@ -37,12 +37,12 @@ function createFakeEngine() {
   return { engine: engine as unknown as VoiceEngine, pushed };
 }
 
-function createGateway(options: { installed?: boolean } = {}) {
+function createGateway(options: { installed?: boolean; installing?: boolean } = {}) {
   const dataDir = makeTestDir("voice-gateway");
   const paths = resolveVoicePaths({ dataDir, env: {} });
   const { engine, pushed } = createFakeEngine();
   const installer = {
-    getStatus: () => ({ installed: options.installed !== false, supported: true, target: "win32-x64", installing: false, assets: [], totalBytes: 0, remainingBytes: 0 }),
+    getStatus: () => ({ installed: options.installed !== false, supported: true, target: "win32-x64", installing: options.installing === true, assets: [], speechModels: [], totalBytes: 0, remainingBytes: 0 }),
     install: vi.fn(async () => undefined),
   } as unknown as VoiceInstaller;
   const listeners = new Set<(event: unknown) => void>();
@@ -174,6 +174,18 @@ describe("VoiceGateway HTTP transport", () => {
     await vi.waitFor(() => expect(sink.closed).toBe(true));
     expect(gateway.getStatus().activeConversations).toBe(0);
     await gateway.shutdown();
+  });
+
+  it("refuses a speech model change while a download is running", async () => {
+    const { gateway } = createGateway({ installing: true });
+    const app = express();
+    app.use(express.json());
+    app.use("/voice", createVoiceRouter(gateway));
+
+    const res = await request(app).patch("/voice/chat-mic").send({ speechModel: "parakeet-v3" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("current download");
   });
 
   it("serves status and rejects cross-site installs", async () => {

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createApiRouter } from "../api-router.js";
 import { createApiServices } from "../api-services.js";
 import { createAppContext } from "../app-context-factory.js";
+import { openDatabase } from "../db.js";
 import { __testing } from "../staging-tools.js";
 import {
   activateStagingPreviewTarget,
@@ -266,6 +267,34 @@ describe("staging preview backend child process", () => {
         expect(completed.body.index.state).toBe("idle");
         expect(completed.body.totals.inputTokens).toBe(20);
       });
+    } finally {
+      await ctx.copilotUsageReader?.shutdown();
+      await ctx.sessionManager.gracefulShutdown();
+      await ctx.voiceJobManager.shutdown();
+      db.close();
+    }
+  });
+
+  it("starts with a settings row it cannot read, and reports it through the settings API", async () => {
+    const stagingDir = makeTestDir("stage-unreadable-settings");
+    const runtimePaths = runtimePathsFor(stagingDir);
+    mkdirSync(runtimePaths.dataDir, { recursive: true });
+    const seeded = openDatabase(runtimePaths.dataDir);
+    seeded.prepare("INSERT INTO settings (key, value) VALUES ('app', ?)").run(JSON.stringify({ chatMic: { speechModel: "not-a-model" } }));
+    seeded.close();
+
+    const { ctx, db } = createAppContext({
+      runtimePaths,
+      apiBasePath: "/staging/unreadable-settings/api",
+      isStaging: true,
+      enableStartupDocsSnapshot: false,
+    });
+    const app = express();
+    app.use("/api", createApiRouter(ctx, createApiServices(ctx)));
+
+    try {
+      expect(ctx.voiceRuntime?.engine.speechModel.id).toBe("parakeet-unified-en");
+      expect((await request(app).get("/api/settings")).status).toBeGreaterThanOrEqual(400);
     } finally {
       await ctx.copilotUsageReader?.shutdown();
       await ctx.sessionManager.gracefulShutdown();

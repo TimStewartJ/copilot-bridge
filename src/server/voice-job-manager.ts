@@ -5,9 +5,11 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { isBridgeRestartingError } from "./backend-availability.js";
 import { sendChatMessage, type ChatMessageDeliveryContext } from "./chat-message-delivery.js";
 import type { SessionManager } from "./session-manager.js";
+import type { SettingsStore } from "./settings-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { TranscriptionService } from "./transcription-service.js";
 import type { CopilotContextTier } from "../shared/copilot-context.js";
+import { decideVoiceReview, type VoiceReviewReason } from "../shared/chat-mic.js";
 import type { SendMode } from "../shared/send-mode.js";
 import {
   type StoredVoiceJob,
@@ -40,6 +42,8 @@ interface CreateVoiceJobManagerOptions {
   sessionManager: SessionManager;
   taskStore: TaskStore;
   chatDelivery: ChatMessageDeliveryContext;
+  /** Where the choice to keep held recordings lives. */
+  settingsStore?: Pick<SettingsStore, "getSettings">;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -65,6 +69,7 @@ export function createVoiceJobManager({
   sessionManager,
   taskStore,
   chatDelivery,
+  settingsStore,
 }: CreateVoiceJobManagerOptions) {
   const voiceJobsDir = join(dataDir, "voice-jobs");
   mkdirSync(voiceJobsDir, { recursive: true });
@@ -85,6 +90,15 @@ export function createVoiceJobManager({
     void processVoiceJob(jobId).catch((error) => {
       console.error(`[voice-jobs] Uncontained processing failure for ${jobId}:`, error);
     });
+  }
+
+  /** The settings API reports a settings row it cannot read. A sweep has to survive one. */
+  function keepsHeldRecordings(): boolean {
+    try {
+      return settingsStore?.getSettings().chatMic?.keepHeldRecordings === true;
+    } catch {
+      return false;
+    }
   }
 
   function toSnapshot(job: VoiceJob | undefined): VoiceJobSnapshot | undefined {
@@ -138,6 +152,11 @@ export function createVoiceJobManager({
     return toSnapshot(store.getVoiceJob(id));
   }
 
+  /** Where a job's recording is, for playing it back. It may already have been cleaned up. */
+  function getRecordingPath(id: string): string | undefined {
+    return store.getVoiceJob(id)?.audioPath;
+  }
+
   function findLatestRelevantForComposer(composerKey: string): VoiceJobSnapshot | undefined {
     return toSnapshot(store.findLatestRelevantForComposer(composerKey));
   }
@@ -145,6 +164,18 @@ export function createVoiceJobManager({
   async function markRecovered(id: string): Promise<VoiceJobSnapshot | undefined> {
     if (!store.getVoiceJob(id)) return undefined;
     return toSnapshot(store.markRecovered(id));
+  }
+
+  /** What a client that just started missed while nothing was polling: running jobs, and dictations waiting to be read. */
+  function listOpenVoiceJobs(): VoiceJobSnapshot[] {
+    return [...store.listPendingVoiceJobs(), ...store.listHeldVoiceJobs()].map((job) => toSnapshot(job)!);
+  }
+
+  /** A held dictation waits in its chat, so deleting the chat leaves nothing to come back to. */
+  function forgetHeldForChat(sessionId: string): void {
+    for (const job of store.listHeldVoiceJobs()) {
+      if (job.targetSessionId === sessionId) store.markRecovered(job.id);
+    }
   }
 
   function resumePendingJobs(): void {
@@ -242,6 +273,9 @@ export function createVoiceJobManager({
 
   async function transcribeAndSend(job: StoredVoiceJob, existingTranscript?: string): Promise<void> {
     let transcript = existingTranscript?.trim();
+    // A transcript saved before coverage existed has no verdict, and that means it was never checked.
+    let reviewReason: VoiceReviewReason | undefined = job.reviewReason
+      ?? (transcript && job.speechGapSeconds === undefined ? "unchecked" : undefined);
 
     if (!transcript) {
       store.updateVoiceJob(job.id, {
@@ -255,15 +289,19 @@ export function createVoiceJobManager({
         if (!transcript) {
           throw new Error("No transcript returned");
         }
+        reviewReason = decideVoiceReview(result.coverage);
+        // The verdict is saved with the transcript, so a restart can never send what should be held.
+        store.updateVoiceJob(job.id, {
+          transcript,
+          error: undefined,
+          speechGapSeconds: result.coverage?.largestGapSeconds,
+          speechGapStart: result.coverage?.gapStartSeconds,
+          reviewReason,
+        });
       } catch (error) {
         await markJobError(job.id, error instanceof Error ? error.message : String(error));
         return;
       }
-
-      store.updateVoiceJob(job.id, {
-        transcript,
-        error: undefined,
-      });
     }
 
     const targetSessionId = job.targetSessionId;
@@ -275,6 +313,11 @@ export function createVoiceJobManager({
     const isResumingSend = job.status === "sending";
     if (isResumingSend && await sessionHasAcceptedTranscript(targetSessionId, transcript, job.updatedAt)) {
       await markJobDone(job.id, transcript);
+      return;
+    }
+
+    if (reviewReason) {
+      store.updateVoiceJob(job.id, { status: "held", transcript, reviewReason, error: undefined });
       return;
     }
 
@@ -411,9 +454,13 @@ export function createVoiceJobManager({
 
   async function performMaintenance(now: number): Promise<VoiceJobMaintenanceResult> {
     const audioCutoff = now - VOICE_JOB_AUDIO_RETENTION_MS;
+    const keepHeld = keepsHeldRecordings();
     for (const job of store.listTerminalVoiceJobs()) {
       const finishedAt = Date.parse(job.updatedAt);
-      if (Number.isFinite(finishedAt) && finishedAt > audioCutoff) continue;
+      // A held dictation nobody has opened still needs its recording; the two days start once it is opened.
+      const keepsLonger = job.status === "held" || (keepHeld && job.reviewReason);
+      const cutoff = keepsLonger ? now - VOICE_JOB_TERMINAL_RETENTION_MS : audioCutoff;
+      if (Number.isFinite(finishedAt) && finishedAt > cutoff) continue;
       await cleanupJobArtifacts(job);
     }
 
@@ -479,8 +526,11 @@ export function createVoiceJobManager({
   return {
     acceptVoiceJob,
     getVoiceJob,
+    getRecordingPath,
     findLatestRelevantForComposer,
     markRecovered,
+    listOpenVoiceJobs,
+    forgetHeldForChat,
     resumePendingJobs,
     runMaintenance,
     startMaintenance,

@@ -30,6 +30,7 @@ import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
 import { ComposerAttachmentTray } from "./ChatAttachments";
 import { VoiceRecordingWave } from "./VoiceRecordingWave";
+import { VoiceReviewLine } from "./chat/VoiceReviewLine";
 import { DS, cx } from "../design/tokens";
 import { AutopilotIcon } from "../design/primitives";
 import { haptic } from "../lib/haptics";
@@ -722,6 +723,11 @@ export default function ChatInput({
   const nextSendMode: SendMode = isDraft ? defaultSendMode : chosenSendMode;
   const autopilotNext = nextSendMode === "autopilot";
   nextSendModeRef.current = nextSendMode;
+  // A held dictation goes out by hand, in the mode it was recorded for.
+  const heldSendMode = voiceJob?.status === "review" ? voiceJob.sendMode : undefined;
+  useEffect(() => {
+    if (heldSendMode) chooseSendMode(heldSendMode);
+  }, [chooseSendMode, heldSendMode]);
 
   const handleSend = useCallback((mode: SendMode = nextSendMode) => {
     if (disabled || uploading > 0 || manualSendBlockedByVoiceJob) return;
@@ -765,7 +771,8 @@ export default function ChatInput({
   useEffect(() => {
     const target = sendAfterTranscriptRef.current;
     if (!target) return;
-    if (target !== composerKey || (voiceJob?.status === "error" && voiceJob.retryable !== true)) {
+    // A dictation held for review stays in the draft; that is the one exception to always sending.
+    if (target !== composerKey || voiceJob?.status === "review" || (voiceJob?.status === "error" && voiceJob.retryable !== true)) {
       sendAfterTranscriptRef.current = null;
       return;
     }
@@ -985,6 +992,8 @@ export default function ChatInput({
             )}
           </div>
         )}
+
+        {voiceJob?.status === "review" && voiceJob.review && !recordingView && hasContent && <VoiceReviewLine review={voiceJob.review} />}
 
         {slashCommandsSupported && !recordingView && (slashSuggestions.length > 0 || exactSlashCommand) && (
           <div

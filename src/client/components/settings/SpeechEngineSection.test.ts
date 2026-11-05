@@ -9,6 +9,7 @@ import {
   waitUntilAct,
   type ReactDomHarness,
 } from "../../test-react-harness";
+import { installSelectAwareDomShim } from "../../test-dom-shim";
 import type { VoiceInstallStatus, VoiceStatus } from "../../voice/voice-api";
 import { describeEngineState, SpeechEngineSection } from "./SpeechEngineSection";
 
@@ -19,6 +20,7 @@ const apiMocks = vi.hoisted(() => ({
 const voiceApiMocks = vi.hoisted(() => ({
   fetchVoiceStatus: vi.fn(),
   startVoiceInstall: vi.fn(),
+  patchChatMic: vi.fn(),
 }));
 
 vi.mock("../../api", () => apiMocks);
@@ -42,13 +44,22 @@ function install(overrides: Partial<VoiceInstallStatus> = {}): VoiceInstallStatu
   };
 }
 
-function voiceStatus(installOverrides: Partial<VoiceInstallStatus> = {}, engine: VoiceStatus["engine"] = { state: "stopped", loaded: [] }): VoiceStatus {
+function voiceStatus(installOverrides: Partial<VoiceInstallStatus> = {}, engine: VoiceStatus["engine"] = { state: "stopped", loaded: [] }, chatMic: Partial<VoiceStatus["chatMic"]> = {}): VoiceStatus {
   return {
     install: install(installOverrides),
     engine,
     voices: [],
     defaults: { voice: "af_heart", speed: 1, patience: 0.5, bargeIn: true, announce: "watched" },
     activeConversations: 0,
+    chatMic: {
+      speechModel: "parakeet-unified-en",
+      models: [
+        { id: "parakeet-unified-en", label: "Parakeet Unified English (local)", installed: true, sizeBytes: 501_350_460 },
+        { id: "parakeet-v3", label: "Parakeet v3 (local)", installed: false, sizeBytes: 487_170_055 },
+      ],
+      keepHeldRecordings: false,
+      ...chatMic,
+    },
   };
 }
 
@@ -67,7 +78,7 @@ function text(harness: ReactDomHarness): string {
 }
 
 async function renderSection() {
-  const harness = await createReactDomHarness();
+  const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
   await harness.render(createElement(MemoryRouter, null, createElement(SpeechEngineSection)));
   return harness;
 }
@@ -77,6 +88,7 @@ beforeEach(() => {
   apiMocks.fetchTranscriptionStatus.mockReset();
   voiceApiMocks.fetchVoiceStatus.mockReset();
   voiceApiMocks.startVoiceInstall.mockReset();
+  voiceApiMocks.patchChatMic.mockReset();
 });
 
 afterEach(() => {
@@ -119,6 +131,42 @@ describe("SpeechEngineSection", () => {
       expect(text(harness)).toContain("Ready. Up to 2 minutes per recording.");
       expect(findAllByTag(harness.dom.container, "A").map((link) => link.textContent)).toContain("Open Helm");
       expect(findAllByTag(harness.dom.container, "BUTTON").some((button) => button.textContent?.includes("Download and set up"))).toBe(false);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("offers the speech model once the engine is installed", async () => {
+    voiceApiMocks.fetchVoiceStatus.mockResolvedValue(voiceStatus({ installed: true, remainingBytes: 0 }));
+    apiMocks.fetchTranscriptionStatus.mockResolvedValue(availableMic);
+    const harness = await renderSection();
+    try {
+      await waitUntilAct(harness.act, () => text(harness).includes("Speech model"));
+      const select = findAllByTag(harness.dom.container, "SELECT")[0]!;
+      expect(getReactProps(select)?.value).toBe("parakeet-unified-en");
+      expect(text(harness)).toContain("Parakeet v3 (download 465 MB)");
+
+      voiceApiMocks.patchChatMic.mockResolvedValue(voiceStatus(
+        { installed: true, remainingBytes: 0, installing: true },
+        undefined,
+        { pendingSpeechModel: "parakeet-v3" },
+      ));
+      await harness.act(async () => { await getReactProps(select)?.onChange?.({ target: { value: "parakeet-v3" } }); });
+      expect(voiceApiMocks.patchChatMic).toHaveBeenCalledWith({ speechModel: "parakeet-v3" });
+      expect(text(harness)).toContain("The current model works until it's ready.");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("says the current model stays in use when a later download fails", async () => {
+    voiceApiMocks.fetchVoiceStatus.mockResolvedValue(voiceStatus({ installed: true, remainingBytes: 0, error: "HTTP 404 from github.com" }));
+    apiMocks.fetchTranscriptionStatus.mockResolvedValue(availableMic);
+    const harness = await renderSection();
+    try {
+      await waitUntilAct(harness.act, () => text(harness).includes("HTTP 404"));
+      expect(text(harness)).toContain("Couldn't download a speech model, so the current one stays in use");
+      expect(text(harness)).not.toContain("Setup failed");
     } finally {
       await harness.cleanup();
     }

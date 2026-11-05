@@ -10,6 +10,7 @@ import type {
   SessionModelUsage,
 } from "../shared/session-model-move.js";
 import type { UnifiedHelmSettings } from "../shared/helm-settings.js";
+import type { SpeechCoverage, VoiceReviewReason } from "../shared/chat-mic.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import { isRecord } from "../shared/is-record.js";
 import { ConditionalGetCache, readEtagHeader } from "./conditional-get-cache";
@@ -2769,9 +2770,11 @@ export interface TranscriptionStatus {
 export interface TranscriptionResult {
   text: string;
   provider: Exclude<TranscriptionStatus["provider"], "disabled">;
+  /** How well the words cover the detected speech; null when that could not be checked. */
+  coverage?: SpeechCoverage | null;
 }
 
-export type VoiceJobStatus = "accepted" | "transcribing" | "sending" | "done" | "error" | "recovered";
+export type VoiceJobStatus = "accepted" | "transcribing" | "sending" | "done" | "error" | "held" | "recovered";
 
 export interface VoiceJobStatusResponse {
   id: string;
@@ -2781,9 +2784,18 @@ export interface VoiceJobStatusResponse {
   status: VoiceJobStatus;
   transcript?: string;
   error?: string;
+  speechGapSeconds?: number;
+  speechGapStart?: number;
+  reviewReason?: VoiceReviewReason;
+  /** The send mode the recording was finished with. */
+  mode?: SendMode;
   safeToLeave: true;
   createdAt: string;
   updatedAt: string;
+}
+
+export function voiceJobRecordingUrl(jobId: string): string {
+  return `${API_BASE}/api/voice-jobs/${encodeURIComponent(jobId)}/recording`;
 }
 
 export interface CreateVoiceJobRequest {
@@ -2887,6 +2899,15 @@ export async function fetchLatestVoiceJob(composerKey: string): Promise<VoiceJob
   const qs = new URLSearchParams({ composerKey }).toString();
   const res = await fetch(`${API_BASE}/api/voice-jobs/latest?${qs}`);
   if (res.status === 404) return null;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function fetchOpenVoiceJobs(): Promise<VoiceJobStatusResponse[]> {
+  const res = await fetch(`${API_BASE}/api/voice-jobs/open`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);

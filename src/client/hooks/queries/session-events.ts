@@ -32,6 +32,12 @@ export function projectVoiceSessionActivity(queryClient: QueryClient, activity: 
   });
 }
 
+/** The dictation ended without starting a run, so a chat marked as working on it is idle again. */
+export function settleVoiceSessionActivity(queryClient: QueryClient, sessionId: string): void {
+  patchSessionQueryData(queryClient, [sessionId], (session: Session): Partial<Session> =>
+    isVoiceSessionIntent(session.intentText?.trim() ?? "") ? { runState: "idle", intentText: null } : {});
+}
+
 /** Puts a chat's new playbook into its cached model state; an empty view means none is active. */
 export function projectSessionPlaybook(
   queryClient: Pick<QueryClient, "setQueryData">,

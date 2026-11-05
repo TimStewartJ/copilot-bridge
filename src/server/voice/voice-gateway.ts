@@ -17,6 +17,7 @@ import {
   DEFAULT_VOICE_SETTINGS,
   KOKORO_VOICES,
   normalizeVoiceSettings,
+  SPEECH_MODELS,
   type VoicePaths,
   type VoiceSettings,
 } from "./voice-catalog.js";
@@ -32,6 +33,8 @@ import { VOICE_ENGINE_CAPABILITIES } from "./voice-engine-protocol.js";
 import type { VoiceInstaller } from "./voice-installer.js";
 import { pruneVoiceLogs, VoiceLog } from "./voice-log.js";
 import type { VoiceRuntime } from "./voice-runtime.js";
+import { applySelectedSpeechModel, resolveUsableSpeechModel } from "./voice-runtime.js";
+import type { ChatMicSettings, SpeechModelId } from "../../shared/chat-mic.js";
 
 export const VOICE_WS_PATH_SUFFIX = "/voice/ws";
 const RECONNECT_GRACE_MS = 60_000;
@@ -581,6 +584,7 @@ export class VoiceGateway {
   readonly paths: VoicePaths;
   readonly engine: VoiceEngine;
   readonly installer: VoiceInstaller;
+  private pendingSpeechModel?: SpeechModelId;
   private readonly conversations = new Map<string, ConversationSession>();
   /** Whether each chat's long replies are read in full or summarized, as the user last said. */
   readonly readbackPreferences = new Map<string, ReadbackPreference>();
@@ -600,13 +604,53 @@ export class VoiceGateway {
   }
 
   getStatus() {
+    const chatMic = this.ctx.settingsStore.getSettings().chatMic;
+    const install = this.installer.getStatus();
+    const downloading = install.speechModels.find((asset) => asset.id === install.progress?.assetId)?.id as SpeechModelId | undefined;
     return {
-      install: this.installer.getStatus(),
+      install,
       engine: this.engine.status,
       voices: KOKORO_VOICES,
       defaults: normalizeVoiceSettings(this.ctx.settingsStore.getSettings().helm, DEFAULT_VOICE_SETTINGS),
       activeConversations: this.conversations.size,
+      chatMic: {
+        speechModel: resolveUsableSpeechModel({ installer: this.installer }, chatMic).id,
+        pendingSpeechModel: this.pendingSpeechModel ?? downloading,
+        models: SPEECH_MODELS.map((model) => {
+          const asset = install.speechModels.find((candidate) => candidate.id === model.id);
+          return { id: model.id, label: model.label, installed: asset?.installed === true, ...(asset ? { sizeBytes: asset.sizeBytes } : {}) };
+        }),
+        keepHeldRecordings: chatMic?.keepHeldRecordings === true,
+      },
     };
+  }
+
+  /**
+   * Changes how the chat mic works. A model that is not on disk yet is installed first, beside the
+   * one in use, and takes over only once it is verified. Resolves as soon as the change is underway.
+   */
+  updateChatMic(patch: ChatMicSettings): void {
+    const { speechModel, ...rest } = patch;
+    const save = (changes: ChatMicSettings) => {
+      this.ctx.settingsStore.updateSettings({ chatMic: { ...this.ctx.settingsStore.getSettings().chatMic, ...changes } });
+    };
+    if (Object.keys(rest).length > 0) save(rest);
+    if (!speechModel) return;
+    // An install that finishes later would otherwise overwrite this choice with the one it was started for.
+    if (this.installer.getStatus().installing) throw new Error("Wait for the current download to finish.");
+    const applyModel = () => {
+      save({ speechModel });
+      applySelectedSpeechModel({ paths: this.paths, installer: this.installer, engine: this.engine }, this.ctx.settingsStore.getSettings().chatMic);
+    };
+    const asset = this.installer.getStatus().speechModels.find((candidate) => candidate.id === speechModel);
+    if (!asset || asset.installed) {
+      applyModel();
+      return;
+    }
+    this.pendingSpeechModel = speechModel;
+    void this.installer.install([speechModel]).then(applyModel).catch(() => undefined).finally(() => {
+      this.pendingSpeechModel = undefined;
+    });
   }
 
   /**
