@@ -12,12 +12,13 @@ Every test is code someone has to keep passing through later refactors, so add o
 - Write the fewest tests that prove the change. A behavior is covered by one test at the layer that owns it, not by a new test for each input you tried.
 - Before adding an `it`, extend an existing case or `it.each` table when the new case differs only in its input. A new test needs a new branch, failure mode or contract.
 - Test through public behavior: return values, persisted state, emitted events, HTTP responses, rendered text and roles. Do not reach into private fields with `as any` when a public method or observable effect can show the result, and do not assert internal call order or call counts unless the order or count is itself the contract (for example "sends exactly once").
+- Test data is public. When a test comes from a real failure, keep the shape that triggered it and replace names, IDs, titles and URLs with made-up ones. Do not paste real API responses or logs.
 - Do not write tests that cannot fail for a real bug:
   - a mock configured to return a value, then a check that the code returned that value
   - an expected value computed with the function under test
   - pass-through wrappers, constants, default labels, or shapes TypeScript already checks
   - a negative check for text or a feature the code no longer has
-- Do not read source files and match their text. Run the code and check what it does. The deliberate structural guards (main-thread boundary, in-tree packages, the xplat and design audits) are the exceptions.
+- Do not read source files and match their text. Run the code and check what it does. The deliberate structural guards (main-thread boundary, in-tree packages, the xplat, design and public repo audits) are the exceptions.
 - HTTP route tests in `src/integration/` cover validation, status codes, serialization and wiring, with one representative case per behavior. Business rules belong in the owning store or service unit test and are checked once there.
 - Client API wrappers in `src/client/api*.ts` only need tests for client-side logic such as ID encoding, query building or response projection. The route integration tests cover the request itself.
 - Put logic that needs many cases (geometry, keyboard handling, formatting, classification) in a pure function and test it with a table. Keep a few component tests that prove the wiring.
@@ -54,3 +55,4 @@ Every test is code someone has to keep passing through later refactors, so add o
 ## Audits
 
 - `npm run test:xplat-audit` runs in `check:fast` and blocks known non-portable test patterns. Avoid `xplat-audit-ignore-*` comments; if one is truly necessary, keep it narrow and say why the test is still safe.
+- `npm run test:public-audit` runs in `check:fast` and CI. It fails on `package-lock.json` entries outside the public npm registry and on Azure DevOps orgs that are not on its list of made-up names. Installing through a mirror writes the mirror's address into the lockfile; `npm run lockfile:public` puts it back.
