@@ -138,6 +138,8 @@ export async function waitTick(): Promise<void> {
   await Promise.resolve();
 }
 
+const REAL_SET_TIMEOUT = setTimeout;
+
 async function waitSchedulerTask(): Promise<void> {
   // Service the check phase (setImmediate) and the timers phase (setTimeout) so a
   // React scheduler task backed by a real timer is observed deterministically.
@@ -176,7 +178,8 @@ export async function waitUntilAct(
   for (let flushIndex = 0; flushIndex < maxFlushes; flushIndex += 1) {
     await flushAct(act);
     if (predicate()) return;
-    if (!vi.isFakeTimers()) {
+    // vi.isFakeTimers() is also true when a test fakes only Date, which leaves setTimeout real.
+    if (setTimeout === REAL_SET_TIMEOUT) {
       await act(async () => {
         await waitSchedulerTask();
       });
