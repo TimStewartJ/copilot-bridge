@@ -10,6 +10,7 @@ import {
 } from "../../test-react-harness";
 import { installSelectAwareDomShim } from "../../test-dom-shim";
 import type { SessionModelMoveJob, SessionModelUsage } from "../../../shared/session-model-move.js";
+import type { AppSettings } from "../../api";
 
 const apiMocks = vi.hoisted(() => ({
   fetchSessionModelMove: vi.fn(),
@@ -24,7 +25,12 @@ vi.mock("../../queryClient", () => ({ queryClient: { invalidateQueries: queryMoc
 vi.mock("../../hooks/queries/useModels", () => ({
   useModelsQuery: () => ({
     data: [
-      { id: "model-new", name: "New Model" },
+      {
+        id: "model-new",
+        name: "New Model",
+        supportedReasoningEfforts: ["low", "high"],
+        billing: { tokenPrices: { maxPromptTokens: 200_000, longContext: { maxPromptTokens: 1_000_000 } } },
+      },
       { id: "model-old", name: "Old Model" },
       { id: "model-off", name: "Disabled Model", policy: { state: "disabled" } },
     ],
@@ -86,16 +92,18 @@ async function choose(harness: ReactDomHarness, index: number, value: string) {
   });
 }
 
-async function renderSection() {
+async function renderSection(presets?: AppSettings["modelPresets"]) {
   const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
-  await harness.render(createElement(ModelMoveDisclosure));
+  await harness.render(createElement(ModelMoveDisclosure, { presets }));
   return harness;
 }
 
+/** Opens the form and picks the old model, then Custom and the new model. */
 async function openAndChoose(harness: ReactDomHarness) {
   await click(harness, OPEN_LABEL);
-  await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 2);
+  await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 1);
   await choose(harness, 0, "model-old");
+  await click(harness, "Custom");
   await choose(harness, 1, "model-new");
 }
 
@@ -113,13 +121,86 @@ afterEach(() => {
 
 describe("ModelMoveDisclosure", () => {
 
+  it("moves the chats to a tier with the tier's model, effort and context", async () => {
+    const harness = await renderSection({
+      preset2: { model: "model-new" },
+      preset3: { model: "model-new", reasoningEffort: "high", contextTier: "long_context" },
+    });
+    try {
+      await click(harness, OPEN_LABEL);
+      await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 1);
+      await choose(harness, 0, "model-old");
+      expect(getReactProps(button(harness, "Fast"))?.disabled).toBe(true);
+
+      await click(harness, "Deep");
+      expect(text(harness)).toContain("New Model · High · Long context (1M)");
+      expect(findAllByTag(harness.dom.container, "SELECT")).toHaveLength(1);
+      apiMocks.startSessionModelMove.mockResolvedValue(job());
+      await click(harness, "Move 12 chats");
+      expect(apiMocks.startSessionModelMove).toHaveBeenLastCalledWith({
+        fromModel: "model-old",
+        toModel: "model-new",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("applies a tier's standard context explicitly, so no chat keeps a larger window by default", async () => {
+    const harness = await renderSection({ preset2: { model: "model-new" } });
+    try {
+      await click(harness, OPEN_LABEL);
+      await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 1);
+      await choose(harness, 0, "model-old");
+      await click(harness, "Standard");
+      expect(text(harness)).toContain("New Model · each chat's effort · Standard context (200K)");
+      apiMocks.startSessionModelMove.mockResolvedValue(job());
+      await click(harness, "Move 12 chats");
+      expect(apiMocks.startSessionModelMove).toHaveBeenLastCalledWith({
+        fromModel: "model-old",
+        toModel: "model-new",
+        contextTier: "default",
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("applies the effort and context chosen for the new model to every chat", async () => {
+    const harness = await renderSection();
+    try {
+      await openAndChoose(harness);
+      const selects = findAllByTag(harness.dom.container, "SELECT");
+      expect(selects).toHaveLength(4);
+      expect(findAllByTag(selects[2], "OPTION").map((option) => option.textContent))
+        .toEqual(["Keep each chat's", "Low", "High"]);
+      expect(findAllByTag(selects[3], "OPTION").map((option) => option.textContent))
+        .toEqual(["Keep each chat's size", "Standard context (200K)", "Long context (1M)"]);
+
+      await choose(harness, 2, "high");
+      await choose(harness, 3, "long_context");
+      apiMocks.startSessionModelMove.mockResolvedValue(job());
+      await click(harness, "Move 12 chats");
+      expect(apiMocks.startSessionModelMove).toHaveBeenCalledWith({
+        fromModel: "model-old",
+        toModel: "model-new",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("starts the move, follows it, and reports what was left behind", async () => {
     const harness = await renderSection();
     try {
       await openAndChoose(harness);
       expect(text(harness)).toContain("1 chat busy now. Busy chats are skipped.");
       expect(findAllByTag(findAllByTag(harness.dom.container, "SELECT")[1], "OPTION").map((option) => option.textContent))
-        .toEqual(["Choose a model", "New Model"]);
+        .toEqual(["Choose a model", "New Model", "Old Model"]);
 
       apiMocks.startSessionModelMove.mockResolvedValue(job());
       await click(harness, "Move 12 chats");
@@ -190,7 +271,7 @@ describe("ModelMoveDisclosure", () => {
       expect(apiMocks.startSessionModelMove).toHaveBeenLastCalledWith({ fromModel: "model-old", toModel: "model-new" });
 
       await click(harness, "Move other chats");
-      expect(findAllByTag(harness.dom.container, "SELECT")).toHaveLength(2);
+      expect(findAllByTag(harness.dom.container, "SELECT")).toHaveLength(4);
     } finally {
       await harness.cleanup();
     }
@@ -210,15 +291,17 @@ describe("ModelMoveDisclosure", () => {
       expect(apiMocks.fetchSessionModelUsage).not.toHaveBeenCalled();
 
       await click(harness, OPEN_LABEL);
-      await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 2);
+      await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 1);
 
       expect(apiMocks.fetchSessionModelUsage).toHaveBeenCalledWith({ refresh: false });
-      const [from, to] = findAllByTag(harness.dom.container, "SELECT");
+      const [from] = findAllByTag(harness.dom.container, "SELECT");
       expect(findAllByTag(from, "OPTION").map((option) => option.textContent)).toEqual([
         "Choose a model",
         "Old Model · 12 chats",
         "model-retired · 3 chats",
       ]);
+      await click(harness, "Custom");
+      const to = findAllByTag(harness.dom.container, "SELECT")[1];
       expect(findAllByTag(to, "OPTION").map((option) => option.textContent)).toEqual([
         "Choose a model",
         "New Model",
@@ -249,7 +332,7 @@ describe("ModelMoveDisclosure", () => {
       await openAndChoose(harness);
       await click(harness, "Move 12 chats");
       await waitUntilAct(harness.act, () => text(harness).includes("Model is not available: model-new"));
-      expect(findAllByTag(harness.dom.container, "SELECT")).toHaveLength(2);
+      expect(findAllByTag(harness.dom.container, "SELECT")).toHaveLength(4);
     } finally {
       await harness.cleanup();
     }
@@ -293,7 +376,7 @@ describe("ModelMoveDisclosure", () => {
       apiMocks.fetchSessionModelMove.mockResolvedValue({ job: null });
       await advanceTimersByTimeAct(harness.act, 1_500);
       await waitUntilAct(harness.act, () => text(harness).includes("The server restarted before the move finished."));
-      expect(findAllByTag(harness.dom.container, "SELECT")).toHaveLength(2);
+      expect(findAllByTag(harness.dom.container, "SELECT")).toHaveLength(1);
     } finally {
       await harness.cleanup();
     }
@@ -307,7 +390,7 @@ describe("ModelMoveDisclosure", () => {
       await waitUntilAct(harness.act, () => text(harness).includes("Session list is unavailable"));
 
       await click(harness, "Retry");
-      await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 2);
+      await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "SELECT").length === 1);
       expect(text(harness)).not.toContain("Session list is unavailable");
     } finally {
       await harness.cleanup();

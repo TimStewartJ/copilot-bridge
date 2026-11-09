@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
+  getContextPromptTokensForTier,
   isCopilotContextTier,
   modelSupportsLongContext,
+  resolveContextTierForModel,
   type CopilotContextTier,
   type CopilotModelContextMetadata,
 } from "../shared/copilot-context.js";
@@ -29,6 +31,8 @@ const SCAN_CONCURRENCY = 8;
 const USAGE_CACHE_MS = 60_000;
 /** A dead runtime or a full session cache fails every chat the same way; stop instead of trying them all. */
 const MAX_CONSECUTIVE_FAILURES = 3;
+/** Moving chats to the model they are on only makes sense to change their effort or context. */
+const SAME_MODEL_ERROR = "fromModel and toModel must differ unless reasoningEffort or contextTier is given";
 
 export interface SessionModelMoveSessionState {
   model?: string;
@@ -93,14 +97,25 @@ export function resolveMoveReasoningEffort(
   return resolveSupportedReasoningEffort(current, target.supportedReasoningEfforts);
 }
 
-/** A chat on long context stays on it when the new model offers it, so the move does not force a compaction. */
+/**
+ * The context a chat gets on the new model: the one asked for, otherwise long context when the new
+ * model offers it and the chat's window now is larger than the new model's standard one. A model
+ * whose only window is 1M counts as large, so moving off it does not shrink the chat to 200K.
+ */
 export function resolveMoveContextTier(
   requested: CopilotContextTier | undefined,
   current: CopilotContextTier | undefined,
+  source: CopilotModelContextMetadata | undefined,
   target: CopilotModelContextMetadata | undefined,
 ): CopilotContextTier | undefined {
   if (requested) return requested;
-  return current === "long_context" && modelSupportsLongContext(target) ? "long_context" : undefined;
+  if (!modelSupportsLongContext(target)) return undefined;
+  if (current === "long_context") return "long_context";
+  const currentWindow = getContextPromptTokensForTier(source, resolveContextTierForModel(source, current));
+  const targetStandardWindow = getContextPromptTokensForTier(target, "default");
+  return currentWindow !== undefined && targetStandardWindow !== undefined && currentWindow > targetStandardWindow
+    ? "long_context"
+    : undefined;
 }
 
 function emptyCounts(): Record<SessionModelMoveOutcome, number> {
@@ -126,12 +141,14 @@ export function parseSessionModelMoveRequest(
   const { fromModel, toModel, reasoningEffort, contextTier, compact, sessionIds, dryRun } = body;
   if (typeof fromModel !== "string" || !fromModel.trim()) return { error: "fromModel must be a non-empty string" };
   if (typeof toModel !== "string" || !toModel.trim()) return { error: "toModel must be a non-empty string" };
-  if (fromModel.trim() === toModel.trim()) return { error: "fromModel and toModel must differ" };
   if (reasoningEffort !== undefined && (typeof reasoningEffort !== "string" || !reasoningEffort.trim())) {
     return { error: "reasoningEffort must be a non-empty string" };
   }
   if (contextTier !== undefined && !isCopilotContextTier(contextTier)) {
     return { error: "contextTier must be default or long_context" };
+  }
+  if (fromModel.trim() === toModel.trim() && !reasoningEffort && !contextTier) {
+    return { error: SAME_MODEL_ERROR };
   }
   if (compact !== undefined && typeof compact !== "boolean") return { error: "compact must be a boolean" };
   if (dryRun !== undefined && typeof dryRun !== "boolean") return { error: "dryRun must be a boolean" };
@@ -229,7 +246,9 @@ export function createSessionModelMover(deps: SessionModelMoverDeps) {
     const fromModel = request.fromModel.trim();
     const toModel = request.toModel.trim();
     if (!fromModel || !toModel) throw new SessionModelMoveRequestError("fromModel and toModel are required");
-    if (fromModel === toModel) throw new SessionModelMoveRequestError("fromModel and toModel must differ");
+    if (fromModel === toModel && !request.reasoningEffort && !request.contextTier) {
+      throw new SessionModelMoveRequestError(SAME_MODEL_ERROR);
+    }
     return { ...request, fromModel, toModel };
   }
 
@@ -261,6 +280,7 @@ export function createSessionModelMover(deps: SessionModelMoverDeps) {
   async function moveOne(
     active: SessionModelMoveJob,
     candidate: ScannedSession,
+    source: CopilotModelContextMetadata | undefined,
     target: CopilotModelContextMetadata | undefined,
   ): Promise<SessionModelMoveResult> {
     const { sessionId } = candidate;
@@ -287,7 +307,15 @@ export function createSessionModelMover(deps: SessionModelMoverDeps) {
       ...(state.contextTier ? { previousContextTier: state.contextTier } : {}),
     };
     const reasoningEffort = resolveMoveReasoningEffort(active.reasoningEffort, state.reasoningEffort, target);
-    const contextTier = resolveMoveContextTier(active.contextTier, state.contextTier, target);
+    const contextTier = resolveMoveContextTier(active.contextTier, state.contextTier, source, target);
+    // A move to the same model that would change nothing for this chat: it already has what was asked.
+    if (
+      active.fromModel === active.toModel
+      && (reasoningEffort === undefined || reasoningEffort === state.reasoningEffort)
+      && (contextTier ?? state.contextTier ?? "default") === (state.contextTier ?? "default")
+    ) {
+      return { ...base, outcome: "moved", ...previous };
+    }
     const wasLoaded = deps.isSessionLoaded(sessionId);
     try {
       let result = await deps.setSessionModel(sessionId, active.toModel, reasoningEffort, contextTier);
@@ -326,9 +354,12 @@ export function createSessionModelMover(deps: SessionModelMoverDeps) {
   }
 
   async function run(active: SessionModelMoveJob, candidates: ScannedSession[]): Promise<void> {
+    let source: CopilotModelContextMetadata | undefined;
     let target: CopilotModelContextMetadata | undefined;
     try {
-      target = (await deps.listModels()).find((model) => model.id === active.toModel);
+      const models = await deps.listModels();
+      source = models.find((model) => model.id === active.fromModel);
+      target = models.find((model) => model.id === active.toModel);
     } catch {
       // Without the catalog each chat's effort and context are carried over as they are.
     }
@@ -342,7 +373,7 @@ export function createSessionModelMover(deps: SessionModelMoverDeps) {
       active.currentSessionId = candidate.sessionId;
       let result: SessionModelMoveResult;
       try {
-        result = await moveOne(active, candidate, target);
+        result = await moveOne(active, candidate, source, target);
       } catch (error) {
         result = {
           sessionId: candidate.sessionId,

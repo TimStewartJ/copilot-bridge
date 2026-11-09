@@ -392,7 +392,7 @@ describe("session model mover", () => {
     await expect(mover.start({ fromModel: "model-third", toModel: NEW })).resolves.toMatchObject({ total: 1 });
   });
 
-  it("rejects a move from a model to itself", async () => {
+  it("rejects a move from a model to itself that changes nothing", async () => {
     const { mover } = createHarness({ a: { model: OLD } });
 
     await expect(mover.start({ fromModel: OLD, toModel: ` ${OLD} ` })).rejects.toBeInstanceOf(SessionModelMoveRequestError);
@@ -410,14 +410,53 @@ describe("session model mover", () => {
 
     expect(setSessionModel).toHaveBeenCalledWith("a", NEW, undefined, undefined);
   });
+
+  it("puts chats from a model with one large window on the new model's long context", async () => {
+    const { mover, setSessionModel, runMove } = createHarness(
+      { a: { model: OLD, reasoningEffort: "high" } },
+      { models: [{ id: OLD, capabilities: { limits: { max_prompt_tokens: 1_000_000 } } }, NEW_MODEL] },
+    );
+
+    await mover.start({ fromModel: OLD, toModel: NEW });
+    await runMove();
+
+    expect(setSessionModel).toHaveBeenCalledWith("a", NEW, "high", "long_context");
+  });
+
+  it("changes the context of chats that stay on their model, and leaves the ones already there", async () => {
+    const { mover, setSessionModel, runMove } = createHarness(
+      {
+        short: { model: NEW, reasoningEffort: "high", contextTier: "default" },
+        long: { model: NEW, reasoningEffort: "high", contextTier: "long_context" },
+      },
+    );
+
+    await mover.start({ fromModel: NEW, toModel: NEW, contextTier: "long_context" });
+    await runMove();
+
+    expect(setSessionModel.mock.calls).toEqual([["short", NEW, "high", "long_context"]]);
+    expect(mover.getJob()).toMatchObject({ status: "completed", counts: { moved: 2 } });
+  });
 });
 
 describe("resolveMoveContextTier", () => {
   it("keeps long context only when the new model offers it", () => {
-    expect(resolveMoveContextTier(undefined, "long_context", NEW_MODEL)).toBe("long_context");
-    expect(resolveMoveContextTier(undefined, "long_context", { id: NEW })).toBeUndefined();
-    expect(resolveMoveContextTier(undefined, "default", NEW_MODEL)).toBeUndefined();
-    expect(resolveMoveContextTier("default", "long_context", NEW_MODEL)).toBe("default");
+    expect(resolveMoveContextTier(undefined, "long_context", undefined, NEW_MODEL)).toBe("long_context");
+    expect(resolveMoveContextTier(undefined, "long_context", undefined, { id: NEW })).toBeUndefined();
+    expect(resolveMoveContextTier(undefined, "default", undefined, NEW_MODEL)).toBeUndefined();
+    expect(resolveMoveContextTier("default", "long_context", undefined, NEW_MODEL)).toBe("default");
+  });
+
+  it("keeps a large single window large instead of dropping to the new model's standard one", () => {
+    const largeOnly: CopilotModelContextMetadata = { id: OLD, capabilities: { limits: { max_prompt_tokens: 1_000_000 } } };
+    const smallOnly: CopilotModelContextMetadata = { id: OLD, capabilities: { limits: { max_prompt_tokens: 128_000 } } };
+    const tieredOld: CopilotModelContextMetadata = { id: OLD, billing: TIERED_PRICES, capabilities: { limits: { max_prompt_tokens: 900_000 } } };
+
+    expect(resolveMoveContextTier(undefined, undefined, largeOnly, NEW_MODEL)).toBe("long_context");
+    expect(resolveMoveContextTier(undefined, undefined, smallOnly, NEW_MODEL)).toBeUndefined();
+    // A chat on a tiered model's standard tier stays standard even though the model's largest window is bigger.
+    expect(resolveMoveContextTier(undefined, undefined, tieredOld, NEW_MODEL)).toBeUndefined();
+    expect(resolveMoveContextTier(undefined, "default", tieredOld, NEW_MODEL)).toBeUndefined();
   });
 });
 

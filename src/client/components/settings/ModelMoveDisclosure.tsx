@@ -5,6 +5,7 @@ import {
   fetchSessionModelMove,
   fetchSessionModelUsage,
   startSessionModelMove,
+  type AppSettings,
   type ModelInfo,
 } from "../../api";
 import { useModelsQuery } from "../../hooks/queries/useModels";
@@ -16,8 +17,26 @@ import {
   type SessionModelMoveResult,
   type SessionModelUsage,
 } from "../../../shared/session-model-move.js";
+import {
+  getContextTierLabel,
+  isCopilotContextTier,
+  modelSupportsLongContext,
+  modelUsesDynamicSelection,
+  type CopilotContextTier,
+} from "../../../shared/copilot-context.js";
+import { formatReasoningEffortLabel } from "../../reasoning-effort";
+import { getModelPresetSlotLabel, MODEL_PRESET_SLOTS, type ModelPresetSlot } from "../../../shared/model-presets.js";
+
+/** A tier applies its own model, effort and context; Custom picks them here. */
+type MoveTarget = ModelPresetSlot | "custom";
+
+interface SessionModelMoveTarget {
+  model: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
+}
 import { DS, cx } from "../../design/tokens";
-import { Button, Details, DisclosureRow, Notice, SettingList, SettingRow } from "../../design/primitives";
+import { Button, Details, DisclosureRow, Notice, SegmentedControl, SettingList, SettingRow } from "../../design/primitives";
 
 const POLL_INTERVAL_MS = 1_500;
 /** A move can leave hundreds of chats behind when it stops early; the list shows the first of them. */
@@ -65,18 +84,23 @@ function describeResult(result: SessionModelMoveResult): string {
 }
 
 /**
- * Moves every chat that is not archived from one model to another, for when a model is replaced.
- * It is used every few weeks at most, so it is one closed line under the model setting. The server
- * does the work one chat at a time; this shows the choice, the progress and the result.
+ * Moves every chat that is not archived off one model, to a tier (its model, effort and context) or
+ * to a model of your own. It is used every few weeks at most, so it is one closed line under the
+ * model setting. The server does the work one chat at a time; this shows the choice, the progress
+ * and the result.
  */
-export function ModelMoveDisclosure() {
+export function ModelMoveDisclosure({ presets }: { presets?: AppSettings["modelPresets"] }) {
   const { data: models } = useModelsQuery();
   const [open, setOpen] = useState(false);
   const [usage, setUsage] = useState<SessionModelUsage | null>(null);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageError, setUsageError] = useState<string | null>(null);
   const [fromModel, setFromModel] = useState("");
+  const [target, setTarget] = useState<MoveTarget | undefined>(undefined);
+  /** Custom only: the model, and an effort and context for every chat. Empty: each chat keeps its own. */
   const [toModel, setToModel] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState("");
+  const [contextTier, setContextTier] = useState<CopilotContextTier | "">("");
   const [job, setJob] = useState<SessionModelMoveJob | null>(null);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -200,7 +224,57 @@ export function ModelMoveDisclosure() {
     .filter((model) => !model.policy || model.policy.state !== "disabled")
     .sort((left, right) => left.name.localeCompare(right.name));
   const fromUsage = usage?.models.find((entry) => entry.model === fromModel);
-  const canStart = Boolean(fromUsage && toModel && toModel !== fromModel) && !starting;
+  const tierChoice = (slot: ModelPresetSlot): SessionModelMoveTarget | undefined => {
+    const preset = presets?.[slot];
+    const model = preset?.model ? availableModels.find((entry) => entry.id === preset.model) : undefined;
+    if (!preset || !model) return undefined;
+    return {
+      model: model.id,
+      ...(preset.reasoningEffort && model.supportedReasoningEfforts?.includes(preset.reasoningEffort)
+        ? { reasoningEffort: preset.reasoningEffort }
+        : {}),
+      ...(modelSupportsLongContext(model) && !modelUsesDynamicSelection(model)
+        ? { contextTier: preset.contextTier ?? "default" }
+        : {}),
+    };
+  };
+  const customInfo = models?.find((model) => model.id === toModel);
+  const effortChoices = customInfo?.supportedReasoningEfforts ?? [];
+  const contextChoices: CopilotContextTier[] = customInfo && !modelUsesDynamicSelection(customInfo) && modelSupportsLongContext(customInfo)
+    ? ["default", "long_context"]
+    : [];
+  const chosen: SessionModelMoveTarget | undefined = target === "custom"
+    ? toModel ? {
+      model: toModel,
+      ...(reasoningEffort && effortChoices.includes(reasoningEffort) ? { reasoningEffort } : {}),
+      ...(contextTier && contextChoices.includes(contextTier) ? { contextTier } : {}),
+    } : undefined
+    : target ? tierChoice(target) : undefined;
+  const changesSomething = Boolean(chosen && (chosen.model !== fromModel || chosen.reasoningEffort || chosen.contextTier));
+  const canStart = Boolean(fromUsage && chosen && changesSomething) && !starting;
+  const moveRequest: SessionModelMoveRequest = {
+    fromModel,
+    toModel: chosen?.model ?? "",
+    ...(chosen?.reasoningEffort ? { reasoningEffort: chosen.reasoningEffort } : {}),
+    ...(chosen?.contextTier ? { contextTier: chosen.contextTier } : {}),
+  };
+  const targetOptions = [
+    ...MODEL_PRESET_SLOTS.map((slot) => ({
+      value: slot as MoveTarget,
+      label: getModelPresetSlotLabel(slot),
+      disabled: !tierChoice(slot),
+      ...(tierChoice(slot) ? {} : { title: "Set this tier first" }),
+    })),
+    { value: "custom" as MoveTarget, label: "Custom" },
+  ];
+  const describeTarget = (choice: SessionModelMoveTarget) => {
+    const info = models?.find((model) => model.id === choice.model);
+    return [
+      modelName(choice.model),
+      formatReasoningEffortLabel(choice.reasoningEffort, info) ?? "each chat's effort",
+      getContextTierLabel(info, choice.contextTier),
+    ].filter(Boolean).join(" · ");
+  };
 
   const formRows = (
     <>
@@ -214,10 +288,7 @@ export function ModelMoveDisclosure() {
           <select
             id="model-move-from"
             value={fromModel}
-            onChange={(event) => {
-              setFromModel(event.target.value);
-              if (event.target.value === toModel) setToModel("");
-            }}
+            onChange={(event) => setFromModel(event.target.value)}
             disabled={starting}
             className={cx(DS.field.input, DS.field.inputSize.md, DS.setting.field)}
           >
@@ -244,28 +315,94 @@ export function ModelMoveDisclosure() {
       </SettingRow>
       <SettingRow
         label="To"
-        htmlFor="model-move-to"
+        hint={chosen && target !== "custom"
+          ? `${describeTarget(chosen)}${changesSomething ? "" : ". The chats are already on it."}`
+          : undefined}
         control={(
-          <select
-            id="model-move-to"
-            value={toModel}
-            onChange={(event) => setToModel(event.target.value)}
-            disabled={starting}
-            className={cx(DS.field.input, DS.field.inputSize.md, DS.setting.field)}
-          >
-            <option value="">Choose a model</option>
-            {availableModels.filter((model) => model.id !== fromModel).map((model) => (
-              <option key={model.id} value={model.id}>{model.name}</option>
-            ))}
-          </select>
+          <div className={DS.setting.field}>
+            <SegmentedControl<MoveTarget>
+              ariaLabel="Move to"
+              options={targetOptions}
+              value={target}
+              fullWidth
+              disabled={starting}
+              onChange={setTarget}
+            />
+          </div>
         )}
       />
+      {target === "custom" && (
+        <SettingRow
+          label="Model"
+          htmlFor="model-move-to"
+          control={(
+            <select
+              id="model-move-to"
+              value={toModel}
+              onChange={(event) => {
+                setToModel(event.target.value);
+                setReasoningEffort("");
+                setContextTier("");
+              }}
+              disabled={starting}
+              className={cx(DS.field.input, DS.field.inputSize.md, DS.setting.field)}
+            >
+              <option value="">Choose a model</option>
+              {availableModels.map((model) => (
+                <option key={model.id} value={model.id}>{model.name}</option>
+              ))}
+            </select>
+          )}
+        />
+      )}
+      {target === "custom" && effortChoices.length > 0 && (
+        <SettingRow
+          label="Effort"
+          htmlFor="model-move-effort"
+          control={(
+            <select
+              id="model-move-effort"
+              value={reasoningEffort}
+              onChange={(event) => setReasoningEffort(event.target.value)}
+              disabled={starting}
+              className={cx(DS.field.input, DS.field.inputSize.md, DS.setting.field)}
+            >
+              <option value="">Keep each chat's</option>
+              {effortChoices.map((effort) => (
+                <option key={effort} value={effort}>{formatReasoningEffortLabel(effort, customInfo) ?? effort}</option>
+              ))}
+            </select>
+          )}
+        />
+      )}
+      {target === "custom" && contextChoices.length > 0 && (
+        <SettingRow
+          label="Context"
+          htmlFor="model-move-context"
+          control={(
+            <select
+              id="model-move-context"
+              value={contextTier}
+              onChange={(event) => setContextTier(isCopilotContextTier(event.target.value) ? event.target.value : "")}
+              disabled={starting}
+              className={cx(DS.field.input, DS.field.inputSize.md, DS.setting.field)}
+            >
+              <option value="">Keep each chat's size</option>
+              {contextChoices.map((tier) => (
+                <option key={tier} value={tier}>
+                  {getContextTierLabel(customInfo, tier) ?? (tier === "long_context" ? "Long context" : "Standard context")}
+                </option>
+              ))}
+            </select>
+          )}
+        />
+      )}
       <div className="py-3 last:pb-0">
         <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             disabled={!canStart}
-            onClick={() => void start({ fromModel, toModel })}
+            onClick={() => void start(moveRequest)}
             icon={starting ? <Loader2 size={13} className="animate-spin motion-reduce:animate-none" /> : undefined}
           >
             {fromUsage ? `Move ${countChats(fromUsage.sessionCount)}` : "Move chats"}

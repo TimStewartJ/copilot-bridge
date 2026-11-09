@@ -23,7 +23,7 @@ export interface SessionModelMoveRequest {
   toModel: string;
   /** Applied to every moved chat. Omitted: each chat keeps its effort, or the nearest one the new model supports. */
   reasoningEffort?: string;
-  /** Applied to every moved chat. Omitted: a chat on long context keeps it when the new model offers it. */
+  /** Applied to every moved chat. Omitted: a chat keeps a window as large as it has when the new model offers one. */
   contextTier?: CopilotContextTier;
   /** Compact a conversation that does not fit the new model, then move it. Off: such a chat is left as it is. */
   compact?: boolean;

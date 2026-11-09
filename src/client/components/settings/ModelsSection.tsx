@@ -278,7 +278,7 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
         {roles.error && <Notice tone="warning" className="mt-3" title="Couldn't check the models in use">{roles.error instanceof Error ? roles.error.message : String(roles.error)}</Notice>}
       </div>
 
-      <ModelListFooter />
+      <ModelListFooter presets={presets} />
     </div>
   </SettingsSection>;
 }
@@ -342,7 +342,7 @@ function RoleRow({ role, draft, view, models, available, onRole, onCustom }: {
 }
 
 /** Refreshing the model list, and moving chats off a model. */
-function ModelListFooter() {
+function ModelListFooter({ presets }: { presets: NonNullable<AppSettings["modelPresets"]> }) {
   const { data: clientInfo } = useModelClientInfoQuery();
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
@@ -380,7 +380,7 @@ function ModelListFooter() {
         </Button>
       </div>
       {error && <p role="alert" className="text-xs text-error">{error}</p>}
-      <ModelMoveDisclosure />
+      <ModelMoveDisclosure presets={presets} />
     </div>
   );
 }
