@@ -12,7 +12,7 @@ import type {
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
+import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node";
 
 import { getGeneratedImageVisuals, getVisibleEventTimestamp } from "./event-transform.js";
 import type { EventBusRegistry, SessionEventBus } from "./event-bus.js";

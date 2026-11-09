@@ -1,11 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { isTransientBackendError } from "../backend-availability.js";
 import { COMPUTER_USE_PLUGIN_NAME, resolveComputerUsePlugin } from "../computer-use-plugin.js";
+import { isStaleAgentSessionError } from "../session-runner.js";
 
-const EXPECTED_CLI_VERSION = "1.0.105";
-const EXPECTED_SDK_VERSION = "1.0.28";
+const EXPECTED_CLI_VERSION = "1.0.107";
+const EXPECTED_SDK_VERSION = "1.0.29";
 
 // Launching the pinned CLI lives in copilot-cli-launch.native.test.ts.
 describe("installed Copilot package contract", () => {
@@ -33,6 +36,17 @@ describe("installed Copilot package contract", () => {
       "@github/copilot-sdk-win32-x64": EXPECTED_SDK_VERSION,
       "@github/copilot-sdk-darwin-arm64": EXPECTED_SDK_VERSION,
     });
+  });
+
+  // The Bridge recognises a lost runtime connection with `instanceof ConnectionError`. When the SDK
+  // pins a vscode-jsonrpc the Bridge does not, npm installs the SDK its own copy and the check fails
+  // for every error the SDK raises.
+  it("recognises a closed connection raised by the SDK's vscode-jsonrpc", () => {
+    const sdkRequire = createRequire(sdkPackageJsonPath!);
+    const { ConnectionError, ConnectionErrors } = sdkRequire("vscode-jsonrpc/node") as typeof import("vscode-jsonrpc/node");
+    const closed = new ConnectionError(ConnectionErrors.Closed, "Connection is closed.");
+    expect(isStaleAgentSessionError(closed)).toBe(true);
+    expect(isTransientBackendError(closed)).toBe(true);
   });
 
   // Verified for win32-x64 only; the other platform packages have not been inspected.

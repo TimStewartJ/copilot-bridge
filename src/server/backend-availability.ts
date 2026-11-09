@@ -2,7 +2,7 @@
 // right now". Kept separate from session-manager.ts so runners and API
 // handlers can classify errors without importing the whole manager.
 
-import { ConnectionError } from "vscode-jsonrpc/node.js";
+import { ConnectionError } from "vscode-jsonrpc/node";
 import { isAgentRpcTimeoutError } from "./agent-backend/rpc-timeouts.js";
 
 /** An in-flight run or request was failed because the backend RPC channel was lost. */

@@ -22,11 +22,15 @@ const mcpTools = Array.from({ length: 35 }, (_, index) => ({
   inputSchema: { type: "object", properties: {} },
 }));
 
+const FIXTURE_AGENT_PROMPT = "Return the fixture response.";
+
 async function fixture(signal: AbortSignal) {
   const home = makeTestDir("copilot-tool-loading");
   const cwd = join(home, "workspace");
   const requests: Record<string, unknown>[] = [];
   const fixtureErrors: string[] = [];
+  /** Assistant messages the fixture model answers the next requests with, in order. */
+  const scripted: Record<string, unknown>[] = [];
   const server = createServer((request, response) => {
     if (request.method !== "POST") { response.writeHead(405).end(); return; }
     let body = "";
@@ -55,18 +59,20 @@ async function fixture(signal: AbortSignal) {
         return;
       }
       requests.push(input);
-      const message = { role: "assistant", content: "Eager tools fixture finished." };
+      const scriptedMessage = scripted.shift();
+      const message = scriptedMessage ?? { role: "assistant", content: "Eager tools fixture finished." };
+      const finishReason = scriptedMessage ? "tool_calls" : "stop";
       if (input.stream === true) {
         response.setHeader("Content-Type", "text/event-stream");
         response.end(`data: ${JSON.stringify({
           id: "fixture", object: "chat.completion.chunk", created: 0, model: input.model,
-          choices: [{ index: 0, delta: message, finish_reason: "stop" }],
+          choices: [{ index: 0, delta: message, finish_reason: finishReason }],
         })}\n\ndata: [DONE]\n\n`);
       } else {
         response.setHeader("Content-Type", "application/json");
         response.end(JSON.stringify({
           id: "fixture", object: "chat.completion", created: 0, model: input.model,
-          choices: [{ index: 0, message, finish_reason: "stop" }],
+          choices: [{ index: 0, message, finish_reason: finishReason }],
         }));
       }
     });
@@ -122,10 +128,29 @@ async function fixture(signal: AbortSignal) {
         parameters: { type: "object", properties: {} }, handler: async () => "fixture result",
       }),
     ],
-    customAgents: [{ name: "fixture-agent", description: "Local test agent.", prompt: "Return the fixture response." }],
+    customAgents: [{ name: "fixture-agent", description: "Local test agent.", prompt: FIXTURE_AGENT_PROMPT }],
     provider: { type: "openai", baseUrl: `http://127.0.0.1:${address.port}/v1`, wireApi: "completions" },
   } satisfies SessionConfig;
-  return { client, backend, config, requests, fixtureErrors, cleanup };
+  return { client, backend, config, requests, fixtureErrors, scripted, cleanup };
+}
+
+function delegateToFixtureAgent(): Record<string, unknown> {
+  const call = {
+    id: "call_fixture_task", type: "function",
+    function: {
+      name: "task",
+      arguments: JSON.stringify({
+        description: "Check child tool definitions", prompt: FIXTURE_AGENT_PROMPT,
+        agent_type: "fixture-agent", name: "tool-loading-child", mode: "sync",
+      }),
+    },
+  };
+  return { role: "assistant", content: null, tool_calls: [{ index: 0, ...call }] };
+}
+
+function isFixtureAgentRequest(request: Record<string, unknown>): boolean {
+  const first = Array.isArray(request.messages) ? request.messages[0] : undefined;
+  return isRecord(first) && typeof first.content === "string" && first.content.startsWith(FIXTURE_AGENT_PROMPT);
 }
 
 function requestToolNames(request: Record<string, unknown> | undefined): unknown[] {
@@ -145,7 +170,7 @@ function assertToolPolicy(request: Record<string, unknown> | undefined) {
 
 describe("native tool loading policy", () => {
   it("keeps MCP and always-loaded definitions and defers only on-demand tools on create, model/agent switch, subagent and cold resume", async ({ signal }) => {
-    const { backend, config, requests, fixtureErrors, cleanup } = await fixture(signal);
+    const { backend, config, requests, fixtureErrors, scripted, cleanup } = await fixture(signal);
     try {
       const session = await backend.createSession(config);
       await session.initializeTools();
@@ -165,17 +190,15 @@ describe("native tool loading policy", () => {
       assertToolPolicy(requests.at(-1));
       await raw.rpc.agent.deselect();
 
+      // The model starts sub-agents with a task call inside a turn, as in Bridge chats. Since CLI
+      // 1.0.107 a task the host runs itself between a model or agent switch and the next turn gets
+      // no tools at all; the Bridge never runs one that way.
       const beforeChild = requests.length;
-      const child = await raw.rpc.tools.execute({
-        name: "task",
-        arguments: {
-          description: "Check child tool definitions", prompt: "Return the fixture response.",
-          agent_type: "fixture-agent", name: "tool-loading-child", mode: "sync",
-        },
-      });
-      expect(child, typeof child === "string" ? child : child.textResultForLlm).toMatchObject({ resultType: "success" });
-      expect(requests.length).toBeGreaterThan(beforeChild);
-      assertToolPolicy(requests.at(-1));
+      scripted.push(delegateToFixtureAgent());
+      await session.sendAndWait({ prompt: "Delegate to the fixture agent." }, null);
+      const childRequests = requests.slice(beforeChild).filter(isFixtureAgentRequest);
+      expect(childRequests).toHaveLength(1);
+      assertToolPolicy(childRequests[0]);
       await session.release();
 
       const resumed = await backend.resumeSession(session.sessionId, config);

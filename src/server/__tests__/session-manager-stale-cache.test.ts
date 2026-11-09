@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
+import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node";
 import { SessionManager } from "../session-manager.js";
 import {
   applyMcpServerStatusChange,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node.js";
+import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node";
 import { SessionCapacityError, SessionManager } from "../session-manager.js";
 import { createEventBusRegistry } from "../event-bus.js";
 import { createSessionTitlesStore } from "../session-titles.js";

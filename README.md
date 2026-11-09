@@ -142,6 +142,10 @@ both versions separately, so a CLI release can be validated independently of the
 wrapper is needed. The SDK natively forwards GitHub MCP configuration, structured `ask_user` elicitation, and Bridge
 tool-loading metadata.
 
+When upgrading the SDK, pin `vscode-jsonrpc` and `koffi` to the exact versions its `package.json` lists, so npm keeps
+one copy of each. The Bridge recognises a lost runtime connection with `instanceof ConnectionError`, which fails for
+errors from a second `vscode-jsonrpc`; `copilot-runtime-contract.test.ts` checks this.
+
 Automatic tool approvals are configured once per runtime handle using the CLI's native permission
 mode, before tool initialization or prompt delivery. Bridge no longer answers each approval through
 an SDK callback. Native policy refusal or initialization failure stops delivery explicitly; managed
