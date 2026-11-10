@@ -15,6 +15,7 @@ import { createTaskStartersStore } from "./task-starters-store.js";
 import { createUnattendedRunStore } from "./unattended-run-store.js";
 import { createTaskHistoryStore } from "./task-history-store.js";
 import { createCompletionReportStore } from "./completion-report-store.js";
+import { createTaskPageStore } from "./task-page-store.js";
 import { createSettingsStore } from "./settings-store.js";
 import { createSessionTitlesStore } from "./session-titles.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
@@ -112,6 +113,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   });
   const taskHistoryStore = createTaskHistoryStore(db);
   const completionReportStore = createCompletionReportStore(db);
+  const taskPageStore = createTaskPageStore(db);
   const sessionTitles = createSessionTitlesStore(db);
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
@@ -192,6 +194,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     unattendedRunStore,
     taskHistoryStore,
     completionReportStore,
+    taskPageStore,
     sessionTitles,
     bridgeSessionStateStore,
     cliSessionCatalog,

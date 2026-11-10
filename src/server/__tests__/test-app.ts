@@ -6,6 +6,7 @@
 // should import from here; everything else uses ./helpers.ts.
 
 import { createSkillUsageStore } from "../skill-usage-store.js";
+import { createTaskPageStore } from "../task-page-store.js";
 import { createUnattendedRunStore } from "../unattended-run-store.js";
 import { createSkillPackManager } from "../skill-packs.js";
 import { createSkillCatalog } from "../skill-catalog.js";
@@ -108,6 +109,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     taskStore,
     taskHistoryStore: createTaskHistoryStore(db),
     completionReportStore: createCompletionReportStore(db),
+    taskPageStore: createTaskPageStore(db),
     taskGroupStore,
     scheduleStore: createScheduleStore(db),
     settingsStore: createSettingsStore(db),

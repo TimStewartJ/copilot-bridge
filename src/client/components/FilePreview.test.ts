@@ -112,7 +112,7 @@ describe("OutboundAttachment", () => {
 
       const frame = findAllByTag(harness.dom.container, "IFRAME")[0];
       expect(frame.getAttribute("src")).toBe("/api/x/mockup.html?inline=1");
-      expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+      expect(frame.getAttribute("sandbox")).toBe("allow-scripts allow-popups allow-popups-to-escape-sandbox");
       expect(findAllByTag(harness.dom.container, "AUDIO")[0].getAttribute("src")).toBe("/api/x/take.mp3");
       expect(findAllByTag(harness.dom.container, "IMG")[0].getAttribute("src")).toBe("/api/x/chart.png");
       expect(byLabel(harness.dom.container, "BUTTON", "View full size: take.mp3")).toBeUndefined();

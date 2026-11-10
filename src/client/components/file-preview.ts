@@ -8,6 +8,8 @@ import { useSyncExternalStore } from "react";
 export interface PreviewFile {
   url: string;
   name: string;
+  /** What the viewer calls the file, when its name is not what the reader knows it by. */
+  title?: string;
 }
 
 export type FilePreviewKind = "image" | "markdown" | "table" | "html" | "pdf" | "audio" | "video" | "text";

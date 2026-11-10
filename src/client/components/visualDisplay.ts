@@ -1,3 +1,4 @@
+import { HTML_SANDBOX } from "../../shared/html-sandbox.js";
 import { BarChart3, Image as ImageIcon, PanelsTopLeft, Workflow, type LucideIcon } from "lucide-react";
 
 export const VISUAL_DISPLAY_MODES = ["inline", "focus"] as const;
@@ -9,7 +10,7 @@ export interface VisualViewport {
   height?: number;
 }
 
-export const HTML_SANDBOX_PERMISSIONS = "allow-scripts";
+export const HTML_SANDBOX_PERMISSIONS = HTML_SANDBOX;
 
 const VISUAL_KINDS: Record<string, { label: string; Icon: LucideIcon }> = {
   image: { label: "Image", Icon: ImageIcon },

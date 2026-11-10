@@ -19,6 +19,7 @@ import type { TaskStartersStore } from "./task-starters-store.js";
 import type { UnattendedRunStore } from "./unattended-run-store.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
 import type { CompletionReportStore } from "./completion-report-store.js";
+import type { TaskPageStore } from "./task-page-store.js";
 import type { SessionTitlesStore } from "./session-titles.js";
 import type { BridgeSessionStateStore } from "./bridge-session-state-store.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
@@ -82,6 +83,8 @@ export interface AppContext {
   taskHistoryStore?: TaskHistoryStore;
   /** Evidence reports recorded by verify_complete. */
   completionReportStore?: CompletionReportStore;
+  /** HTML pages chats published on tasks. */
+  taskPageStore?: TaskPageStore;
   sessionTitles: SessionTitlesStore;
   bridgeSessionStateStore: BridgeSessionStateStore;
   cliSessionCatalog?: CopilotCliSessionCatalog;

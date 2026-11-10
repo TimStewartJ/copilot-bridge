@@ -274,7 +274,7 @@ function FileViewer({ file, onClose }: { file: PreviewFile; onClose?: () => void
 
   return (
     <LightboxShell
-      title={file.name}
+      title={file.title ?? file.name}
       subtitle={describeFile(file.name).kind}
       onClose={onClose}
       actions={(

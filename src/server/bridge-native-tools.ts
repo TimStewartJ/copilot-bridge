@@ -34,7 +34,7 @@ export const DEFERRED_BRIDGE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "session_archive", "session_rename", "session_send", "session_set_workspace", "session_start",
   "tag_create", "tag_delete", "tag_list", "tag_update",
   "task_create", "task_group_create", "task_group_delete", "task_group_list", "task_group_update",
-  "task_link_work_item", "task_unlink_work_item",
+  "task_link_work_item", "task_page_publish", "task_unlink_work_item",
 ]);
 
 const SDK_TOOL_RESULT_TYPES = new Set([

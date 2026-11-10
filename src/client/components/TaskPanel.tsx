@@ -22,6 +22,7 @@ import TaskSessionList from "./TaskSessionList";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
+import TaskPageSection, { RemoveTaskPageItem } from "./TaskPageSection";
 import TaskHistorySheet, { describeHistoryActor, useTaskHistory } from "./TaskHistorySheet";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
@@ -587,6 +588,8 @@ export default function TaskPanel({
             <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} standalone />
           )}
 
+          <TaskPageSection taskId={task.id} taskTitle={currentTask.title} />
+
           {onStartSuggestedChat && currentTask.status === "active" && !currentTask.completedAt && (
             <TaskStartersSection
               taskId={task.id}
@@ -881,6 +884,7 @@ export default function TaskPanel({
                     label="Tidy instructions and notes"
                     onClick={() => { closeMenu(); void startTidy(currentTask.id); }}
                   />
+                  <RemoveTaskPageItem taskId={currentTask.id} closeMenu={closeMenu} />
                 </>
               )}
             />

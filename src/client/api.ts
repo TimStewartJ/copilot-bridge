@@ -1780,6 +1780,29 @@ export async function createTaskSession(
 }
 
 /** Starts a chat that proposes tidying the task's instructions and notes; returns its id. */
+// ── Task pages ────────────────────────────────────────────────────
+
+export interface TaskPageInfo {
+  taskId: string;
+  updatedAt: string;
+  sessionId?: string;
+  size: number;
+}
+
+export async function fetchTaskPage(taskId: string, options?: { signal?: AbortSignal }): Promise<TaskPageInfo | null> {
+  const data = await apiFetch<{ page: TaskPageInfo | null }>(`/api/tasks/${encodeURIComponent(taskId)}/page`, undefined, { signal: options?.signal });
+  return data.page;
+}
+
+export async function removeTaskPage(taskId: string): Promise<void> {
+  await requestDelete(`/api/tasks/${encodeURIComponent(taskId)}/page`);
+}
+
+/** Where the page itself is served, sandboxed like any agent-written HTML. */
+export function taskPageUrl(taskId: string): string {
+  return `${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/page.html`;
+}
+
 export async function startTaskTidy(taskId: string): Promise<{ sessionId: string; error?: string }> {
   return apiFetch<{ sessionId: string; error?: string }>(`/api/tasks/${encodeURIComponent(taskId)}/tidy`, {});
 }

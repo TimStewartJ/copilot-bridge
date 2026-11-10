@@ -1022,6 +1022,15 @@ function initSchema(db: DatabaseSync): void {
       lastSessionId TEXT
     );
   `);
+  // A task's page: one HTML document an agent published for the user to see where the task stands.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_pages (
+      taskId TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+      html TEXT NOT NULL,
+      sessionId TEXT,
+      updatedAt TEXT NOT NULL
+    );
+  `);
   // What verify_complete recorded: the evidence a chat showed that its work was done.
   db.exec(`
     CREATE TABLE IF NOT EXISTS completion_reports (

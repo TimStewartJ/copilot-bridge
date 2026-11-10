@@ -1,4 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { HTML_SANDBOX } from "../shared/html-sandbox.js";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { err, ok, type Result } from "./tool-results.js";
@@ -22,11 +23,19 @@ export const MAX_VEGA_LITE_DEPTH = 20;
 
 export const HTML_MIME_TYPE = "text/html";
 /**
- * The policy every HTML document from a session is served under, as a published visual or a sent
- * file: an opaque origin with scripts, so it can never act as the Bridge, and no network.
+ * The policy every HTML document an agent writes is served under, as a published visual, a sent
+ * file or a task page: the shared sandbox (an opaque origin, so it can never act as the Bridge) and
+ * no network.
  */
 export const HTML_SANDBOX_CSP =
-  "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+  `sandbox ${HTML_SANDBOX}; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'`;
+
+/** Headers for a response that is agent-written HTML. */
+export function setHtmlSandboxHeaders(res: { setHeader(name: string, value: string): unknown }): void {
+  res.setHeader("Content-Security-Policy", HTML_SANDBOX_CSP);
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+}
 
 const MIME_TO_EXT: Record<string, string> = {
   "image/png": "png",

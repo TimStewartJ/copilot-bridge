@@ -492,7 +492,7 @@ describe("Attachment routes", () => {
       expect(framed.status, name).toBe(200);
       expect(framed.headers["content-type"], name).toMatch(type);
       expect(framed.headers["content-disposition"], name).toBeUndefined();
-      expect(framed.headers["content-security-policy"], name).toContain("sandbox allow-scripts;");
+      expect(framed.headers["content-security-policy"], name).toContain("sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;");
       expect(framed.headers["content-security-policy"], name).toContain("connect-src 'none'");
       expect(framed.headers["x-content-type-options"], name).toBe("nosniff");
     }
@@ -602,7 +602,7 @@ describe("Attachment routes", () => {
     expect(page.headers["content-disposition"]).toContain("attachment;");
     const framed = await request(filesApp).get(`/api/sessions/${sessionId}/files/page.html?inline=1`);
     expect(framed.headers["content-disposition"]).toBeUndefined();
-    expect(framed.headers["content-security-policy"]).toContain("sandbox allow-scripts;");
+    expect(framed.headers["content-security-policy"]).toContain("sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;");
 
     const forcedDownload = await request(filesApp).get(`/api/sessions/${sessionId}/files/photo.png?download=1`);
     expect(forcedDownload.headers["content-disposition"]).toContain("attachment;");

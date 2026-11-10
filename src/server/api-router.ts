@@ -10,6 +10,7 @@ import { homedir, tmpdir } from "node:os";
 import type { AppContext } from "./app-context.js";
 import { registerHomeRoutes } from "./home.js";
 import { registerCalendarRoutes } from "./calendar-router.js";
+import { registerTaskPageRoutes } from "./task-page-routes.js";
 import { resolveSessionSummary } from "./session-list.js";
 import type { ApiServices } from "./api-services.js";
 export type { ApiServiceOptions as ApiRouterOptions } from "./api-services.js";
@@ -85,7 +86,7 @@ import {
 } from "./neutral-workspace.js";
 import {
   HTML_MIME_TYPE,
-  HTML_SANDBOX_CSP,
+  setHtmlSandboxHeaders,
   isCanonicalArtifactId,
   loadVisualArtifactMetaForOwner,
   resolveVisualArtifactForOwner,
@@ -1217,6 +1218,7 @@ export function createApiRouter(
 
   registerHomeRoutes(router, ctx, () => sessionList.read());
   if (ctx.calendarStore) registerCalendarRoutes(router, { ...ctx, calendarStore: ctx.calendarStore });
+  if (ctx.taskPageStore) registerTaskPageRoutes(router, { ...ctx, taskPageStore: ctx.taskPageStore });
 
   router.get("/sessions", async (req, res) => {
     try {
@@ -1755,8 +1757,7 @@ export function createApiRouter(
       return;
     }
     if (sandboxed) {
-      res.setHeader("Content-Security-Policy", HTML_SANDBOX_CSP);
-      res.setHeader("Referrer-Policy", "no-referrer");
+      setHtmlSandboxHeaders(res);
     } else {
       res.setHeader("Cache-Control", "private, max-age=3600");
     }
@@ -1821,11 +1822,7 @@ export function createApiRouter(
       return;
     }
     res.type(resolved.value.mimeType);
-    if (resolved.value.mimeType === HTML_MIME_TYPE) {
-      res.setHeader("Content-Security-Policy", HTML_SANDBOX_CSP);
-      res.setHeader("Referrer-Policy", "no-referrer");
-      res.setHeader("X-Content-Type-Options", "nosniff");
-    }
+    if (resolved.value.mimeType === HTML_MIME_TYPE) setHtmlSandboxHeaders(res);
     res.sendFile(resolved.value.filePath, { dotfiles: "allow" }, onErr);
   }
 
