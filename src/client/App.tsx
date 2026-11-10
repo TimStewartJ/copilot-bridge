@@ -53,6 +53,7 @@ import {
 } from "./useDrafts";
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey, HELM_DRAFT_COMPOSER_KEY } from "./lib/composer-key";
+import type { TaskStarter } from "../shared/task-starters.js";
 import { looksUntouched } from "./lib/untouched-task";
 import { getRememberedDashboardPath, isDashboardRoutePath } from "./lib/dashboard-routes";
 import { haptic } from "./lib/haptics";
@@ -1037,6 +1038,28 @@ function AppShell() {
 
   const handleNewSession = (taskId: string) => {
     navigate(getTaskDraftSessionPath(taskId));
+  };
+
+  /** Opens a new chat on the task with a suggested prompt in the composer. False when it didn't. */
+  const handleStartSuggestedChat = (taskId: string, starter: TaskStarter): boolean => {
+    const draftKey = getDraftComposerKey(taskId);
+    if (getDraftSession(draftKey)) {
+      window.alert("A voice message is starting this chat. Try again shortly.");
+      return false;
+    }
+    const unsent = readDraft(draftKey);
+    const hasUnsent = Boolean(unsent?.text.trim() || unsent?.attachments?.length);
+    if (hasUnsent && unsent?.text.trim() !== starter.prompt
+      && !window.confirm("Replace the unsent message in this task's new chat?")) {
+      return false;
+    }
+    setDraftImmediate(draftKey, starter.prompt);
+    if (starter.playbook) {
+      const playbook = starter.playbook;
+      setDraftLaunchOptions(draftKey, (launch) => ({ ...launch, playbook }));
+    }
+    navigate(getTaskDraftSessionPath(taskId));
+    return true;
   };
 
   const handleNewQuickChat = () => {
@@ -2032,6 +2055,7 @@ function AppShell() {
                   activeSessionId={activeSessionId}
                   onSelectSession={handleSelectSession}
                   onNewSession={handleNewSession}
+                  onStartSuggestedChat={handleStartSuggestedChat}
                   onUpdateTask={handleUpdateTask}
                   onTasksChanged={invalidateTasks}
                   isUnread={isUnread}
@@ -2160,6 +2184,7 @@ function AppShell() {
                     activeSessionId={activeSessionId}
                     onSelectSession={handleSelectSession}
                     onNewSession={handleNewSession}
+                    onStartSuggestedChat={handleStartSuggestedChat}
                     onUpdateTask={handleUpdateTask}
                     onTasksChanged={invalidateTasks}
                     isUnread={isUnread}

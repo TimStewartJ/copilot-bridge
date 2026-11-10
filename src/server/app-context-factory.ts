@@ -11,6 +11,7 @@ import { createSessionPlaybookStore } from "./session-playbook-store.js";
 import { createSkillCatalog } from "./skill-catalog.js";
 import { createSkillPackManager } from "./skill-packs.js";
 import { createSkillUsageStore } from "./skill-usage-store.js";
+import { createTaskStartersStore } from "./task-starters-store.js";
 import { createUnattendedRunStore } from "./unattended-run-store.js";
 import { createTaskHistoryStore } from "./task-history-store.js";
 import { createCompletionReportStore } from "./completion-report-store.js";
@@ -96,6 +97,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const sessionWorkspaceStore = createSessionWorkspaceStore(db);
   const sessionPlaybookStore = createSessionPlaybookStore(db);
   const skillUsageStore = createSkillUsageStore(db);
+  const taskStartersStore = createTaskStartersStore(db);
   const unattendedRunStore = createUnattendedRunStore(db);
   let skillCatalog: ReturnType<typeof createSkillCatalog> | undefined;
   const skillPacks = createSkillPackManager({
@@ -186,6 +188,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     skillCatalog,
     skillPacks,
     skillUsageStore,
+    taskStartersStore,
     unattendedRunStore,
     taskHistoryStore,
     completionReportStore,

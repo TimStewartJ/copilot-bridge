@@ -936,6 +936,7 @@ export function createTaskStore(
     }
     db.prepare("DELETE FROM schedules WHERE taskId = ?").run(id);
     db.prepare("DELETE FROM entity_tags WHERE entityType = 'task' AND entityId = ?").run(id);
+    db.prepare("DELETE FROM task_starters WHERE taskId = ?").run(id);
     db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
     return deletedScheduleIds;
   }

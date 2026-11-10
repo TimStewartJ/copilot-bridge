@@ -1,3 +1,4 @@
+import type { TaskStartersResponse } from "../shared/task-starters.js";
 import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
@@ -1628,6 +1629,23 @@ export async function fetchTaskGitStatus(
 ): Promise<TaskGitStatus> {
   const suffix = options?.refresh ? "?refresh=1" : "";
   return apiFetch<TaskGitStatus>(`/api/tasks/${id}/git-status${suffix}`, undefined, options);
+}
+
+export async function fetchTaskStarters(taskId: string, options?: { signal?: AbortSignal }): Promise<TaskStartersResponse> {
+  return apiFetch<TaskStartersResponse>(`/api/tasks/${encodeURIComponent(taskId)}/starters`, undefined, options);
+}
+
+/** Asks Helm for new suggested chats for this task; the response says it is refreshing. */
+export async function refreshTaskStarters(taskId: string): Promise<TaskStartersResponse> {
+  return apiFetch<TaskStartersResponse>(`/api/tasks/${encodeURIComponent(taskId)}/starters/refresh`, {});
+}
+
+export async function markTaskStarterUsed(taskId: string, starterId: string): Promise<void> {
+  await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/starters/${encodeURIComponent(starterId)}/use`, {});
+}
+
+export async function dismissTaskStarter(taskId: string, starterId: string): Promise<void> {
+  await requestDelete(`/api/tasks/${encodeURIComponent(taskId)}/starters/${encodeURIComponent(starterId)}`);
 }
 
 export async function patchTask(

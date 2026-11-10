@@ -26,6 +26,7 @@ import {
 } from "./session-view.js";
 import { resolveSessionCreationOptions as resolveSessionCreationOptionsForContext } from "./session-creation-options.js";
 import { startTaskTidyChat } from "./task-tidy.js";
+import { TaskStartersError, TaskStartersService } from "./task-starters.js";
 import { parseWorkspaceCwd } from "./session-formatting.js";
 import { buildTaskOverview, toOverviewSessions } from "./task-overview.js";
 import { maxIsoTime } from "../shared/session-activity.js";
@@ -3799,6 +3800,28 @@ export function createApiRouter(
       if (sendSessionCapacityError(res, err)) return;
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // Suggested chats on a task: Helm's looks write them; the panel can refresh one task's set.
+  const taskStarters = new TaskStartersService(ctx);
+  function sendStartersError(res: express.Response, error: unknown): void {
+    if (error instanceof TaskStartersError) res.status(error.status).json({ error: error.message });
+    else res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+  router.get("/tasks/:id/starters", (req, res) => {
+    try { res.json(taskStarters.get(req.params.id)); } catch (error) { sendStartersError(res, error); }
+  });
+  router.post("/tasks/:id/starters/refresh", (req, res) => {
+    try {
+      void taskStarters.refresh(req.params.id);
+      res.status(202).json(taskStarters.get(req.params.id));
+    } catch (error) { sendStartersError(res, error); }
+  });
+  router.post("/tasks/:id/starters/:starterId/use", (req, res) => {
+    try { taskStarters.close(req.params.id, req.params.starterId, "used"); res.json({ ok: true }); } catch (error) { sendStartersError(res, error); }
+  });
+  router.delete("/tasks/:id/starters/:starterId", (req, res) => {
+    try { taskStarters.close(req.params.id, req.params.starterId, "dismissed"); res.status(204).end(); } catch (error) { sendStartersError(res, error); }
   });
 
   // ── Checklist routes ─────────────────────────────────────────────

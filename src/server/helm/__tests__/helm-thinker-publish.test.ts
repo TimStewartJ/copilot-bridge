@@ -119,6 +119,29 @@ describe("thinker publication", () => {
     expect(result.errors.join("\n")).toMatch(/proposal 2 action 1: tidy_task needs the taskId of a local task listed with tidy signs/);
   });
 
+  it("accepts suggested chats for listed local tasks and refuses the rest", () => {
+    const chats = [{ label: "Book the return flight", prompt: "Find return flights for the AWC trip.", playbook: "buy-or-book" }];
+    const accepted = validatePublication({ summary: "x", items: [], starters: [{ bridge: "local", taskId: "t1", chats }] }, packet(), []);
+    expect(accepted.ok && accepted.starters).toEqual([{ taskId: "t1", chats }]);
+
+    const refused = validatePublication({
+      summary: "x", items: [],
+      starters: [
+        { bridge: "pc", taskId: "t1", chats },
+        { taskId: "missing", chats },
+        { taskId: "t2", chats: [...chats, { label: "b", prompt: "b" }, { label: "c", prompt: "c" }, { label: "d", prompt: "d" }] },
+        { taskId: "t1", chats: [{ label: "", prompt: "p" }] },
+      ],
+    }, packet(), []);
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    const errors = refused.errors.join("\n");
+    expect(errors).toMatch(/starters 1: starters only work for tasks on bridge "local"/);
+    expect(errors).toMatch(/starters 2: needs the taskId of a task listed for local/);
+    expect(errors).toMatch(/starters 3 chats must be a list of at most 3/);
+    expect(errors).toMatch(/starters 4 chats 1: label is required/);
+  });
+
   it("protects Tim's memory and enforces the size limits", () => {
     const mine = memory({ id: "u1", author: "user", text: "Ministry first on weekends", kind: "priority" });
     const theirs = memory({ id: "h1", kind: "person", key: "bryce", text: "Buyer" });

@@ -1040,6 +1040,22 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_completion_reports_task ON completion_reports(taskId, createdAt);
   `);
   addColumn("completion_reports", "notesJson", "TEXT NOT NULL DEFAULT '[]'");
+  // Suggested chats on a task (shared/task-starters.ts). A new set replaces the task's open ones.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_starters (
+      id TEXT PRIMARY KEY,
+      taskId TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      playbook TEXT,
+      source TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      usedAt TEXT,
+      dismissedAt TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_starters_task ON task_starters(taskId, position);
+  `);
   // An event's ID in the calendar it was imported from, so a repeat import updates it in place.
   addColumn("calendar_events", "externalId", "TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_externalId ON calendar_events(externalId) WHERE externalId IS NOT NULL");

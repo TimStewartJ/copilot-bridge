@@ -47,6 +47,7 @@ export const queryKeys = {
   task: (id: string) => ["task", id] as const,
   taskChecklistItems: (id: string) => ["task", id, "checklist-items"] as const,
   taskGitStatus: (id: string) => ["task", id, "git-status"] as const,
+  taskStarters: (id: string) => ["task", id, "starters"] as const,
   taskMomentumEvents: (id: string) => ["task", id, "momentum-events"] as const,
   taskHistory: (id: string) => ["task", id, "history"] as const,
   taskEnriched: (id: string) => ["task", id, "enriched"] as const,

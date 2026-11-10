@@ -1,4 +1,6 @@
 import TaskDatesSection from "../calendar/TaskDatesSection";
+import { TaskStartersSection } from "./task-sections/TaskStartersSection";
+import type { TaskStarter } from "../../shared/task-starters.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -79,6 +81,8 @@ interface TaskPanelProps {
   activeSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
+  /** Opens a new chat with a suggested prompt; false when it didn't. Leaving it out hides suggestions. */
+  onStartSuggestedChat?: (taskId: string, starter: TaskStarter) => boolean;
   onUpdateTask: (
     taskId: string,
     updates: Parameters<typeof patchTask>[1],
@@ -159,6 +163,7 @@ export default function TaskPanel({
   activeSessionId,
   onSelectSession,
   onNewSession,
+  onStartSuggestedChat,
   onUpdateTask,
   onTasksChanged,
   isUnread,
@@ -580,6 +585,13 @@ export default function TaskPanel({
             />
           ) : (
             <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} standalone />
+          )}
+
+          {onStartSuggestedChat && currentTask.status === "active" && !currentTask.completedAt && (
+            <TaskStartersSection
+              taskId={task.id}
+              onStart={(starter) => onStartSuggestedChat(task.id, starter)}
+            />
           )}
 
           <Section

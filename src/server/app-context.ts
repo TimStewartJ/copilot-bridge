@@ -15,6 +15,7 @@ import type { SessionPlaybookStore } from "./session-playbook-store.js";
 import type { SkillCatalog } from "./skill-catalog.js";
 import type { SkillPackManager } from "./skill-packs.js";
 import type { SkillUsageStore } from "./skill-usage-store.js";
+import type { TaskStartersStore } from "./task-starters-store.js";
 import type { UnattendedRunStore } from "./unattended-run-store.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
 import type { CompletionReportStore } from "./completion-report-store.js";
@@ -74,6 +75,8 @@ export interface AppContext {
   skillCatalog?: SkillCatalog;
   skillPacks?: SkillPackManager;
   skillUsageStore?: SkillUsageStore;
+  /** Suggested chats on each task panel. */
+  taskStartersStore?: TaskStartersStore;
   /** Chats where defers or schedules ran turns since the user last wrote there. */
   unattendedRunStore?: UnattendedRunStore;
   taskHistoryStore?: TaskHistoryStore;

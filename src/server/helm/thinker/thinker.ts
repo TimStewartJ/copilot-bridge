@@ -43,12 +43,13 @@ import { applyHelmSessionProfile } from "../helm-session-profile.js";
 import { createHelmToolDefinitions, type HelmBridgeFacade, type HelmToolRuntime } from "../helm-tools.js";
 import { bridgeStatuses, buildThinkerPacket, countChanges, readBridgeForChat, renderThinkerPacket, type ChatBridgeView, type ThinkerPacket } from "./context.js";
 import { buildThinkerPrompt, buildThinkerSystemPrompt, THINKER_NUDGE } from "./prompt.js";
-import { MAX_ACTIONS, MAX_CHARS, MAX_EVIDENCE, MAX_HANDLED, MAX_ITEMS, MAX_PROPOSALS, MAX_WATCHING, normalizeChoice, validatePublication, type HandledPlan, type MemoryOp } from "./publish.js";
+import { MAX_ACTIONS, MAX_CHARS, MAX_EVIDENCE, MAX_HANDLED, MAX_ITEMS, MAX_PROPOSALS, MAX_STARTER_TASKS, MAX_WATCHING, normalizeChoice, validatePublication, type HandledPlan, type MemoryOp } from "./publish.js";
 import { createLocalSource, createPeerSource, sourceLink, type HelmSource } from "./sources.js";
 import { mergeSourceIds, toRunView, type HelmRunRecord, type HelmThinkerStore } from "./store.js";
 import { connectSource, RunSources, SourceError, sourceUnsupportedReason, type SourceConnector, type SourceToolInfo } from "./outside-sources.js";
 import type { McpServer } from "../../mcp-server-store.js";
 import { startTaskTidyChat, taskTidyHints } from "../../task-tidy.js";
+import { TASK_STARTER_LABEL_MAX, TASK_STARTER_PROMPT_MAX, TASK_STARTERS_MAX } from "../../../shared/task-starters.js";
 
 /** How long one run may take before it is given up. */
 const RUN_TIMEOUT_MS = 30 * 60_000;
@@ -453,6 +454,31 @@ export class HelmThinker {
             description: `At most ${MAX_HANDLED}, and only replies listed under this bridge's replies in the packet.`,
             items: { type: "object", properties: { bridge: { type: "string" }, sessionId: { type: "string" }, why: chars(MAX_CHARS.handledWhy) }, required: ["bridge", "sessionId", "why"] },
           },
+          starters: {
+            type: "array",
+            description: `Suggested chats for at most ${MAX_STARTER_TASKS} local tasks. A task's set replaces its earlier suggestions.`,
+            items: {
+              type: "object",
+              properties: {
+                bridge: { type: "string", description: "Always \"local\"." },
+                taskId: { type: "string" },
+                chats: {
+                  type: "array",
+                  description: `At most ${TASK_STARTERS_MAX}, most useful first.`,
+                  items: {
+                    type: "object",
+                    properties: {
+                      label: chars(TASK_STARTER_LABEL_MAX, "The button's text, a short imperative. "),
+                      prompt: chars(TASK_STARTER_PROMPT_MAX, "The complete message, as Tim would type it. "),
+                      playbook: { type: "string", description: "Optional playbook name, or \"none\" for a small direct request." },
+                    },
+                    required: ["label", "prompt"],
+                  },
+                },
+              },
+              required: ["taskId", "chats"],
+            },
+          },
           memory: {
             type: "object",
             properties: {
@@ -494,6 +520,9 @@ export class HelmThinker {
       changes = this.applyMemory(result.memory, fromSources);
       const ok = this.store.publishRun(run.id, result.brief, changes);
       if (ok) {
+        for (const plan of result.starters) {
+          if (this.ctx.taskStore.getTask(plan.taskId)) this.ctx.taskStartersStore?.replaceWithin(plan.taskId, plan.chats, "helm");
+        }
         this.store.setRunSources(run.id, this.runSourceStatuses(active.sources), fromSources);
         // Only a source read successfully counts as read: after a failure, the next look reads that stretch again.
         this.store.setSourceCoverage(active.sources?.readServerIds ?? [], run.startedAt);
@@ -502,7 +531,7 @@ export class HelmThinker {
     });
     if (!published) return toolFailure("This run already published its brief.");
     const handled = settings.autonomy === "routine" ? this.applyHandled(run.id, result.handled) : 0;
-    return { success: true, items: result.brief.items.length, handled, memoryChanges: changes.length };
+    return { success: true, items: result.brief.items.length, handled, memoryChanges: changes.length, starters: result.starters.length };
   }
 
   private applyMemory(ops: MemoryOp[], fromSources: readonly string[] = []): HelmMemoryChange[] {

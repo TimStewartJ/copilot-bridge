@@ -17,6 +17,7 @@ import {
   type HelmProposal,
   type HelmWatching,
 } from "../../../shared/helm-thinker.js";
+import { validateTaskStarters, type TaskStarterDraft } from "../../../shared/task-starters.js";
 import type { PacketBridge, ThinkerPacket } from "./context.js";
 
 // helm_publish states these limits in its tool descriptions, so a run sees them before it writes.
@@ -26,6 +27,8 @@ export const MAX_PROPOSALS = 5;
 export const MAX_WATCHING = 10;
 export const MAX_HANDLED = 30;
 export const MAX_ACTIONS = 3;
+/** Tasks one look may write suggested chats for. */
+export const MAX_STARTER_TASKS = 12;
 export const MAX_CHARS = {
   summary: 700,
   title: 160,
@@ -55,8 +58,13 @@ export interface HandledPlan {
   activityAt: string;
 }
 
+export interface StarterPlan {
+  taskId: string;
+  chats: TaskStarterDraft[];
+}
+
 export type PublicationResult =
-  | { ok: true; brief: HelmBrief; handled: HandledPlan[]; memory: MemoryOp[] }
+  | { ok: true; brief: HelmBrief; handled: HandledPlan[]; memory: MemoryOp[]; starters: StarterPlan[] }
   | { ok: false; errors: string[] };
 
 function text(value: unknown, max: number): string | undefined {
@@ -228,9 +236,22 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
     else handled.push({ bridge: bridge.id, sessionId: reply.sessionId, title: reply.task ? `${reply.task} · ${reply.conversation}` : reply.conversation, why, activityAt: reply.activityAt });
   });
 
+  const starters: StarterPlan[] = [];
+  if (input.starters !== undefined && (!Array.isArray(input.starters) || input.starters.length > MAX_STARTER_TASKS)) errors.push(`starters must be a list of at most ${MAX_STARTER_TASKS} tasks`);
+  else (input.starters ?? []).forEach((rawStarter: any, index: number) => {
+    const where = `starters ${index + 1}`;
+    const local = bridges.get("local");
+    if (rawStarter?.bridge !== undefined && rawStarter.bridge !== "local") { errors.push(`${where}: starters only work for tasks on bridge "local"`); return; }
+    if (!local || typeof rawStarter?.taskId !== "string" || !local.tasks.some((task) => task.taskId === rawStarter.taskId)) { errors.push(`${where}: needs the taskId of a task listed for local`); return; }
+    if (starters.some((plan) => plan.taskId === rawStarter.taskId)) { errors.push(`${where}: that task is listed twice`); return; }
+    const checked = validateTaskStarters(rawStarter.chats, `${where} chats`);
+    if (!checked.ok) errors.push(...checked.errors);
+    else starters.push({ taskId: rawStarter.taskId, chats: checked.starters });
+  });
+
   const memoryOps = validateMemory(input.memory, packet, memory, errors);
   if (errors.length > 0) return { ok: false, errors: errors.slice(0, 25) };
-  return { ok: true, brief: { summary: summary!, items, proposals, watching }, handled, memory: memoryOps };
+  return { ok: true, brief: { summary: summary!, items, proposals, watching }, handled, memory: memoryOps, starters };
 }
 
 function validateMemory(raw: unknown, packet: ThinkerPacket, memory: readonly HelmMemoryEntry[], errors: string[]): MemoryOp[] {
