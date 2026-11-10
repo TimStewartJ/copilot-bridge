@@ -5,6 +5,7 @@ import { validateToolArguments } from "../agent-tools-mcp/validate-args.js";
 import { getBridgeToolDefinitions } from "../agent-tools-mcp/register.js";
 import { createTaskToolDefinitions } from "../tools/task-tools.js";
 import { buildBridgeContextSections } from "../session-context-block.js";
+import { TASK_NOTES_MAX_LENGTH } from "../task-note-pages.js";
 import { toolFailure } from "../tool-results.js";
 import { createTestApp } from "./test-app.js";
 
@@ -135,11 +136,35 @@ describe("session manager task tools", () => {
 
     const restart = await info({});
     const reread = await info({ offset: restart.nextOffset, revision: restart.revision });
-    const rewritten = await write({ notes: `${long} Decided.`, notesWriteToken: reread.notesWriteToken });
+    const rewritten = await write({ notes: long.replace("Rule at the end.", "Rule kept."), notesWriteToken: reread.notesWriteToken });
     expect(rewritten).toMatchObject({ success: true, notesWriteToken: expect.any(String) });
     expect(await write({ notes: "Short again", notesWriteToken: rewritten.notesWriteToken })).toMatchObject({ success: true });
     expect(saved()).toBe("Short again");
     expect(await write({ notes: "No token needed" })).toMatchObject({ success: true });
+  });
+
+  it("refuses agent writes that grow task notes past the limit, but lets over-limit notes be corrected and shrunk", async () => {
+    const { ctx } = createTestApp();
+    const task = ctx.taskStore.createTask("Trip plan");
+    const update = (args: Record<string, unknown>) => getTool(ctx, "task_update").handler({ taskId: task.id, ...args }, createInvocation("task_update"));
+    const saved = () => ctx.taskStore.getTask(task.id)!.notes;
+    const atLimit = `Open: visa.\n${"x".repeat(TASK_NOTES_MAX_LENGTH - "Open: visa.\n".length)}`;
+
+    expect(await update({ notes: atLimit })).toMatchObject({ success: true });
+    for (const growing of [{ notes: `${atLimit}y` }, { notesEdit: { old_str: "Open: visa.", new_str: "Open: visa, insurance." } }]) {
+      const refused = await update(growing);
+      expect(refused).toMatchObject({ resultType: "failure" });
+      expect(JSON.stringify(refused)).toContain("task_history_add");
+    }
+    expect(saved()).toBe(atLimit);
+
+    // Notes saved over the limit before it existed, or by the user in the app.
+    const legacy = `Booked: hotel.\n${"Old story. ".repeat(1000)}`;
+    ctx.taskStore.updateTask(task.id, { notes: legacy });
+    expect(await update({ notesEdit: { old_str: "Booked: hotel.", new_str: "Booked: motel." } })).toMatchObject({ success: true });
+    expect(await update({ notesEdit: { old_str: "Booked: motel.", new_str: "Booked: motel, with parking." } })).toMatchObject({ resultType: "failure" });
+    expect(await update({ notesEdit: { old_str: "Booked: motel.\n", new_str: "" } })).toMatchObject({ success: true });
+    expect(saved()).toBe(legacy.slice("Booked: hotel.\n".length));
   });
 
   it("changes one passage of long notes without a read, and only when it is unambiguous", async () => {

@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 export type TaskNotesSource = "task" | "group";
 /** Notes up to this length travel whole with a chat's messages; longer ones travel as their start. */
 export const TASK_NOTES_BRIEF_LENGTH = 8000;
+/** Agents may not grow task notes past this, which stays under the brief so every chat sees them whole. */
+export const TASK_NOTES_MAX_LENGTH = 6000;
 /** Keeps a page under the 20 KB at which the CLI moves a tool's result to a file. */
 const PAGE_LENGTH = 16_000;
 
@@ -27,6 +29,16 @@ export function notesWriteRefusal(current: string, token: unknown): string | und
   return token === undefined
     ? "These notes are longer than the excerpt in your context. To change part of task notes use notesEdit; to replace them, read them to the end with task_get_info (task_group_list for group notes) and pass its notesWriteToken."
     : "These notes changed since you read them. Read them again and pass the new notesWriteToken.";
+}
+
+/**
+ * Why an agent may not save these task notes. Notes already over the limit may still be saved at
+ * their length or shorter, so they can be corrected and trimmed step by step.
+ */
+export function notesLengthRefusal(current: string, next: string): string | undefined {
+  if (next.length <= TASK_NOTES_MAX_LENGTH || next.length <= current.length) return undefined;
+  const limit = TASK_NOTES_MAX_LENGTH.toLocaleString("en-US");
+  return `Task notes are limited to ${limit} characters so every chat sees all of them; this would make them ${next.length.toLocaleString("en-US")}. Keep only where the task stands now: replace lines that are out of date, record what happened with task_history_add, put standing rules in the task instructions and reference material in a docs page linked from the notes, then save again.`;
 }
 
 /** Changes one exact passage, so nothing else has to be read or sent back. */

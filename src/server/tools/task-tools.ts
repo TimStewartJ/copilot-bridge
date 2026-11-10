@@ -10,7 +10,7 @@ import type { AppContext } from "../app-context.js";
 import type { Task, TaskChangeActor } from "../task-store.js";
 import type { ProvidersConfig } from "../providers/types.js";
 import type { TagStore } from "../tag-store.js";
-import { applyNotesEdit, notesContinuationRefusal, notesWriteRefusal, notesWriteTokenField, readTaskNotesPage } from "../task-note-pages.js";
+import { applyNotesEdit, notesContinuationRefusal, notesLengthRefusal, notesWriteRefusal, notesWriteTokenField, readTaskNotesPage, TASK_NOTES_MAX_LENGTH } from "../task-note-pages.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
 import {
   InvalidTaskHistoryEntryError,
@@ -139,10 +139,10 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         muted: { type: "boolean", description: "Mute unread task indicators and notifications" },
         priority: { type: "integer", description: "Task priority" },
         instructions: { type: "string", description: "Standing rules for every session of this task, such as approval requirements or how to verify work (markdown). Overwrites existing instructions. Keep it short." },
-        notes: { type: "string", description: "Current state of the work: open items, the latest known facts, what to do next (markdown). Overwrites existing notes. Do not keep a log of past work here; use task_history_add." },
+        notes: { type: "string", description: `Where the task stands now, written for the user in plain language (markdown, at most ${TASK_NOTES_MAX_LENGTH.toLocaleString("en-US")} characters): what is done or decided, what is open, what to watch out for, and pointers to docs. Overwrites existing notes. Replace lines that are out of date rather than adding to the end. The next step belongs in task_update_momentum, what happened in task_history_add, standing rules in instructions, and reference material in a docs page.` },
         notesEdit: {
           type: "object",
-          description: "Change one passage instead of sending all the notes. Prefer this for long notes. Instead of notes.",
+          description: "Change one passage instead of sending all the notes, such as replacing a line that is out of date. Instead of notes.",
           properties: {
             old_str: { type: "string", description: "The exact text to replace. It must appear exactly once." },
             new_str: { type: "string", description: "The replacement text." },
@@ -192,6 +192,10 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         const edited = applyNotesEdit(task.value.notes, args.notesEdit.old_str, args.notesEdit.new_str);
         if ("error" in edited) return toolFailure(edited.error);
         updates.notes = edited.notes;
+      }
+      if (typeof updates.notes === "string") {
+        const tooLong = notesLengthRefusal(task.value.notes, updates.notes);
+        if (tooLong) return toolFailure(tooLong);
       }
       let tagStore: TagStore | undefined;
       if (hasTags) {

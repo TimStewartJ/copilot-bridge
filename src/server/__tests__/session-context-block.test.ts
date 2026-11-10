@@ -83,7 +83,7 @@ describe("bridge context sections", () => {
     expect(content).not.toContain("Two strong leads.");
     expect(notes!.content).toBe([
       "<task_notes>",
-      "Task notes (the current state of the work; any rules the user wrote here still apply):\nTwo strong leads.",
+      "Task notes (where the work stands, kept by earlier chats and possibly out of date: check facts your work depends on; standing rules belong in the task instructions):\nTwo strong leads.",
       "",
       'Group notes (task group "Home"):\nBudget $3k',
       "</task_notes>",
