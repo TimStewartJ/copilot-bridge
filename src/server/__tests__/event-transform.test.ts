@@ -31,6 +31,18 @@ describe("transcript event projection", () => {
     }
   });
 
+  it("keeps usage and optional route-event payloads for turn details", () => {
+    for (const type of [
+      "session.usage_record",
+      "session.fusion_resolved",
+      "assistant.fusion_phase_completed",
+      "session.fusion_completed",
+    ]) {
+      const event = { type, id: type, data: { detail: "kept" } };
+      expect(projectTranscriptEvent(event)).toBe(event);
+    }
+  });
+
   it("gives the same transcript when non-transcript payloads are dropped", () => {
     const events = [
       { type: "user.message", id: "u1", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Go" } },
@@ -50,6 +62,152 @@ describe("transcript event projection", () => {
     expect(transformEventsToMessages(projected, "s")).toEqual(transformEventsToMessages(events, "s"));
     expect(getLastVisibleActivityAt(projected, "s")).toEqual(getLastVisibleActivityAt(events, "s"));
     expect(transformEventsToMessages(events, "s").find((entry) => entry.sourceEventId === "m2")?.forkBoundaryEventId).toBe("asset");
+  });
+});
+
+describe("transcript turn details", () => {
+  it("shows model and metering data without route events", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-generic", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Check this" } },
+      {
+        id: "usage-generic",
+        type: "session.usage_record",
+        timestamp: "2026-04-10T10:00:10.000Z",
+        data: { usage: {
+          model: "model-a",
+          copilotUsage: { totalNanoAiu: 1_000_000_000 },
+          accounting: { usageId: "request-generic" },
+        } },
+      },
+      {
+        id: "assistant-generic",
+        type: "assistant.message",
+        timestamp: "2026-04-10T10:00:20.000Z",
+        data: { model: "model-a", content: "Done" },
+      },
+      { id: "end-generic", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:25.000Z", data: {} },
+    ]);
+
+    expect(entries.find((entry) => entry.sourceEventId === "assistant-generic")).toMatchObject({
+      model: "model-a",
+      turnDetails: {
+        durationMs: 25_000,
+        models: [{ model: "model-a", requests: 1, meteredRequests: 1, meteredAiCredits: 1 }],
+      },
+    });
+    expect(entries.find((entry) => entry.sourceEventId === "assistant-generic")?.turnDetails?.phases).toBeUndefined();
+  });
+
+  it.each([undefined, "abort", "session.idle", "session.shutdown"])(
+    "keeps unanswered follow-ups together unless the run ended (%s)",
+    (boundary) => {
+      const entries = transformEventsToMessages([
+        { id: "initial", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Check this" } },
+        {
+          id: "initial-usage", type: "session.usage_record", timestamp: "2026-04-10T10:00:05.000Z",
+          data: { usage: { model: "model-a", copilotUsage: { totalNanoAiu: 1_000_000_000 } } },
+        },
+        ...(boundary ? [{ type: boundary, timestamp: "2026-04-10T10:00:09.000Z", data: {} }] : []),
+        { id: "follow-up", type: "user.message", timestamp: "2026-04-10T10:00:10.000Z", data: { content: "Keep it short" } },
+        {
+          id: "follow-up-usage", type: "session.usage_record", timestamp: "2026-04-10T10:00:15.000Z",
+          data: { usage: { model: "model-a", copilotUsage: { totalNanoAiu: 2_000_000_000 } } },
+        },
+        { id: "answer", type: "assistant.message", timestamp: "2026-04-10T10:00:20.000Z", data: { model: "model-a", content: "Done" } },
+        { type: "assistant.turn_end", timestamp: "2026-04-10T10:00:25.000Z", data: {} },
+        { type: "session.shutdown", timestamp: "2026-04-10T11:00:00.000Z", data: {} },
+      ]);
+
+      expect(entries.find((entry) => entry.sourceEventId === "answer")?.turnDetails).toMatchObject({
+        durationMs: boundary ? 15_000 : 25_000,
+        models: [{
+          model: "model-a",
+          requests: boundary ? 1 : 2,
+          meteredAiCredits: boundary ? 2 : 3,
+        }],
+      });
+    },
+  );
+
+  it("adds generic metering with optional route detail to the final assistant message", () => {
+    const entries = transformEventsToMessages([
+      { id: "user-1", type: "user.message", timestamp: "2026-04-10T10:00:00.000Z", data: { content: "Check this" } },
+      {
+        id: "usage-1",
+        type: "session.usage_record",
+        timestamp: "2026-04-10T10:00:10.000Z",
+        data: { usage: {
+          model: "model-a",
+          modelDisplayName: "Model A",
+          copilotUsage: { totalNanoAiu: 2_000_000_000 },
+          accounting: { usageId: "request-1" },
+        } },
+      },
+      {
+        id: "usage-duplicate",
+        type: "session.usage_record",
+        timestamp: "2026-04-10T10:00:10.000Z",
+        data: { usage: {
+          model: "model-a",
+          copilotUsage: { totalNanoAiu: 2_000_000_000 },
+          accounting: { usageId: "request-1" },
+        } },
+      },
+      {
+        id: "resolved-1",
+        type: "session.fusion_resolved",
+        timestamp: "2026-04-10T10:00:11.000Z",
+        data: { fusionId: "route-1" },
+      },
+      {
+        id: "draft-1",
+        type: "assistant.fusion_phase_completed",
+        timestamp: "2026-04-10T10:00:20.000Z",
+        data: {
+          fusionId: "route-1", phaseId: "phase-draft", phaseKind: "primary", model: "model-a",
+          status: "succeeded", content: "Draft answer", durationMs: 8_000,
+        },
+      },
+      {
+        id: "review-1",
+        type: "assistant.fusion_phase_completed",
+        timestamp: "2026-04-10T10:00:21.000Z",
+        data: {
+          fusionId: "route-1", phaseId: "phase-review", phaseKind: "judge", model: "model-b",
+          status: "succeeded", verdict: "accept", content: "{\"rationale\":\"The answer is supported.\"}", durationMs: 1_000,
+        },
+      },
+      {
+        id: "route-completed",
+        type: "session.fusion_completed",
+        timestamp: "2026-04-10T10:00:22.000Z",
+        data: { fusionId: "route-1", finalSourcePhaseId: "phase-review" },
+      },
+      {
+        id: "assistant-final",
+        type: "assistant.message",
+        timestamp: "2026-04-10T10:00:30.000Z",
+        data: { model: "model-b", content: "The answer is supported." },
+      },
+      { id: "turn-end", type: "assistant.turn_end", timestamp: "2026-04-10T10:00:35.000Z", data: {} },
+    ]);
+
+    expect(entries.find((entry) => entry.sourceEventId === "assistant-final")).toMatchObject({
+      model: "model-b",
+      turnDetails: {
+        sourceMessageId: "assistant-final",
+        durationMs: 35_000,
+        finalModel: "model-b",
+        models: [
+          { model: "model-a", displayName: "Model A", requests: 1, meteredRequests: 1, meteredAiCredits: 2 },
+          { model: "model-b", requests: 0, meteredRequests: 0, meteredAiCredits: 0 },
+        ],
+        phases: [
+          { model: "model-a", label: "Draft", replacedAnswer: "Draft answer", final: false },
+          { model: "model-b", label: "Review", outcome: "accept", note: "The answer is supported.", final: true },
+        ],
+      },
+    });
   });
 });
 

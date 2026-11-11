@@ -162,6 +162,46 @@ describe("readMessagesFromDisk latest-page path", () => {
     clearEventLogStatsCache();
   });
 
+  it.each([48, 300])("keeps a steered turn's usage when its start is outside the tail (%i trace records)", async (lines) => {
+    const copilotHome = makeTestDir("session-disk-reader-turn-details");
+    const sessionId = "steered-turn";
+    writeSessionFiles(copilotHome, sessionId, {
+      events: [
+        ...tracePadding(),
+        { id: "initial", type: "user.message", timestamp: "2026-04-30T10:00:00.000Z", data: { content: "Check this" } },
+        {
+          id: "first-usage", type: "session.usage_record", timestamp: "2026-04-30T10:00:05.000Z",
+          data: { usage: { model: "model-a", copilotUsage: { totalNanoAiu: 1_000_000_000 } } },
+        },
+        ...tracePadding({ lines }),
+        { id: "follow-up", type: "user.message", timestamp: "2026-04-30T10:00:10.000Z", data: { content: "Keep it short" } },
+        {
+          id: "last-usage", type: "session.usage_record", timestamp: "2026-04-30T10:00:15.000Z",
+          data: { usage: { model: "model-a", copilotUsage: { totalNanoAiu: 2_000_000_000 } } },
+        },
+        { id: "answer", type: "assistant.message", timestamp: "2026-04-30T10:00:20.000Z", data: { model: "model-a", content: "Done" } },
+        { type: "assistant.turn_end", timestamp: "2026-04-30T10:00:25.000Z", data: {} },
+      ],
+    });
+
+    const { deps, spans } = createDeps(copilotHome);
+    const full = await readMessagesFromDisk(deps, sessionId);
+    const latest = await readMessagesFromDisk(deps, sessionId, { limit: 1 });
+    expect(latest.messages).toEqual(full.messages.slice(-1));
+    expect(latest.messages[0]?.turnDetails).toMatchObject({
+      durationMs: 25_000,
+      models: [{ model: "model-a", requests: 2, meteredAiCredits: 3 }],
+    });
+    expect((await readMessagesFromDisk(deps, sessionId, { limit: 1 })).messages).toEqual(latest.messages);
+    const readSpan = spans.filter((span) => span.name === "session.readFromDisk").at(-1);
+    if (lines === 48) {
+      expect(readSpan?.metadata?.mode).toBe("tail");
+      expect(readSpan?.metadata?.readFullFile).toBe(false);
+    } else {
+      expect(readSpan?.metadata).toMatchObject({ mode: "full", fallbackReason: "turn-details-boundary" });
+    }
+  });
+
   it("uses a bounded tail transform for giant histories while preserving response shape", async () => {
     const copilotHome = makeTestDir("session-disk-reader-tail");
     const oldMessages = Array.from({ length: 120 }, (_, index) => ({

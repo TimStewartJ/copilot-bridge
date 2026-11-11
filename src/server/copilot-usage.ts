@@ -116,9 +116,22 @@ export interface CopilotUsageModelRow extends CopilotUsageTotals, CopilotUsageCo
   sessions: number;
 }
 
+export interface CopilotUsageChatModelChoice {
+  model: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
+}
+
+export interface CopilotUsageChatModelRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
+  selection: CopilotUsageChatModelChoice;
+  sessions: number;
+  models: CopilotUsageModelRow[];
+}
+
 export interface CopilotUsageSessionRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
   sessionId: string;
   shutdownAt: string | null;
+  chatModel?: CopilotUsageChatModelChoice;
   models: CopilotUsageModelRow[];
   days?: CopilotUsageDayRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];
@@ -174,6 +187,7 @@ export interface CopilotUsageSummary {
   totals: CopilotUsageSummaryTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
+  chatModels?: CopilotUsageChatModelRow[];
   days: CopilotUsageDayRow[];
   sessions: CopilotUsageSessionRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];
@@ -213,6 +227,7 @@ export interface CopilotUsageSessionScanResult {
   modelRows: CopilotUsageModelRow[];
   dailyRows?: CopilotUsageDailyModelRow[];
   totals: CopilotUsageTotals;
+  chatModel?: CopilotUsageChatModelChoice;
   sessionRow?: CopilotUsageSessionRow;
   forkAccounting?: CopilotUsageForkAccounting;
   source?: {
@@ -270,7 +285,7 @@ const COPILOT_USAGE_READ_ERROR_MESSAGE = "Unable to read local Copilot usage his
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
 /** nanoAIU per AI credit. The CLI reports metered cost as `totalNanoAiu`. */
 const NANO_AIU_PER_AI_CREDIT = 1_000_000_000;
-export const COPILOT_USAGE_PARSER_VERSION = 6;
+export const COPILOT_USAGE_PARSER_VERSION = 7;
 
 export class CopilotUsageReadError extends Error {
   constructor(message = COPILOT_USAGE_READ_ERROR_MESSAGE) {
@@ -345,6 +360,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
   const requestedSessionIds = sessionIds ? new Set(sessionIds) : null;
   const modelTotals = new Map<string, CopilotUsageModelRow>();
   const dailyModelTotals = new Map<string, Map<string, CopilotUsageModelRow>>();
+  const chatModelTotals = new Map<string, ChatModelUsageAccumulator>();
   const deferWorkerParentSessions = new Set<string>();
   const startDate = resolvedRange.startDate;
   const startAtMs = resolvedRange.startAt ? Date.parse(resolvedRange.startAt) : null;
@@ -358,6 +374,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
         summary,
         modelTotals,
         dailyModelTotals,
+        chatModelTotals,
         deferWorkerParentSessions,
         requestedSessionIds,
         startDate,
@@ -377,6 +394,13 @@ export function buildCopilotUsageSummaryFromSessionResults({
       addTotals(summary.totals, result.totals);
       addDeferWorkerUsage(summary, result, result.totals, deferWorkerParentSessions);
       addDailyModelRows(dailyModelTotals, dailyRows);
+      if (result.chatModel && result.sessionRow) {
+        addChatModelUsage(
+          chatModelTotals,
+          result.chatModel,
+          result.sessionRow.models,
+        );
+      }
       if (
         result.sessionRow
         && (!requestedSessionIds || requestedSessionIds.has(result.sessionRow.sessionId))
@@ -405,6 +429,17 @@ export function buildCopilotUsageSummaryFromSessionResults({
     ? sessionsSeen ?? resultCount
     : summary.coverage.sessionsIncluded + summary.coverage.sessionsSkipped;
   summary.models = sortUsageModelRows([...modelTotals.values()]);
+  summary.chatModels = [...chatModelTotals.values()]
+    .map(({ models, ...row }) => ({
+      ...row,
+      models: sortUsageModelRows([...models.values()]),
+      ...createZeroCostEstimate(),
+    }))
+    .sort((left, right) => (
+      right.estimatedCostUsd - left.estimatedCostUsd
+      || right.sessions - left.sessions
+      || selectionKey(left.selection).localeCompare(selectionKey(right.selection))
+    ));
   summary.deferWorkers.parentSessions = deferWorkerParentSessions.size;
   summary.days = createUsageDayRows(dailyModelTotals);
   summary.sessions.sort((left, right) => (
@@ -428,6 +463,7 @@ function accumulateRangedSessionResult(
     summary: CopilotUsageSummary;
     modelTotals: Map<string, CopilotUsageModelRow>;
     dailyModelTotals: Map<string, Map<string, CopilotUsageModelRow>>;
+    chatModelTotals: Map<string, ChatModelUsageAccumulator>;
     deferWorkerParentSessions: Set<string>;
     requestedSessionIds: Set<string> | null;
     startDate: string;
@@ -438,6 +474,7 @@ function accumulateRangedSessionResult(
     summary,
     modelTotals,
     dailyModelTotals,
+    chatModelTotals,
     deferWorkerParentSessions,
     requestedSessionIds,
     startDate,
@@ -463,6 +500,16 @@ function accumulateRangedSessionResult(
   if (dailyRows.length === 0) return;
 
   addDailyModelRows(dailyModelTotals, dailyRows);
+  if (result.chatModel) {
+    const modelsForSelection = new Map<string, CopilotUsageModelRow>();
+    for (const row of dailyRows) {
+      const key = usageModelKey(row.model, row.contextTier);
+      const modelRow = modelsForSelection.get(key) ?? createZeroModelRow(row.model, 1, row.contextTier);
+      addTotals(modelRow, row);
+      modelsForSelection.set(key, modelRow);
+    }
+    addChatModelUsage(chatModelTotals, result.chatModel, [...modelsForSelection.values()]);
+  }
   summary.coverage.sessionsIncluded += 1;
   if (result.hasEvents) summary.coverage.sessionsWithEvents += 1;
 
@@ -499,6 +546,7 @@ function accumulateRangedSessionResult(
     summary.sessions.push({
       sessionId,
       shutdownAt: maxTimestampFromList(inRangeUsageAts),
+      ...(result.chatModel ? { chatModel: result.chatModel } : {}),
       models: sortUsageModelRows([...sessionModelRows.values()]),
       days: createUsageDayRowsFromDailyRows(dailyRows),
       unpricedModels: [],
@@ -629,6 +677,7 @@ function deduplicateForkSessionResults(
       if (!hasInheritedShutdown) continue;
       const deduplicatedResult = createIncludedResult(
         sessionId,
+        result.chatModel,
         buildShutdownUsageRows(
           accounting.shutdowns,
           (shutdown) => includedShutdowns.has(shutdown.key),
@@ -686,6 +735,7 @@ export async function scanCopilotUsageSession(
   let latestShutdownAt: string | null = null;
   let selectedModel = "unknown";
   let selectedContextTier: CopilotContextTier | undefined;
+  let chatModel: CopilotUsageChatModelChoice | undefined;
   // Sub-agents log their own model changes in the parent's events, tagged with agentId.
   const subagentSelections = new Map<string, { model: string; contextTier?: CopilotContextTier }>();
   let sessionCreatedAt: string | null = null;
@@ -728,6 +778,14 @@ export async function scanCopilotUsageSession(
         selectedModel = normalizeModelName(data?.selectedModel) ?? selectedModel;
         selectedContextTier = normalizeContextTier(data?.contextTier)
           ?? (persistedState.model === selectedModel ? persistedState.contextTier : undefined);
+        if (!chatModel && selectedModel !== "unknown") {
+          const effort = normalizeModelName(data?.reasoningEffort) ?? normalizeModelName(data?.autoTier);
+          chatModel = {
+            model: selectedModel,
+            ...(effort ? { reasoningEffort: effort } : {}),
+            ...(selectedContextTier ? { contextTier: selectedContextTier } : {}),
+          };
+        }
         continue;
       }
 
@@ -735,6 +793,14 @@ export async function scanCopilotUsageSession(
         selectedModel = normalizeModelName(data?.selectedModel) ?? selectedModel;
         selectedContextTier = normalizeContextTier(data?.contextTier)
           ?? (persistedState.model === selectedModel ? persistedState.contextTier : selectedContextTier);
+        if (!chatModel && selectedModel !== "unknown") {
+          const effort = normalizeModelName(data?.reasoningEffort) ?? normalizeModelName(data?.autoTier);
+          chatModel = {
+            model: selectedModel,
+            ...(effort ? { reasoningEffort: effort } : {}),
+            ...(selectedContextTier ? { contextTier: selectedContextTier } : {}),
+          };
+        }
         continue;
       }
 
@@ -834,7 +900,7 @@ export async function scanCopilotUsageSession(
   }
 
   if (usableShutdowns.length === 0 && assistantUsageByRequest.size > 0) {
-    return createIncludedResult(sessionId, buildAssistantUsageRows(assistantUsageByRequest));
+    return createIncludedResult(sessionId, chatModel, buildAssistantUsageRows(assistantUsageByRequest));
   }
 
   if (!sawShutdown) {
@@ -859,6 +925,7 @@ export async function scanCopilotUsageSession(
     : undefined;
   return createIncludedResult(
     sessionId,
+    chatModel,
     buildShutdownUsageRows(usableShutdowns),
     forkAccounting,
   );
@@ -1052,8 +1119,48 @@ function addDailyUsage(
   target.set(key, existing);
 }
 
+interface ChatModelUsageAccumulator extends CopilotUsageTotals {
+  selection: CopilotUsageChatModelChoice;
+  sessions: number;
+  models: Map<string, CopilotUsageModelRow>;
+}
+
+function selectionKey(selection: CopilotUsageChatModelChoice): string {
+  return [
+    selection.model,
+    selection.reasoningEffort ?? "",
+    selection.contextTier ?? "",
+  ].join("\u0000");
+}
+
+function addChatModelUsage(
+  target: Map<string, ChatModelUsageAccumulator>,
+  selection: CopilotUsageChatModelChoice,
+  modelRows: readonly CopilotUsageModelRow[],
+): void {
+  if (modelRows.length === 0) return;
+  const key = selectionKey(selection);
+  const existing = target.get(key) ?? {
+    selection,
+    sessions: 0,
+    ...createZeroTotals(),
+    models: new Map<string, CopilotUsageModelRow>(),
+  };
+  existing.sessions += 1;
+  for (const row of modelRows) {
+    const modelKey = usageModelKey(row.model, row.contextTier);
+    const model = existing.models.get(modelKey) ?? createZeroModelRow(row.model, 0, row.contextTier);
+    model.sessions += 1;
+    addTotals(model, row);
+    existing.models.set(modelKey, model);
+    addTotals(existing, row);
+  }
+  target.set(key, existing);
+}
+
 function createIncludedResult(
   sessionId: string,
+  chatModel: CopilotUsageChatModelChoice | undefined,
   usage: {
     modelRows: CopilotUsageModelRow[];
     includedUsageAts: string[];
@@ -1084,10 +1191,12 @@ function createIncludedResult(
     modelRows,
     dailyRows,
     totals,
+    ...(chatModel ? { chatModel } : {}),
     ...(forkAccounting ? { forkAccounting } : {}),
     sessionRow: {
       sessionId,
       shutdownAt: maxTimestampFromList(usage.includedUsageAts),
+      ...(chatModel ? { chatModel } : {}),
       models: modelRows,
       unpricedModels: [],
       ...totals,
@@ -1111,6 +1220,15 @@ function applyCopilotUsageCostEstimates(
       addTotals(summaryUnpricedTokens, row);
       summaryUnpricedModels.push(createUnpricedModelReportRow(row));
     }
+  }
+
+  for (const chatModel of summary.chatModels ?? []) {
+    const selectionCost = createZeroCostEstimate();
+    for (const model of chatModel.models) {
+      applyCostEstimateToModelRow(model, sdkModels);
+      addCostEstimate(selectionCost, model);
+    }
+    assignCostEstimate(chatModel, selectionCost);
   }
 
   assignCostEstimate(summary.totals, summaryCost);
@@ -1288,6 +1406,7 @@ function createEmptySummary(now: () => number, range: CopilotUsageRange): Copilo
       latestSkippedAt: null,
     },
     models: [],
+    chatModels: [],
     days: [],
     sessions: [],
     unpricedModels: [],

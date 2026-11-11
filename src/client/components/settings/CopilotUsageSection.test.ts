@@ -148,6 +148,33 @@ describe("CopilotUsageSection", () => {
     expect(vi.mocked(useCopilotUsageQuery)).toHaveBeenCalledWith({ includeSessions: false, range: "all" });
   });
 
+  it("shows the chat's starting model and the concrete models that used it", () => {
+    const model = {
+      ...createUsageTotals({ requests: 2, outputTokens: 20, totalTokens: 20 }),
+      ...createCostEstimate({ estimatedCostUsd: 0.4 }),
+      model: "gpt-6-astra",
+      sessions: 1,
+      pricingKey: "gpt-6-astra",
+      pricedAs: "gpt-6-astra",
+      pricingStatus: "exact" as const,
+      normalizedPricingModel: "gpt-6-astra",
+    };
+    const html = renderSection(createUsageSummary({
+      chatModels: [{
+        selection: { model: "auto", reasoningEffort: "max" },
+        sessions: 1,
+        ...createUsageTotals({ requests: 2, outputTokens: 20, totalTokens: 20 }),
+        ...createCostEstimate({ estimatedCostUsd: 0.4 }),
+        models: [model],
+      }],
+    }));
+
+    expect(html).toContain("By chat model at start");
+    expect(html).toContain("auto · max");
+    expect(html).toContain("gpt-6-astra");
+    expect(html).toContain("2 requests");
+  });
+
   it("shows a partial indexing warning while keeping cached usage visible", () => {
     const warning = "1 local Copilot usage session failed to index. Cached results were retained when available.";
     const html = renderSection(createUsageSummary({

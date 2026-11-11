@@ -183,6 +183,31 @@ export function CopilotUsageSection() {
               ) : <UsageModelList models={data.models} />}
             </Section>
 
+            {(data.chatModels?.length ?? 0) > 0 && (
+              <Section label="By chat model at start">
+                <div className={cx(DS.surface.divided, "space-y-0")}>
+                  {data.chatModels!.map((row) => {
+                    const selection = [
+                      row.selection.model,
+                      row.selection.reasoningEffort,
+                      row.selection.contextTier === "long_context" ? "Long context" : undefined,
+                    ].filter(Boolean).join(" · ");
+                    return (
+                      <Details
+                        key={`${row.selection.model}:${row.selection.reasoningEffort ?? ""}:${row.selection.contextTier ?? ""}`}
+                        label={selection}
+                        detail={`${formatNumber(row.sessions)} chats · ${formatUsageUsd(row.estimatedCostUsd)} est. · ${formatNumber(row.requests)} requests`}
+                      >
+                        {row.models.length > 0
+                          ? <UsageModelList models={row.models} />
+                          : <EmptyHint>No model usage recorded.</EmptyHint>}
+                      </Details>
+                    );
+                  })}
+                </div>
+              </Section>
+            )}
+
             <div className="space-y-2">
               <Details label="Coverage and exclusions" detail={`${formatNumber(data.coverage.sessionsSkipped)} skipped`}>
                 <p className={cx(DS.usage.prose, "mb-3")}>

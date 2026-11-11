@@ -22,6 +22,8 @@ import {
   isSdkUserAuthoredMessage,
 } from "./sdk-event-identity.js";
 import { AgentEventOwners, showsAgentTurnsAreStamped } from "./agent-event-ownership.js";
+import { transcriptTurnDetails } from "./transcript-turn-details.js";
+import type { ChatTurnDetails } from "../shared/chat-turn-details.js";
 
 // Shared event→entry transform logic
 // Produces a flat chronological list of text messages, tool calls, and visual artifacts.
@@ -51,6 +53,8 @@ export interface TransformedEntry {
   // Message fields (when type === "message")
   role?: string;
   content?: string;
+  model?: string;
+  turnDetails?: ChatTurnDetails;
   timestamp?: string;
   forkBoundaryEventId?: string;
   undoEventId?: string;
@@ -105,6 +109,10 @@ export const TRANSCRIPT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "assistant.message",
   "assistant.turn_start",
   "assistant.turn_end",
+  "session.usage_record",
+  "session.fusion_resolved",
+  "session.fusion_completed",
+  "assistant.fusion_phase_completed",
   "tool.execution_start",
   "tool.execution_complete",
   "tool.execution_progress",
@@ -586,7 +594,8 @@ export function getLastVisibleActivityAt(events: any[], sessionId?: string): str
 /**
  * Transcript state carried from one event to the next. Given the cursor in effect just before an
  * event, the rest of the log transforms exactly as it does inside a whole-history transform, so a
- * reader can start mid-log from a saved cursor.
+ * reader can start mid-log from a saved cursor. Per-turn usage additionally needs the owning
+ * prompt and its usage records; the disk reader includes that prefix in the window.
  */
 export interface TranscriptCursor {
   turnIndex: number;
@@ -715,6 +724,7 @@ export function transformEventsToMessages(
   const entries: TransformedEntry[] = [];
   let idx = 0;
   const cursor = cloneTranscriptCursor(options.initialCursor ?? createTranscriptCursor());
+  const turnDetailsByMessageId = transcriptTurnDetails(events);
   // Pass 1 tracks the same launches as the cursor, as of each event it indexes.
   const correlatingSubAgentToolCallIds = new Set<string>(cursor.activeSubAgentToolCallIds);
   const agentOwners = new AgentEventOwners();
@@ -919,6 +929,10 @@ export function transformEventsToMessages(
           ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           role: "assistant",
           content,
+          ...(typeof data?.model === "string" && data.model ? { model: data.model } : {}),
+          ...(rawEventId && turnDetailsByMessageId.has(rawEventId)
+            ? { turnDetails: turnDetailsByMessageId.get(rawEventId) }
+            : {}),
           timestamp: data.timestamp ?? (event as any).timestamp,
           ...(activeTurnId ? { turnId: activeTurnId } : {}),
           ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),

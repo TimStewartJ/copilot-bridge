@@ -12,6 +12,7 @@ import type {
 } from "../shared/session-model-move.js";
 import type { UnifiedHelmSettings } from "../shared/helm-settings.js";
 import type { SpeechCoverage, VoiceReviewReason } from "../shared/chat-mic.js";
+import type { ChatTurnDetails } from "../shared/chat-turn-details.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import { isRecord } from "../shared/is-record.js";
 import { ConditionalGetCache, readEtagHeader } from "./conditional-get-cache";
@@ -407,6 +408,9 @@ export interface ChatMessage {
   clientMessageId?: string;
   role: "user" | "assistant";
   content: string;
+  /** Model and usage for a completed assistant turn, when the event log has enough attribution. */
+  model?: string;
+  turnDetails?: ChatTurnDetails;
   timestamp?: string;
   toolCalls?: ToolCall[];
   attachments?: Attachment[];
@@ -2297,6 +2301,16 @@ export interface CopilotUsageModelRow extends CopilotUsageTotals, CopilotUsageCo
   sessions: number;
 }
 
+export interface CopilotUsageChatModelRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
+  selection: {
+    model: string;
+    reasoningEffort?: string;
+    contextTier?: CopilotContextTier;
+  };
+  sessions: number;
+  models: CopilotUsageModelRow[];
+}
+
 export interface CopilotUsageDayRow extends CopilotUsageTotals, CopilotUsageCostEstimate {
   date: string;
   models: CopilotUsageModelRow[];
@@ -2353,6 +2367,7 @@ export interface CopilotUsageSummary {
   totals: CopilotUsageSummaryTotals;
   coverage: CopilotUsageCoverage;
   models: CopilotUsageModelRow[];
+  chatModels?: CopilotUsageChatModelRow[];
   days: CopilotUsageDayRow[];
   sessions: CopilotUsageSessionRow[];
   unpricedModels: CopilotUsageUnpricedModelRow[];

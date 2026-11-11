@@ -26,6 +26,10 @@ import ReasoningStep from "./ReasoningStep";
 import { useChatRunActive } from "./chat-run-context";
 import { ActivityBlockKeyProvider, useAgentNameResolver } from "./transcript-agents-context";
 import { DS, cx } from "../../design/tokens";
+import { Badge, Details } from "../../design/primitives";
+import type { ChatTurnDetails, ChatTurnPhase } from "../../../shared/chat-turn-details.js";
+import { COPILOT_AI_CREDIT_USD } from "../../../shared/copilot-pricing.js";
+import { formatUsageNumber, formatUsageUsd } from "../../lib/usage-presentation";
 
 /** What to say on the line of a run whose main agent has stopped to wait for agents. */
 export interface ActivityWaitingText {
@@ -128,6 +132,67 @@ function workedLabel(subject: string | undefined, durationMs: number | undefined
   return durationMs !== undefined && durationMs >= 1000 ? `${verb} for ${formatDuration(durationMs)}` : verb;
 }
 
+function formatPhaseDuration(durationMs: number | undefined): string | undefined {
+  return durationMs !== undefined && durationMs >= 1000 ? formatDuration(durationMs) : undefined;
+}
+
+function phaseOutcome(phase: ChatTurnPhase): string | undefined {
+  if (phase.final) return "Answered";
+  if (phase.outcome === "reject") return "Rejected";
+  if (phase.outcome === "accept") return "Accepted";
+  return undefined;
+}
+
+function ActivityTurnDetails({ details }: { details: ChatTurnDetails }) {
+  return (
+    <div className="mt-2 space-y-2">
+      <div className={DS.text.eyebrow}>Models</div>
+      <div className={cx(DS.surface.divided, "space-y-0")}>
+        {details.models.map((model) => {
+          const cost = model.meteredRequests > 0
+            ? formatUsageUsd(model.meteredAiCredits * COPILOT_AI_CREDIT_USD)
+            : "Cost not recorded";
+          return (
+            <div key={model.model} className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 py-1.5 text-[13px]">
+              <span className="min-w-0 break-all font-medium text-text-secondary">{model.displayName ?? model.model}</span>
+              <span className="text-xs text-text-faint">
+                {formatUsageNumber(model.requests)} request{model.requests === 1 ? "" : "s"}
+                {cost ? ` · ${cost}${model.meteredRequests > 0 && model.meteredRequests < model.requests ? " metered" : ""}` : ""}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {details.phases && details.phases.length > 0 && (
+        <div className="space-y-2">
+          <div className={DS.text.eyebrow}>Route</div>
+          {details.phases.map((phase, index) => {
+            const outcome = phaseOutcome(phase);
+            return (
+              <div key={`${phase.model}:${phase.label}:${index}`} className="min-w-0 border-t border-border-subtle pt-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[13px]">
+                  <span className="min-w-0 break-all font-medium text-text-secondary">{phase.model}</span>
+                  <Badge>{phase.label}</Badge>
+                  {outcome && <Badge tone={phase.final ? "success" : phase.outcome === "reject" ? "warning" : "neutral"}>{outcome}</Badge>}
+                  {formatPhaseDuration(phase.durationMs) && (
+                    <span className={cx(DS.text.meta, "ml-auto")}>{formatPhaseDuration(phase.durationMs)}</span>
+                  )}
+                </div>
+                {phase.note && <p className={cx(DS.text.prose, "mt-1")}>{phase.note}</p>}
+                {phase.replacedAnswer && (
+                  <Details label="Replaced answer" className="mt-1">
+                    <p className={cx(DS.text.prose, "whitespace-pre-wrap")}>{phase.replacedAnswer}</p>
+                  </Details>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * The main agent's step in flight, for the collapsed line. Steps agents take in the background are
  * left to their own rows: several agents take turns many times a minute, and a line that followed
@@ -188,8 +253,9 @@ function describeHeader(input: {
   waiting: ActivityWaitingText | undefined;
   toolForest: ToolCallForest;
   context: ToolPresentationContext;
+  turnDetails?: ChatTurnDetails;
 }): HeaderText {
-  const { steps, summary, active, inFlight, liveLabel, waiting, toolForest, context } = input;
+  const { steps, summary, active, inFlight, liveLabel, waiting, toolForest, context, turnDetails } = input;
   const { main, inAgents } = collectActivityCalls(steps);
 
   if (active) {
@@ -206,6 +272,8 @@ function describeHeader(input: {
     const step = inFlight ? describeStepInFlight(main, inAgents, context) : undefined;
     return step ?? { label: liveLabel?.trim() || "Working" };
   }
+
+  if (turnDetails) return { label: workedLabel(undefined, turnDetails.durationMs) };
 
   if (main.length === 0 && inAgents.length === 0) {
     const first = steps.find((step) => step.kind === "reasoning");
@@ -305,8 +373,9 @@ export default memo(function ActivityBlock({
       waiting: active ? waiting : undefined,
       toolForest,
       context,
+      turnDetails: block.turnDetails,
     }),
-    [active, block.steps, context, inFlight, liveLabel, summary, toolForest, waiting],
+    [active, block.steps, block.turnDetails, context, inFlight, liveLabel, summary, toolForest, waiting],
   );
   const streamingThought = active && inFlight ? getStreamingThought(block.steps) : undefined;
   const showThoughtWindow = !expanded && streamingThought !== undefined;
@@ -328,6 +397,23 @@ export default memo(function ActivityBlock({
   const elapsed = active && summary.durationMs !== undefined && summary.durationMs >= 1000
     ? formatDuration(summary.durationMs, { wholeSeconds: true })
     : undefined;
+  const modelsWorked = block.turnDetails && block.turnDetails.models.length > 0
+    ? `${block.turnDetails.models.length} model${block.turnDetails.models.length === 1 ? "" : "s"}`
+    : undefined;
+  const meteredRequests = block.turnDetails?.models.reduce((total, model) => total + model.meteredRequests, 0) ?? 0;
+  const meteredCredits = block.turnDetails?.models.reduce((total, model) => total + model.meteredAiCredits, 0) ?? 0;
+  const totalRequests = block.turnDetails?.models.reduce((total, model) => total + model.requests, 0) ?? 0;
+  const meteredCost = meteredRequests > 0
+    ? formatUsageUsd(meteredCredits * COPILOT_AI_CREDIT_USD)
+    : undefined;
+  const turnCost = totalRequests === 0
+    ? undefined
+    : meteredCost
+      ? `${meteredCost}${meteredRequests < totalRequests ? " metered" : ""}`
+      : "Cost not recorded";
+  const turnDetailsMeta = [modelsWorked, turnCost]
+    .filter(Boolean)
+    .join(" · ");
   const failedTotal = summary.failedCount + (header.agentsOnly ? summary.agentFailedCount : 0);
 
   return (
@@ -359,7 +445,7 @@ export default memo(function ActivityBlock({
               {header.detail}
             </span>
           )}
-          {(hasCounts || elapsed) && (
+          {(hasCounts || elapsed || turnDetailsMeta) && (
             <span className="shrink-0 whitespace-nowrap pl-1 text-xs tabular-nums text-text-faint" data-activity-meta="">
               {stepsAreTheNamedAgents ? agentSteps : (
                 <>
@@ -379,6 +465,12 @@ export default memo(function ActivityBlock({
                   {elapsed}
                 </>
               )}
+              {turnDetailsMeta && (
+                <>
+                  {(hasCounts || elapsed) && " · "}
+                  {turnDetailsMeta}
+                </>
+              )}
             </span>
           )}
           {failedTotal > 0 && (
@@ -396,6 +488,7 @@ export default memo(function ActivityBlock({
       {showThoughtWindow && <ThoughtWindow content={streamingThought} />}
       {expanded && (
         <div className={cx(DS.rail, DS.motion.reveal, "pb-1")}>
+          {block.turnDetails && <ActivityTurnDetails details={block.turnDetails} />}
           <ActivityBlockKeyProvider value={block.key}>
             {block.steps.map((step) => {
               if (step.kind === "reasoning") return <ReasoningStep key={step.key} entry={step.entry} />;

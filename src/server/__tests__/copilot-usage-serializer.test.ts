@@ -17,7 +17,7 @@ const zeroTotals = {
   estimatedAiCredits: 0,
   costBreakdownUsd: { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, reasoning: 0, total: 0 },
   billableOutputTokens: 0,
-  reasoningPricingAssumption: "reasoning_tokens_included_in_output",
+  reasoningPricingAssumption: "reasoning_tokens_included_in_output" as const,
 };
 
 function modelRow(contextTier?: "default" | "long_context") {
@@ -27,7 +27,7 @@ function modelRow(contextTier?: "default" | "long_context") {
     sessions: 1,
     pricingKey: contextTier === "long_context" ? "gpt-6-luna:long_context" : "gpt-6-luna",
     pricedAs: contextTier === "long_context" ? "gpt-6-luna:long_context" : "gpt-6-luna",
-    pricingStatus: "exact",
+    pricingStatus: "exact" as const,
     normalizedPricingModel: "gpt-6-luna",
     ...(contextTier ? {
       contextTier,
@@ -73,6 +73,24 @@ function summaryWith(models: ReturnType<typeof modelRow>[]): CopilotUsageSummary
 }
 
 describe("serializeCopilotUsageSummary", () => {
+  it("serializes the selected chat model and its concrete usage breakdown", () => {
+    const summary = summaryWith([modelRow()]);
+    summary.chatModels = [{
+      selection: { model: "auto", reasoningEffort: "max" },
+      sessions: 1,
+      ...zeroTotals,
+      models: [modelRow()],
+    }];
+
+    const body = serializeCopilotUsageSummary(summary);
+
+    expect(body.chatModels).toMatchObject([{
+      selection: { model: "auto", reasoningEffort: "max" },
+      sessions: 1,
+      models: [{ model: "gpt-6-luna" }],
+    }]);
+  });
+
   it("preserves explicit context tiers and omits absent tier fields within the same report", () => {
     const body = serializeCopilotUsageSummary(summaryWith([modelRow("long_context"), modelRow("default"), modelRow()]));
 

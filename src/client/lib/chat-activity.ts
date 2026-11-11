@@ -4,6 +4,7 @@ import type { ChatRenderSegment } from "./tool-call-tree";
 import { getOwnToolCallStatus, getToolCallStatus, type ToolCallStatus } from "./tool-call-status";
 import { isSettledAskUserCall } from "./ask-user-record";
 import { isRecordedCompletionCall } from "./verification-record";
+import type { ChatTurnDetails } from "../../shared/chat-turn-details.js";
 
 /**
  * Work done between two things the agent said: its thinking and its tool calls, in order, and what
@@ -38,6 +39,7 @@ export interface ActivityBlock {
   /** Stable across the live-to-disk handoff, so an expanded block stays expanded. */
   key: string;
   steps: ActivityStep[];
+  turnDetails?: ChatTurnDetails;
 }
 
 /** A question the agent asked, lifted out of its steps so the exchange reads as conversation. */
@@ -253,14 +255,21 @@ export function groupActivitySegments(
     });
   };
 
-  const flush = () => {
-    if (steps.length === 0) return;
+  const flush = (turnDetails?: ChatTurnDetails) => {
+    if (steps.length === 0 && !turnDetails) return;
     const gathered = gatherAgentSteps(steps, topLevelAgentOf);
-    const baseKey = getBlockBaseKey(gathered[0]!);
+    const baseKey = gathered.length > 0
+      ? getBlockBaseKey(gathered[0]!)
+      : `turn:${turnDetails!.sourceMessageId}`;
     // One turn can open several blocks (thinking, then text, then tools), so number them.
     const occurrence = keyCounts.get(baseKey) ?? 0;
     keyCounts.set(baseKey, occurrence + 1);
-    blocks.push({ type: "activity", key: `activity:${baseKey}:${occurrence}`, steps: gathered });
+    blocks.push({
+      type: "activity",
+      key: `activity:${baseKey}:${occurrence}`,
+      steps: gathered,
+      ...(turnDetails ? { turnDetails } : {}),
+    });
     steps = [];
   };
 
@@ -291,6 +300,11 @@ export function groupActivitySegments(
         blocks.push({ type: lifted, key: `${lifted}:${id}`, toolCall: latestToolCalls.get(id) ?? entry.toolCall });
       }
       pushTools(pending, index, segment);
+      return;
+    }
+    if (segment.type === "message") {
+      flush(segment.entry.role === "assistant" ? segment.entry.turnDetails : undefined);
+      blocks.push(segment);
       return;
     }
     flush();

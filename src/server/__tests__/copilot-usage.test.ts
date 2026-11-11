@@ -822,8 +822,15 @@ describe("readCopilotUsageSummary", () => {
       cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 12 };
     const selected = { ...reported, model: "gpt-5.5", outputTokens: 5, totalTokens: 5 };
     expect(summary.models).toMatchObject([reported, selected]);
+    expect(summary.chatModels).toMatchObject([{
+      selection: { model: "gpt-5.5" },
+      sessions: 1,
+      requests: 2,
+      models: [reported, selected],
+    }]);
     expect(summary.sessions).toMatchObject([{
       sessionId: "session-live", shutdownAt: "2026-02-02T09:01:00.000Z", requests: 2,
+      chatModel: { model: "gpt-5.5" },
       inputTokens: 0, outputTokens: 17, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 17,
       models: [reported, selected],
     }]);

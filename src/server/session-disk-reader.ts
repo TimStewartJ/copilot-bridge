@@ -46,6 +46,7 @@ import {
   type TranscriptAgentFoldState,
 } from "./transcript-agent-fold.js";
 import type { TranscriptAgent } from "../shared/transcript-agents.js";
+import { advanceTranscriptTurnBoundary, type TranscriptTurnBoundary } from "./transcript-turn-details.js";
 
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_SINGLE_READ_MAX_BYTES = 1024 * 1024;
@@ -56,7 +57,7 @@ const EVENT_LOG_STATS_SCAN_CHUNK_BYTES = 256 * 1024;
  * only a handful of sessions are ever read concurrently, so this is deliberately small.
  */
 const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 32;
-const EVENT_LOG_STATS_CACHE_VERSION = 6;
+const EVENT_LOG_STATS_CACHE_VERSION = 7;
 /** Bytes hashed at the head and at the resume point to detect event-log rewrites. */
 const EVENT_LOG_FINGERPRINT_BYTES = 4 * 1024;
 /** Backstop bound on retained cursor checkpoints when the log has very short turns. */
@@ -124,6 +125,8 @@ interface EventLogStats {
   lastVisibleActivityAt?: string;
   /** Transcript cursor in effect just before the requested offset; undefined once pruned. */
   cursor?: TranscriptCursor;
+  turnStartOffset?: number;
+  hasUsageRecords: boolean;
   coverage: SessionHistoryCoverage;
   agents: TranscriptAgent[];
 }
@@ -143,6 +146,7 @@ interface CursorCheckpoint {
   /** Byte offset of the line whose effect produced `cursor`. */
   offset: number;
   cursor: TranscriptCursor;
+  turnStartOffset?: number;
 }
 
 /**
@@ -164,6 +168,9 @@ interface EventLogStatsScannerState {
   /** Counts every turn start, as `getSessionHistoryCoverage` numbers turns without an id. */
   turnIndex: number;
   cursor: TranscriptCursor;
+  turnBoundary?: TranscriptTurnBoundary;
+  turnStartOffset?: number;
+  hasUsageRecords: boolean;
   /** Collapsed state for every checkpoint older than the largest possible tail window. */
   baseCheckpoint: CursorCheckpoint;
   checkpoints: CursorCheckpoint[];
@@ -359,6 +366,7 @@ async function readTailCandidateEvents(
   eventsPath: string,
   sessionId: string,
   limit: number,
+  minimumBytes = 0,
 ): Promise<TailCandidateEvents> {
   const fileStat = await stat(eventsPath);
   const fileSize = fileStat.size;
@@ -377,7 +385,7 @@ async function readTailCandidateEvents(
 
   let bytesToRead = fileSize <= RECENT_MESSAGES_SINGLE_READ_MAX_BYTES
     ? fileSize
-    : Math.min(fileSize, RECENT_MESSAGES_INITIAL_TAIL_BYTES);
+    : Math.min(fileSize, Math.max(minimumBytes, RECENT_MESSAGES_INITIAL_TAIL_BYTES));
   const maxTailBytes = Math.min(fileSize, RECENT_MESSAGES_MAX_TAIL_BYTES);
   let latest: TailCandidateEvents | undefined;
   const file = await open(eventsPath, "r");
@@ -415,7 +423,7 @@ async function readTailCandidateEvents(
       if (position === 0 || transformedCount >= limit || bytesToRead >= maxTailBytes) {
         return latest;
       }
-      bytesToRead = Math.min(fileSize, bytesToRead * 2);
+      bytesToRead = Math.min(maxTailBytes, bytesToRead * 2);
     }
   } finally {
     await file.close();
@@ -434,6 +442,7 @@ function createEventLogStatsScannerState(agentTurnsStamped = false): EventLogSta
     pendingTerminalCompletionEntry: false,
     turnIndex: 0,
     cursor,
+    hasUsageRecords: false,
     baseCheckpoint: { offset: -1, cursor: cloneTranscriptCursor(cursor) },
     checkpoints: [],
     activity: {
@@ -454,8 +463,8 @@ function cloneEventLogStatsScannerState(
     openVisibleToolCallIds: [...state.openVisibleToolCallIds],
     visibleVisualToolCalls: state.visibleVisualToolCalls.map(([id, name]) => [id, name]),
     cursor: cloneTranscriptCursor(state.cursor),
-    baseCheckpoint: { offset: state.baseCheckpoint.offset, cursor: cloneTranscriptCursor(state.baseCheckpoint.cursor) },
-    checkpoints: state.checkpoints.map((checkpoint) => ({ offset: checkpoint.offset, cursor: cloneTranscriptCursor(checkpoint.cursor) })),
+    baseCheckpoint: { ...state.baseCheckpoint, cursor: cloneTranscriptCursor(state.baseCheckpoint.cursor) },
+    checkpoints: state.checkpoints.map((checkpoint) => ({ ...checkpoint, cursor: cloneTranscriptCursor(checkpoint.cursor) })),
     activity: {
       ...state.activity,
       openVisibleToolCallIds: [...state.activity.openVisibleToolCallIds],
@@ -504,8 +513,18 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
       state.latestTurnId = getSdkTurnId(event) ?? `turn-${state.turnIndex}`;
     }
     if (isTurnTerminalEvent(event) && eventId) state.latestTerminalEventId = eventId;
+    const turnBoundary = advanceTranscriptTurnBoundary(state.turnBoundary, event);
+    if (event.type === "user.message" && turnBoundary !== state.turnBoundary) {
+      state.turnStartOffset = turnBoundary ? lineStartOffset : undefined;
+    }
+    state.turnBoundary = turnBoundary;
+    if (event.type === "session.usage_record") state.hasUsageRecords = true;
     if (advanceTranscriptCursor(state.cursor, event, agentOwners)) {
-      state.checkpoints.push({ offset: lineStartOffset, cursor: cloneTranscriptCursor(state.cursor) });
+      state.checkpoints.push({
+        offset: lineStartOffset,
+        cursor: cloneTranscriptCursor(state.cursor),
+        turnStartOffset: state.turnStartOffset,
+      });
     }
     if (
       event.type === "tool.execution_start"
@@ -603,10 +622,10 @@ function pruneCursorCheckpoints(state: EventLogStatsScannerState, scannedBytes: 
  * The cursor in effect just before `cursorOffset`: the last checkpoint written by an earlier line.
  * Undefined when the backstop has already collapsed that checkpoint into a later base.
  */
-function resolveTranscriptCursor(
+function resolveTranscriptCheckpoint(
   state: EventLogStatsScannerState,
   cursorOffset: number,
-): TranscriptCursor | undefined {
+): CursorCheckpoint | undefined {
   if (state.baseCheckpoint.offset >= cursorOffset) return undefined;
   let selected = state.baseCheckpoint;
   let low = 0;
@@ -621,14 +640,14 @@ function resolveTranscriptCursor(
       high = mid - 1;
     }
   }
-  return cloneTranscriptCursor(selected.cursor);
+  return { ...selected, cursor: cloneTranscriptCursor(selected.cursor) };
 }
 
 function buildEventLogStats(
   state: EventLogStatsScannerState,
   cursorOffset: number,
 ): EventLogStats {
-  const cursor = resolveTranscriptCursor(state, cursorOffset);
+  const checkpoint = resolveTranscriptCheckpoint(state, cursorOffset);
   return {
     eventCount: state.eventCount,
     candidateEventCount: state.candidateEventCount,
@@ -637,7 +656,8 @@ function buildEventLogStats(
     ...(state.activity.lastVisibleActivityAt
       ? { lastVisibleActivityAt: state.activity.lastVisibleActivityAt }
       : {}),
-    ...(cursor ? { cursor } : {}),
+    ...(checkpoint ? { cursor: checkpoint.cursor, turnStartOffset: checkpoint.turnStartOffset } : {}),
+    hasUsageRecords: state.hasUsageRecords,
     coverage: {
       ...(state.latestEventId ? { latestEventId: state.latestEventId } : {}),
       ...(state.latestTurnId ? { latestTurnId: state.latestTurnId } : {}),
@@ -1071,6 +1091,8 @@ export async function readMessagesFromDisk(
     throw err;
   }
 
+  const initialFileSize = tail.fileSize;
+  const initialMtimeMs = tail.mtimeMs;
   let stats: EventLogStats;
   let derivedTailMessages: TransformedEntry[] | undefined;
   try {
@@ -1091,6 +1113,20 @@ export async function readMessagesFromDisk(
       const tStats = Date.now();
       const scan = await scanEventLogStats(eventsPath, sessionId, tail.fileSize);
       stats = buildEventLogStats(scan.state, tail.startOffset);
+      if (stats.hasUsageRecords && stats.turnStartOffset !== undefined && stats.turnStartOffset < tail.startOffset) {
+        // Include the prompt that owns the first partial turn, not just its latest follow-up.
+        const minimumBytes = tail.fileSize - Math.max(0, stats.turnStartOffset - 1);
+        if (minimumBytes > RECENT_MESSAGES_MAX_TAIL_BYTES) {
+          deps.recordSpan("session.readFromDisk.tailFallback", Date.now() - t0, sessionId, {
+            reason: "turn-details-boundary",
+          });
+          return readMessagesFromDiskFull(deps, sessionId, eventsPath, t0, opts, {
+            fallbackReason: "turn-details-boundary",
+          });
+        }
+        tail = await readTailCandidateEvents(eventsPath, sessionId, latestLimit, minimumBytes);
+        stats = buildEventLogStats(scan.state, tail.startOffset);
+      }
       const statsMs = Date.now() - tStats;
       deps.recordSpan("session.readFromDisk.stats", statsMs, sessionId, {
         cacheResult: scan.resumedFrom > 0
@@ -1119,13 +1155,13 @@ export async function readMessagesFromDisk(
     if (isFileNotFoundError(err)) return emptyReadResult();
     throw err;
   }
-  if (currentFileStat.size !== tail.fileSize || currentFileStat.mtimeMs !== tail.mtimeMs) {
-    const fallbackReason = currentFileStat.size !== tail.fileSize ? "file-size-changed" : "file-mtime-changed";
+  if (currentFileStat.size !== initialFileSize || currentFileStat.mtimeMs !== initialMtimeMs) {
+    const fallbackReason = currentFileStat.size !== initialFileSize ? "file-size-changed" : "file-mtime-changed";
     deps.recordSpan("session.readFromDisk.tailFallback", Date.now() - t0, sessionId, {
       reason: fallbackReason,
-      initialFileSize: tail.fileSize,
+      initialFileSize,
       currentFileSize: currentFileStat.size,
-      initialMtimeMs: tail.mtimeMs,
+      initialMtimeMs,
       currentMtimeMs: currentFileStat.mtimeMs,
     });
     return readMessagesFromDiskFull(deps, sessionId, eventsPath, t0, opts, {

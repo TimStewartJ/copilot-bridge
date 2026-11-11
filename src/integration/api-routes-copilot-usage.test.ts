@@ -340,6 +340,7 @@ describe("Copilot usage routes", () => {
         pricedModelRow,
         unpricedModelRow,
       ],
+      chatModels: [],
       days: [dayRow],
       sessions: [
         {

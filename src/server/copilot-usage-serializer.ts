@@ -64,6 +64,17 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
     ...serializeCostEstimate(row),
     ...serializePricingMetadata(row),
   });
+  const serializeChatModelRow = (row: NonNullable<CopilotUsageSummary["chatModels"]>[number]) => ({
+    selection: {
+      model: row.selection.model,
+      ...(row.selection.reasoningEffort ? { reasoningEffort: row.selection.reasoningEffort } : {}),
+      ...(row.selection.contextTier ? { contextTier: row.selection.contextTier } : {}),
+    },
+    sessions: row.sessions,
+    ...serializeTokenTotals(row),
+    ...serializeCostEstimate(row),
+    models: row.models.map(serializeModelRow),
+  });
   const serializeDayRow = (row: CopilotUsageSummary["days"][number]) => ({
     date: row.date,
     ...serializeTokenTotals(row),
@@ -126,6 +137,7 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
       latestSkippedAt: summary.coverage.latestSkippedAt,
     },
     models: (summary.models ?? []).map(serializeModelRow),
+    chatModels: (summary.chatModels ?? []).map(serializeChatModelRow),
     days: (summary.days ?? []).map(serializeDayRow),
     sessions: (summary.sessions ?? []).map((row) => ({
       sessionId: row.sessionId,

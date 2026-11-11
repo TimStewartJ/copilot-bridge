@@ -126,6 +126,40 @@ describe("ActivityBlock", () => {
     expect(html).not.toContain("shimmer-text");
   });
 
+  it("shows metered model usage and optional replaced-answer details", () => {
+    const message: ChatEntry = {
+      type: "message",
+      role: "assistant",
+      content: "Final answer",
+      turnDetails: {
+        sourceMessageId: "answer-event",
+        durationMs: 14_000,
+        finalModel: "model-b",
+        models: [
+          { model: "model-a", requests: 2, meteredRequests: 2, meteredAiCredits: 5 },
+          { model: "model-b", requests: 1, meteredRequests: 1, meteredAiCredits: 0.1 },
+        ],
+        phases: [
+          { model: "model-a", label: "Draft", replacedAnswer: "Earlier answer", final: false },
+          { model: "model-b", label: "Review", outcome: "reject", note: "The evidence does not support the claim.", final: false },
+        ],
+      },
+    };
+    const { html, text } = render([
+      tool("read", { name: "view", startedAt: at(1), completedAt: at(2), success: true }),
+      message,
+    ], { expanded: true, runActive: false });
+
+    expect(text).toContain("Worked for 14s");
+    expect(text).toContain("2 models");
+    expect(text).toContain("model-a");
+    expect(text).toContain("model-b");
+    expect(text).toContain("Rejected");
+    expect(text).toContain("The evidence does not support the claim.");
+    expect(text).toContain("Earlier answer");
+    expect(html).toContain("$0.05");
+  });
+
   it("opens into the thinking and tool calls in the order they happened", () => {
     const { text } = render(finishedRun, { expanded: true });
 
