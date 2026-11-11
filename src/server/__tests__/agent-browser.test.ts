@@ -406,6 +406,8 @@ describe("agent-browser wrapper", () => {
       ["the missing sandbox when the output also says that something was not found", `${NO_SANDBOX_OUTPUT}\nchrome-sandbox: not found`, "launch.no_usable_sandbox", undefined],
       ["a missing agent-browser", "sh: 1: agent-browser: not found", "binary_missing", undefined],
       ["a DevToolsActivePort failure without the sandbox line", "Chrome exited early without writing DevToolsActivePort", "launch.devtools_active_port", "DevToolsActivePort"],
+      ["a Windows local read timeout", "Failed to read: The connected party did not respond. (os error 10060)", "transport.timeout", undefined],
+      ["a POSIX local read timeout", "Failed to read: Resource temporarily unavailable (os error 11)", "transport.timeout", undefined],
     ])("classifies a failure by %s", async (_name, output, failureCode, signature) => {
       expect(await classify(output)).toEqual({ failureCode, signature });
     });
@@ -481,12 +483,29 @@ describe("agent-browser wrapper", () => {
         "Chrome exited early without writing DevToolsActivePort",
         "Failed to connect: Connection refused",
         "Broken pipe",
-        "agent-browser command timed out after 30000ms",
         "The element is covered",
       ]) {
         expect(mod.browserFailureAdvice(output), output).toBeUndefined();
       }
     });
+  });
+
+  it.each([
+    "Failed to read: The connected party did not respond. (os error 10060)",
+    "Failed to read: Resource temporarily unavailable (os error 11)",
+    "CDP command timed out: Page.navigate",
+    "agent-browser command timed out after 30000ms",
+  ])("keeps a local timeout visible without replaying an action: %s", async (output) => {
+    execFileMock.mockImplementation(callbackFailure({ stderr: output }));
+    const mod = await import("../agent-browser.js");
+
+    await expect(mod.ab(["click", "@e1"])).resolves.toEqual({ ok: false, output });
+
+    expect(execFileMock).toHaveBeenCalledOnce();
+    expect(killMock).not.toHaveBeenCalled();
+    expect(mod.browserFailureAdvice(output)).toMatch(/local.*timed out/);
+    expect(mod.browserFailureAdvice(output)).toContain("`dialog accept` first, in a call with capture off");
+    expect(mod.browserFailureAdvice(output)).toContain("may already have run");
   });
 
   describe("installed agent-browser version", () => {

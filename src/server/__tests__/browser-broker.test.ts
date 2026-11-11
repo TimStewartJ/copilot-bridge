@@ -313,18 +313,23 @@ describe("browser broker", () => {
     await broker.disposeSessionTarget(lease, OP);
   });
 
-  it("requires two successful commands before reporting readiness", async () => {
+  it("requires browser-control responses without evaluating a page that may be paused", async () => {
     const root = makeTestDir("browser-broker-readiness");
-    const runCommand = vi.fn()
-      .mockResolvedValueOnce({ ok: false, output: "connection refused" })
-      .mockResolvedValueOnce({ ok: true, output: "about:blank" })
-      .mockResolvedValueOnce({ ok: true, output: "" });
+    const runCommand = vi.fn<RunCommand>(async (command) =>
+      command[0] === "get"
+        ? { ok: false, output: "CDP command timed out: Runtime.evaluate" }
+        : { ok: true, output: "ready" })
+      .mockResolvedValueOnce({ ok: false, output: "connection refused" });
     const { telemetryStore, spansNamed } = spanRecorder();
     const broker = new BrowserBroker({ copilotHome: root, runCommand, telemetryStore });
 
     await broker.withEphemeralContext("authenticated", OP, async () => undefined);
 
     expect(runCommand).toHaveBeenCalledTimes(3);
+    expect(runCommand.mock.calls.slice(-2).map(([command]) => command)).toEqual([
+      ["tab", "list"],
+      ["dialog", "status"],
+    ]);
     expect(broker.getSnapshot().authenticated).toMatchObject({
       status: "ready",
       activeOperations: 0,

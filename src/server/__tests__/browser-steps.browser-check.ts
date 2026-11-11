@@ -18,6 +18,7 @@ vi.unmock("../browser-launch-host.js");
 vi.unmock("../agent-browser-command.js");
 
 const { runBrowserAutomationCommands } = await import("../browser-automation.js");
+const { ab } = await import("../agent-browser.js");
 const { BrowserBroker } = await import("../browser-broker.js");
 const { BrowserSessionStore, sessionLease } = await import("../browser-session-store.js");
 const { normalizeBrowserAutomationCommands } = await import("../browser-steps.js");
@@ -119,6 +120,73 @@ it("uploads through a styled button, screenshots, drags and downloads in a real 
     await expect(readFile(join(filesDir, "report.txt"), "utf-8")).resolves.toBe("the report");
   } finally {
     await sessions.closeAll();
+    pages.closeAllConnections();
+    pages.close();
+    await rm(copilotHome, { recursive: true, force: true });
+  }
+});
+
+it.each(["public", "authenticated"] as const)("keeps dialog recovery reachable in a paused %s browser", async (context) => {
+  const copilotHome = await mkdtemp(join(tmpdir(), "bridge-browser-dialog-check-"));
+  const pages = createServer((_req, res) => {
+    res.setHeader("content-type", "text/html");
+    res.end(`<!doctype html><title>Ready</title>
+      <button onclick="window.clicks++; setTimeout(() => {
+        document.title = confirm('Keep this page?') ? 'Accepted' : 'Dismissed';
+      }, 0)">Ask</button>
+      <script>window.clicks = 0;</script>`);
+  });
+  const broker = new BrowserBroker({ copilotHome });
+  const sessions = new BrowserSessionStore({ browserBroker: broker });
+  try {
+    pages.listen(0, "127.0.0.1");
+    await once(pages, "listening");
+    const site = `http://127.0.0.1:${(pages.address() as AddressInfo).port}/`;
+    const session = await sessions.createSession("dialog-check", context);
+    const commandOptions = { browserTarget: session.browserTarget };
+    const run = async (...steps: Array<[string, ...string[]]>) => {
+      const commands = normalizeBrowserAutomationCommands(steps.map(([command, ...args]) => ({ command, args })));
+      if (!commands.ok) throw new Error(commands.error);
+      return sessions.useSession(session.id, "dialog-check", (record) => broker.withTarget(
+        sessionLease(record),
+        { toolName: "browser_steps_check", browserOpId: "dialog-check" },
+        () => runBrowserAutomationCommands(commands.value, commandOptions),
+      ));
+    };
+
+    await expect(run(["open", site])).resolves.toMatchObject({ ok: true, value: { ok: true } });
+    const tabsBefore = await ab(["tab", "list"], undefined, commandOptions);
+    expect(tabsBefore.ok).toBe(true);
+    // The click may itself time out once the modal pauses page JavaScript. Never replay it.
+    await ab(["click", "button"], undefined, commandOptions);
+    await vi.waitFor(async () => {
+      const status = await ab(["dialog", "status"], undefined, commandOptions);
+      expect(status).toMatchObject({ ok: true, data: { hasDialog: true, type: "confirm" } });
+    });
+
+    const recovered = await run(["tab", "list"], ["dialog", "dismiss"], ["get", "title"], ["eval", "window.clicks"]);
+    expect(recovered).toMatchObject({
+      ok: true,
+      value: {
+        ok: true,
+        value: { steps: [
+          { command: "tab", ok: true },
+          { command: "dialog", ok: true },
+          { command: "get", ok: true, output: "Dismissed" },
+          { command: "eval", ok: true, output: "1" },
+        ] },
+      },
+    });
+    const tabsAfter = await ab(["tab", "list"], undefined, commandOptions);
+    const targetIds = (tabs: unknown): string[] => {
+      if (!Array.isArray(tabs)) throw new Error("The browser did not return its tabs");
+      return tabs.map((tab: { targetId: string }) => tab.targetId);
+    };
+    expect(targetIds(tabsAfter.data?.tabs)).toEqual(targetIds(tabsBefore.data?.tabs));
+    expect(broker.getSnapshot()[context].status).toBe("ready");
+  } finally {
+    await sessions.closeAll();
+    if (context === "authenticated") await broker.shutdownAuthenticated();
     pages.closeAllConnections();
     pages.close();
     await rm(copilotHome, { recursive: true, force: true });

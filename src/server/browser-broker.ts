@@ -577,12 +577,14 @@ export class BrowserBroker {
           ...options.metadata,
         },
       };
-      const first = await this.runCommand(["get", "url"], READINESS_TIMEOUT_MS, commandOptions);
+      // URL and title evaluate page JavaScript. A modal pauses it, including the readiness
+      // check that would otherwise keep the caller from reaching the dialog or tab controls.
+      const first = await this.runCommand(["tab", "list"], READINESS_TIMEOUT_MS, commandOptions);
       if (!first.ok) {
         lastOutput = first.output;
         continue;
       }
-      const second = await this.runCommand(["get", "title"], READINESS_TIMEOUT_MS, commandOptions);
+      const second = await this.runCommand(["dialog", "status"], READINESS_TIMEOUT_MS, commandOptions);
       if (!second.ok) {
         lastOutput = second.output;
         continue;

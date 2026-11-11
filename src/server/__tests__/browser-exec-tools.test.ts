@@ -447,6 +447,27 @@ describe("browser_exec tool", () => {
         expect(result.sessionLog).toContain("1. open ok");
         expect(result.sessionLog).toContain("2. click failed");
       });
+
+      it("explains a local read timeout without repeating a click or restarting the shared browser", async () => {
+        const calls = mockAgentBrowser((call) => {
+          if (call.command === "click") return { fails: "Failed to read: The connected party did not respond. (os error 10060)" };
+          return undefined;
+        });
+        const { tool } = await loadBrowserExec();
+
+        const result = await tool.handler({
+          ...failedClick,
+          context: "authenticated",
+          reason: "Inspect the example cart",
+        }, invocation) as { textResultForLlm: string };
+
+        expect(result.textResultForLlm).toContain("local browser command timed out");
+        expect(result.textResultForLlm).toContain("`dialog accept`");
+        expect(result.textResultForLlm).toContain("may already have run");
+        expect(calls.filter((call) => call.command === "click")).toHaveLength(1);
+        expect(calls.map((call) => call.command)).not.toContain("close");
+        expect(killMock).not.toHaveBeenCalled();
+      });
     });
   });
 });

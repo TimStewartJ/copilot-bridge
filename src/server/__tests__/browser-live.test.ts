@@ -287,7 +287,7 @@ function createFakeBrowsers(prefix: string, journal: string[] = []) {
     runCommand: async (command, timeout, options) => {
       commands.push({ command: [...command], timeout, options });
       journal.push(command.join(" "));
-      if (command[0] === "get") return answers.ready();
+      if (["tab list", "dialog status"].includes(command.join(" "))) return answers.ready();
       throw new Error(`The broker must not run this agent-browser command here: ${command.join(" ")}`);
     },
     shutdownTarget: async (target, telemetryStore) => {

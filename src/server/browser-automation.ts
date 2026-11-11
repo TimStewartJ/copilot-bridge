@@ -2,7 +2,7 @@
 // is in browser-steps.ts.
 
 import type { BrowserCommand, BrowserCommandResult } from "./agent-browser.js";
-import { ab, isAgentBrowserInstalled } from "./agent-browser.js";
+import { ab, browserFailureAdvice, isAgentBrowserInstalled } from "./agent-browser.js";
 import { saveDownload } from "./browser-download.js";
 import type { PageBlockFields } from "./browser-page-check.js";
 import { takeScreenshot, type BrowserStepFiles, type BrowserStepImage } from "./browser-step-files.js";
@@ -171,7 +171,7 @@ export function browserStepFailure<T extends object>(
   const detail = joinFailureSections(
     failure.error,
     stepOutput && stepOutput !== failure.error ? stepOutput : undefined,
-    (pageBlock.blocked ?? pageBlock.captcha)?.guidance,
+    (pageBlock.blocked ?? pageBlock.captcha)?.guidance ?? browserFailureAdvice(failure.failedStep.output),
   ) ?? failure.error;
   return toolFailureWithContext(failure.error, {
     ...pageBlock,

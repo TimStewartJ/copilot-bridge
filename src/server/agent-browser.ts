@@ -109,6 +109,7 @@ export type BrowserCommandFailureCode =
   | "launch.devtools_active_port"
   | "transport.broken_pipe"
   | "transport.connection_refused"
+  | "transport.timeout"
   | "launch.chrome_exited_early"
   | "launch.timeout"
   | "unknown";
@@ -221,6 +222,8 @@ function commandSpanName(command: BrowserCommand): string {
   if (command[0] === "get" && command[1] === "title") return "browser.command.get_title";
   if (command[0] === "get" && command[1] === "url") return "browser.command.get_url";
   if (command[0] === "get" && command[1] === "cdp-url") return "browser.command.get_cdp_url";
+  if (command[0] === "tab" && command[1] === "list") return "browser.command.tab_list";
+  if (command[0] === "dialog" && command[1] === "status") return "browser.command.dialog_status";
   if (command[0] === "eval") return "browser.command.eval";
   if (command[0] === "stream") return "browser.command.stream";
   return "browser.command.other";
@@ -234,6 +237,9 @@ function failureSignature(output: string): string | null {
 }
 
 function failureCode(output: string): BrowserCommandFailureCode {
+  if (/^Failed to read:.*(?:timed out|os error (?:10060|110|11|35)\b)/i.test(output)) {
+    return "transport.timeout";
+  }
   // Reported together with a DevToolsActivePort failure, which says nothing about the cause.
   if (output.includes(NO_USABLE_SANDBOX)) return "launch.no_usable_sandbox";
   if (output.includes("which:") || output.includes("not found")) return "binary_missing";
@@ -776,6 +782,17 @@ export function getAgentBrowserVersion(): Promise<string | undefined> {
  * shows. Undefined when the output says nothing more useful than itself.
  */
 export function browserFailureAdvice(output: string): string | undefined {
+  if (failureCode(output) === "transport.timeout"
+    || /^(?:CDP command timed out:|agent-browser command timed out after )/.test(output)) {
+    // agent-browser's own dismissal of alerts and "Leave this site?" prompts can fail without a trace (on
+    // Windows its helper stops before it answers), and `dialog status` then reports no dialog. An open
+    // prompt pauses the page, so the reads an agent reaches for next hang as well.
+    return "The local browser command timed out. After a click or navigation, a page alert or \"Leave this site?\" "
+      + `prompt can cause this. It pauses the page, so reading it (url, title, snapshot, capture) hangs for up to ${DEFAULT_TIMEOUT / 1000} `
+      + "seconds each, and `dialog status` does not always show it. Run `dialog accept` first, in a call with "
+      + "capture off; for a \"Leave this site?\" prompt that lets the page go. Then check the tabs before repeating "
+      + "an action that may already have run.";
+  }
   if (failureCode(output) !== "launch.no_usable_sandbox") return undefined;
   return "Chrome cannot use its sandbox on this host. Install Google Chrome from its package so the "
     + "system allows it, or add --no-sandbox to AGENT_BROWSER_ARGS in the Bridge .env.";

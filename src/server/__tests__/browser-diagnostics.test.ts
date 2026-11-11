@@ -536,7 +536,7 @@ describe("browser diagnostics", () => {
     it("tells what to do when the host refuses Chrome its sandbox", async ({ signal }) => {
       const refusal = "Chrome exited early (exit code: 133) without writing DevToolsActivePort: "
         + "FATAL:zygote_host_impl_linux.cc No usable sandbox! If you are running on Ubuntu 23.10+ ...";
-      answerCommands(({ args }) => (args[0] === "get"
+      answerCommands(({ args }) => (args[0] === "tab" && args[1] === "list"
         ? { fail: { stdout: JSON.stringify({ success: false, data: null, error: refusal }) } }
         : undefined));
       const { ctx, telemetryStore } = createContext();
@@ -573,7 +573,7 @@ describe("browser diagnostics", () => {
       const profileRoot = path.join(copilotHome, "browser-public");
       mkdirSync(path.join(profileRoot, "slot-1"), { recursive: true });
       writeFileSync(path.join(profileRoot, "slot-1", "Preferences"), "{ broken");
-      const seen = answerCommands(({ args, env }) => (args[0] === "get" && pathBasename(env?.AGENT_BROWSER_PROFILE ?? "") === "slot-1"
+      const seen = answerCommands(({ args, env }) => (args[0] === "tab" && args[1] === "list" && pathBasename(env?.AGENT_BROWSER_PROFILE ?? "") === "slot-1"
         ? { fail: { stdout: JSON.stringify({ success: false, data: null, error: "The browser closed before it answered" }) } }
         : undefined));
       const mod = await import("../browser-diagnostics.js");
@@ -582,7 +582,7 @@ describe("browser diagnostics", () => {
 
       expect(probe).toMatchObject({ ok: true, context: "public", state: "ready" });
       expect(probe).not.toHaveProperty("message");
-      const startedOn = seen.filter((command) => command.args[0] === "get")
+      const startedOn = seen.filter((command) => command.args[0] === "tab" && command.args[1] === "list")
         .map((command) => pathBasename(command.env?.AGENT_BROWSER_PROFILE ?? ""));
       expect([...new Set(startedOn)]).toEqual(["slot-1", "slot-2"]);
       // The profile that was in the way is gone; the one the browser started on stays.

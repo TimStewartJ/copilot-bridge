@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";
 import type { BrowserCommand } from "./agent-browser.js";
-import { ab, safeRecordBrowserSpan } from "./agent-browser.js";
+import { ab, browserFailureAdvice, safeRecordBrowserSpan } from "./agent-browser.js";
 import { agentBrowserMissingFailure } from "./browser-automation.js";
 import type { BrowserBrokerLease, BrowserContext } from "./browser-broker.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
@@ -25,12 +25,13 @@ function safeHost(url: string): string | undefined {
 
 function browserFetchFailure(
   summary: string,
-  context: { url: string; selector?: string },
+  context: { url: string; selector?: string; commandOutput?: string },
   pageBlock: PageBlockFields = {},
 ) {
   return toolFailureWithContext(summary, pageBlock, {
     // A failure reaches the agent as its text alone, so what the page turned out to be goes there.
-    detail: (pageBlock.blocked ?? pageBlock.captcha)?.guidance,
+    detail: (pageBlock.blocked ?? pageBlock.captcha)?.guidance
+      ?? browserFailureAdvice(context.commandOutput ?? summary),
     sessionLog: joinFailureSections(
       `URL: ${context.url}`,
       context.selector ? `Selector: ${context.selector}` : undefined,
@@ -121,6 +122,7 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
             return browserFetchFailure(`Failed to open URL: ${openResult.output.slice(0, 200)}`, {
               url,
               selector,
+              commandOutput: openResult.output,
             }, pageBlockFields(await checkPage(commandOptions)));
           }
 
@@ -145,6 +147,7 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
             return browserFetchFailure(`Failed to capture page: ${snapshot.output.slice(0, 200)}`, {
               url,
               selector,
+              commandOutput: snapshot.output,
             });
           }
 
