@@ -192,6 +192,7 @@ export type TunnelSupervisorPlan = {
   tunnelName: string | null;
   additionalName?: string;
   auth?: TunnelHostAuthKind;
+  githubAccount?: string;
 };
 
 /**
@@ -206,9 +207,15 @@ export function planTunnelSupervisors(
 ): TunnelSupervisorPlan[] {
   const [primary, ...additional] = tunnels;
   const additionalNames = additional.map((tunnel) => tunnel.name);
+  const account = (tunnel: TunnelSpec) => (tunnel.githubAccount ? { githubAccount: tunnel.githubAccount } : {});
   return [
-    primary ? { tunnelName: primary.name, auth: primary.auth } : { tunnelName: null },
-    ...additional.map((tunnel) => ({ tunnelName: tunnel.name, additionalName: tunnel.name, auth: tunnel.auth })),
+    primary ? { tunnelName: primary.name, auth: primary.auth, ...account(primary) } : { tunnelName: null },
+    ...additional.map((tunnel) => ({
+      tunnelName: tunnel.name,
+      additionalName: tunnel.name,
+      auth: tunnel.auth,
+      ...account(tunnel),
+    })),
     ...staleAdditionalNames
       .filter((name) => !additionalNames.includes(name))
       .map((name) => ({ tunnelName: null, additionalName: name })),

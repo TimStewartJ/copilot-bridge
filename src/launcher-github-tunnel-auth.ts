@@ -22,10 +22,11 @@ export type GitHubTunnelHostAuthDependencies = {
 
 /**
  * Reads the github.com credential Git Credential Manager (or any git credential helper)
- * stores for HTTPS pushes. Prompts are disabled so a missing or expired credential fails
- * instead of opening a sign-in window on an unattended launcher.
+ * stores for HTTPS pushes, for `account` when one is named. Prompts are disabled so a
+ * missing or expired credential fails instead of opening a sign-in window on an
+ * unattended launcher.
  */
-export function readGitHubTokenFromGitCredential(): Promise<string> {
+export function readGitHubTokenFromGitCredential(account?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", ["credential", "fill"], {
       env: { ...process.env, GCM_INTERACTIVE: "never", GIT_TERMINAL_PROMPT: "0" },
@@ -56,9 +57,12 @@ export function readGitHubTokenFromGitCredential(): Promise<string> {
         return;
       }
       const reason = stderr.trim().split(/\r?\n/).pop() || `exit code ${code}`;
-      finish(new Error(`No GitHub credential from git credential fill (${reason}). Sign in once with a git command over HTTPS to github.com.`));
+      const fix = account
+        ? `Store a github.com credential for ${account} once, for example with git credential-manager github login --username ${account}.`
+        : "Sign in once with a git command over HTTPS to github.com.";
+      finish(new Error(`No GitHub credential${account ? ` for ${account}` : ""} from git credential fill (${reason}). ${fix}`));
     });
-    child.stdin.end("protocol=https\nhost=github.com\n\n");
+    child.stdin.end(`protocol=https\nhost=github.com\n${account ? `username=${account}\n` : ""}\n`);
   });
 }
 
@@ -67,6 +71,14 @@ const defaultDependencies: GitHubTunnelHostAuthDependencies = {
   fetch,
   now: Date.now,
 };
+
+/** Host auth for a `github:` tunnel, using the stored credential of `githubAccount` when named. */
+export function createGitHubTunnelHostAuthFor(githubAccount?: string): TunnelHostAuth {
+  return createGitHubTunnelHostAuth({
+    ...defaultDependencies,
+    readGitHubToken: () => readGitHubTokenFromGitCredential(githubAccount),
+  });
+}
 
 async function getJson(
   fetchFn: typeof fetch,

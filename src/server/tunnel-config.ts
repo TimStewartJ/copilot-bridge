@@ -1,4 +1,5 @@
 const TUNNEL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$/;
+const GITHUB_ACCOUNT_RE = /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i;
 const OFF_RE = /^(0|false|no|off)$/i;
 const GITHUB_PREFIX = "github:";
 
@@ -13,6 +14,11 @@ export type TunnelHostAuthKind = "cli" | "github";
 export type TunnelSpec = {
   name: string;
   auth: TunnelHostAuthKind;
+  /**
+   * GitHub account whose stored credential hosts a `github` tunnel. Without one, the
+   * credential helper's default github.com account is used.
+   */
+  githubAccount?: string;
 };
 
 export type TunnelConfig = {
@@ -30,9 +36,30 @@ export function normalizeTunnelName(value: string): string | null {
   return TUNNEL_NAME_RE.test(normalized) ? normalized : null;
 }
 
+/** Formats a tunnel the way `BRIDGE_TUNNEL_NAMES` lists it. */
+export function formatTunnelSpec(tunnel: TunnelSpec): string {
+  if (tunnel.auth !== "github") return tunnel.name;
+  return tunnel.githubAccount ? `${GITHUB_PREFIX}${tunnel.githubAccount}/${tunnel.name}` : `${GITHUB_PREFIX}${tunnel.name}`;
+}
+
+function parseTunnelEntry(entry: string): TunnelSpec | null {
+  if (!entry.toLowerCase().startsWith(GITHUB_PREFIX)) {
+    const name = normalizeTunnelName(entry);
+    return name ? { name, auth: "cli" } : null;
+  }
+  const rest = entry.slice(GITHUB_PREFIX.length);
+  const slash = rest.indexOf("/");
+  const name = normalizeTunnelName(slash < 0 ? rest : rest.slice(slash + 1));
+  if (!name) return null;
+  if (slash < 0) return { name, auth: "github" };
+  const githubAccount = rest.slice(0, slash);
+  return GITHUB_ACCOUNT_RE.test(githubAccount) ? { name, auth: "github", githubAccount } : null;
+}
+
 /**
  * Reads `BRIDGE_TUNNEL_NAMES`. An entry written `github:<name>` names a tunnel owned
- * by a GitHub account. When the list is not set at all, a legacy `BRIDGE_TUNNEL_NAME`
+ * by a GitHub account, and `github:<account>/<name>` also says which stored GitHub
+ * credential hosts it. When the list is not set at all, a legacy `BRIDGE_TUNNEL_NAME`
  * still names a single tunnel unless `BRIDGE_ENABLE_TUNNEL` turns it off, so existing
  * installs keep their tunnel. Invalid names are reported and skipped.
  */
@@ -54,14 +81,13 @@ export function resolveTunnelConfig(env: NodeJS.ProcessEnv = process.env): Tunne
 
   const tunnels: TunnelSpec[] = [];
   for (const entry of entries) {
-    const github = entry.toLowerCase().startsWith(GITHUB_PREFIX);
-    const name = normalizeTunnelName(github ? entry.slice(GITHUB_PREFIX.length) : entry);
-    if (!name) {
+    const tunnel = parseTunnelEntry(entry);
+    if (!tunnel) {
       warnings.push(
-        `Skipping invalid tunnel name "${entry}". Use 3-60 letters, numbers, and hyphens, starting and ending with a letter or number, optionally prefixed with "github:".`,
+        `Skipping invalid tunnel name "${entry}". Use 3-60 letters, numbers, and hyphens, starting and ending with a letter or number, optionally prefixed with "github:" or "github:<GitHub account>/".`,
       );
-    } else if (!tunnels.some((tunnel) => tunnel.name === name)) {
-      tunnels.push({ name, auth: github ? "github" : "cli" });
+    } else if (!tunnels.some((existing) => existing.name === tunnel.name)) {
+      tunnels.push(tunnel);
     }
   }
   return { tunnels, warnings };

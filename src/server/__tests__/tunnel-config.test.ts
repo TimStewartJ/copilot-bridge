@@ -10,16 +10,20 @@ describe("tunnel config", () => {
 
   it("reads an ordered list with the primary tunnel first", () => {
     expect(resolveTunnelConfig({
-      BRIDGE_TUNNEL_NAMES: " Bridge-Work, GitHub:bridge-gh bad.name\nbridge-work,,github:bad.name other-one ",
+      BRIDGE_TUNNEL_NAMES: " Bridge-Work, GitHub:bridge-gh bad.name\nbridge-work,,github:bad.name other-one "
+        + "github:Octo-Alt/Bridge-Alt github:-bad/bridge-x github:octo/bad.name",
     })).toEqual({
       tunnels: [
         { name: "bridge-work", auth: "cli" },
         { name: "bridge-gh", auth: "github" },
         { name: "other-one", auth: "cli" },
+        { name: "bridge-alt", auth: "github", githubAccount: "Octo-Alt" },
       ],
       warnings: [
         expect.stringContaining('Skipping invalid tunnel name "bad.name"'),
         expect.stringContaining('Skipping invalid tunnel name "github:bad.name"'),
+        expect.stringContaining('Skipping invalid tunnel name "github:-bad/bridge-x"'),
+        expect.stringContaining('Skipping invalid tunnel name "github:octo/bad.name"'),
       ],
     });
   });

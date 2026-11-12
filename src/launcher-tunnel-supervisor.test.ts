@@ -180,10 +180,10 @@ describe("TunnelSupervisor", () => {
     expect(planTunnelSupervisors([])).toEqual([{ tunnelName: null }]);
     expect(planTunnelSupervisors([
       { name: "bridge-work", auth: "cli" },
-      { name: "bridge-gh", auth: "github" },
+      { name: "bridge-gh", auth: "github", githubAccount: "octo-alt" },
     ], ["bridge-gh", "old-gh"])).toEqual([
       { tunnelName: "bridge-work", auth: "cli" },
-      { tunnelName: "bridge-gh", additionalName: "bridge-gh", auth: "github" },
+      { tunnelName: "bridge-gh", additionalName: "bridge-gh", auth: "github", githubAccount: "octo-alt" },
       { tunnelName: null, additionalName: "old-gh" },
     ]);
   });
