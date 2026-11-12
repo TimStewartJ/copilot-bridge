@@ -150,7 +150,7 @@ describe("CopilotUsageSection", () => {
 
   it("shows the chat's starting model and the concrete models that used it", () => {
     const model = {
-      ...createUsageTotals({ requests: 2, outputTokens: 20, totalTokens: 20 }),
+      ...createUsageTotals({ requests: 1, outputTokens: 20, totalTokens: 20 }),
       ...createCostEstimate({ estimatedCostUsd: 0.4 }),
       model: "gpt-6-astra",
       sessions: 1,
@@ -159,20 +159,38 @@ describe("CopilotUsageSection", () => {
       pricingStatus: "exact" as const,
       normalizedPricingModel: "gpt-6-astra",
     };
+    const unpricedModel = {
+      ...createUsageTotals({ requests: 7, outputTokens: 70, totalTokens: 70 }),
+      ...createCostEstimate(),
+      model: "example-unpriced-model",
+      sessions: 3,
+      pricingKey: null,
+      pricedAs: null,
+      pricingStatus: "unpriced" as const,
+      normalizedPricingModel: null,
+    };
     const html = renderSection(createUsageSummary({
       chatModels: [{
         selection: { model: "auto", reasoningEffort: "max" },
         sessions: 1,
-        ...createUsageTotals({ requests: 2, outputTokens: 20, totalTokens: 20 }),
+        ...createUsageTotals({ requests: 1, outputTokens: 20, totalTokens: 20 }),
         ...createCostEstimate({ estimatedCostUsd: 0.4 }),
         models: [model],
+      }, {
+        selection: { model: "example-unpriced-model", contextTier: "long_context" },
+        sessions: 3,
+        ...createUsageTotals({ requests: 7, outputTokens: 70, totalTokens: 70 }),
+        ...createCostEstimate(),
+        models: [unpricedModel],
       }],
     }));
 
     expect(html).toContain("By chat model at start");
     expect(html).toContain("auto · max");
+    expect(html).toContain("example-unpriced-model · Long context");
     expect(html).toContain("gpt-6-astra");
-    expect(html).toContain("2 requests");
+    expect(html).toContain("<span>1 chat</span><span>$0.40 est.</span><span>1 request</span>");
+    expect(html).toContain("<span>3 chats</span><span>Unpriced</span><span>7 requests</span>");
   });
 
   it("shows a partial indexing warning while keeping cached usage visible", () => {

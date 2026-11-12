@@ -11,6 +11,11 @@ export function formatUsageNumber(value: number): string {
   return Number.isFinite(value) && value >= 0 ? NUMBER.format(value) : "Unavailable";
 }
 
+/** "1 chat", "1,658 chats". */
+export function formatUsageCount(value: number, noun: string): string {
+  return `${formatUsageNumber(value)} ${value === 1 ? noun : `${noun}s`}`;
+}
+
 /** Missing metering is not a free run, and a small positive cost must not read as zero. */
 export function formatUsageUsd(value: number | null | undefined): string {
   if (value == null) return "Not recorded";

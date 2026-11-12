@@ -207,6 +207,7 @@ hover/selected rows and constrained panes.
 | A self-contained object to act on | `Panel` (never nested) |
 | A proportion | `DS.meter` (neutral fill; a chart is not a call to action) |
 | Copilot amounts, tokens, and metering coverage | `lib/usage-presentation.ts`, `components/usage/UsageModelList`, `TokenBreakdown` |
+| A usage line with several figures that opens for more | `components/usage/UsageRow` in an `@container/usage-models` surface; `Details` keeps its detail on one line and clips figures on a phone |
 | A user's tag | `TagPill` (`DS.tag`) |
 | A row in a list, a menu, a dialog, a sheet | `DS.row`, `DS.surface.floating`, `.dialog` + `.scrim`, `.sheet` |
 | A short menu or list opened from a button (a sheet from the bottom on a phone) | `Sheet` (`design/Sheet.tsx`), rows from `DS.menu.item` |

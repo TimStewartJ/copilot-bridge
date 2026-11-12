@@ -11,8 +11,9 @@ import {
 import { useCopilotUsageQuery } from "../../hooks/queries/useCopilotUsage";
 import { DS, cx } from "../../design/tokens";
 import { Badge, Button, Details, EmptyHint, Notice, Section, SegmentedControl, StatRow } from "../../design/primitives";
-import { describeMeteredCoverage, formatUsageCredits, formatUsageNumber as formatNumber, formatUsageUsd, hasMeteredUsage, meteredCostUsd } from "../../lib/usage-presentation";
+import { describeMeteredCoverage, formatUsageCount, formatUsageCredits, formatUsageNumber as formatNumber, formatUsageUsd, hasMeteredUsage, meteredCostUsd } from "../../lib/usage-presentation";
 import UsageModelList from "../usage/UsageModelList";
+import UsageRow from "../usage/UsageRow";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "../shared/Skeleton";
 
 const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
@@ -185,23 +186,29 @@ export function CopilotUsageSection() {
 
             {(data.chatModels?.length ?? 0) > 0 && (
               <Section label="By chat model at start">
-                <div className={cx(DS.surface.divided, "space-y-0")}>
+                <div className={cx(DS.surface.divided, "@container/usage-models")}>
                   {data.chatModels!.map((row) => {
                     const selection = [
                       row.selection.model,
                       row.selection.reasoningEffort,
                       row.selection.contextTier === "long_context" ? "Long context" : undefined,
                     ].filter(Boolean).join(" · ");
+                    const unpriced = row.models.length > 0 && row.models.every((model) => model.pricingStatus === "unpriced");
                     return (
-                      <Details
+                      <UsageRow
                         key={`${row.selection.model}:${row.selection.reasoningEffort ?? ""}:${row.selection.contextTier ?? ""}`}
-                        label={selection}
-                        detail={`${formatNumber(row.sessions)} chats · ${formatUsageUsd(row.estimatedCostUsd)} est. · ${formatNumber(row.requests)} requests`}
+                        name={selection}
+                        figures={<>
+                          <span>{formatUsageCount(row.sessions, "chat")}</span>
+                          <span>{unpriced ? "Unpriced" : `${formatUsageUsd(row.estimatedCostUsd)} est.`}</span>
+                          <span>{formatUsageCount(row.requests, "request")}</span>
+                        </>}
+                        bodyClassName="pb-1"
                       >
                         {row.models.length > 0
                           ? <UsageModelList models={row.models} />
                           : <EmptyHint>No model usage recorded.</EmptyHint>}
-                      </Details>
+                      </UsageRow>
                     );
                   })}
                 </div>
