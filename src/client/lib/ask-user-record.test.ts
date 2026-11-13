@@ -13,7 +13,7 @@ function call(args: ToolArgs, result?: string, partial: Partial<ToolCall> = {}):
   };
 }
 
-const ONE_OF = {
+const FORM = {
   message: "How should failures be counted?",
   requestedSchema: {
     properties: {
@@ -25,6 +25,9 @@ const ONE_OF = {
           { const: "drop", title: "Leave them out" },
         ],
       },
+      regions: { type: "array", title: "Regions", items: { anyOf: [{ const: "n", title: "North, primary" }, { const: "s", title: "South" }] } },
+      db: { type: "string", title: "Database", enum: ["pg", "my"], enumNames: ["PostgreSQL", "MySQL"] },
+      ready: { type: "boolean", title: "Ready" },
       note: { type: "string", title: "Anything else", description: "Optional." },
     },
     required: ["preProv"],
@@ -32,95 +35,61 @@ const ONE_OF = {
 };
 
 describe("readAskUserRecord", () => {
-  it("marks the chosen option and keeps a multi-line text answer", () => {
-    const record = readAskUserRecord(call(ONE_OF, "User responded:\npreProv: separate\nnote: first line\nsecond line"));
+  // The CLI's wording for an answer differs between releases; every form must reach the user whole.
+  it.each([
+    [
+      "field titles and option labels",
+      "User responded:\nFailures before OS provisioning: Count them separately\nRegions: North, primary, South\nAnything else: first line\nsecond line",
+      "Failures before OS provisioning: Count them separately\nRegions: North, primary, South\nAnything else: first line\nsecond line",
+    ],
+    ["field keys and option values", "User responded:\npreProv: separate\nregions: n, s", "preProv: separate\nregions: n, s"],
+    ["Windows line breaks", "User responded:\r\nAnything else: first line\r\nsecond line", "Anything else: first line\nsecond line"],
+    ["one line", "User responded: preProv=separate, regions=n, s", "preProv=separate, regions=n, s"],
+  ])("shows the recorded answer as written: %s", (_name, result, answer) => {
+    const record = readAskUserRecord(call(FORM, result));
 
     expect(record?.outcome).toBe("answered");
-    expect(record?.fields[0]).toMatchObject({
-      title: "Failures before OS provisioning",
-      kind: "choice",
-      required: true,
-      answered: true,
-      options: [
-        { value: "separate", label: "Count them separately", selected: true },
-        { value: "drop", label: "Leave them out", selected: false },
-      ],
-    });
-    expect(record?.fields[1]).toMatchObject({ kind: "text", answer: "first line\nsecond line", description: "Optional." });
+    expect(record?.answer).toBe(answer);
   });
 
-  it("splits multi-select answers against the options, even when an option contains a comma", () => {
-    const record = readAskUserRecord(call({
-      message: "Close which?",
-      requestedSchema: {
-        properties: {
-          close: { type: "array", items: { anyOf: [{ const: "1 (CI, 9/17)", title: "One" }, { const: "2", title: "Two" }, { const: "3", title: "Three" }] } },
-          fixSkill: { type: "boolean", title: "Fix the skill" },
-        },
-      },
-    }, "User responded:\nclose: 1 (CI, 9/17), 3\nfixSkill: true"));
-
-    expect(record?.fields[0]?.options.map((option) => option.selected)).toEqual([true, false, true]);
-    expect(record?.fields[0]?.answer).toBeUndefined();
-    expect(record?.fields[1]?.options).toEqual([
-      { value: "true", label: "Yes", selected: true },
-      { value: "false", label: "No", selected: false },
+  it("reads the offered fields from the question's own arguments", () => {
+    expect(readAskUserRecord(call(FORM))?.fields).toEqual([
+      { key: "preProv", title: "Failures before OS provisioning", options: ["Count them separately", "Leave them out"] },
+      { key: "regions", title: "Regions", options: ["North, primary", "South"] },
+      { key: "db", title: "Database", options: ["PostgreSQL", "MySQL"] },
+      { key: "ready", title: "Ready", options: [] },
+      { key: "note", title: "Anything else", description: "Optional.", options: [] },
     ]);
-  });
-
-  it("reads the enum form with enumNames and an answer outside the options", () => {
-    const record = readAskUserRecord(call({
-      message: "Pick",
-      requestedSchema: { properties: { db: { type: "string", enum: ["pg", "my"], enumNames: ["PostgreSQL", "MySQL"] } } },
-    }, "User responded:\ndb: sqlite please"));
-
-    expect(record?.fields[0]?.options.map((option) => option.label)).toEqual(["PostgreSQL", "MySQL"]);
-    expect(record?.fields[0]?.options.some((option) => option.selected)).toBe(false);
-    expect(record?.fields[0]?.answer).toBe("sqlite please");
-  });
-
-  it("reads the older single-question form", () => {
-    expect(readAskUserRecord(call({ question: "Share the error?" }, "User responded: use the ADO agent"))).toEqual({
-      message: "Share the error?",
-      fields: [],
+    expect(readAskUserRecord(call({ question: "Which?", choices: ["A", "B"] }, "User responded: B"))).toEqual({
+      message: "Which?",
+      fields: [{ key: "", title: "", options: ["A", "B"] }],
       outcome: "answered",
-      freeformAnswer: "use the ADO agent",
+      answer: "B",
     });
-    const withChoices = readAskUserRecord(call({ question: "Which?", choices: ["A", "B"] }, "User responded: B"));
-    expect(withChoices?.fields[0]?.options.map((option) => option.selected)).toEqual([false, true]);
   });
 
   it("names the outcome when there is no answer", () => {
-    expect(readAskUserRecord(call(ONE_OF, "User cancelled the request."))?.outcome).toBe("cancelled");
-    expect(readAskUserRecord(call(ONE_OF, "User declined to answer."))?.outcome).toBe("declined");
-    expect(readAskUserRecord(call(ONE_OF, "The user is not available to respond and will review your work later."))?.outcome)
+    expect(readAskUserRecord(call(FORM, "User cancelled the request."))?.outcome).toBe("cancelled");
+    expect(readAskUserRecord(call(FORM, "User declined to answer."))?.outcome).toBe("declined");
+    expect(readAskUserRecord(call(FORM, "The user is not available to respond and will review your work later."))?.outcome)
       .toBe("away");
-    expect(readAskUserRecord(call(ONE_OF))?.outcome).toBe("unanswered");
-    expect(readAskUserRecord(call(ONE_OF, "boom", { success: false }))).toMatchObject({ outcome: "failed", note: "boom" });
+    expect(readAskUserRecord(call(FORM))?.outcome).toBe("unanswered");
+    expect(readAskUserRecord(call(FORM, "boom", { success: false }))).toMatchObject({ outcome: "failed", note: "boom" });
+    expect(readAskUserRecord(call(FORM, "Something new"))).toMatchObject({ outcome: "other", note: "Something new" });
   });
 
-  it("does not read a reply Bridge gave in the user's place as the user's answer", () => {
-    // The transcript carries the reply as the first field's value, the way it carries a typed answer.
-    const unanswered = readAskUserRecord(call(ONE_OF, `User responded:\npreProv: ${AUTOMATIC_ANSWERS.unanswered}`));
-    expect(unanswered?.outcome).toBe("away");
-    expect(unanswered?.fields.map((field) => [field.answered, field.answer])).toEqual([[false, undefined], [false, undefined]]);
-    expect(unanswered?.freeformAnswer).toBeUndefined();
-    // The runtime's own summary of the same reply, as the event log has it.
-    expect(readAskUserRecord(call(ONE_OF, `User responded: ${AUTOMATIC_ANSWERS.unanswered}`))?.outcome).toBe("away");
-
-    const autopilot = readAskUserRecord(call(ONE_OF, `User responded:\npreProv: ${AUTOMATIC_ANSWERS.autopilot}`));
-    expect(autopilot?.outcome).toBe("autopilot");
-    expect(autopilot?.fields.some((field) => field.answered)).toBe(false);
-    expect(readAskUserRecord(call({ question: "Proceed?" }, `User responded: ${AUTOMATIC_ANSWERS.autopilot}`)))
-      .toEqual({ message: "Proceed?", fields: [], outcome: "autopilot" });
-
-    const skipped = readAskUserRecord(call(ONE_OF, `User responded:\npreProv: ${AUTOMATIC_ANSWERS.skipped}`));
-    expect(skipped?.outcome).toBe("skipped");
-    expect(skipped?.fields.some((field) => field.answered)).toBe(false);
+  it("does not show a reply Bridge gave in the user's place as the user's answer", () => {
+    for (const [reason, outcome] of [["unanswered", "away"], ["autopilot", "autopilot"], ["skipped", "skipped"]] as const) {
+      for (const result of [`User responded:\nFailures before OS provisioning: ${AUTOMATIC_ANSWERS[reason]}`, `User responded: ${AUTOMATIC_ANSWERS[reason]}`]) {
+        const record = readAskUserRecord(call(FORM, result));
+        expect(record?.outcome).toBe(outcome);
+        expect(record?.answer).toBeUndefined();
+      }
+    }
   });
 
   it("ignores other tools and calls with no question", () => {
-    expect(readAskUserRecord(call(ONE_OF, undefined, { name: "powershell" }))).toBeNull();
+    expect(readAskUserRecord(call(FORM, undefined, { name: "powershell" }))).toBeNull();
     expect(readAskUserRecord(call({ requestedSchema: {} }))).toBeNull();
   });
 });

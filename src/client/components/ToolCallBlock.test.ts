@@ -72,7 +72,7 @@ describe("ToolCallBlock details", () => {
     } finally { await harness.cleanup(); }
   });
 
-  it("shows a question as the form it was, not as its schema", async () => {
+  it("shows a question with the answer the CLI recorded, not its schema", async () => {
     const text = await openRow({
       toolCallId: "ask-1",
       name: "ask_user",
@@ -82,7 +82,7 @@ describe("ToolCallBlock details", () => {
           properties: {
             tracking: {
               type: "string",
-              title: "ADO tracking",
+              title: "Tracking",
               oneOf: [{ const: "feature_task", title: "Feature plus Task" }, { const: "none", title: "Nothing yet" }],
             },
           },
@@ -91,12 +91,11 @@ describe("ToolCallBlock details", () => {
       startedAt: "2026-09-20T08:00:00.000Z",
       completedAt: "2026-09-20T08:05:00.000Z",
       success: true,
-      result: "User responded:\ntracking: feature_task",
+      result: "User responded:\nTracking: Feature plus Task",
     });
 
-    expect(text).toContain("ADO tracking");
-    expect(text).toContain("Feature plus Task");
-    expect(text).toContain("Nothing yet");
+    expect(text).toContain("Tracking: Feature plus Task");
+    expect(text).not.toContain("Nothing yet");
     expect(text).not.toContain("requestedSchema");
     expect(text).not.toContain("User responded");
   });

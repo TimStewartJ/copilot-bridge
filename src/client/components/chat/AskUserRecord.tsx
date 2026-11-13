@@ -1,5 +1,4 @@
 import { memo, useMemo } from "react";
-import { Check } from "lucide-react";
 import type { ToolCall } from "../../api";
 import { readAskUserRecord, type AskUserField, type AskUserOutcome, type AskUserRecord } from "../../lib/ask-user-record";
 import { formatDuration, getToolDurationMs } from "../../lib/tool-presentation";
@@ -39,50 +38,19 @@ function formatTime(value: string | undefined): string | undefined {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function OptionLine({ label, selected, dimmed }: { label: string; selected: boolean; dimmed: boolean }) {
-  return (
-    <li className="flex min-w-0 items-start gap-2 text-[13px] leading-5" data-selected={selected || undefined}>
-      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
-        {selected && <Check size={14} className="text-text-primary" aria-label="Chosen" />}
-      </span>
-      <span className={cx("min-w-0 break-words", selected ? "font-medium text-text-primary" : dimmed ? "text-text-faint" : "text-text-secondary")}>
-        {label}
-      </span>
-    </li>
-  );
-}
-
-function FieldAnswer({ field, outcome }: { field: AskUserField; outcome: AskUserOutcome }) {
-  const anySelected = field.options.some((option) => option.selected);
+/** A field the question offered, for a question that has no answer to show. */
+function OfferedField({ field }: { field: AskUserField }) {
   return (
     <div className="min-w-0" data-ask-user-field={field.key || undefined}>
       {field.title && <div className={DS.text.sectionLabel}>{field.title}</div>}
       {field.options.length > 0 && (
         <ul className={cx("space-y-0.5", field.title && "mt-1")}>
-          {field.options.map((option) => (
-            <OptionLine
-              key={option.value}
-              label={option.label}
-              selected={option.selected}
-              dimmed={anySelected || Boolean(field.answer)}
-            />
+          {field.options.map((option, index) => (
+            <li key={`${index}:${option}`} className="min-w-0 break-words text-[13px] leading-5 text-text-secondary">
+              {option}
+            </li>
           ))}
         </ul>
-      )}
-      {field.answer && (
-        <div className="mt-1 flex min-w-0 items-start gap-2">
-          {field.options.length > 0 && (
-            <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
-              <Check size={14} className="text-text-primary" aria-hidden="true" />
-            </span>
-          )}
-          <div className="min-w-0 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
-            {field.options.length > 0 ? `Other: ${field.answer}` : field.answer}
-          </div>
-        </div>
-      )}
-      {!field.answered && outcome === "answered" && field.options.length === 0 && (
-        <div className={cx("mt-0.5", DS.text.empty)}>Left blank</div>
       )}
     </div>
   );
@@ -98,14 +66,18 @@ interface AskUserRecordViewProps {
 }
 
 /**
- * A question the agent asked, shown the way its form looked, with what was picked marked. The
- * question itself is the agent speaking, so it reads as content; the form below it is the answer.
+ * A question the agent asked and what came of it. The question is the agent speaking, so it reads
+ * as content. Below it is the answer as the CLI recorded it, or, when there is none, the fields
+ * the question offered.
  */
 export function AskUserRecordView({ toolCall, record, variant = "transcript", waiting = false }: AskUserRecordViewProps) {
   const durationMs = getToolDurationMs(toolCall);
   const time = formatTime(toolCall.startedAt);
   const outcome = describeOutcome(record.outcome, durationMs);
-  const showForm = record.fields.length > 0 || record.freeformAnswer;
+  const showOffered = record.outcome !== "answered" && record.fields.length > 0;
+  const boxClassName = variant === "detail"
+    ? "mt-2.5 space-y-3 border-l border-border pl-3"
+    : cx("mt-2.5 space-y-3 px-3 py-2.5", DS.surface.inset);
 
   return (
     <div className="min-w-0" data-ask-user-record={record.outcome}>
@@ -119,23 +91,17 @@ export function AskUserRecordView({ toolCall, record, variant = "transcript", wa
         </div>
       )}
       <PromptMarkdown content={record.message} trusted />
-      {showForm && (
-        <div
-          className={variant === "detail"
-            ? "mt-2.5 space-y-3 border-l border-border pl-3"
-            : cx("mt-2.5 space-y-3 px-3 py-2.5", DS.surface.inset)}
-        >
-          {record.fields.map((field) => (
-            <FieldAnswer key={field.key || "answer"} field={field} outcome={record.outcome} />
-          ))}
-          {record.freeformAnswer && (
-            <div className="min-w-0">
-              {record.fields.length === 0 && <div className={DS.text.sectionLabel}>Your answer</div>}
-              <div className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
-                {record.freeformAnswer}
-              </div>
-            </div>
-          )}
+      {record.answer && (
+        <div className={boxClassName} data-ask-user-answer="">
+          <div className="min-w-0">
+            <div className={DS.text.sectionLabel}>Your answer</div>
+            <div className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">{record.answer}</div>
+          </div>
+        </div>
+      )}
+      {showOffered && (
+        <div className={boxClassName}>
+          {record.fields.map((field) => <OfferedField key={field.key || "choices"} field={field} />)}
         </div>
       )}
       {variant === "detail" && (waiting || record.outcome !== "answered") && (
