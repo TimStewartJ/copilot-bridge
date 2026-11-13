@@ -33,10 +33,14 @@ export function createTaskPageToolDefinitions(ctx: AppContext): BridgeToolDefini
   return [
     defineSessionBridgeTool("task_page_publish", {
       description:
-        "Publish an HTML page on a task, replacing the page it has. The user opens it from the task to see where the task stands at a glance, often on a phone. " +
-        "It suits tasks with something to lay out (a trip itinerary, a tracker, applications, an event plan). " +
-        "Save the page to a file and pass its `path`. It must be self-contained: inline CSS and scripts, images as data: URLs, nothing loaded from the network. " +
-        "Make it readable at phone width and in light and dark mode (prefers-color-scheme). Links open in a new window. " +
+        "Publish an HTML page on a task, replacing the page it has. The user opens it from the task, usually on a phone, to take in the task at a glance. " +
+        "It suits tasks with something to lay out (a trip, a tracker, applications, an event plan). " +
+        "Make it a rich, visual page, not a document: show what the task holds with visuals that fit it, such as a timeline or calendar strip for dates, " +
+        "progress bars or rings for counts and money, inline SVG charts for comparisons, an SVG route or map sketch for places, and colour and status chips for state. " +
+        "Use scripts for small interactions: tabs or expandable sections for detail, filters, and countdowns and \"today\" computed from dates when the page opens. " +
+        "Keep text to labels and one-line notes. " +
+        "Write the page to a file of your own in your session folder and pass its `path`. It must be self-contained: inline CSS, scripts and SVG, images as data: URLs, nothing loaded from the network, and no storage, so nothing persists between visits. " +
+        "Make it fit phone width and work in light and dark mode (prefers-color-scheme). Links open in a new window. " +
         "To change a page, publish the whole page again.",
       parameters: {
         type: "object",
