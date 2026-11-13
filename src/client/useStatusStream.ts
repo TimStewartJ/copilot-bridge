@@ -30,7 +30,8 @@ export type StatusEvent =
   | { type: "status:connected" }
   | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string; taskId?: string }
   | { type: "schedule:changed"; scheduleId?: string }
-  | { type: "task:changed"; taskId?: string }
+  /** reason "starters": only the task's suggested chats changed. */
+  | { type: "task:changed"; taskId?: string; reason?: string }
   | { type: "management-job:changed"; jobId?: string; jobType?: ManagementJobType; status?: ManagementJobStatus }
   | { type: "docs:changed"; docPath?: string }
   | { type: "helm:changed"; reason?: string }

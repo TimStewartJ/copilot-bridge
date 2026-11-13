@@ -7,7 +7,9 @@ export const TASK_STARTERS_MAX = 3;
 export const TASK_STARTER_LABEL_MAX = 60;
 export const TASK_STARTER_PROMPT_MAX = 2000;
 
-export type TaskStarterSource = "helm" | "refresh";
+/** helm: a scheduled look; refresh: the panel's refresh button; auto: after a chat on the task went quiet. */
+export type TaskStarterSource = "helm" | "refresh" | "auto";
+export type TaskStarterRefreshTrigger = "manual" | "auto";
 
 export interface TaskStarter {
   id: string;

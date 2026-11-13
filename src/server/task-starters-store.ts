@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
 import { runInOwnOrOuterTransaction } from "./db-transaction.js";
-import type { TaskStarter, TaskStarterDraft, TaskStarterSource } from "../shared/task-starters.js";
+import type { TaskStarter, TaskStarterDraft, TaskStarterRefreshTrigger, TaskStarterSource } from "../shared/task-starters.js";
 
 /** Used and dismissed suggestions are kept this long, then dropped when the task gets a new set. */
 const KEEP_CLOSED_MS = 30 * 86_400_000;
@@ -14,7 +14,7 @@ function toStarter(row: Row): TaskStarter {
   return {
     id: row.id, taskId: row.taskId, label: row.label, prompt: row.prompt,
     ...(row.playbook ? { playbook: row.playbook } : {}),
-    source: row.source === "refresh" ? "refresh" : "helm",
+    source: row.source === "refresh" || row.source === "auto" ? row.source : "helm",
     createdAt: row.createdAt,
   };
 }
@@ -52,6 +52,25 @@ export function createTaskStartersStore(db: DatabaseSync, now: () => Date = () =
       starters.forEach((starter, position) => {
         insert.run(randomUUID(), taskId, position, starter.label, starter.prompt, starter.playbook ?? null, source, at.toISOString());
       });
+    },
+    /** Records that a refresh started; returns its id for finishRefresh. */
+    startRefresh(taskId: string, trigger: TaskStarterRefreshTrigger): number {
+      const result = db.prepare("INSERT INTO task_starter_refreshes (taskId, trigger, startedAt) VALUES (?, ?, ?)")
+        .run(taskId, trigger, now().toISOString());
+      return Number(result.lastInsertRowid);
+    },
+    finishRefresh(id: number, outcome: string, count: number | null): void {
+      db.prepare("UPDATE task_starter_refreshes SET finishedAt = ?, outcome = ?, count = ? WHERE id = ?")
+        .run(now().toISOString(), outcome.slice(0, 200), count, id);
+    },
+    /** When the task's last refresh of any kind started, or null. */
+    lastRefreshAt(taskId: string): string | null {
+      const row = db.prepare("SELECT MAX(startedAt) AS at FROM task_starter_refreshes WHERE taskId = ?").get(taskId) as { at: string | null } | undefined;
+      return row?.at ?? null;
+    },
+    countRefreshesSince(trigger: TaskStarterRefreshTrigger, since: string): number {
+      const row = db.prepare("SELECT COUNT(*) AS n FROM task_starter_refreshes WHERE trigger = ? AND startedAt >= ?").get(trigger, since) as { n: number };
+      return Number(row.n);
     },
     /** Closes one suggestion. False when it is not an open suggestion of that task. */
     close(taskId: string, id: string, how: "used" | "dismissed"): boolean {

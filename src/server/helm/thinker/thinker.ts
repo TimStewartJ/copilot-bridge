@@ -530,6 +530,7 @@ export class HelmThinker {
       return ok;
     });
     if (!published) return toolFailure("This run already published its brief.");
+    for (const plan of result.starters) this.ctx.globalBus.emit({ type: "task:changed", taskId: plan.taskId, reason: "starters" });
     const handled = settings.autonomy === "routine" ? this.applyHandled(run.id, result.handled) : 0;
     return { success: true, items: result.brief.items.length, handled, memoryChanges: changes.length, starters: result.starters.length };
   }

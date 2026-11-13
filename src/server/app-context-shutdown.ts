@@ -35,6 +35,7 @@ export function shutdownAppContextServices(
     ctx.deferredPromptRunner?.shutdown();
     ctx.deferLoopRunner?.shutdown();
     ctx.helm?.dispose();
+    ctx.taskStarters?.dispose();
     // A running look's outside sources are child processes: they end with it.
     const helmThinkerShutdown = Promise.resolve(ctx.helmThinker?.dispose()).catch((error) => {
       console.error("[web] Helm shutdown failed:", error);

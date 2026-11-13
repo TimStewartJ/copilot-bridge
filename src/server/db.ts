@@ -1065,6 +1065,20 @@ function initSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_starters_task ON task_starters(taskId, position);
   `);
+  // Each refresh of a task's suggested chats, for the auto-refresh cooldown and daily cap.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_starter_refreshes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      taskId TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      startedAt TEXT NOT NULL,
+      finishedAt TEXT,
+      outcome TEXT,
+      count INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_starter_refreshes_task ON task_starter_refreshes(taskId, startedAt);
+    CREATE INDEX IF NOT EXISTS idx_task_starter_refreshes_started ON task_starter_refreshes(trigger, startedAt);
+  `);
   // An event's ID in the calendar it was imported from, so a repeat import updates it in place.
   addColumn("calendar_events", "externalId", "TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_externalId ON calendar_events(externalId) WHERE externalId IS NOT NULL");

@@ -16,6 +16,7 @@ import type { SkillCatalog } from "./skill-catalog.js";
 import type { SkillPackManager } from "./skill-packs.js";
 import type { SkillUsageStore } from "./skill-usage-store.js";
 import type { TaskStartersStore } from "./task-starters-store.js";
+import type { TaskStartersService } from "./task-starters.js";
 import type { UnattendedRunStore } from "./unattended-run-store.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
 import type { CompletionReportStore } from "./completion-report-store.js";
@@ -79,6 +80,8 @@ export interface AppContext {
   skillUsageStore?: SkillUsageStore;
   /** Suggested chats on each task panel. */
   taskStartersStore?: TaskStartersStore;
+  /** Serves, refreshes and auto-refreshes suggested chats; created with the API services. */
+  taskStarters?: TaskStartersService;
   /** Chats where defers or schedules ran turns since the user last wrote there. */
   unattendedRunStore?: UnattendedRunStore;
   taskHistoryStore?: TaskHistoryStore;

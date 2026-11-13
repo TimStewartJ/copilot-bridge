@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ModelInfo, ModelPresets } from "../api";
 import type {
   LaunchOption,
@@ -42,6 +43,8 @@ interface NewSessionLaunchPanelProps {
   tierChange?: { tierLabel: string; onReset: () => void; onSave: () => void };
   /** A model A/B test's two tiers, when the chat will start on one of them; choosing a tier opts out. */
   abTestTiers?: readonly [ModelPresetSlot, ModelPresetSlot];
+  /** Shown above the launch options, such as a task's suggested chats. */
+  suggestions?: ReactNode;
 }
 
 const MODE_OPTIONS: LaunchOption<SendMode>[] = [
@@ -74,6 +77,7 @@ export default function NewSessionLaunchPanel({
   onModelSelectionCommitted,
   tierChange,
   abTestTiers,
+  suggestions,
 }: NewSessionLaunchPanelProps) {
   const availableModels = models.filter((model) => model.policy?.state !== "disabled");
 
@@ -85,6 +89,7 @@ export default function NewSessionLaunchPanel({
         </div>
 
         <div className="space-y-4">
+          {suggestions}
           <FormRow label="Playbook" htmlFor="new-session-playbook" hideLabel>
             <PlaybookSelect
               id="new-session-playbook"

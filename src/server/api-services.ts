@@ -1,3 +1,4 @@
+import { TaskStartersService } from "./task-starters.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { AppContext } from "./app-context.js";
@@ -202,6 +203,7 @@ export function createApiServices(ctx: AppContext, options: ApiServiceOptions = 
     });
     ctx.helmThinker.start();
   }
+  ctx.taskStarters ??= new TaskStartersService(ctx, { autoRefresh: true });
   ctx.voiceGateway ??= new VoiceGateway({ ctx, facade, helm: ctx.helm ?? HELM_UNAVAILABLE, runtime: voiceRuntime });
   setSettingsGetter(() => ctx.settingsStore.getSettings());
 

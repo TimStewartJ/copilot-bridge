@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestBus, setupTestDb } from "./helpers.js";
 import { createTaskStore, type TaskStore } from "../task-store.js";
 import { createTaskStartersStore, type TaskStartersStore } from "../task-starters-store.js";
-import { parseStartersReply, TaskStartersService } from "../task-starters.js";
+import { AUTO_REFRESH_QUIET_MS, parseStartersReply, TaskStartersService } from "../task-starters.js";
+import { createGlobalBus } from "../global-bus.js";
 import type { DatabaseSync } from "../db.js";
 
 let db: DatabaseSync;
@@ -14,6 +15,29 @@ beforeEach(() => {
   taskStore = createTaskStore(db, createTestBus());
   starters = createTaskStartersStore(db);
 });
+
+function service(reply: string | undefined, extra: Record<string, unknown> = {}, options = {}) {
+  const prompts: string[] = [];
+  const ctx = {
+    ...extra,
+    taskStore,
+    taskStartersStore: starters,
+    settingsStore: { getSettings: () => ({}) },
+    sessionTitles: { getTitle: () => undefined },
+    sessionManager: {
+      isSessionBusy: () => false,
+      listModels: async () => [],
+      createHelperSession: async () => ({
+        session: {
+          sendAndWait: async ({ prompt }: { prompt: string }) => { prompts.push(prompt); return { data: { content: reply } }; },
+          abort: async () => undefined,
+        },
+        dispose: async () => undefined,
+      }),
+    },
+  } as unknown as ConstructorParameters<typeof TaskStartersService>[0];
+  return { svc: new TaskStartersService(ctx, options), prompts };
+}
 
 describe("task starters store", () => {
   it("replaces only the open set, closes each suggestion once, and goes with its task", () => {
@@ -32,26 +56,6 @@ describe("task starters store", () => {
 });
 
 describe("task starters refresh", () => {
-  function service(reply: string | undefined) {
-    const prompts: string[] = [];
-    const ctx = {
-      taskStore,
-      taskStartersStore: starters,
-      settingsStore: { getSettings: () => ({}) },
-      sessionTitles: { getTitle: () => undefined },
-      sessionManager: {
-        listModels: async () => [],
-        createHelperSession: async () => ({
-          session: {
-            sendAndWait: async ({ prompt }: { prompt: string }) => { prompts.push(prompt); return { data: { content: reply } }; },
-            abort: async () => undefined,
-          },
-          dispose: async () => undefined,
-        }),
-      },
-    } as unknown as ConstructorParameters<typeof TaskStartersService>[0];
-    return { svc: new TaskStartersService(ctx), prompts };
-  }
 
   it("writes the model's chats for that task, and reports a reply that doesn't fit", async () => {
     const task = taskStore.createTask("Example launch");
@@ -70,5 +74,37 @@ describe("task starters refresh", () => {
   it("finds the JSON in a reply with text around it", () => {
     expect(parseStartersReply("Sure! {\"chats\": []} Done.")).toEqual([]);
     expect(() => parseStartersReply("no json")).toThrow(/no suggestions/);
+  });
+});
+
+describe("task starters auto-refresh", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("refreshes a task once its chat stays quiet after a reply, skipping scheduled chats and recent refreshes", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const bus = createGlobalBus();
+    const task = taskStore.createTask("Example garden plan");
+    taskStore.linkSession(task.id, "chat-1");
+    taskStore.linkSession(task.id, "monitor-1");
+    const states: Record<string, { triggeredBy?: string }> = { "monitor-1": { triggeredBy: "schedule" } };
+    const reply = JSON.stringify({ chats: [{ label: "Order seeds", prompt: "Order the seeds on the list." }] });
+    const { svc, prompts } = service(reply, { globalBus: bus, bridgeSessionStateStore: { getState: (id: string) => states[id] } }, { autoRefresh: true });
+
+    bus.emit({ type: "session:idle", sessionId: "monitor-1", assistantPreview: "Nothing new." });
+    await vi.advanceTimersByTimeAsync(AUTO_REFRESH_QUIET_MS);
+    expect(prompts).toHaveLength(0);
+
+    bus.emit({ type: "session:idle", sessionId: "chat-1", assistantPreview: "Drafted the bed layout." });
+    await vi.advanceTimersByTimeAsync(AUTO_REFRESH_QUIET_MS - 1);
+    expect(prompts).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(svc.get(task.id).refreshing).toBe(false));
+    expect(prompts[0]).toContain("Drafted the bed layout.");
+    expect(svc.get(task.id).starters).toMatchObject([{ label: "Order seeds", source: "auto" }]);
+
+    bus.emit({ type: "session:idle", sessionId: "chat-1", assistantPreview: "Done." });
+    await vi.advanceTimersByTimeAsync(AUTO_REFRESH_QUIET_MS);
+    expect(prompts).toHaveLength(1);
+    svc.dispose();
   });
 });

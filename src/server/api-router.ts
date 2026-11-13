@@ -3819,7 +3819,7 @@ export function createApiRouter(
   });
 
   // Suggested chats on a task: Helm's looks write them; the panel can refresh one task's set.
-  const taskStarters = new TaskStartersService(ctx);
+  const taskStarters = ctx.taskStarters ??= new TaskStartersService(ctx);
   function sendStartersError(res: express.Response, error: unknown): void {
     if (error instanceof TaskStartersError) res.status(error.status).json({ error: error.message });
     else res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3829,7 +3829,7 @@ export function createApiRouter(
   });
   router.post("/tasks/:id/starters/refresh", (req, res) => {
     try {
-      void taskStarters.refresh(req.params.id);
+      void taskStarters.refresh(req.params.id, { trigger: "manual" });
       res.status(202).json(taskStarters.get(req.params.id));
     } catch (error) { sendStartersError(res, error); }
   });

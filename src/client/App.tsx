@@ -54,6 +54,7 @@ import {
 import { useStatusStream } from "./useStatusStream";
 import { getComposerKeyFromPathname, getDraftComposerKey, HELM_DRAFT_COMPOSER_KEY } from "./lib/composer-key";
 import type { TaskStarter } from "../shared/task-starters.js";
+import { TaskStarterChips } from "./components/task-sections/TaskStarterChips";
 import { looksUntouched } from "./lib/untouched-task";
 import { getRememberedDashboardPath, isDashboardRoutePath } from "./lib/dashboard-routes";
 import { haptic } from "./lib/haptics";
@@ -585,6 +586,10 @@ function AppShell() {
         refetch(["task"], TASK_OVERVIEW_KEY, calendarRootKey);
         break;
       case "task:changed":
+        if (event.reason === "starters") {
+          if (event.taskId) refetch(queryKeys.taskStarters(event.taskId));
+          break;
+        }
         taskChangeInvalidator.handleTaskChange(event.taskId);
         // Revisits and checklist deadlines are calendar dates.
         refetch(calendarRootKey);
@@ -1049,7 +1054,7 @@ function AppShell() {
     }
     const unsent = readDraft(draftKey);
     const hasUnsent = Boolean(unsent?.text.trim() || unsent?.attachments?.length);
-    if (hasUnsent && unsent?.text.trim() !== starter.prompt
+    if (hasUnsent && (unsent?.text.trim() !== starter.prompt || unsent?.attachments?.length)
       && !window.confirm("Replace the unsent message in this task's new chat?")) {
       return false;
     }
@@ -2229,6 +2234,7 @@ function AppShell() {
               path="tasks/:taskId/sessions/:sessionId"
               element={
                 <SessionRoute
+                  onStartSuggestedChat={handleStartSuggestedChat}
                   sessions={sessions}
                   onMessageSent={handleMessageSent}
                   onRenderedReadThrough={rememberRenderedReadThrough}
@@ -2311,6 +2317,7 @@ function AppShell() {
               path="sessions/:sessionId"
               element={
                 <SessionRoute
+                  onStartSuggestedChat={handleStartSuggestedChat}
                   sessions={sessions}
                   onMessageSent={handleMessageSent}
                   onRenderedReadThrough={rememberRenderedReadThrough}
@@ -2645,6 +2652,7 @@ function SessionRoute({
   defaultReasoningEffort,
   defaultContextTier,
   launchDefaultsLoading,
+  onStartSuggestedChat,
 }: {
   sessions: Session[];
   onMessageSent: () => void;
@@ -2681,6 +2689,7 @@ function SessionRoute({
   defaultReasoningEffort?: string;
   defaultContextTier?: CopilotContextTier;
   launchDefaultsLoading: boolean;
+  onStartSuggestedChat?: (taskId: string, starter: TaskStarter) => boolean;
 }) {
   const { sessionId: rawSessionId, taskId } = useParams<{ sessionId: string; taskId: string }>();
   const navigate = useNavigate();
@@ -3098,6 +3107,9 @@ function SessionRoute({
       onModeChange={setLaunchMode}
       onModelSelectionCommitted={requestComposerFocus}
       tierChange={abTestLaunch ? undefined : launchTierChange}
+      suggestions={taskId && onStartSuggestedChat
+        ? <TaskStarterChips taskId={taskId} onStart={(starter) => onStartSuggestedChat(taskId, starter)} />
+        : undefined}
     />
   ) : undefined;
 
