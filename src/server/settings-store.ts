@@ -14,9 +14,11 @@ import {
 import { isModelFamily, type ModelFamily } from "../shared/model-families.js";
 import {
   getModelPresetSlotForFamily,
+  getModelPresetSlotLabel,
   isModelPresetSlot,
   type ModelPresetSlot,
 } from "../shared/model-presets.js";
+import type { ModelAbTestSettings } from "../shared/model-ab-test.js";
 import { isRecord } from "../shared/is-record.js";
 import { isModelRole, isTierChoice, type ModelRoleChoice, type ModelRoles } from "../shared/model-roles.js";
 import {
@@ -129,6 +131,8 @@ export interface AppSettings {
    * Present (even empty) once the roles have been set up or inferred.
    */
   modelRoles?: ModelRoles;
+  /** Starts new chats on one of two tiers at random to compare them; see shared/model-ab-test.ts. */
+  modelAbTest?: ModelAbTestSettings;
   /** Legacy input fields migrated into modelPresets. */
   familyDefaults?: ModelFamilyDefaults;
   lastModelFamily?: ModelFamily;
@@ -657,6 +661,52 @@ function reconcileModelRoles(base: AppSettings, normalized: AppSettings, value: 
   if (background) normalized.deferWorker = { ...background };
 }
 
+function normalizeModelAbTest(value: unknown): ModelAbTestSettings | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) validationError("modelAbTest must be an object");
+  if (typeof value.enabled !== "boolean") validationError("modelAbTest.enabled must be a boolean");
+  if (!isModelPresetSlot(value.a) || !isModelPresetSlot(value.b)) {
+    validationError("modelAbTest.a and modelAbTest.b must be preset1, preset2 or preset3");
+  }
+  if (value.a === value.b) validationError("modelAbTest.a and modelAbTest.b must be different tiers");
+  const startedAt = typeof value.startedAt === "string" && Number.isFinite(Date.parse(value.startedAt))
+    ? new Date(Date.parse(value.startedAt)).toISOString()
+    : undefined;
+  return { enabled: value.enabled, a: value.a, b: value.b, ...(startedAt ? { startedAt } : {}) };
+}
+
+/**
+ * The server owns when a test began, so its results never mix two setups. A write that turns the test
+ * on, moves an arm, or changes what an arm's tier runs starts a new test. A write that leaves an arm's
+ * tier without a model ends it, unless the write itself asked for that arm, which is refused.
+ */
+function reconcileModelAbTest(base: AppSettings, normalized: AppSettings, value: Record<string, unknown>): void {
+  const next = normalized.modelAbTest;
+  // Reading the stored row: keep it as saved.
+  if (!next || base === DEFAULT_SETTINGS) return;
+  const previous = base.modelAbTest;
+  const armsMoved = previous?.a !== next.a || previous?.b !== next.b;
+  let enabled = next.enabled;
+  const emptyTier = [next.a, next.b].find((slot) => !normalized.modelPresets?.[slot]?.model);
+  if (enabled && emptyTier) {
+    if ("modelAbTest" in value && (!previous?.enabled || armsMoved)) {
+      validationError(`The ${getModelPresetSlotLabel(emptyTier)} tier has no model yet`);
+    }
+    enabled = false;
+  }
+  const runs = (settings: AppSettings, slot: ModelPresetSlot) => {
+    const preset = settings.modelPresets?.[slot];
+    return preset?.model ? `${preset.model}|${preset.reasoningEffort ?? ""}|${preset.contextTier ?? "default"}` : "";
+  };
+  const restart = enabled && (
+    !previous?.enabled || !previous.startedAt || armsMoved
+    || runs(base, next.a) !== runs(normalized, next.a)
+    || runs(base, next.b) !== runs(normalized, next.b)
+  );
+  const startedAt = restart ? new Date().toISOString() : previous?.startedAt;
+  normalized.modelAbTest = { enabled, a: next.a, b: next.b, ...(startedAt ? { startedAt } : {}) };
+}
+
 /**
  * Helm's model used to be kept in `helm.model` (with `helm.typedReasoningEffort` for its chat). A Helm
  * role that was Automatic but had a model there becomes a custom role with that model and effort.
@@ -804,8 +854,10 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("deployGuards" in value) normalized.deployGuards = normalizeDeployGuards(value.deployGuards);
   // Like every other settings object, a write sends the whole role map; a missing role is Automatic.
   if ("modelRoles" in value) normalized.modelRoles = normalizeModelRoles(value.modelRoles) ?? {};
+  if ("modelAbTest" in value) normalized.modelAbTest = normalizeModelAbTest(value.modelAbTest);
   reconcileModelRoles(base, normalized, value);
   migrateHelmModel(normalized, value);
+  reconcileModelAbTest(base, normalized, value);
   return normalized;
 }
 

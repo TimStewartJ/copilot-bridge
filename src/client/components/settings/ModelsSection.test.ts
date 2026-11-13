@@ -7,15 +7,25 @@ import { installSelectAwareDomShim } from "../../test-dom-shim";
 const mocks = vi.hoisted(() => ({
   useModelsQuery: vi.fn(),
   invalidateQueries: vi.fn(),
+  abTestReport: undefined as unknown,
 }));
 
 vi.mock("../../hooks/queries/useModels", () => ({ useModelsQuery: () => mocks.useModelsQuery() }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: undefined, error: null }),
+  useQuery: (options: { queryKey: readonly unknown[] }) => ({
+    data: options.queryKey[0] === "model-ab-test" ? mocks.abTestReport : undefined,
+    error: null,
+  }),
   useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries, setQueryData: vi.fn() }),
 }));
 vi.mock("../../hooks/queries/useModelClientInfo", () => ({ useModelClientInfoQuery: () => ({ data: undefined }) }));
-vi.mock("../../queryClient", () => ({ queryKeys: { models: ["models"], modelClientInfo: ["models", "client"] } }));
+vi.mock("../../queryClient", () => ({
+  queryKeys: {
+    models: ["models"],
+    modelClientInfo: ["models", "client"],
+    modelAbTest: (startedAt: string | null) => ["model-ab-test", startedAt],
+  },
+}));
 vi.mock("./ModelMoveDisclosure", () => ({ ModelMoveDisclosure: () => null }));
 
 const { ModelsSection } = await import("./ModelsSection");
@@ -127,5 +137,41 @@ describe("ModelsSection", () => {
     // Use recommended leaves Reviewers on the chat's model.
     await harness.act(() => getReactProps(button(harness!.dom.container, "Use recommended"))!.onClick());
     expect(setDraft.mock.lastCall?.[0].modelRoles).not.toHaveProperty("reviewers");
+  });
+
+  it("starts an A/B test between two set tiers and shows each arm's runs and cost", async () => {
+    mocks.useModelsQuery.mockReturnValue({ data: MODELS });
+    const setDraft = vi.fn();
+    harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+    await harness.render(createElement(ModelsSection, { draft: DRAFT, setDraft }));
+
+    // A starts on Standard and B on Deep; one arm can't take the other's tier.
+    expect(getReactProps(button(group(harness.dom.container, "Tier A"), "Deep"))!.disabled).toBe(true);
+    const toggle = findAllByTag(harness.dom.container, "input").find((element) => getReactProps(element)?.id === "model-ab-test");
+    await harness.act(() => getReactProps(toggle)!.onChange({ target: { checked: true } }));
+    expect(setDraft).toHaveBeenLastCalledWith(expect.objectContaining({ modelAbTest: { enabled: true, a: "preset2", b: "preset3" } }));
+
+    const startedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    mocks.abTestReport = {
+      startedAt,
+      arms: [
+        { arm: "a", tier: "preset2", setup: { model: "gpt-6.1-sol", reasoningEffort: "high" }, chats: 2, scheduledRuns: 1, switched: 1, meteredSessions: 2, meteredAiCredits: 300 },
+        { arm: "b", tier: "preset3", chats: 1, scheduledRuns: 0, switched: 0, meteredSessions: 0, meteredAiCredits: 0 },
+      ],
+    };
+    await harness.render(createElement(ModelsSection, {
+      draft: { ...DRAFT, modelAbTest: { enabled: true, a: "preset2", b: "preset3", startedAt } } as AppSettings,
+      setDraft,
+    }));
+    const text = harness.dom.container.textContent;
+    expect(text).toContain("Started 2h ago");
+    expect(text).toContain("GPT-6.1 Sol · High");
+    expect(text).toContain("$1.50 per run");
+    expect(text).toContain("2 of 3 recorded");
+    expect(text).toContain("1 model change");
+    expect(text).toContain("Cost not recorded yet");
+    // A running test keeps its arms until it is turned off.
+    expect(getReactProps(button(group(harness.dom.container, "Tier A"), "Fast"))!.disabled).toBe(true);
+    mocks.abTestReport = undefined;
   });
 });

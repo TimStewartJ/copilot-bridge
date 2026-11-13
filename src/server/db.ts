@@ -1070,6 +1070,23 @@ function initSchema(db: DatabaseSync): void {
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_externalId ON calendar_events(externalId) WHERE externalId IS NOT NULL");
   // The calendar an imported event comes from, so the calendar can say where it came from.
   addColumn("calendar_events", "source", "TEXT");
+  // Which arm of a model A/B test each chat started on (shared/model-ab-test.ts). Kept when the chat
+  // is deleted, since dropping deleted chats would skew the comparison.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS model_ab_assignments (
+      sessionId TEXT PRIMARY KEY,
+      testStartedAt TEXT NOT NULL,
+      arm TEXT NOT NULL CHECK (arm IN ('a', 'b')),
+      tier TEXT NOT NULL,
+      model TEXT NOT NULL,
+      reasoningEffort TEXT,
+      contextTier TEXT,
+      source TEXT NOT NULL CHECK (source IN ('chat', 'schedule')),
+      assignedAt TEXT NOT NULL,
+      switchedAt TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_ab_assignments_test ON model_ab_assignments(testStartedAt);
+  `);
 
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all();
   if (!taskColumns.some(column => column.name === "deferred")) {

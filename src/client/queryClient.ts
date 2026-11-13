@@ -24,6 +24,8 @@ export const queryKeys = {
   settings: ["settings"] as const,
   models: ["models"] as const,
   modelClientInfo: ["models", "client-info"] as const,
+  /** Keyed by the test's start, so a new test never shows the last one's results. */
+  modelAbTest: (startedAt: string | null) => ["model-ab-test", startedAt] as const,
   tags: ["tags"] as const,
   playbooks: ["playbooks"] as const,
   skills: ["skills"] as const,

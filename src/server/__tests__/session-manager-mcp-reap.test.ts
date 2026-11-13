@@ -9,6 +9,7 @@ import { createTestBus, freezeLifecycleDeadlines, makeAgentSessionStub, makeTest
 import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { readSessionLaunchContext } from "../session-launch-context.js";
+import { createModelAbTestStore } from "../model-ab-test.js";
 import { PLACEHOLDER_TITLE_GUIDANCE } from "../session-context-block.js";
 import type { AgentBackendDisconnect } from "../agent-backend/types.js";
 import { AppliedPromptFingerprints } from "../session-prompt-fingerprint.js";
@@ -1581,5 +1582,47 @@ describe("SessionManager bounded session lifecycle", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+describe("SessionManager model A/B test", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("starts a chat or unpinned scheduled run nobody chose a model for on a test arm, and records it", async () => {
+    const { manager } = createManager();
+    const store = createModelAbTestStore(setupTestDb());
+    const startedAt = "2026-03-02T09:00:00.000Z";
+    manager.deps.modelAbTestStore = store;
+    manager.deps.settingsStore.getSettings = () => ({
+      model: "model-standard",
+      modelPresets: { preset2: { model: "model-standard" }, preset3: { model: "model-deep", reasoningEffort: "high" } },
+      modelAbTest: { enabled: true, a: "preset2", b: "preset3", startedAt },
+    });
+    const task = { id: "task-1", title: "Test task", kind: "task", muted: false, status: "active", notes: "", workItems: [], pullRequests: [] };
+    manager.deps.taskStore.getTask.mockReturnValue(task);
+    vi.spyOn(Math, "random").mockReturnValue(0.75);
+    const start = async (sessionId: string, scheduleContext?: Record<string, unknown>, options: Record<string, unknown> = {}) => {
+      const createSession = vi.fn(async (_config: unknown) => fakeSession(sessionId));
+      manager.backend = { createSession };
+      await manager.createTaskSession("task-1", "Test task", [], "", undefined, scheduleContext, options);
+      return createSession.mock.calls[0]?.[0] as any;
+    };
+
+    expect(await start("ab-chat")).toMatchObject({ model: "model-deep", reasoningEffort: "high" });
+    await start("ab-run", { name: "Sweep", type: "cron", runCount: 0 });
+    expect(await start("picked", undefined, { model: "model-standard" })).toMatchObject({ model: "model-standard" });
+    expect(await start("pinned", { name: "Pinned", type: "cron", runCount: 0, modelTier: "preset2" })).toMatchObject({ model: "model-standard" });
+    // Helm's own conversations run on Helm's role, never a test arm.
+    const helmId = "0b6c2d1e-4f3a-4b5c-8d7e-9f0a1b2c3d4e";
+    manager.deps.resolveSessionProfile = (sessionId: string) => (sessionId === helmId ? { apply: (cfg: unknown) => cfg } : undefined);
+    const createHelm = vi.fn(async (_config: unknown) => fakeSession(helmId));
+    manager.backend = { createSession: createHelm };
+    await manager.createSession({ expectedSessionId: helmId });
+    expect(createHelm.mock.calls[0]?.[0]).toMatchObject({ model: "model-standard" });
+
+    expect(store.listForTest(startedAt)).toEqual([
+      expect.objectContaining({ sessionId: "ab-chat", arm: "b", tier: "preset3", model: "model-deep", reasoningEffort: "high", source: "chat" }),
+      expect.objectContaining({ sessionId: "ab-run", arm: "b", source: "schedule" }),
+    ]);
+    await manager.evictAllCachedSessions();
   });
 });

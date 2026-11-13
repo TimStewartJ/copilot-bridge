@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { resolve } from "node:path";
 import { setupTestDb } from "./helpers.js";
 import { createSettingsStore, isImageGenerationEnabled } from "../settings-store.js";
@@ -437,4 +437,38 @@ describe("settings-store", () => {
     expect(readRawSettings()).toBe(raw);
   });
 
+});
+
+describe("settings-store model A/B test", () => {
+  const TIERS = { preset2: { model: "model-standard" }, preset3: { model: "model-deep", reasoningEffort: "high" } };
+  const ON = { enabled: true, a: "preset2", b: "preset3" } as const;
+  afterEach(() => vi.useRealTimers());
+
+  it("starts a test when it is turned on or what an arm runs changes, and keeps its start when turned off", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-03-02T09:00:00.000Z"));
+    store.updateSettings({ modelPresets: TIERS });
+    // The server owns the start time, whatever a client sends.
+    expect(store.updateSettings({ modelAbTest: { ...ON, startedAt: "2020-01-01T00:00:00.000Z" } }).modelAbTest)
+      .toEqual({ ...ON, startedAt: "2026-03-02T09:00:00.000Z" });
+
+    vi.setSystemTime(new Date("2026-03-02T10:00:00.000Z"));
+    store.updateSettings({ theme: "dark" });
+    expect(store.updateSettings({ modelAbTest: ON }).modelAbTest?.startedAt).toBe("2026-03-02T09:00:00.000Z");
+    expect(store.updateSettings({ modelPresets: { ...TIERS, preset3: { model: "model-deep", reasoningEffort: "low" } } }).modelAbTest?.startedAt)
+      .toBe("2026-03-02T10:00:00.000Z");
+
+    vi.setSystemTime(new Date("2026-03-02T11:00:00.000Z"));
+    expect(store.updateSettings({ modelAbTest: { ...ON, enabled: false } }).modelAbTest)
+      .toEqual({ ...ON, enabled: false, startedAt: "2026-03-02T10:00:00.000Z" });
+  });
+
+  it("refuses a test on a tier without a model, and ends one whose tier loses its model", () => {
+    store.updateSettings({ modelPresets: { preset2: TIERS.preset2 } });
+    expect(() => store.updateSettings({ modelAbTest: ON })).toThrow("The Deep tier has no model yet");
+    expect(() => store.updateSettings({ modelAbTest: { ...ON, b: "preset2" } })).toThrow("must be different tiers");
+
+    store.updateSettings({ modelPresets: TIERS, modelAbTest: ON });
+    expect(store.updateSettings({ modelPresets: { preset2: TIERS.preset2 } }).modelAbTest).toMatchObject({ enabled: false });
+  });
 });

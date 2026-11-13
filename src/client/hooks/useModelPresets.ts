@@ -19,6 +19,7 @@ import { queryClient, queryKeys } from "../queryClient";
 import { settingsWriter } from "./queries/useSettings";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { ModelPresetSlot } from "../../shared/model-presets.js";
+import type { ModelAbTestSettings } from "../../shared/model-ab-test.js";
 import { isTierChoice } from "../../shared/model-roles.js";
 
 /** The shared writer applies the change to the cached settings at once and sends it in order. */
@@ -57,6 +58,8 @@ export interface ModelPresetMemory {
   remember: (selection: RememberModelPresetSelection) => void;
   /** Makes a chat's model, effort and context the tier's own (Settings › Models changes with it). */
   saveToTier: (selection: RememberModelPresetSelection) => void;
+  /** The model A/B test while it runs: a new chat nobody picked a model for starts on one of its tiers. */
+  abTest?: ModelAbTestSettings;
 }
 
 export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMemory {
@@ -69,6 +72,7 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
   const presets = settings?.modelPresets;
   const lastPresetSlot = settings?.lastModelPreset;
   const globalDefaultModelId = settings?.model;
+  const abTest = settings?.modelAbTest?.enabled ? settings.modelAbTest : undefined;
 
   const resolvePickerState = useCallback((context: ModelPresetPickerContext) => (
     resolveModelPresetState({
@@ -146,7 +150,9 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     findSlotForModel: findSlot,
     remember,
     saveToTier,
+    abTest,
   }), [
+    abTest,
     saveToTier,
     findSlot,
     globalDefaultModelId,

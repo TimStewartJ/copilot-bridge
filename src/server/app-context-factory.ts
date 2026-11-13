@@ -23,6 +23,7 @@ import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { createScheduleStore } from "./schedule-store.js";
 import { createReadStateStore } from "./read-state-store.js";
+import { createModelAbTestStore } from "./model-ab-test.js";
 import { createChecklistStore } from "./checklist-store.js";
 import { createCalendarStore } from "./calendar-store.js";
 import { createDocsStore } from "./docs-store.js";
@@ -117,6 +118,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const sessionTitles = createSessionTitlesStore(db);
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
+  const modelAbTestStore = createModelAbTestStore(db);
   const checklistStore = createChecklistStore(db, globalBus);
   const calendarStore = createCalendarStore(db, globalBus);
   const telemetryStore = createTelemetryStore(db);
@@ -199,6 +201,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     bridgeSessionStateStore,
     cliSessionCatalog,
     readStateStore,
+    modelAbTestStore,
     checklistStore,
     calendarStore,
     docsStore,

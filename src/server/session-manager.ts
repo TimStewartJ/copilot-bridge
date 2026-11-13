@@ -95,6 +95,7 @@ import {
 
 import { isMcpStatusFresh, latestMcpStatus, stampMcpStatusSnapshot } from "./mcp-status.js";
 import type { SettingsStore } from "./settings-store.js";
+import { chooseModelAbTestArm, type ModelAbTestChoice, type ModelAbTestStore } from "./model-ab-test.js";
 import type { TagStore } from "./tag-store.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 import type { SessionContextStore } from "./session-context-store.js";
@@ -615,6 +616,8 @@ export interface SessionManagerDeps {
   taskGroupStore?: TaskGroupStore;
   checklistStore?: ChecklistStore;
   settingsStore?: SettingsStore;
+  /** Records which arm of a model A/B test each new chat starts on (model-ab-test.ts). */
+  modelAbTestStore?: Pick<ModelAbTestStore, "record" | "noteModelChange">;
   tagStore?: TagStore;
   mcpServerStore?: McpServerStore;
   docsIndex?: DocsIndex;
@@ -810,6 +813,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     taskGroupStore: ctx.taskGroupStore,
     checklistStore: ctx.checklistStore,
     settingsStore: ctx.settingsStore,
+    modelAbTestStore: ctx.modelAbTestStore,
     tagStore: ctx.tagStore,
     mcpServerStore: ctx.mcpServerStore ?? ctx.settingsStore.getMcpServerStore(),
     docsIndex: ctx.docsIndex,
@@ -1395,6 +1399,8 @@ export class SessionManager {
     launchContext?: SessionLaunchContext;
     /** The playbook the chat starts with: the user's launch choice or its schedule's pin. */
     playbook?: { playbook: string; source: PlaybookSource };
+    /** The model A/B test arm the chat starts on, recorded once the chat exists. */
+    modelAbTest?: { choice: ModelAbTestChoice; source: "chat" | "schedule" };
     onCreateStarting?: () => void;
   }): Promise<AgentSession> {
     const {
@@ -1459,6 +1465,7 @@ export class SessionManager {
         };
         this.persistSessionModelState(session.sessionId, state);
       }
+      if (options.modelAbTest) this.recordModelAbTestAssignment(session.sessionId, options.modelAbTest, sessionConfig);
       this.persistSessionWorkspace(session.sessionId, sessionConfig.workingDirectory);
       this.deps.globalBus.emit({ type: "sessions:changed", sessionId: session.sessionId });
       const duration = Date.now() - startedAt;
@@ -1467,6 +1474,55 @@ export class SessionManager {
       return session;
     } finally {
       releaseReservation();
+    }
+  }
+
+  /**
+   * The model A/B test arm for a new chat, when a test runs and nothing else chose the chat's model:
+   * the caller gave no model, effort or context, a scheduled run has no tier of its own, and the chat
+   * has no instructions of its own (Helm's conversations and runs keep their role's model).
+   */
+  private pickModelAbTestArm(
+    sessionId: string | undefined,
+    options: { model?: string; reasoningEffort?: string; contextTier?: string },
+    modelMetadata: Parameters<typeof chooseModelAbTestArm>[1],
+    scheduleContext?: ScheduleContext,
+  ): ModelAbTestChoice | undefined {
+    if (!this.deps.modelAbTestStore || options.model || options.reasoningEffort || options.contextTier || scheduleContext?.modelTier) {
+      return undefined;
+    }
+    try {
+      if (sessionId && this.deps.resolveSessionProfile?.(sessionId)) return undefined;
+      return chooseModelAbTestArm(this.deps.settingsStore?.getSettings(), modelMetadata);
+    } catch (error) {
+      console.warn(`[model-ab-test] Could not pick an arm: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
+  /** Records the arm a new chat started on and what it runs. A failure here never fails the chat. */
+  private recordModelAbTestAssignment(
+    sessionId: string,
+    assignment: { choice: ModelAbTestChoice; source: "chat" | "schedule" },
+    sessionConfig: { model?: unknown; reasoningEffort?: unknown; contextTier?: unknown },
+  ): void {
+    const model = typeof sessionConfig.model === "string" ? sessionConfig.model : "";
+    if (!model) return;
+    const reasoningEffort = typeof sessionConfig.reasoningEffort === "string" ? sessionConfig.reasoningEffort : undefined;
+    const contextTier = normalizeCopilotContextTier(sessionConfig.contextTier);
+    try {
+      this.deps.modelAbTestStore?.record({
+        ...assignment.choice,
+        sessionId,
+        model,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(contextTier ? { contextTier } : {}),
+        source: assignment.source,
+        assignedAt: new Date().toISOString(),
+      });
+      console.log(`[model-ab-test] [${sessionId.slice(0, 8)}] Started on arm ${assignment.choice.arm.toUpperCase()} (${model})`);
+    } catch (error) {
+      console.warn(`[model-ab-test] [${sessionId.slice(0, 8)}] Could not record the arm: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -4794,11 +4850,13 @@ export class SessionManager {
       const t0 = Date.now();
       const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
       const modelMetadata = await this.loadModelMetadataForRuntime(client);
+      const abTestArm = this.pickModelAbTestArm(bridgeSessionId, options, modelMetadata);
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         ...(options.model ? { modelOverride: options.model } : {}),
         ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
         ...(options.contextTier ? { contextTierOverride: options.contextTier } : {}),
+        ...(abTestArm ? { modelTier: abTestArm.tier } : {}),
         ...(modelMetadata ? { modelMetadata } : {}),
       });
       const creationReservation = await this.beginSessionCreation(sessionConfig);
@@ -4809,6 +4867,7 @@ export class SessionManager {
         creationReservation,
         startedAt: t0,
         ...(options.playbook ? { playbook: { playbook: options.playbook, source: "user" as const } } : {}),
+        ...(abTestArm ? { modelAbTest: { choice: abTestArm, source: "chat" as const } } : {}),
         spanName: "session.create",
         logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
         cleanupLabel: "session",
@@ -5152,6 +5211,7 @@ export class SessionManager {
           previousRunReport: await this.readPreviousRunReport(scheduleContext.previousSessionId),
         }
         : scheduleContext;
+      const abTestArm = this.pickModelAbTestArm(bridgeSessionId, options, modelMetadata, scheduleContext);
       const sessionConfig = this.buildSessionConfig({
         ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
         task,
@@ -5159,6 +5219,7 @@ export class SessionManager {
         ...(options.model ? { modelOverride: options.model } : {}),
         ...(options.reasoningEffort ? { reasoningEffortOverride: options.reasoningEffort } : {}),
         ...(options.contextTier ? { contextTierOverride: options.contextTier } : {}),
+        ...(abTestArm ? { modelTier: abTestArm.tier } : {}),
         ...(modelMetadata ? { modelMetadata } : {}),
       });
       const creationReservation = await this.beginSessionCreation(sessionConfig);
@@ -5175,6 +5236,7 @@ export class SessionManager {
         cleanupLabel: "task session",
         launchContext: { scheduleContext: runScheduleContext },
         ...(initialPlaybook ? { playbook: initialPlaybook } : {}),
+        ...(abTestArm ? { modelAbTest: { choice: abTestArm, source: scheduleContext ? "schedule" as const : "chat" as const } } : {}),
         onCreateStarting: options.onCreateStarting,
       });
       if (bridgeSessionId && (options.background || options.expectedSessionId)) {
@@ -6513,6 +6575,11 @@ export class SessionManager {
         ...(liveReasoningEffort ? { reasoningEffort: liveReasoningEffort } : {}),
         ...(liveContextTier ? { contextTier: liveContextTier } : {}),
       });
+      try {
+        this.deps.modelAbTestStore?.noteModelChange(sessionId, liveModel, liveReasoningEffort, new Date().toISOString());
+      } catch (error) {
+        console.warn(`[model-ab-test] [${sid}] Could not note the model change: ${error instanceof Error ? error.message : String(error)}`);
+      }
 
       return {
         status: "applied",

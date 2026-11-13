@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RotateCw } from "lucide-react";
-import { fetchModelRoles, refreshModels, type AppSettings, type ModelInfo } from "../../api";
+import { fetchModelAbTestReport, fetchModelRoles, refreshModels, type AppSettings, type ModelInfo } from "../../api";
 import { useModelsQuery } from "../../hooks/queries/useModels";
 import { useModelClientInfoQuery } from "../../hooks/queries/useModelClientInfo";
 import { queryKeys } from "../../queryClient";
@@ -31,7 +31,16 @@ import {
 } from "../../../shared/model-roles.js";
 import { pickSecondOpinion } from "../../../shared/subagent-settings.js";
 import { getModelFamilyLabel, type ModelFamily } from "../../../shared/model-families.js";
-import { Button, ChoiceButton, Details, FormRow, Notice, SegmentedControl, SettingList } from "../../design/primitives";
+import {
+  DEFAULT_MODEL_AB_TEST_TIERS,
+  MODEL_AB_TEST_ARMS,
+  type ModelAbTestArm,
+  type ModelAbTestReport,
+  type ModelAbTestSettings,
+} from "../../../shared/model-ab-test.js";
+import { COPILOT_AI_CREDIT_USD } from "../../../shared/copilot-pricing.js";
+import { formatUsageCount, formatUsageUsd } from "../../lib/usage-presentation";
+import { Button, ChoiceButton, Details, Field, FieldList, FormRow, MetaLine, Notice, SegmentedControl, SettingList, SettingRow, Switch } from "../../design/primitives";
 import { DS, cx } from "../../design/tokens";
 import { SettingsSection } from "./SettingsSection";
 import { ModelMoveDisclosure } from "./ModelMoveDisclosure";
@@ -278,9 +287,90 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
         {roles.error && <Notice tone="warning" className="mt-3" title="Couldn't check the models in use">{roles.error instanceof Error ? roles.error.message : String(roles.error)}</Notice>}
       </div>
 
+      <ModelAbTestBlock draft={draft} setDraft={setDraft} models={models} />
+
       <ModelListFooter presets={presets} />
     </div>
   </SettingsSection>;
+}
+
+// copy-ok: says which chats the test changes, a scope the reader cannot see
+const AB_TEST_SCOPE = "New chats, and schedules that follow them, start on A or B at random.";
+
+/** Starts new chats on one of two tiers at random, so the two can be compared on the same work. */
+function ModelAbTestBlock({ draft, setDraft, models }: {
+  draft: AppSettings;
+  setDraft: (draft: AppSettings) => void;
+  models: readonly ModelInfo[] | undefined;
+}) {
+  const presets = draft.modelPresets ?? {};
+  const test: ModelAbTestSettings = draft.modelAbTest ?? { enabled: false, ...DEFAULT_MODEL_AB_TEST_TIERS };
+  const report = useQuery({
+    queryKey: queryKeys.modelAbTest(test.startedAt ?? null),
+    queryFn: ({ signal }) => fetchModelAbTestReport(signal),
+    enabled: Boolean(test.startedAt),
+  });
+  const save = (next: Partial<ModelAbTestSettings>) => setDraft({ ...draft, modelAbTest: { ...test, ...next } });
+  const ready = Boolean(presets[test.a]?.model && presets[test.b]?.model);
+  const otherArm = (arm: ModelAbTestArm): ModelAbTestArm => (arm === "a" ? "b" : "a");
+  const armOptions = (arm: ModelAbTestArm) => MODEL_PRESET_SLOTS.map((slot) => {
+    const taken = slot === test[otherArm(arm)];
+    return {
+      value: slot,
+      label: MODEL_TIER_INFO[slot].label,
+      disabled: !presets[slot]?.model || taken,
+      title: !presets[slot]?.model ? "Set this tier first" : taken ? `${otherArm(arm).toUpperCase()} runs this tier` : undefined,
+    };
+  });
+  return (
+    <div>
+      <h3 className={cx(DS.text.sectionLabel, "mb-1")}>A/B test</h3>
+      <SettingList>
+        <SettingRow label="Compare two tiers" htmlFor="model-ab-test" hint={AB_TEST_SCOPE}
+          control={<Switch id="model-ab-test" checked={test.enabled} disabled={!test.enabled && !ready}
+            onChange={(event) => save({ enabled: event.target.checked })} />} />
+        {MODEL_AB_TEST_ARMS.map((arm) => (
+          <SettingRow key={arm} label={arm.toUpperCase()} labelId={`model-ab-test-${arm}`}
+            control={<SegmentedControl<ModelPresetSlot> ariaLabel={`Tier ${arm.toUpperCase()}`} options={armOptions(arm)} value={test[arm]}
+              disabled={test.enabled} onChange={(slot) => save(arm === "a" ? { a: slot } : { b: slot })} />} />
+        ))}
+      </SettingList>
+      {report.data?.startedAt && report.data.startedAt === test.startedAt && (
+        <ModelAbTestResults report={report.data} running={test.enabled} models={models} />
+      )}
+      {report.error && <p role="alert" className="mt-2 text-xs text-error">{report.error instanceof Error ? report.error.message : String(report.error)}</p>}
+    </div>
+  );
+}
+
+function ModelAbTestResults({ report, running, models }: {
+  report: ModelAbTestReport;
+  running: boolean;
+  models: readonly ModelInfo[] | undefined;
+}) {
+  return (
+    <div className="mt-3">
+      <MetaLine items={[`Started ${timeAgo(report.startedAt ?? undefined)}`, !running && "Stopped"]} />
+      <FieldList className="mt-1">
+        {report.arms.map((arm) => {
+          const runs = arm.chats + arm.scheduledRuns;
+          const perRun = arm.meteredSessions > 0 ? (arm.meteredAiCredits * COPILOT_AI_CREDIT_USD) / arm.meteredSessions : null;
+          return (
+            <Field key={arm.arm} label={`${arm.arm.toUpperCase()} · ${MODEL_TIER_INFO[arm.tier].label}`} stacked>
+              <MetaLine items={[
+                describeChoice(arm.setup, models),
+                formatUsageCount(arm.chats, "chat"),
+                formatUsageCount(arm.scheduledRuns, "scheduled run"),
+                runs > 0 && (perRun === null ? "Cost not recorded yet" : `${formatUsageUsd(perRun)} per run`),
+                perRun !== null && arm.meteredSessions < runs && `${arm.meteredSessions} of ${runs} recorded`,
+                arm.switched > 0 && formatUsageCount(arm.switched, "model change"),
+              ]} />
+            </Field>
+          );
+        })}
+      </FieldList>
+    </div>
+  );
 }
 
 function RoleRow({ role, draft, view, models, available, onRole, onCustom }: {

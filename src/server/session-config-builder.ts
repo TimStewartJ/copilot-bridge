@@ -90,6 +90,8 @@ export interface SessionConfigOptions {
   modelOverride?: string;
   reasoningEffortOverride?: string;
   contextTierOverride?: CopilotContextTier;
+  /** Starts the chat on this tier, the way a schedule's own tier does: a model A/B test arm. */
+  modelTier?: ModelPresetSlot;
   /** Replaces the base method's role sentence in the preamble (Helm's chat says it is Helm). */
   promptRole?: string;
   /** Guidance appended after the Bridge's own, for chats with a role of their own (Helm). */
@@ -208,6 +210,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     modelOverride,
     reasoningEffortOverride,
     contextTierOverride,
+    modelTier,
     forResume,
   } = params.options ?? {};
   const workingDirectory = callbacks.resolveEffectiveSessionCwd({ sessionId, task });
@@ -297,13 +300,15 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     if (sessionId) cfg.sessionId = sessionId;
 
     const modelMetadata = params.options?.modelMetadata;
-    // A schedule's tier gives its model, effort and context as one choice, never New chats' values.
-    // When the tier can't be used, the run follows New chats.
-    const scheduleTier = scheduleContext?.modelTier && !modelOverride
-      ? resolveModelTier(settings, scheduleContext.modelTier, modelMetadata)
+    // A tier (a schedule's, or a model A/B test arm) gives its model, effort and context as one
+    // choice, never New chats' values. When the tier can't be used, the chat follows New chats.
+    const tierSlot = modelTier ?? scheduleContext?.modelTier;
+    const scheduleTier = tierSlot && !modelOverride
+      ? resolveModelTier(settings, tierSlot, modelMetadata)
       : undefined;
     if (scheduleTier && "warning" in scheduleTier) {
-      console.warn(`[schedule] "${scheduleContext?.name}": ${scheduleTier.warning} Running on the New chats model instead.`);
+      const owner = scheduleContext ? `[schedule] "${scheduleContext.name}"` : "[model-ab-test]";
+      console.warn(`${owner}: ${scheduleTier.warning} Running on the New chats model instead.`);
     }
     const tierChoice = scheduleTier?.model ? scheduleTier : undefined;
 

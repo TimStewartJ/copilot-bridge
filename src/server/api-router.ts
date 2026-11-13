@@ -143,6 +143,7 @@ import {
 import { SESSION_HOLD_INTENT } from "./session-holds.js";
 import { createHelmRouter } from "./helm/helm-router.js";
 import { describeModelRoles } from "./model-roles.js";
+import { buildModelAbTestReport } from "./model-ab-test.js";
 import { MODEL_ROLES, isTierChoice } from "../shared/model-roles.js";
 import { createHelmThinkerRouter } from "./helm/thinker/router.js";
 import { createVoiceRouter } from "./voice/voice-router.js";
@@ -1378,6 +1379,24 @@ export function createApiRouter(
       res.status(500).json({
         error: err instanceof Error ? err.message : "Unable to read local Copilot usage history.",
       });
+    }
+  });
+
+  // GET /model-ab-test — the current model A/B test per arm: chats, scheduled runs and recorded cost.
+  router.get("/model-ab-test", async (_req, res) => {
+    try {
+      const test = ctx.settingsStore.getSettings().modelAbTest;
+      const assignments = test?.startedAt && ctx.modelAbTestStore
+        ? ctx.modelAbTestStore.listForTest(test.startedAt)
+        : [];
+      // Whole-chat totals: every chat in the test started after it began.
+      const usage = assignments.length > 0
+        ? await copilotUsageReader.readSummary({ sessionIds: assignments.map((assignment) => assignment.sessionId), range: "all" })
+        : undefined;
+      res.json(buildModelAbTestReport(test, assignments, usage?.sessions ?? []));
+    } catch (err) {
+      console.error("[model-ab-test] Error:", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : "Unable to read the model A/B test." });
     }
   });
 

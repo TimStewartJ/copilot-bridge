@@ -90,6 +90,19 @@ describe("NewSessionLaunchPanel", () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
+  it("names an A/B test's two tiers in place of effort and context when the test picks the model", async () => {
+    await harness!.render(createElement(NewSessionLaunchPanel, {
+      ...requiredProps(),
+      reasoningEffortOptions: [{ value: "high", label: "High" }],
+      contextOptions: [{ value: "default", label: "Standard context" }],
+      abTestTiers: ["preset2", "preset3"],
+    }));
+    expect(harness!.dom.container.textContent).toContain("A/B test: starts on Standard or Deep at random");
+    const groups = findAllByTag(harness!.dom.container, "div").map((element) => getReactProps(element)?.["aria-label"]);
+    expect(groups).not.toContain("Effort for new session");
+    expect(groups).not.toContain("Context for new session");
+  });
+
   it("marks an explicitly remembered preset live when the model inherits the Bridge default", async () => {
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),

@@ -24,6 +24,7 @@ import type { SessionTitlesStore } from "./session-titles.js";
 import type { BridgeSessionStateStore } from "./bridge-session-state-store.js";
 import type { CopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import type { ReadStateStore } from "./read-state-store.js";
+import type { ModelAbTestStore } from "./model-ab-test.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import type { DocsStore } from "./docs-store.js";
 import type { DocsIndex } from "./docs-index.js";
@@ -89,6 +90,8 @@ export interface AppContext {
   bridgeSessionStateStore: BridgeSessionStateStore;
   cliSessionCatalog?: CopilotCliSessionCatalog;
   readStateStore: ReadStateStore;
+  /** Which arm of a model A/B test each new chat started on. */
+  modelAbTestStore?: ModelAbTestStore;
   checklistStore: ChecklistStore;
   /** The Bridge's own calendar events. */
   calendarStore?: CalendarStore;

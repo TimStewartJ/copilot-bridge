@@ -2759,16 +2759,22 @@ function SessionRoute({
   const selectedPresetSlot = draftLaunch?.presetSlot ?? rememberedLaunchSelection?.slot;
   const activePresetSlot = selectedPresetSlot
     ?? modelPresetMemory.findSlotForModel(launchState.modelKey, launchState.availableModels);
+  // While a model A/B test runs, a chat whose model nobody picked leaves the choice of arm to the server.
+  const abTestLaunch = isDraft && modelPresetMemory.abTest && !draftLaunch?.model && !draftLaunch?.presetSlot
+    && !draftLaunch?.reasoningEffort && !draftLaunch?.contextTier
+    ? modelPresetMemory.abTest
+    : undefined;
   const rememberModelPreset = modelPresetMemory.remember;
   const playbooksQuery = usePlaybooksQuery({ enabled: isDraft });
   // Only an explicit choice is sent; without one the agent picks a playbook (or the task's pin applies).
   const launchPlaybookForCreate = draftLaunch?.playbook;
   const launchCreateOptions = useMemo(
     () => ({
-      ...buildNewSessionCreateOptions(launchState),
+      ...(abTestLaunch ? {} : buildNewSessionCreateOptions(launchState)),
       ...(launchPlaybookForCreate ? { playbook: launchPlaybookForCreate } : {}),
     }),
     [
+      abTestLaunch,
       launchState.modelForCreate,
       launchState.selectedContextTier,
       launchState.selectedReasoningEffort,
@@ -2998,7 +3004,8 @@ function SessionRoute({
     const sentLaunchMode = launchMode;
     const newSessionId = await materializeSession(taskId, createOptions);
     onSessionCreated?.(newSessionId);
-    const optimisticModelState = buildOptimisticSessionModelState(createOptions, defaultModelId);
+    // A test arm is the server's pick; the chat shows its model once the server has chosen.
+    const optimisticModelState = abTestLaunch ? undefined : buildOptimisticSessionModelState(createOptions, defaultModelId);
     if (optimisticModelState) {
       queryClient.setQueryData(queryKeys.sessionModel(newSessionId), optimisticModelState);
     }
@@ -3030,6 +3037,7 @@ function SessionRoute({
     navigate(path, { replace: true });
     await delivery;
   }, [
+    abTestLaunch,
     cleanupFailedFirstSendSession,
     composerKey,
     defaultModelId,
@@ -3069,10 +3077,11 @@ function SessionRoute({
       models={launchState.availableModels}
       modelsLoading={modelsQuery.isLoading || launchDefaultsLoading}
       modelsError={modelsQuery.error instanceof Error ? modelsQuery.error.message : undefined}
-      defaultModelId={defaultModelId}
+      defaultModelId={abTestLaunch ? undefined : defaultModelId}
       presets={presets}
-      selectedModelId={launchState.modelKey}
-      selectedPresetSlot={activePresetSlot}
+      selectedModelId={abTestLaunch ? "" : launchState.modelKey}
+      selectedPresetSlot={abTestLaunch ? undefined : activePresetSlot}
+      abTestTiers={abTestLaunch ? [abTestLaunch.a, abTestLaunch.b] : undefined}
       reasoningEffortOptions={launchState.reasoningEffortOptions}
       selectedReasoningEffort={launchState.selectedReasoningEffort}
       contextOptions={launchState.contextOptions}
@@ -3088,7 +3097,7 @@ function SessionRoute({
       onPlaybookChange={handleLaunchPlaybookChange}
       onModeChange={setLaunchMode}
       onModelSelectionCommitted={requestComposerFocus}
-      tierChange={launchTierChange}
+      tierChange={abTestLaunch ? undefined : launchTierChange}
     />
   ) : undefined;
 

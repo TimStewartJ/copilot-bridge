@@ -1,5 +1,6 @@
 import type { TaskStartersResponse } from "../shared/task-starters.js";
 import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
+import type { ModelAbTestReport, ModelAbTestSettings } from "../shared/model-ab-test.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
 import type { ExperimentalSettings } from "../shared/experimental-settings.js";
@@ -2543,6 +2544,8 @@ export interface AppSettings {
   lastModelPreset?: ModelPresetSlot;
   /** Which tier or model each kind of work runs on (Settings › Models); a missing role is Automatic. */
   modelRoles?: ModelRoles;
+  /** New chats start on one of two tiers at random; the server sets `startedAt`. */
+  modelAbTest?: ModelAbTestSettings;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
   computerUse?: ComputerUseSettings;
@@ -3116,6 +3119,10 @@ export interface ModelInfo extends CopilotModelContextMetadata {
 
 export async function fetchModelRoles(signal?: AbortSignal): Promise<ModelRolesView> {
   return apiFetch<ModelRolesView>("/api/models/roles", undefined, { signal });
+}
+
+export async function fetchModelAbTestReport(signal?: AbortSignal): Promise<ModelAbTestReport> {
+  return apiFetch<ModelAbTestReport>("/api/model-ab-test", undefined, { signal });
 }
 
 export async function fetchModels(): Promise<ModelInfo[]> {
