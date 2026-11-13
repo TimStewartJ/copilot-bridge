@@ -54,7 +54,7 @@ describe("GitHub tunnel host auth", () => {
 
     const refused = createAuth({ [LIST_URL]: () => new Response(null, { status: 401 }) });
     await expect(refused.auth.getCredential("bridge-github")).rejects.toThrow(
-      "Listing the GitHub account's tunnels failed: HTTP 401",
+      /Listing the GitHub account's tunnels failed: HTTP 401\. .*read:user and user:email/,
     );
 
     const noToken = createAuth({ [LIST_URL]: listWithTunnel, [HOST_URL]: () => Response.json({}) });
@@ -81,6 +81,12 @@ describe("GitHub tunnel host auth", () => {
       detail: "Reading bridge-github status failed: HTTP 503",
     });
 
+    // A 401 here means the host token expired, not that the GitHub token was refused.
+    const expired = createAuth({ [STATUS_URL]: () => new Response(null, { status: 401 }) });
+    await expect(expired.auth.inspectHost(credential, 25)).resolves.toEqual({
+      hostConnections: null,
+      detail: "Reading bridge-github status failed: HTTP 401",
+    });
   });
 
   it("requests a separate connect-only token using the existing GitHub identity", async () => {

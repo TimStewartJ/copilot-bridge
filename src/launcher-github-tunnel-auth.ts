@@ -13,6 +13,8 @@ const CLUSTER_RE = /^[a-z0-9]{2,20}$/;
 const CREDENTIAL_TIMEOUT_MS = 20_000;
 const API_TIMEOUT_MS = 15_000;
 const USER_AGENT = "copilot-bridge";
+const GITHUB_TOKEN_REFUSED_HINT =
+  "The token may be revoked, expired or missing the read:user and user:email scopes (Git Credential Manager's own sign-in token has been refused); see the github: tunnel notes in the README.";
 
 export type GitHubTunnelHostAuthDependencies = {
   readGitHubToken: () => Promise<string>;
@@ -57,9 +59,7 @@ export function readGitHubTokenFromGitCredential(account?: string): Promise<stri
         return;
       }
       const reason = stderr.trim().split(/\r?\n/).pop() || `exit code ${code}`;
-      const fix = account
-        ? `Store a github.com credential for ${account} once, for example with git credential-manager github login --username ${account}.`
-        : "Sign in once with a git command over HTTPS to github.com.";
+      const fix = "Store a github.com credential in your git credential helper, with a token that has the read:user and user:email scopes; see the github: tunnel notes in the README.";
       finish(new Error(`No GitHub credential${account ? ` for ${account}` : ""} from git credential fill (${reason}). ${fix}`));
     });
     child.stdin.end(`protocol=https\nhost=github.com\n${account ? `username=${account}\n` : ""}\n`);
@@ -91,6 +91,9 @@ async function getJson(
     headers: { Authorization: authorization, "User-Agent": USER_AGENT },
     signal: AbortSignal.timeout(timeoutMs),
   });
+  if (response.status === 401 && authorization.startsWith("github ")) {
+    throw new Error(`${what} failed: HTTP 401. ${GITHUB_TOKEN_REFUSED_HINT}`);
+  }
   if (!response.ok) throw new Error(`${what} failed: HTTP ${response.status}`);
   return response.json();
 }
