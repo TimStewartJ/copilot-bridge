@@ -68,8 +68,30 @@ export interface DeferWorkerSettings {
   contextTier?: CopilotContextTier;
 }
 
+export type ComputerUseEngine = "cua" | "github";
+
 export interface ComputerUseSettings {
   enabled?: boolean;
+  /** Cua Driver (default on Windows) or the Copilot SDK's Computer Use plugin. */
+  engine?: ComputerUseEngine;
+  /** Minutes without keyboard or mouse input before a chat may take the foreground. */
+  awayAfterMinutes?: number;
+}
+
+export const DEFAULT_COMPUTER_USE_AWAY_MINUTES = 3;
+export const MAX_COMPUTER_USE_AWAY_MINUTES = 120;
+
+/** Cua Driver ships for Windows only here, so other hosts keep the SDK plugin. */
+export function resolveComputerUseEngine(
+  settings: Pick<AppSettings, "computerUse"> | undefined,
+  platform: NodeJS.Platform = process.platform,
+): ComputerUseEngine {
+  if (platform !== "win32") return "github";
+  return settings?.computerUse?.engine ?? "cua";
+}
+
+export function resolveComputerUseAwayMinutes(settings: Pick<AppSettings, "computerUse"> | undefined): number {
+  return settings?.computerUse?.awayAfterMinutes ?? DEFAULT_COMPUTER_USE_AWAY_MINUTES;
 }
 
 /** Lets chats call the runtime's image tool, which bills a separate image model per image. On unless `enabled` is false. */
@@ -309,11 +331,6 @@ function normalizeDeferWorkerSettings(value: unknown): DeferWorkerSettings | und
 }
 
 /** An opt-in feature switch: `{ enabled: true }` when on, unset when off. */
-function normalizeEnabledSwitch(key: string, value: unknown): { enabled: true } | undefined {
-  const enabled = readEnabledFlag(key, value);
-  return enabled === true ? { enabled: true } : undefined;
-}
-
 function readEnabledFlag(key: string, value: unknown): boolean | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isRecord(value)) validationError(`${key} must be an object`);
@@ -322,6 +339,28 @@ function readEnabledFlag(key: string, value: unknown): boolean | undefined {
     validationError(`${key}.enabled must be a boolean`);
   }
   return typeof enabled === "boolean" ? enabled : undefined;
+}
+
+/** Off unless turned on; the engine and away time are kept while it is off so turning it back on restores them. */
+function normalizeComputerUseSettings(value: unknown): ComputerUseSettings | undefined {
+  const enabled = readEnabledFlag("computerUse", value);
+  if (!isRecord(value)) return undefined;
+  const engine = value.engine;
+  if (engine !== undefined && engine !== null && engine !== "cua" && engine !== "github") {
+    validationError("computerUse.engine must be cua or github");
+  }
+  const minutes = value.awayAfterMinutes;
+  if (minutes !== undefined && minutes !== null && (
+    typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < 1 || minutes > MAX_COMPUTER_USE_AWAY_MINUTES
+  )) {
+    validationError(`computerUse.awayAfterMinutes must be a whole number from 1 to ${MAX_COMPUTER_USE_AWAY_MINUTES}`);
+  }
+  const normalized: ComputerUseSettings = {
+    ...(enabled === true ? { enabled: true } : {}),
+    ...(engine === "cua" || engine === "github" ? { engine } : {}),
+    ...(typeof minutes === "number" ? { awayAfterMinutes: minutes } : {}),
+  };
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 /** On unless turned off, so only `{ enabled: false }` is kept. */
@@ -843,7 +882,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("deferWorker" in value) {
     normalized.deferWorker = normalizeDeferWorkerSettings(value.deferWorker);
   }
-  if ("computerUse" in value) normalized.computerUse = normalizeEnabledSwitch("computerUse", value.computerUse);
+  if ("computerUse" in value) normalized.computerUse = normalizeComputerUseSettings(value.computerUse);
   if ("imageGeneration" in value) {
     normalized.imageGeneration = normalizeImageGenerationSettings(value.imageGeneration);
   }

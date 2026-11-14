@@ -11,6 +11,7 @@ import {
 
 const apiMocks = vi.hoisted(() => ({
   fetchComputerUseStatus: vi.fn(),
+  installCuaDriver: vi.fn(),
 }));
 
 vi.mock("../../api", async (importOriginal) => ({
@@ -20,6 +21,14 @@ vi.mock("../../api", async (importOriginal) => ({
 
 const { ComputerUseSection } = await import("./ComputerUseSection");
 
+const pluginOnly = (plugin: { available: boolean; version?: string; reason?: string }) => ({
+  enabled: false,
+  engine: "github",
+  awayAfterMinutes: 3,
+  plugin,
+  cua: { supported: false, installed: false, version: "0.49.5", installing: false },
+});
+
 describe("ComputerUseSection", () => {
   let harness: ReactDomHarness | undefined;
 
@@ -27,6 +36,7 @@ describe("ComputerUseSection", () => {
     await harness?.cleanup();
     harness = undefined;
     apiMocks.fetchComputerUseStatus.mockReset();
+    apiMocks.installCuaDriver.mockReset();
   });
 
   async function renderSection(draft: AppSettings, setDraft = vi.fn()) {
@@ -36,7 +46,7 @@ describe("ComputerUseSection", () => {
   }
 
   it("toggles the installed plugin on and clears its setting when switched back off", async () => {
-    apiMocks.fetchComputerUseStatus.mockResolvedValue({ enabled: false, available: true, version: "0.1.88" });
+    apiMocks.fetchComputerUseStatus.mockResolvedValue(pluginOnly({ available: true, version: "0.1.88" }));
     const draft: AppSettings = { mcpServers: {} };
     const { container, setDraft, harness: rendered } = await renderSection(draft);
 
@@ -59,15 +69,35 @@ describe("ComputerUseSection", () => {
   });
 
   it("explains why it cannot be turned on when the SDK ships no plugin", async () => {
-    apiMocks.fetchComputerUseStatus.mockResolvedValue({
-      enabled: false,
+    apiMocks.fetchComputerUseStatus.mockResolvedValue(pluginOnly({
       available: false,
       reason: "The Copilot SDK platform package (@github/copilot-sdk-linux-x64) is not installed.",
-    });
+    }));
     const { container, harness: rendered } = await renderSection({ mcpServers: {} });
 
     await waitUntilAct(rendered.act, () => container.textContent?.includes("is not installed") === true);
     const [checkbox] = findAllByTag(container, "INPUT");
     expect(getReactProps(checkbox)?.disabled).toBe(true);
+  });
+
+  it("offers to install Cua Driver when it is the engine and missing", async () => {
+    const missing = {
+      enabled: true,
+      engine: "cua",
+      awayAfterMinutes: 3,
+      plugin: { available: true, version: "0.1.97" },
+      cua: { supported: true, installed: false, version: "0.49.5", installing: false },
+    };
+    apiMocks.fetchComputerUseStatus.mockResolvedValue(missing);
+    apiMocks.installCuaDriver.mockResolvedValue({ ...missing, cua: { ...missing.cua, installing: true } });
+    const { container, harness: rendered } = await renderSection({ mcpServers: {}, computerUse: { enabled: true } });
+
+    await waitUntilAct(rendered.act, () => container.textContent?.includes("Install") === true);
+    const install = findAllByTag(container, "BUTTON").find((button) => button.textContent === "Install")!;
+    await rendered.act(async () => {
+      getReactProps(install)?.onClick?.({});
+    });
+    expect(apiMocks.installCuaDriver).toHaveBeenCalledOnce();
+    await waitUntilAct(rendered.act, () => container.textContent?.includes("Installing…") === true);
   });
 });

@@ -296,6 +296,12 @@ describe("settings-store", () => {
     expect(() => store.updateSettings({
       computerUse: "on" as any,
     })).toThrow("computerUse must be an object");
+
+    // The engine and away time survive turning it off, so turning it back on restores them.
+    expect(store.updateSettings({ computerUse: { enabled: false, engine: "github", awayAfterMinutes: 10 } }).computerUse)
+      .toEqual({ engine: "github", awayAfterMinutes: 10 });
+    expect(() => store.updateSettings({ computerUse: { engine: "other" } as any })).toThrow("computerUse.engine must be cua or github");
+    expect(() => store.updateSettings({ computerUse: { awayAfterMinutes: 0 } })).toThrow("computerUse.awayAfterMinutes");
   });
 
   it("keeps image generation on unless it is explicitly turned off", () => {

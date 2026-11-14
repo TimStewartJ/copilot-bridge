@@ -681,6 +681,39 @@ async function loadWindowsSchedulingApi(): Promise<WindowsSchedulingApi> {
 const PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1;
 const ABOVE_NORMAL_PRIORITY_CLASS = 0x8000;
 
+let lastInputApi: Promise<() => number | undefined> | undefined;
+
+async function loadLastInputApi(): Promise<() => number | undefined> {
+  const imported = await import("koffi");
+  const koffi = ((imported as { default?: unknown }).default ?? imported) as {
+    load(name: string): { func(signature: string): (...args: unknown[]) => unknown };
+    struct(name: string, fields: Record<string, string>): unknown;
+  };
+  koffi.struct("BRIDGE_LASTINPUTINFO", { cbSize: "uint32", dwTime: "uint32" });
+  const getLastInputInfo = koffi.load("user32.dll").func("int __stdcall GetLastInputInfo(_Inout_ BRIDGE_LASTINPUTINFO* plii)");
+  const getTickCount = koffi.load("kernel32.dll").func("uint32 __stdcall GetTickCount()");
+  return () => {
+    const info = { cbSize: 8, dwTime: 0 };
+    if (!Number(getLastInputInfo(info))) return undefined;
+    // Both counters wrap at 2^32 ms, so subtract in 32 bits.
+    return ((Number(getTickCount()) - info.dwTime) >>> 0) / 1000;
+  };
+}
+
+/**
+ * Seconds since the last keyboard or mouse input in this Windows session, or undefined where
+ * that can't be read. In a disconnected session it is the time since input before the disconnect.
+ */
+export async function readSecondsSinceLastInput(platform: NodeJS.Platform = process.platform): Promise<number | undefined> {
+  if (platform !== "win32") return undefined;
+  try {
+    lastInputApi ??= loadLastInputApi();
+    return (await lastInputApi)();
+  } catch {
+    return undefined;
+  }
+}
+
 const MOVE_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000, 3_000, 4_000] as const;
 const TRANSIENT_MOVE_ERROR_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 

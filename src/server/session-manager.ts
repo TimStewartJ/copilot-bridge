@@ -52,6 +52,7 @@ import type { ChecklistStore } from "./checklist-store.js";
 import type { SessionWorkspaceStore } from "./session-workspace-store.js";
 import { resolveSessionPlaybook, toSessionPlaybookView, type SessionPlaybookStore } from "./session-playbook-store.js";
 import type { SkillCatalog } from "./skill-catalog.js";
+import type { CuaDriverStatus } from "./cua-driver.js";
 import type { UnattendedRunStore } from "./unattended-run-store.js";
 import type { SkillPackRoot } from "./skills-registry.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
@@ -588,6 +589,7 @@ export interface SessionManagerDeps {
   skillCatalog?: Pick<SkillCatalog, "current" | "findPlaybook">;
   skillPacks?: { activeRoots(taskTagNames?: readonly string[]): SkillPackRoot[] };
   skillUsageStore?: { record(skillName: string, sessionId?: string): void };
+  resolveCuaDriver?: () => CuaDriverStatus;
   unattendedRunStore?: Pick<UnattendedRunStore, "noteTurn" | "clear">;
   taskHistoryStore?: TaskHistoryStore;
   sessionMetaStore?: SessionMetaStore;
@@ -777,6 +779,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     skillCatalog: ctx.skillCatalog,
     skillPacks: ctx.skillPacks,
     skillUsageStore: ctx.skillUsageStore,
+    ...(ctx.cuaDriver ? { resolveCuaDriver: () => ctx.cuaDriver!.getStatus() } : {}),
     unattendedRunStore: ctx.unattendedRunStore,
     taskHistoryStore: ctx.taskHistoryStore,
     sessionMetaStore: ctx.sessionMetaStore,

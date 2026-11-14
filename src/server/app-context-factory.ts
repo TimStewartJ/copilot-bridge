@@ -11,6 +11,7 @@ import { createSessionPlaybookStore } from "./session-playbook-store.js";
 import { createSkillCatalog } from "./skill-catalog.js";
 import { createSkillPackManager } from "./skill-packs.js";
 import { createSkillUsageStore } from "./skill-usage-store.js";
+import { CuaDriverInstaller } from "./cua-driver.js";
 import { createTaskStartersStore } from "./task-starters-store.js";
 import { createUnattendedRunStore } from "./unattended-run-store.js";
 import { createTaskHistoryStore } from "./task-history-store.js";
@@ -192,6 +193,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     skillCatalog,
     skillPacks,
     skillUsageStore,
+    cuaDriver: new CuaDriverInstaller({ dataDir }),
     taskStartersStore,
     unattendedRunStore,
     taskHistoryStore,

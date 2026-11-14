@@ -65,6 +65,7 @@ import type { HelmThinkerStore } from "./helm/thinker/store.js";
 import type { HelmThinker } from "./helm/thinker/thinker.js";
 import type { VoiceGateway } from "./voice/voice-gateway.js";
 import type { VoiceRuntime } from "./voice/voice-runtime.js";
+import type { CuaDriverInstaller } from "./cua-driver.js";
 
 export interface AppContext {
   taskStore: TaskStore;
@@ -78,6 +79,8 @@ export interface AppContext {
   skillCatalog?: SkillCatalog;
   skillPacks?: SkillPackManager;
   skillUsageStore?: SkillUsageStore;
+  /** Installs and locates Cua Driver, the desktop automation engine. */
+  cuaDriver?: CuaDriverInstaller;
   /** Suggested chats on each task panel. */
   taskStartersStore?: TaskStartersStore;
   /** Serves, refreshes and auto-refreshes suggested chats; created with the API services. */

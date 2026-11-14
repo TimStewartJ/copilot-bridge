@@ -296,6 +296,7 @@ const TOOL_FAMILIES: Array<{ prefix: string; icon: ToolIconName; noun: string }>
   { prefix: "staging_", icon: "rocket", noun: "Staging" },
   { prefix: "browser_", icon: "globe", noun: "Browser" },
   { prefix: "computer-use-", icon: "pointer", noun: "Computer" },
+  { prefix: "cua-", icon: "pointer", noun: "Computer" },
 ];
 
 function humanize(value: string): string {

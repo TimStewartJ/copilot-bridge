@@ -375,11 +375,13 @@ describe("session-config-builder", () => {
 
   describe("computer use", () => {
     const pluginDirectory = join("/sdk", "plugins", "computer-use");
-    const settingsStoreWith = (computerUse?: { enabled: boolean }) => ({
+    const settingsStoreWith = (computerUse?: { enabled: boolean; engine?: "cua" | "github" }) => ({
       getSettings: () => ({ ...(computerUse ? { computerUse } : {}) }),
       updateSettings: vi.fn(),
       getMcpServers: () => ({}),
     }) as unknown as SettingsStore;
+    const cuaExecutable = join("/data", "cua-driver", "0.49.5", "cua-driver.exe");
+    const cuaInstalled = () => ({ supported: true, installed: true, version: "0.49.5", installing: false, executablePath: cuaExecutable });
 
     it("stays off by default and tells the session so without resolving the plugin", () => {
       const resolve = vi.fn();
@@ -400,7 +402,7 @@ describe("session-config-builder", () => {
       for (const forResume of [false, true]) {
         const cfg = buildSessionConfig({
           deps: createDeps({
-            settingsStore: settingsStoreWith({ enabled: true }),
+            settingsStore: settingsStoreWith({ enabled: true, engine: "github" }),
             resolveComputerUsePlugin: () => ({ available: true, pluginDirectory, version: "0.1.88" }),
           }),
           options: { forResume },
@@ -412,10 +414,48 @@ describe("session-config-builder", () => {
       }
     });
 
-    it("loads nothing when the setting is on but the SDK ships no plugin", () => {
+    it("gives Windows chats Cua Driver as an on-demand MCP server with the foreground guard instead of the plugin", () => {
+      const resolvePlugin = vi.fn();
+      for (const forResume of [false, true]) {
+        const cfg = buildSessionConfig({
+          deps: createDeps({
+            settingsStore: settingsStoreWith({ enabled: true }),
+            resolveComputerUsePlugin: resolvePlugin,
+            resolveCuaDriver: cuaInstalled,
+            computerUsePlatform: "win32",
+          }),
+          options: { forResume },
+          callbacks: createCallbacks(),
+        });
+
+        expect(cfg.pluginDirectories).toBeUndefined();
+        expect(cfg.mcpServers.cua).toMatchObject({ command: cuaExecutable, args: ["mcp", "--direct"], deferTools: "auto" });
+        expect(cfg.mcpServers.cua).not.toHaveProperty("executionScope");
+        expect(cfg.hooks.onPreToolUse).toBeTypeOf("function");
+        expect(cfg.systemMessage.content).toContain("at least 3 minutes");
+      }
+      expect(resolvePlugin).not.toHaveBeenCalled();
+    });
+
+    it("says Cua Driver is missing and adds no server until it is installed", () => {
       const cfg = buildSessionConfig({
         deps: createDeps({
           settingsStore: settingsStoreWith({ enabled: true }),
+          resolveCuaDriver: () => ({ supported: true, installed: false, version: "0.49.5", installing: false }),
+          computerUsePlatform: "win32",
+        }),
+        callbacks: createCallbacks(),
+      });
+
+      expect(cfg.mcpServers.cua).toBeUndefined();
+      expect(cfg.hooks).toBeUndefined();
+      expect(cfg.systemMessage.content).toContain("Cua Driver is not installed");
+    });
+
+    it("loads nothing when the setting is on but the SDK ships no plugin", () => {
+      const cfg = buildSessionConfig({
+        deps: createDeps({
+          settingsStore: settingsStoreWith({ enabled: true, engine: "github" }),
           resolveComputerUsePlugin: () => ({ available: false, reason: "not installed" }),
         }),
         callbacks: createCallbacks(),
@@ -761,6 +801,32 @@ describe("session-config-builder", () => {
     expect(serversOnly.mcpServers).toEqual(cfg.mcpServers);
     expect(serversOnly.systemMessage.content).not.toContain("Use the task tools carefully.");
     expect(serversOnly.systemMessage.content).not.toContain("task-1");
+  });
+
+  it("keeps Cua Driver when task tags rebuild the server list", () => {
+    const { mcpServerStore, tagStore } = createMcpRegistryDeps();
+    const taskServer = mcpServerStore.createMcpServer({ name: "Task MCP", config: { command: "task-mcp", args: [] } });
+    const tag = tagStore.createTag("Task tools");
+    tagStore.addTagMcpServerRef(tag.id, taskServer.id);
+    tagStore.setEntityTags("task", "task-1", [tag.id]);
+
+    const cfg = buildSessionConfig({
+      deps: createDeps({
+        mcpServerStore,
+        tagStore,
+        settingsStore: {
+          getSettings: () => ({ computerUse: { enabled: true } }),
+          updateSettings: vi.fn(),
+          getMcpServers: () => ({}),
+        } as unknown as SettingsStore,
+        resolveCuaDriver: () => ({ supported: true, installed: true, version: "0.49.5", installing: false, executablePath: join("/data", "cua-driver.exe") }),
+        computerUsePlatform: "win32",
+      }),
+      options: { task: createTask() },
+      callbacks: createCallbacks(),
+    });
+
+    expect(Object.keys(cfg.mcpServers)).toEqual(expect.arrayContaining(["Task MCP", "cua"]));
   });
 
   it("preserves GitHub Copilot web search and Bridge-owned MCP servers when task tags rebuild MCP selection", () => {

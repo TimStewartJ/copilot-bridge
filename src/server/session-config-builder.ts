@@ -25,7 +25,9 @@ import {
   ASK_USER_CONTEXT_GUIDANCE,
   BRIDGE_EXCLUDED_TOOLS,
   BROWSER_GUIDANCE,
+  COMPUTER_USE_CUA_MISSING_GUIDANCE,
   COMPUTER_USE_OFF_GUIDANCE,
+  computerUseCuaGuidance,
   DEFAULT_IDENTITY,
   HOME_GUIDANCE,
   IMAGE_GENERATION_GUIDANCE,
@@ -59,6 +61,14 @@ import { BASE_METHOD, BASE_METHOD_REPORTING, BASE_METHOD_ROLE } from "./base-met
 import { formatModelRolesBlock, formatSkillRolesBlock, type SkillCatalog } from "./skill-catalog.js";
 import { getBundledSkillsDir, getHomeSkillsDir, type SkillPackRoot } from "./skills-registry.js";
 import { resolveComputerUsePlugin, type ComputerUsePluginStatus } from "./computer-use-plugin.js";
+import {
+  buildCuaMcpServerConfig,
+  createCuaForegroundGuard,
+  CUA_MCP_SERVER_NAME,
+  type CuaDriverStatus,
+} from "./cua-driver.js";
+import { readSecondsSinceLastInput } from "./platform.js";
+import { resolveComputerUseAwayMinutes, resolveComputerUseEngine } from "./settings-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
@@ -122,6 +132,11 @@ export interface SessionConfigBuilderDeps {
   clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
   resolveComputerUsePlugin?: () => ComputerUsePluginStatus;
+  /** Cua Driver's install state; without it the Cua engine has no tools. */
+  resolveCuaDriver?: () => CuaDriverStatus;
+  /** Seconds since the user's last input on this PC; defaults to the Windows session's own reading. */
+  readIdleSeconds?: () => Promise<number | undefined>;
+  computerUsePlatform?: NodeJS.Platform;
   /** The last skill scan: playbooks, roles and extensions for <skill_roles>. */
   skillCatalog?: Pick<SkillCatalog, "current">;
   /** Skill packs a chat loads, given its task's tag names. */
@@ -276,14 +291,35 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   const fusionContextTokens = settings?.experimental?.fusionContextTokens;
   if (fusionContextTokens !== undefined) cfg.fusionContextTokens = fusionContextTokens;
 
-  // Computer Use is upstream's plugin from the SDK platform package. Loading it per
-  // session keeps the Bridge setting as the only gate, independent of CLI user settings.
+  // Desktop automation: Cua Driver as a per-chat MCP server (the default on Windows), or upstream's
+  // Computer Use plugin from the SDK platform package. The Bridge setting is the only gate either way.
   const computerUseEnabled = settings?.computerUse?.enabled === true;
-  const computerUsePlugin = computerUseEnabled
-    ? (deps.resolveComputerUsePlugin ?? resolveComputerUsePlugin)()
-    : undefined;
-  if (computerUsePlugin?.available && computerUsePlugin.pluginDirectory) {
-    cfg.pluginDirectories = [computerUsePlugin.pluginDirectory];
+  const computerUseEngine = resolveComputerUseEngine(settings, deps.computerUsePlatform);
+  let computerUseGuidance: string | undefined = computerUseEnabled ? undefined : COMPUTER_USE_OFF_GUIDANCE;
+  let cuaMcpServer: McpServerConfig | undefined;
+  if (computerUseEnabled && computerUseEngine === "cua") {
+    const cua = deps.resolveCuaDriver?.();
+    if (cua?.installed && cua.executablePath) {
+      const awayAfterMinutes = resolveComputerUseAwayMinutes(settings);
+      cuaMcpServer = toRuntimeMcpServerConfigs({ [CUA_MCP_SERVER_NAME]: buildCuaMcpServerConfig(cua.executablePath) })[CUA_MCP_SERVER_NAME];
+      const guard = createCuaForegroundGuard({
+        awayAfterMinutes,
+        readIdleSeconds: deps.readIdleSeconds ?? (() => readSecondsSinceLastInput()),
+      });
+      cfg.hooks = {
+        onPreToolUse: guard.beforeToolUse,
+        onPostToolUse: guard.afterToolUse,
+        onPostToolUseFailure: guard.afterToolUse,
+      };
+      computerUseGuidance = computerUseCuaGuidance(awayAfterMinutes);
+    } else {
+      computerUseGuidance = COMPUTER_USE_CUA_MISSING_GUIDANCE;
+    }
+  } else if (computerUseEnabled) {
+    const computerUsePlugin = (deps.resolveComputerUsePlugin ?? resolveComputerUsePlugin)();
+    if (computerUsePlugin.available && computerUsePlugin.pluginDirectory) {
+      cfg.pluginDirectories = [computerUsePlugin.pluginDirectory];
+    }
   }
 
   // The runtime offers its image tool only when asked, and a resident session keeps whatever it
@@ -374,7 +410,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     TOOL_NAMING_GUIDANCE,
     WORK_REFERENCE_GUIDANCE,
     DOC_LINK_GUIDANCE,
-    ...(computerUseEnabled ? [] : [COMPUTER_USE_OFF_GUIDANCE]),
+    ...(computerUseGuidance ? [computerUseGuidance] : []),
     ...(imageGenerationEnabled ? [IMAGE_GENERATION_GUIDANCE] : []),
     // Changes only when skills, packs or Settings › Models change, which reach a chat on resume.
     ...(deps.skillCatalog ? [formatSkillRolesBlock(catalogSkills, new Set(activePacks.map((pack) => pack.id)))] : []),
@@ -460,6 +496,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       );
     }
   }
+
+  // After the tag merge, which rebuilds the server list.
+  if (cuaMcpServer) cfg.mcpServers = { ...cfg.mcpServers, [CUA_MCP_SERVER_NAME]: cuaMcpServer };
 
   // Upstream current_datetime now carries a local offset, but we still expose the
   // server's IANA zone name for scheduling and timezone-specific prompts.

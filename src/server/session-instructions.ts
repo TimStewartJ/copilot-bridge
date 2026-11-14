@@ -140,6 +140,28 @@ Desktop computer use is turned off for this Bridge, so this session has no compu
 </computer_use>
 `.trim();
 
+export const COMPUTER_USE_CUA_MISSING_GUIDANCE = `
+<computer_use>
+Desktop computer use is on, but Cua Driver is not installed yet, so this session has no desktop tools. If a task needs them, point the user to Settings > Integrations > Computer use to install it.
+</computer_use>
+`.trim();
+
+/** The rules for Cua Driver's desktop tools; the foreground part is also enforced before each call. */
+export function computerUseCuaGuidance(awayAfterMinutes: number): string {
+  return `
+<computer_use>
+Desktop apps on this PC are driven with Cua Driver's tools (names start with "cua-"). They load on demand: search for "cua" with the tool search tool before the first use. Start from cua-get_guide or the server instructions, find windows with cua-list_windows, read with cua-get_window_state, and batch actions with cua-run_steps or cua-run_script. Element tokens last for this chat's connection only.
+
+Whether the user is here decides how you may act:
+- Away: no keyboard or mouse input on this PC for at least ${awayAfterMinutes} minutes. Then you have full control of the desktop: bring windows to the front with cua-bring_to_front and keep them there, use delivery_mode "foreground", real input, screenshots, launching, closing and restarting apps.
+- Active: anything else, including when the user works in a remote desktop window on this PC. Stay in the background: Cua's default background delivery, plus the shell, files and APIs. If the task needs the foreground, wait for the user to be away when the task can wait; otherwise ask.
+The Bridge refuses foreground calls while the user is active; treat that refusal as an answer, not an obstacle. Use Cua's own foreground tools rather than shell focus tricks.
+
+Always: the usual approval rules apply (sending as the user, purchases, deleting their data, installing software). Don't unlock a locked screen. Hand UAC, Windows Security and credential prompts to the user.
+</computer_use>
+`.trim();
+}
+
 export const IMAGE_GENERATION_GUIDANCE = `
 <image_generation>
 When you call the image tool, set quality to "medium" unless the user asks for another quality. Each image it generates or edits appears in the chat as a card by itself. Do not embed or link it in your reply or publish it again; give its saved path only when the user asks for the file.

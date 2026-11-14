@@ -2493,8 +2493,12 @@ export interface DeferWorkerSettings {
   contextTier?: CopilotContextTier;
 }
 
+export type ComputerUseEngine = "cua" | "github";
+
 export interface ComputerUseSettings {
   enabled?: boolean;
+  engine?: ComputerUseEngine;
+  awayAfterMinutes?: number;
 }
 
 /** On unless `enabled` is false. */
@@ -2504,9 +2508,10 @@ export interface ImageGenerationSettings {
 
 export interface ComputerUseStatus {
   enabled: boolean;
-  available: boolean;
-  version?: string;
-  reason?: string;
+  engine: ComputerUseEngine;
+  awayAfterMinutes: number;
+  plugin: { available: boolean; version?: string; reason?: string };
+  cua: { supported: boolean; installed: boolean; version: string; installing: boolean; error?: string };
 }
 
 export interface ModelPreset {
@@ -2596,6 +2601,16 @@ export async function fetchSettings(): Promise<AppSettings> {
 
 export async function fetchComputerUseStatus(): Promise<ComputerUseStatus> {
   return apiFetch<ComputerUseStatus>("/api/computer-use/status");
+}
+
+/** Starts the download; poll the status until `cua.installing` is false. */
+export async function installCuaDriver(): Promise<ComputerUseStatus> {
+  const res = await fetch(`${API_BASE}/api/computer-use/cua/install`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json() as Promise<ComputerUseStatus>;
 }
 
 export async function patchSettings(updates: AppSettingsUpdates): Promise<AppSettings> {

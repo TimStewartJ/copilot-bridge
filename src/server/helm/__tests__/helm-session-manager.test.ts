@@ -117,7 +117,7 @@ function createManager(
     ...(options.computerUsePluginDirectory
       ? {
           settingsStore: {
-            getSettings: () => ({ mcpServers: {}, computerUse: { enabled: true } }),
+            getSettings: () => ({ mcpServers: {}, computerUse: { enabled: true, engine: "github" } }),
             getMcpServers: () => ({}),
           } as unknown as SessionManagerDeps["settingsStore"],
           resolveComputerUsePlugin: () => ({ available: true, pluginDirectory: options.computerUsePluginDirectory }),

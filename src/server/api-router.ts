@@ -33,6 +33,8 @@ import { buildTaskOverview, toOverviewSessions } from "./task-overview.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import {
   isImageGenerationEnabled,
+  resolveComputerUseAwayMinutes,
+  resolveComputerUseEngine,
   SettingsValidationError,
   type AppSettings,
 } from "./settings-store.js";
@@ -184,6 +186,7 @@ import { BrowserHandedOffError } from "./browser-user-session.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import { loginHost } from "./browser-logins.js";
 import { resolveComputerUsePlugin } from "./computer-use-plugin.js";
+import { CUA_DRIVER_RELEASE } from "./cua-driver.js";
 import { PRE_DELETE_SNAPSHOT_MIN_INTERVAL_MS } from "./docs-snapshot-store.js";
 import { DocsStoreValidationError, serializeDocContent } from "./docs-store.js";
 import { docsFtsUnavailablePayload, isDocsFtsUnavailableError, type DocsFtsMutationResult, type DocsFtsUnavailablePayload } from "./docs-index.js";
@@ -4876,7 +4879,7 @@ export function createApiRouter(
         })();
       }
 
-      const computerUseChanged = (prev.computerUse?.enabled === true) !== (updated.computerUse?.enabled === true);
+      const computerUseChanged = JSON.stringify(prev.computerUse ?? {}) !== JSON.stringify(updated.computerUse ?? {});
       const imageGenerationChanged = isImageGenerationEnabled(prev) !== isImageGenerationEnabled(updated);
       const fusionContextChanged = prev.experimental?.fusionContextTokens !== updated.experimental?.fusionContextTokens;
       const modelChanged = prev.model !== updated.model;
@@ -4910,14 +4913,43 @@ export function createApiRouter(
     }
   });
 
-  // GET /computer-use/status — whether upstream's Computer Use plugin is installed and enabled
+  function computerUseStatus() {
+    const settings = ctx.settingsStore.getSettings();
+    const { pluginDirectory: _pluginDirectory, ...plugin } = resolveComputerUsePlugin();
+    const { executablePath: _executablePath, ...cua } = ctx.cuaDriver?.getStatus()
+      ?? { supported: false, installed: false, version: CUA_DRIVER_RELEASE.version, installing: false };
+    return {
+      enabled: settings.computerUse?.enabled === true,
+      engine: resolveComputerUseEngine(settings),
+      awayAfterMinutes: resolveComputerUseAwayMinutes(settings),
+      plugin,
+      cua,
+    };
+  }
+
+  // GET /computer-use/status — the chosen engine and whether each one is ready
   router.get("/computer-use/status", (_req, res) => {
     try {
-      const { pluginDirectory: _pluginDirectory, ...plugin } = resolveComputerUsePlugin();
-      res.json({ enabled: ctx.settingsStore.getSettings().computerUse?.enabled === true, ...plugin });
+      res.json(computerUseStatus());
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // POST /computer-use/cua/install — download and verify the pinned Cua Driver release
+  router.post("/computer-use/cua/install", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Cua Driver installation")) return;
+    const installer = ctx.cuaDriver;
+    if (!installer) return res.status(503).json({ error: "Cua Driver installation is not available here." });
+    if (!installer.getStatus().supported) return res.status(400).json({ error: "Cua Driver is not available for this platform." });
+    const wasInstalled = installer.getStatus().installed;
+    void installer.install()
+      .then(() => {
+        // Chats built before the install have no desktop tools; rebuild them on their next turn.
+        if (!wasInstalled) void ctx.sessionManager.evictAllCachedSessions();
+      })
+      .catch(() => undefined);
+    res.status(202).json(computerUseStatus());
   });
 
   // GET /mcp-status — global MCP server status from any recent session
