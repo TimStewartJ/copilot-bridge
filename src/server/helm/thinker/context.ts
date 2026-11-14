@@ -4,10 +4,11 @@
 // shown, so a published action can only point at something real.
 import type { HomeInputSummary, HomePage, HomeSection, HomeSnapshot } from "../../../shared/home.js";
 import type { TaskOverviewRow } from "../../../shared/task-overview.js";
-import { HELM_STALE_AFTER_DAYS, type HelmBridgeStatus, type HelmMemoryEntry } from "../../../shared/helm-thinker.js";
+import { HELM_REMOVED_SOURCE, HELM_STALE_AFTER_DAYS, type HelmThreadOwner, type HelmBridgeStatus, type HelmMemoryEntry } from "../../../shared/helm-thinker.js";
 import type { HelmFeedbackRecord } from "./store.js";
 import type { HelmSource, SourceSession } from "./sources.js";
 import { mapWithConcurrency } from "../../map-with-concurrency.js";
+import { attentionOfRow, byAttention, taskBasis, type AttentionAbsence, type AttentionInputs, type TaskAttention } from "../attention.js";
 
 export interface PacketQuestion {
   sessionId: string;
@@ -59,10 +60,25 @@ export interface PacketTask {
   group?: string;
   agentWorking?: boolean;
   changed: boolean;
-  /** Helm's existing thread line for this task, if any. */
+  /** Helm's existing thread line for this task, if any, with its structured part. */
   thread?: string;
+  threadOwner?: HelmThreadOwner;
+  threadHoldUntil?: string;
+  /** The task's next step, waiting-for or revisit date changed after the line was written. */
+  threadOutOfDate?: true;
+  /** Fingerprint of the task's fields now, stamped on a thread this run writes. Not shown to the run. */
+  basis?: string;
   /** On a rebuild, signs that this local task's instructions or notes need tidying. */
   tidy?: string[];
+  /**
+   * Nothing but Tim moves it: "fields" when its live fields say so (no agent working, waiting on no
+   * one), "helm" when only Helm's line says it is his.
+   */
+  onTim?: "fields" | "helm";
+  /** Why it needs Tim now (dates passed, due soon, before time away); set only when onTim. */
+  needsTim?: string[];
+  /** The earliest date behind needsTim, YYYY-MM-DD. */
+  needsTimBy?: string;
 }
 
 export interface PacketBridge {
@@ -102,6 +118,9 @@ export interface ThinkerPacket {
   feedback: HelmFeedbackRecord[];
   previousItems: Array<{ title: string; status: string; outcome: string | null }>;
   outsideSources: PacketSource[];
+  /** Calendar stretches of several days coming up (trips, retreats). */
+  away?: AttentionAbsence[];
+  sourceNames?: Record<string, string>;
 }
 
 const MAX_TASKS_PER_BRIDGE = 250;
@@ -121,7 +140,7 @@ function after(iso: string | null | undefined, watermark: string | null): boolea
   return Date.parse(iso) > Date.parse(watermark);
 }
 
-async function readBridge(source: HelmSource, options: { watermark: string | null; rebuild: boolean; threads: Map<string, string> }): Promise<PacketBridge> {
+async function readBridge(source: HelmSource, options: { watermark: string | null; rebuild: boolean; threads: ReadonlyMap<string, HelmMemoryEntry>; attention?: AttentionInputs; now?: Date }): Promise<PacketBridge> {
   async function pages<T>(section: HomeSection, pick: (snapshot: HomeSnapshot) => HomePage<T>): Promise<{ items: T[]; total: number }> {
     const items: T[] = [];
     let total = 0;
@@ -188,26 +207,47 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
     ...(action.taskId ? { taskId: action.taskId, task: action.taskTitle } : {}),
   }));
 
-  const rows: TaskOverviewRow[] = overview.tasks.filter((row) => !row.muted);
-  const tasks: PacketTask[] = rows.slice(0, MAX_TASKS_PER_BRIDGE).map((row) => {
-    const thread = options.threads.get(`${source.id}:${row.id}`);
-    const changed = options.rebuild || !thread || row.state === "needs_you"
+  const threadOf = (taskId: string) => options.threads.get(`${source.id}:${taskId}`);
+  const attentionInputs = options.attention ? { ...options.attention, helm: (taskId: string) => threadOf(taskId) } : undefined;
+  // Tasks that need Tim come first, so no limit below can leave one out.
+  const rows = overview.tasks.filter((row) => !row.muted)
+    .map((row) => ({ row, attention: attentionOf(row, due, attentionInputs, options.now) }))
+    .sort(byAttention);
+  const tasks: PacketTask[] = rows.slice(0, MAX_TASKS_PER_BRIDGE).map(({ row, attention }) => {
+    const entry = threadOf(row.id);
+    const thread = entry?.text;
+    const basis = taskBasis(row);
+    // Helm's line written before the task's fields last changed (or before lines recorded them) is
+    // out of date; one Tim corrected is his and stays as he wrote it.
+    const outOfDate = !!entry && entry.author !== "user" && entry.basis !== basis;
+    const threadParts = entry ? {
+      thread: entry.text, ...(entry.owner ? { threadOwner: entry.owner } : {}), ...(entry.holdUntil ? { threadHoldUntil: entry.holdUntil } : {}),
+      ...(outOfDate ? { threadOutOfDate: true as const } : {}),
+    } : {};
+    const changed = options.rebuild || !thread || outOfDate || row.state === "needs_you"
       || after(row.lastEngagedAt, options.watermark) || after(taskActivity.get(row.id), options.watermark);
     // Every task carries its dates, so the run can see what has gone stale without opening it.
     const dates = { ...(row.nextTouchAt ? { nextTouchAt: row.nextTouchAt } : {}), ...(row.lastEngagedAt ? { lastEngagedAt: row.lastEngagedAt } : {}), idleDays: row.idleDays };
+    const fields = { ...(row.nextAction ? { nextAction: clip(row.nextAction, 300) } : {}), ...(row.waitingOn ? { waitingOn: clip(row.waitingOn, 200) } : {}) };
+    const flags: Pick<PacketTask, "onTim" | "needsTim" | "needsTimBy"> = attention.onTim
+      ? {
+        onTim: attention.fromFields ? "fields" : "helm",
+        ...(attention.reasons.length ? { needsTim: attention.reasons, ...(attention.soonest ? { needsTimBy: attention.soonest } : {}) } : {}),
+      }
+      : {};
     return changed
       ? {
         taskId: row.id, title: row.title, state: row.state, ...(row.reasons.length ? { reasons: row.reasons } : {}),
-        ...(row.nextAction ? { nextAction: clip(row.nextAction, 300) } : {}), ...(row.waitingOn ? { waitingOn: clip(row.waitingOn, 200) } : {}),
-        ...dates, ...(row.groupName ? { group: row.groupName } : {}), ...(row.busyCount > 0 ? { agentWorking: true } : {}),
-        changed: true, ...(thread ? { thread } : {}),
+        ...fields, ...dates, ...(row.groupName ? { group: row.groupName } : {}), ...(row.busyCount > 0 ? { agentWorking: true } : {}),
+        changed: true, ...flags, ...threadParts, basis,
       }
-      : { taskId: row.id, title: row.title, state: row.state, ...dates, changed: false, thread };
+      // A task that needs Tim always shows its next step and wait, so its thread line is never all the run sees.
+      : { taskId: row.id, title: row.title, state: row.state, ...(flags.needsTim ? fields : {}), ...dates, changed: false, ...flags, ...threadParts, basis };
   });
 
   const working = active.filter((session) => session.runState !== "idle" && !session.needsUserInput).slice(0, 15).map((session) => ({
     sessionId: session.sessionId, conversation: session.title,
-    ...(session.linkedTaskIds[0] ? { task: rows.find((row) => row.id === session.linkedTaskIds[0])?.title } : {}),
+    ...(session.linkedTaskIds[0] ? { task: rows.find(({ row }) => row.id === session.linkedTaskIds[0])?.row.title } : {}),
   }));
 
   const sessionIds = new Set<string>([
@@ -224,6 +264,12 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
   return { id: source.id, label: source.label, ok: true, questions, replies: packetReplies, due, tasks, working, omitted, sessionIds };
 }
 
+function attentionOf(row: TaskOverviewRow, due: PacketDue[], inputs: AttentionInputs | undefined, now: Date | undefined): TaskAttention {
+  if (!inputs) return { onTim: false, fromFields: false, reasons: [] };
+  const checklist = due.filter((item) => item.taskId === row.id).map((item) => ({ text: item.text, ...(item.deadline ? { deadline: item.deadline } : {}) }));
+  return attentionOfRow(row, inputs, now ?? new Date(), checklist);
+}
+
 /** One Bridge as Helm's chat reads it: what waits on Tim, what is running, and every task, compactly. */
 export interface ChatBridgeView {
   bridge: string;
@@ -232,7 +278,7 @@ export interface ChatBridgeView {
   replies: Array<{ sessionId: string; conversation: string; excerpt?: string; task?: string; at?: string; automated?: boolean }>;
   due: Array<{ text: string; deadline?: string; task?: string }>;
   working: Array<{ sessionId: string; conversation: string; task?: string }>;
-  tasks: Array<{ taskId: string; title: string; state?: string; nextAction?: string; waitingOn?: string; idleDays?: number | null }>;
+  tasks: Array<{ taskId: string; title: string; state?: string; nextAction?: string; waitingOn?: string; idleDays?: number | null; onYou?: true; needsYou?: string[] }>;
   omitted?: { questions: number; replies: number; due: number; tasks: number };
 }
 
@@ -240,8 +286,8 @@ const MAX_CHAT_TASKS = 150;
 /** Keeps one read_bridge result to a size the chat can take in at once. */
 const MAX_CHAT_BRIDGE_CHARS = 40_000;
 
-export async function readBridgeForChat(source: HelmSource): Promise<ChatBridgeView> {
-  const bridge = await readBridge(source, { watermark: null, rebuild: true, threads: new Map() });
+export async function readBridgeForChat(source: HelmSource, attention?: AttentionInputs): Promise<ChatBridgeView> {
+  const bridge = await readBridge(source, { watermark: null, rebuild: true, threads: new Map(), ...(attention ? { attention } : {}) });
   const omitted = { ...bridge.omitted, tasks: bridge.omitted.tasks + Math.max(0, bridge.tasks.length - MAX_CHAT_TASKS) };
   const view = chatBridgeView(bridge);
   // Over budget: drop tasks from the end of the list first, then the last replies, and say how many.
@@ -270,6 +316,7 @@ function chatBridgeView(bridge: PacketBridge): ChatBridgeView {
       taskId: task.taskId, title: task.title, ...(task.state ? { state: task.state } : {}),
       ...(task.nextAction ? { nextAction: clip(task.nextAction, 160) } : {}), ...(task.waitingOn ? { waitingOn: clip(task.waitingOn, 120) } : {}),
       ...(task.idleDays !== undefined ? { idleDays: task.idleDays } : {}),
+      ...(task.onTim ? { onYou: true as const } : {}), ...(task.needsTim ? { needsYou: task.needsTim } : {}),
     })),
   };
 }
@@ -286,11 +333,17 @@ export async function buildThinkerPacket(input: {
   outsideSources?: PacketSource[];
   /** Tidy-up signs for a task on this Bridge; read only on a rebuild, Helm's weekly fresh look. */
   tidyHints?: (taskId: string) => string[];
+  attention?: AttentionInputs;
+  /** Names of outside sources by server id, to show which memory lines cite one. */
+  sourceNames?: Record<string, string>;
 }): Promise<ThinkerPacket> {
-  const threads = new Map(input.memory.filter((entry) => entry.kind === "thread" && entry.key && entry.status === "active").map((entry) => [entry.key!, entry.text]));
+  const threads = new Map(input.memory.filter((entry) => entry.kind === "thread" && entry.key && entry.status === "active").map((entry) => [entry.key!, entry]));
   const bridges = await Promise.all(input.sources.map(async (source): Promise<PacketBridge> => {
     try {
-      const bridge = await readBridge(source, { watermark: input.lastRunAt, rebuild: input.rebuild, threads });
+      const bridge = await readBridge(source, {
+        watermark: input.lastRunAt, rebuild: input.rebuild, threads, now: input.now,
+        ...(input.attention ? { attention: source.local ? input.attention : { timeZone: input.attention.timeZone, absences: input.attention.absences } } : {}),
+      });
       if (input.rebuild && input.tidyHints && bridge.id === "local") {
         bridge.tasks = bridge.tasks.map((task) => {
           const tidy = input.tidyHints!(task.taskId);
@@ -316,7 +369,15 @@ export async function buildThinkerPacket(input: {
     feedback: input.feedback,
     previousItems: input.previousItems,
     outsideSources: input.outsideSources ?? [],
+    away: input.attention?.absences ?? [],
+    sourceNames: input.sourceNames ?? {},
   };
+}
+
+/** Tasks the live fields say need Tim now, across every Bridge read, those needing him soonest first. */
+export function tasksNeedingTim(packet: ThinkerPacket): Array<{ bridge: string; task: PacketTask }> {
+  return packet.bridges.flatMap((bridge) => bridge.tasks.filter((task) => task.needsTim?.length).map((task) => ({ bridge: bridge.id, task })))
+    .sort((a, b) => (a.task.needsTimBy ?? "9999").localeCompare(b.task.needsTimBy ?? "9999"));
 }
 
 export function bridgeStatuses(packet: ThinkerPacket): HelmBridgeStatus[] {
@@ -331,10 +392,13 @@ export function countChanges(packet: ThinkerPacket): number {
 export function renderThinkerPacket(packet: ThinkerPacket): string {
   const nowMs = Date.parse(packet.now);
   const stale = (entry: HelmMemoryEntry) => nowMs - Date.parse(entry.confirmedAt) > HELM_STALE_AFTER_DAYS * 86_400_000;
+  const names = packet.sourceNames ?? {};
+  const from = (ids: readonly string[]) => ids.length ? { from: [...new Set(ids.map((id) => names[id] ?? HELM_REMOVED_SOURCE))] } : {};
+  const threadFrom = new Map(packet.memory.filter((entry) => entry.kind === "thread" && entry.key && entry.fromSources.length).map((entry) => [entry.key!, from(entry.fromSources).from!]));
   const memory = packet.memory.filter((entry) => entry.status !== "forgotten").map((entry) => ({
     id: entry.id, kind: entry.kind, ...(entry.key ? { key: entry.key } : {}), text: entry.text, author: entry.author,
     ...(entry.status === "proposed" ? { proposed: true } : {}), ...(stale(entry) ? { stale: true } : {}),
-    confirmed: entry.confirmedAt.slice(0, 10),
+    confirmed: entry.confirmedAt.slice(0, 10), ...(entry.kind === "picture" ? {} : from(entry.fromSources)),
   }));
   const view = (trimUnchanged: boolean) => ({
     now: packet.now,
@@ -342,6 +406,7 @@ export function renderThinkerPacket(packet: ThinkerPacket): string {
     trigger: packet.trigger,
     rebuild: packet.rebuild,
     lastRunAt: packet.lastRunAt,
+    ...(packet.away?.length ? { away: packet.away } : {}),
     memory: memory.filter((entry) => entry.kind !== "thread"),
     feedbackSinceLastBrief: packet.feedback.map((feedback) => ({ item: feedback.itemTitle, kind: feedback.kind, ...(feedback.note ? { note: feedback.note } : {}), at: feedback.at })),
     lastBriefItems: packet.previousItems,
@@ -354,11 +419,19 @@ export function renderThinkerPacket(packet: ThinkerPacket): string {
       ? {
         bridge: bridge.id, label: bridge.label,
         questions: bridge.questions, unreadReplies: bridge.replies, checklistDue: bridge.due, agentsWorking: bridge.working,
-        tasks: bridge.tasks.filter((task) => task.changed || !trimUnchanged).map((task) => task.changed ? task : {
-          taskId: task.taskId, title: task.title, state: task.state,
-          nextTouchAt: task.nextTouchAt, lastEngagedAt: task.lastEngagedAt, idleDays: task.idleDays, thread: task.thread,
+        tasks: bridge.tasks.filter((task) => task.changed || task.needsTim || !trimUnchanged).map((task) => {
+          const cited = threadFrom.get(`${bridge.id}:${task.taskId}`);
+          const { basis: _basis, ...shown } = task;
+          const view = task.changed ? shown : {
+            taskId: task.taskId, title: task.title, state: task.state,
+            ...(task.needsTim ? { nextAction: task.nextAction, waitingOn: task.waitingOn } : {}),
+            nextTouchAt: task.nextTouchAt, lastEngagedAt: task.lastEngagedAt, idleDays: task.idleDays,
+            ...(task.onTim ? { onTim: task.onTim } : {}), ...(task.needsTim ? { needsTim: task.needsTim, needsTimBy: task.needsTimBy } : {}),
+            thread: task.thread, threadOwner: task.threadOwner, threadHoldUntil: task.threadHoldUntil,
+          };
+          return cited && view.thread ? { ...view, threadFrom: cited } : view;
         }),
-        ...(trimUnchanged ? { unchangedTasksOmitted: bridge.tasks.filter((task) => !task.changed).length } : {}),
+        ...(trimUnchanged ? { unchangedTasksOmitted: bridge.tasks.filter((task) => !task.changed && !task.needsTim).length } : {}),
         ...(Object.values(bridge.omitted).some((count) => count > 0) ? { notShownHere: bridge.omitted } : {}),
       }
       : { bridge: bridge.id, label: bridge.label, unavailable: bridge.error }),

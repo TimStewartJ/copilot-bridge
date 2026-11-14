@@ -23,7 +23,7 @@ describe("buildHelmTaskIndex", () => {
       // A session's activity counts as the task's: the trip chat is newer than the Bridge task's own change.
       lastActivity: new Map([["t-trip", Date.parse("2026-11-01T00:00:00.000Z")]]),
     });
-    expect(index?.split("\n").slice(2)).toEqual([
+    expect(index?.split("\n").slice(4)).toEqual([
       "- [Taxes](bridge://task/t-taxes)",
       "- [Trip Lisbon plans](bridge://task/t-trip): Waiting on hotel reply. [from Mail]",
       "- [Copilot Bridge](bridge://task/t-bridge): Ongoing app work; calendar import in review.",

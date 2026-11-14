@@ -585,7 +585,10 @@ function initSchema(db: DatabaseSync): void {
       updatedAt TEXT NOT NULL,
       confirmedAt TEXT NOT NULL,
       uses INTEGER NOT NULL DEFAULT 0,
-      fromSources TEXT
+      fromSources TEXT,
+      owner TEXT,
+      holdUntil TEXT,
+      basis TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_helm_memory_key ON helm_memory(kind, key) WHERE key IS NOT NULL AND status != 'forgotten';
     CREATE TABLE IF NOT EXISTS helm_runs (
@@ -1179,6 +1182,8 @@ function initSchema(db: DatabaseSync): void {
   for (const [table, column] of [
     ["helm_memory", "fromSources"], ["helm_runs", "sourcesJson"], ["helm_runs", "fromSourcesJson"],
     ["helm_conversations", "lastReplyAt"], ["helm_runs", "seenAt"],
+    // Thread lines: whose move Helm says a task is, how long it holds off, and the task fields it read.
+    ["helm_memory", "owner"], ["helm_memory", "holdUntil"], ["helm_memory", "basis"],
   ] as const) {
     const columns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((entry) => entry.name));
     if (columns.has(column)) continue;

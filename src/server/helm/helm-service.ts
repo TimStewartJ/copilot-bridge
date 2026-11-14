@@ -28,6 +28,8 @@ import { pathsEqual } from "../path-utils.js";
 import { hasActiveDeferredWork } from "../schedule-session-retention.js";
 import { buildHelmChatGuidance, HELM_CHAT_ROLE } from "./helm-prompt.js";
 import { buildHelmTaskIndex } from "./helm-task-index.js";
+import { liveLocalAttention, localThreads, threadOutOfDate } from "./attention-live.js";
+import type { TaskAttention } from "./attention.js";
 import { applyHelmChatProfile, HELM_CHAT_EXCLUDED_TOOLS } from "./helm-session-profile.js";
 import { chooseHelmModel } from "./helm-model.js";
 import type { HelmConversationRecord, HelmStore } from "./helm-store.js";
@@ -51,9 +53,6 @@ export const HELM_POLICY = {
 
 /** Effort for a Helm conversation or look when neither the Helm role nor the user's default says. */
 export const HELM_FALLBACK_REASONING_EFFORT = "high";
-
-/** Helm's thread lines are keyed "<bridge>:<taskId>"; this Bridge is "local". */
-const LOCAL_THREAD_PREFIX = "local:";
 
 export interface HelmConversationView {
   sessionId: string;
@@ -268,11 +267,12 @@ export class HelmService implements HelmToolRuntime {
   buildTaskIndex(): string | undefined {
     const tasks = this.ctx.taskStore.listTasks();
     const thinker = this.ctx.helmThinker;
-    const threadEntries = (thinker?.listMemory() ?? [])
-      .filter((entry) => entry.kind === "thread" && entry.status === "active" && entry.key?.startsWith(LOCAL_THREAD_PREFIX));
-    const sourceNames = thinker?.sourceNames(threadEntries.flatMap((entry) => entry.fromSources)) ?? {};
-    const threads = new Map(threadEntries.map((entry) => [entry.key!.slice(LOCAL_THREAD_PREFIX.length), {
-      text: entry.text,
+    const threadEntries = localThreads(this.ctx);
+    const sourceNames = thinker?.sourceNames([...threadEntries.values()].flatMap((entry) => entry.fromSources)) ?? {};
+    const byId = new Map(tasks.map((task) => [task.id, task]));
+    const threads = new Map([...threadEntries].map(([taskId, entry]) => [taskId, {
+      text: entry.text, owner: entry.owner ?? null, holdUntil: entry.holdUntil ?? null,
+      outOfDate: !!byId.get(taskId) && threadOutOfDate(entry, byId.get(taskId)!),
       ...(entry.fromSources.length ? { from: [...new Set(entry.fromSources.map((id) => sourceNames[id] ?? id))] } : {}),
     }]));
     const meta = this.ctx.sessionMetaStore.listMeta();
@@ -283,7 +283,13 @@ export class HelmService implements HelmToolRuntime {
         if (Number.isFinite(time) && time > (lastActivity.get(task.id) ?? 0)) lastActivity.set(task.id, time);
       }
     }
-    return buildHelmTaskIndex({ tasks, threads, lastActivity });
+    let attention: Map<string, TaskAttention> | undefined;
+    try {
+      attention = new Map(liveLocalAttention(this.ctx).map((entry) => [entry.row.id, entry.attention]));
+    } catch (error) {
+      console.warn("[helm] Could not work out which tasks need the user:", error);
+    }
+    return buildHelmTaskIndex({ tasks, threads, lastActivity, ...(attention ? { attention } : {}) });
   }
 
   // ── Hands-free binding and watched sessions (HelmToolRuntime) ──

@@ -19,6 +19,9 @@ import { toolFailure } from "../../tool-results.js";
 import {
   HELM_ENTRY_MAX_CHARS,
   HELM_MEMORY_LIMITS,
+  HELM_MAX_ON_YOU,
+  HELM_REMOVED_SOURCE,
+  HELM_THREAD_OWNERS,
   isRebuildSlot,
   nextScheduledRun,
   previousScheduledRun,
@@ -41,7 +44,8 @@ import { HelmError } from "../helm-service.js";
 import { chooseHelmModel, usableModels } from "../helm-model.js";
 import { applyHelmSessionProfile } from "../helm-session-profile.js";
 import { createHelmToolDefinitions, type HelmBridgeFacade, type HelmToolRuntime } from "../helm-tools.js";
-import { bridgeStatuses, buildThinkerPacket, countChanges, readBridgeForChat, renderThinkerPacket, type ChatBridgeView, type ThinkerPacket } from "./context.js";
+import { bridgeStatuses, buildThinkerPacket, countChanges, readBridgeForChat, renderThinkerPacket, tasksNeedingTim, type ChatBridgeView, type ThinkerPacket } from "./context.js";
+import { localAttentionInputs } from "../attention-live.js";
 import { buildThinkerPrompt, buildThinkerSystemPrompt, THINKER_NUDGE } from "./prompt.js";
 import { MAX_ACTIONS, MAX_CHARS, MAX_EVIDENCE, MAX_HANDLED, MAX_ITEMS, MAX_PROPOSALS, MAX_STARTER_TASKS, MAX_WATCHING, normalizeChoice, validatePublication, type HandledPlan, type MemoryOp } from "./publish.js";
 import { createLocalSource, createPeerSource, sourceLink, type HelmSource } from "./sources.js";
@@ -208,7 +212,7 @@ export class HelmThinker {
   /** Current names of outside sources by server id; a removed server keeps a plain label. */
   sourceNames(ids: Iterable<string>): Record<string, string> {
     const names: Record<string, string> = {};
-    for (const id of ids) names[id] ??= this.ctx.mcpServerStore?.getMcpServer(id)?.name ?? "a removed source";
+    for (const id of ids) names[id] ??= this.ctx.mcpServerStore?.getMcpServer(id)?.name ?? HELM_REMOVED_SOURCE;
     return names;
   }
 
@@ -334,7 +338,8 @@ export class HelmThinker {
   async readBridge(bridge: unknown): Promise<ChatBridgeView> {
     const source = this.sources().find((candidate) => candidate.id === bridge);
     if (!source) throw new HelmError(`Unknown bridge "${String(bridge)}". Bridges: ${this.sources().map((candidate) => candidate.id).join(", ")}`, 400);
-    return readBridgeForChat(source);
+    const inputs = localAttentionInputs(this.ctx, this.now());
+    return readBridgeForChat(source, source.local ? inputs : { timeZone: inputs.timeZone, absences: inputs.absences });
   }
 
   private readConversationTool(): BridgeToolDefinition {
@@ -483,10 +488,23 @@ export class HelmThinker {
             type: "object",
             properties: {
               picture: { type: "string" },
-              threads: { type: "array", items: { type: "object", properties: { bridge: { type: "string" }, taskId: { type: "string" }, text: entryText }, required: ["bridge", "taskId", "text"] } },
+              threads: {
+                type: "array",
+                description: "One line per task you have a view on. Restate an unchanged line (same text) to confirm it against the task as it is now.",
+                items: {
+                  type: "object",
+                  properties: {
+                    bridge: { type: "string" }, taskId: { type: "string" }, text: entryText,
+                    owner: { type: "string", enum: [...HELM_THREAD_OWNERS], description: "Whose move it is: tim, an agent (one is working on it or will on a schedule), others (a person or system Tim waits on), or nobody. Must be tim when the packet marks the task onTim: \"fields\"." },
+                    holdUntil: { type: "string", description: "Optional YYYY-MM-DD: don't raise it before this date. When the owner is tim, it must end before the next stretch in away; on that date it is listed under On you." },
+                    from: { type: "array", items: { type: "string" }, description: "Names from outsideSources this line rests on (what you read there this run, or a from it already had). Leave out when it rests on none." },
+                  },
+                  required: ["bridge", "taskId", "text", "owner"],
+                },
+              },
               removeThreads: { type: "array", items: { type: "string" } },
-              people: { type: "array", items: { type: "object", properties: { key: { type: "string" }, text: entryText, source: { type: "string" } }, required: ["key", "text"] } },
-              dates: { type: "array", items: { type: "object", properties: { key: { type: "string" }, text: entryText, source: { type: "string" } }, required: ["key", "text"] } },
+              people: { type: "array", items: { type: "object", properties: { key: { type: "string" }, text: entryText, source: { type: "string" }, from: { type: "array", items: { type: "string" }, description: "Names from outsideSources this line rests on (what you read there this run, or a from it already had). Leave out when it rests on none." } }, required: ["key", "text"] } },
+              dates: { type: "array", items: { type: "object", properties: { key: { type: "string" }, text: entryText, source: { type: "string" }, from: { type: "array", items: { type: "string" }, description: "Names from outsideSources this line rests on (what you read there this run, or a from it already had). Leave out when it rests on none." } }, required: ["key", "text"] } },
               proposeRules: { type: "array", items: { type: "object", properties: { text: entryText, source: { type: "string" } }, required: ["text"] } },
               proposePriorities: { type: "array", items: { type: "object", properties: { text: entryText, source: { type: "string" } }, required: ["text"] } },
               confirm: { type: "array", items: { type: "string" } },
@@ -515,10 +533,11 @@ export class HelmThinker {
     // Everything this run writes may carry what it read from its sources and what reached it through
     // memory and the last brief; the published brief and every entry it writes are marked with all of them.
     const fromSources = mergeSourceIds(active.carriedSources, active.sources?.usedServerIds ?? []);
+    const brief: HelmBrief = { ...result.brief, ...onYouList(active.packet, result.brief) };
     let changes: HelmMemoryChange[] = [];
     const published = this.store.transaction(() => {
-      changes = this.applyMemory(result.memory, fromSources);
-      const ok = this.store.publishRun(run.id, result.brief, changes);
+      changes = this.applyMemory(result.memory, fromSources, { sourceIds: this.sourceIdsByName(active), rewrite: run.rebuild });
+      const ok = this.store.publishRun(run.id, brief, changes);
       if (ok) {
         for (const plan of result.starters) {
           if (this.ctx.taskStore.getTask(plan.taskId)) this.ctx.taskStartersStore?.replaceWithin(plan.taskId, plan.chats, "helm");
@@ -535,8 +554,33 @@ export class HelmThinker {
     return { success: true, items: result.brief.items.length, handled, memoryChanges: changes.length, starters: result.starters.length };
   }
 
-  private applyMemory(ops: MemoryOp[], fromSources: readonly string[] = []): HelmMemoryChange[] {
+  /** Server ids of the outside sources a run may cite, by the names the run sees: today's sources and those memory already cites. */
+  private sourceIdsByName(active: ActiveRun): Map<string, string> {
+    const ids = new Map<string, string>();
+    for (const [id, name] of Object.entries(active.packet?.sourceNames ?? {})) if (name !== HELM_REMOVED_SOURCE) ids.set(name, id);
+    for (const selection of this.store.getSettings().sources) {
+      const name = this.ctx.mcpServerStore?.getMcpServer(selection.serverId)?.name;
+      if (name) ids.set(name, selection.serverId);
+    }
+    for (const status of active.sources?.statuses ?? []) ids.set(status.name, status.serverId);
+    return ids;
+  }
+
+  /**
+   * runSources marks what the run as a whole may have been shaped by: proposals and the picture keep
+   * it. A thread, person or date carries only the sources it cites, so a look that read mail does not
+   * mark every line it writes as written from mail. An unchanged line keeps what it had, unless the
+   * run rewrites everything (a rebuild).
+   */
+  private applyMemory(ops: MemoryOp[], runSources: readonly string[] = [], options: { sourceIds?: ReadonlyMap<string, string>; rewrite?: boolean } = {}): HelmMemoryChange[] {
     const changes: HelmMemoryChange[] = [];
+    // A source that is no longer one Helm reads can't be cited again, so a rewrite keeps it.
+    const current = new Set(this.store.getSettings().sources.map((source) => source.serverId));
+    const cited = (op: Extract<MemoryOp, { op: "upsert" }>, existing?: HelmMemoryEntry): string[] => {
+      if (op.kind === "picture") return [...runSources];
+      const declared = (op.from ?? []).flatMap((name) => options.sourceIds?.get(name) ?? []);
+      return mergeSourceIds((existing?.fromSources ?? []).filter((id) => !current.has(id)), declared);
+    };
     for (const op of ops) {
       if (op.op === "drop") {
         const entry = this.store.getMemory(op.id);
@@ -547,20 +591,26 @@ export class HelmThinker {
         const entry = this.store.updateMemory(op.id, { confirm: true });
         if (entry) changes.push({ op: "confirmed", kind: entry.kind, text: entry.text });
       } else if (op.op === "propose") {
-        this.store.addMemory({ kind: op.kind, text: op.text, source: op.source, author: "helm", status: "proposed", fromSources });
+        this.store.addMemory({ kind: op.kind, text: op.text, source: op.source, author: "helm", status: "proposed", fromSources: runSources });
         changes.push({ op: "proposed", kind: op.kind, text: op.text });
       } else {
         const existing = this.store.findByKey(op.kind, op.key);
         if (existing?.author === "user") continue;
+        const sources = cited(op, existing);
+        // A thread restated with its fields is confirmed against the task as it is now.
+        const thread = op.kind === "thread" ? { owner: op.owner ?? null, holdUntil: op.holdUntil ?? null, ...(op.basis ? { basis: op.basis } : {}) } : {};
+        const threadMoved = op.kind === "thread" && existing && (existing.owner !== (op.owner ?? null) || (existing.holdUntil ?? null) !== (op.holdUntil ?? null));
         if (existing) {
-          if (existing.text !== op.text) {
-            this.store.updateMemory(existing.id, { text: op.text, source: op.source, addFromSources: fromSources });
+          if (existing.text !== op.text || threadMoved) {
+            this.store.updateMemory(existing.id, op.kind === "picture"
+              ? { text: op.text, source: op.source, addFromSources: sources }
+              : { text: op.text, source: op.source, fromSources: sources, ...thread });
             changes.push({ op: "updated", kind: op.kind, text: op.kind === "picture" ? "Standing picture rewritten" : op.text });
           } else {
-            this.store.updateMemory(existing.id, { confirm: true });
+            this.store.updateMemory(existing.id, { confirm: true, ...thread, ...(op.kind === "picture" ? {} : options.rewrite ? { fromSources: sources } : { addFromSources: sources }) });
           }
         } else {
-          this.store.addMemory({ kind: op.kind, key: op.key, text: op.text, source: op.source, author: "helm", status: "active", fromSources });
+          this.store.addMemory({ kind: op.kind, key: op.key, text: op.text, source: op.source, author: "helm", status: "active", fromSources: sources, ...thread });
           changes.push({ op: "added", kind: op.kind, text: op.kind === "picture" ? "Standing picture written" : op.text });
         }
       }
@@ -641,6 +691,8 @@ export class HelmThinker {
         memory,
         feedback,
         previousItems: (previousBrief?.items ?? []).map((item) => ({ title: item.title, status: states[item.id]?.status ?? "open", outcome: states[item.id]?.outcome ?? null })),
+        attention: localAttentionInputs(this.ctx, this.now()),
+        sourceNames: this.sourceNames(memory.flatMap((entry) => entry.fromSources)),
         tidyHints: (taskId) => {
           const task = this.ctx.taskStore.getTask(taskId);
           return task ? taskTidyHints(task) : [];
@@ -807,6 +859,7 @@ export class HelmThinker {
       }),
       proposals: brief.proposals.map((proposal) => ({ ...proposal, actions: proposal.actions.map(resolveAction) })),
       watching: brief.watching.map((watch) => ({ ...watch, ...(watch.taskId ? { url: this.link(watch.bridge, { taskId: watch.taskId }) } : {}) })),
+      ...(brief.onYou ? { onYou: brief.onYou.map((entry) => ({ ...entry, url: this.link(entry.bridge, { taskId: entry.taskId }) })) } : {}),
     };
   }
 
@@ -1010,4 +1063,23 @@ export class HelmThinker {
       ...(takeOver ? { author: "user" as const } : {}),
     })!;
   }
+}
+
+/**
+ * The brief's "On you" list, from the packet's live fields rather than from what the run wrote:
+ * every task that needs Tim now and that no item already points at, soonest first.
+ */
+export function onYouList(packet: ThinkerPacket, brief: Pick<HelmBrief, "items">): Pick<HelmBrief, "onYou" | "onYouMore"> {
+  const covered = new Set(brief.items.flatMap((item) => [
+    ...item.evidence.flatMap((evidence) => evidence.target.taskId ? [`${evidence.target.bridge}:${evidence.target.taskId}`] : []),
+    ...item.actions.flatMap((action) => action.do.type === "open" && action.do.taskId ? [`${action.do.bridge}:${action.do.taskId}`]
+      : action.do.type === "close_tasks" ? action.do.taskIds.map((taskId) => `${action.do.bridge}:${taskId}`) : []),
+  ]));
+  const open = tasksNeedingTim(packet).filter(({ bridge, task }) => !covered.has(`${bridge}:${task.taskId}`));
+  return {
+    onYou: open.slice(0, HELM_MAX_ON_YOU).map(({ bridge, task }) => ({
+      bridge, taskId: task.taskId, title: task.title, ...(task.nextAction ? { nextAction: task.nextAction } : {}), reasons: task.needsTim ?? [],
+    })),
+    ...(open.length > HELM_MAX_ON_YOU ? { onYouMore: open.length - HELM_MAX_ON_YOU } : {}),
+  };
 }

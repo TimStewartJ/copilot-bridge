@@ -7,6 +7,7 @@ import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
 import { toolFailure } from "../tool-results.js";
 import type { AgentModelInfo } from "../agent-backend/types.js";
 import { formatBridgeLink } from "../../shared/bridge-links.js";
+import { liveLocalAttention, threadOutOfDate, type LiveTaskAttention } from "./attention-live.js";
 
 export interface HelmSessionSummary {
   sessionId: string;
@@ -741,7 +742,7 @@ export function createHelmToolDefinitions(
       },
     }),
     defineBridgeTool("helm_brief", {
-      description: "Helm's latest brief on Home and everything Helm remembers: what needs the user and what Helm recommended, what it handled and is watching, the user's priorities and rules, people, dates, one line per live task, and the standing picture of their world. Call this first for anything about what matters, what to do next, or how things connect; then read live detail with read_bridge, read_conversation or read_session.",
+      description: "Helm's latest brief on Home and everything Helm remembers: what needs the user and what Helm recommended, what it handled and is watching, the user's priorities and rules, people, dates, one line per live task, and the standing picture of their world, plus every task on this Bridge that waits on the user right now, worked out from live task fields (onYouNow). Call this first for anything about what matters, what to do next, or how things connect; then read live detail with read_bridge, read_conversation or read_session.",
       parameters: { type: "object", properties: {} },
       handler: async () => {
         const thinker = ctx.helmThinker;
@@ -749,6 +750,8 @@ export function createHelmToolDefinitions(
         const view = await thinker.getBrief();
         const memory = thinker.listMemory();
         const open = (view.brief?.items ?? []).filter((item) => (view.itemStates[item.id]?.status ?? "open") === "open");
+        const live = liveAttentionSafe(ctx);
+        const rows = new Map(live.map((entry) => [entry.row.id, entry.row]));
         const names = thinker.sourceNames([...(view.run?.fromSources ?? []), ...memory.flatMap((entry) => entry.fromSources)]);
         const from = (ids: readonly string[]) => [...new Set(ids.map((id) => names[id] ?? id))];
         // An entry shaped by an outside source (such as email) says so, so it is weighed as information.
@@ -764,6 +767,10 @@ export function createHelmToolDefinitions(
           ...(view.run?.fromSources.length ? { briefFrom: from(view.run.fromSources) } : {}),
           summary: view.brief?.summary ?? null,
           needsYou: open.map((item) => ({ title: item.title, recommendation: item.recommendation, ...(item.why ? { why: item.why } : {}), bridge: item.bridge, ...(item.source ? { source: item.source } : {}) })),
+          ...(view.brief?.onYou?.length ? {
+            onYouInBrief: view.brief.onYou.map((entry) => ({ task: entry.title, bridge: entry.bridge, why: entry.reasons, ...(entry.nextAction ? { nextAction: entry.nextAction } : {}) })),
+          } : {}),
+          ...liveOnYou(live),
           done: (view.brief?.items ?? []).filter((item) => view.itemStates[item.id] && view.itemStates[item.id]!.status !== "open").map((item) => ({ title: item.title, outcome: view.itemStates[item.id]!.outcome })),
           proposals: (view.brief?.proposals ?? []).map((proposal) => proposal.text),
           watching: (view.brief?.watching ?? []).map((watch) => watch.text),
@@ -773,7 +780,17 @@ export function createHelmToolDefinitions(
           rules: active("rule").map(entry),
           people: active("person").map(entry),
           dates: active("date").map(entry),
-          threads: active("thread").map((item) => ({ task: item.key, text: item.text, ...(item.fromSources.length ? { from: from(item.fromSources) } : {}) })),
+          threads: active("thread").map((item) => {
+            const row = item.key?.startsWith("local:") ? rows.get(item.key.slice(6)) : undefined;
+            // A line written before this task last changed is replaced by what the task says now.
+            if (row && threadOutOfDate(item, row)) {
+              return { task: item.key, outOfDate: true, ...(row.nextAction ? { nextAction: row.nextAction } : {}), ...(row.waitingOn ? { waitingOn: row.waitingOn } : {}) };
+            }
+            return {
+              task: item.key, text: item.text, ...(item.owner ? { owner: item.owner } : {}), ...(item.holdUntil ? { holdUntil: item.holdUntil } : {}),
+              ...(item.fromSources.length ? { from: from(item.fromSources) } : {}),
+            };
+          }),
           picture: picture?.text ?? null,
           ...(picture?.fromSources.length ? { pictureFrom: from(picture.fromSources) } : {}),
         };
@@ -884,4 +901,37 @@ export function boundToolResult(value: unknown, depth = 0): unknown {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, boundToolResult(entry, depth + 1)]));
   }
   return value;
+}
+
+const LIVE_ON_YOU_MAX = 25;
+const LIVE_NO_NEXT_STEP_MAX = 10;
+
+function liveAttentionSafe(ctx: AppContext): LiveTaskAttention[] {
+  try {
+    return liveLocalAttention(ctx);
+  } catch {
+    return [];
+  }
+}
+
+/** This Bridge's tasks that wait on the user right now, from their live fields: the floor for "what needs me". */
+function liveOnYou(entries: LiveTaskAttention[]): Record<string, unknown> {
+  if (entries.length === 0) return {};
+  const onYou = entries.filter((entry) => entry.attention.onTim);
+  const noNextStep = entries.filter((entry) => entry.row.state === "no_next_step" && (entry.row.idleDays ?? 0) >= 7);
+  return {
+    onYouNow: {
+      note: "Worked out just now from this Bridge's live task fields: no agent is working on these and they wait on no one but the user, or your own line says they are the user's. needsYou says why a date presses. When asked what needs the user or what they have fallen behind on, account for every one of these, whatever a thread line says; for other Bridges, read_bridge marks tasks the same way.",
+      tasks: onYou.slice(0, LIVE_ON_YOU_MAX).map(({ row, attention }) => ({
+        task: row.title, link: formatBridgeLink({ kind: "task", taskId: row.id }),
+        ...(attention.reasons.length ? { needsYou: attention.reasons } : {}),
+        ...(row.nextAction ? { nextAction: row.nextAction } : {}), ...(row.waitingOn ? { waitingOn: row.waitingOn } : {}),
+        ...(row.idleDays !== null ? { idleDays: row.idleDays } : {}),
+      })),
+      ...(onYou.length > LIVE_ON_YOU_MAX ? { more: onYou.length - LIVE_ON_YOU_MAX } : {}),
+    },
+    ...(noNextStep.length ? {
+      noNextStep: noNextStep.slice(0, LIVE_NO_NEXT_STEP_MAX).map(({ row }) => ({ task: row.title, link: formatBridgeLink({ kind: "task", taskId: row.id }), idleDays: row.idleDays })),
+    } : {}),
+  };
 }

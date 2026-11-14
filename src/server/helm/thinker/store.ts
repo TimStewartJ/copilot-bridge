@@ -12,6 +12,7 @@ import {
   type HelmItemState,
   type HelmItemStatus,
   type HelmMemoryAuthor,
+  type HelmThreadOwner,
   type HelmMemoryChange,
   type HelmMemoryEntry,
   type HelmMemoryKind,
@@ -65,11 +66,15 @@ function sourceIdsJson(ids: readonly string[]): string | null {
   return ids.length ? JSON.stringify(mergeSourceIds(ids)) : null;
 }
 
+/** A thread line's structured part; undefined leaves a stored value as it is. */
+type ThreadFields = { owner?: HelmThreadOwner | null; holdUntil?: string | null; basis?: string | null };
+
 function hydrateMemory(row: any): HelmMemoryEntry {
   return {
     id: row.id, kind: row.kind, key: row.key ?? null, text: row.text, source: row.source ?? null,
     author: row.author, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
     confirmedAt: row.confirmedAt, uses: Number(row.uses) || 0, fromSources: stringList(row.fromSources),
+    ...(row.kind === "thread" ? { owner: row.owner ?? null, holdUntil: row.holdUntil ?? null, basis: row.basis ?? null } : {}),
   };
 }
 
@@ -149,23 +154,27 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
     return Number(row.n) || 0;
   }
 
-  function addMemory(entry: { kind: HelmMemoryKind; key?: string | null; text: string; source?: string | null; author: HelmMemoryAuthor; status: HelmMemoryStatus; fromSources?: readonly string[] }): HelmMemoryEntry {
+  function addMemory(entry: { kind: HelmMemoryKind; key?: string | null; text: string; source?: string | null; author: HelmMemoryAuthor; status: HelmMemoryStatus; fromSources?: readonly string[] } & ThreadFields): HelmMemoryEntry {
     const at = iso();
     const id = randomUUID();
     db.prepare(
-      `INSERT INTO helm_memory (id, kind, key, text, source, author, status, createdAt, updatedAt, confirmedAt, uses, fromSources)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-    ).run(id, entry.kind, entry.key ?? null, entry.text, entry.source ?? null, entry.author, entry.status, at, at, at, sourceIdsJson(entry.fromSources ?? []));
+      `INSERT INTO helm_memory (id, kind, key, text, source, author, status, createdAt, updatedAt, confirmedAt, uses, fromSources, owner, holdUntil, basis)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+    ).run(id, entry.kind, entry.key ?? null, entry.text, entry.source ?? null, entry.author, entry.status, at, at, at, sourceIdsJson(entry.fromSources ?? []),
+      entry.owner ?? null, entry.holdUntil ?? null, entry.basis ?? null);
     return getMemory(id)!;
   }
 
-  /** Provenance only grows here: an edit, even Tim's, keeps what may have shaped the entry. */
-  function updateMemory(id: string, patch: { text?: string; source?: string | null; status?: HelmMemoryStatus; author?: HelmMemoryAuthor; confirm?: boolean; addFromSources?: readonly string[] }): HelmMemoryEntry | undefined {
+  /**
+   * addFromSources only grows provenance: an edit, even Tim's, keeps what may have shaped the entry.
+   * fromSources replaces it, for a look that rewrote the entry and says which sources it now cites.
+   */
+  function updateMemory(id: string, patch: { text?: string; source?: string | null; status?: HelmMemoryStatus; author?: HelmMemoryAuthor; confirm?: boolean; addFromSources?: readonly string[]; fromSources?: readonly string[] } & ThreadFields): HelmMemoryEntry | undefined {
     const current = getMemory(id);
     if (!current) return undefined;
     const at = iso();
     db.prepare(
-      `UPDATE helm_memory SET text = ?, source = ?, status = ?, author = ?, updatedAt = ?, confirmedAt = ?, fromSources = ? WHERE id = ?`,
+      `UPDATE helm_memory SET text = ?, source = ?, status = ?, author = ?, updatedAt = ?, confirmedAt = ?, fromSources = ?, owner = ?, holdUntil = ?, basis = ? WHERE id = ?`,
     ).run(
       patch.text ?? current.text,
       patch.source === undefined ? current.source : patch.source,
@@ -173,7 +182,10 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
       patch.author ?? current.author,
       patch.text !== undefined || patch.status !== undefined ? at : current.updatedAt,
       patch.confirm || patch.text !== undefined || patch.author === "user" ? at : current.confirmedAt,
-      sourceIdsJson(mergeSourceIds(current.fromSources, patch.addFromSources ?? [])),
+      sourceIdsJson(mergeSourceIds(patch.fromSources ?? current.fromSources, patch.addFromSources ?? [])),
+      patch.owner === undefined ? current.owner ?? null : patch.owner,
+      patch.holdUntil === undefined ? current.holdUntil ?? null : patch.holdUntil,
+      patch.basis === undefined ? current.basis ?? null : patch.basis,
       id,
     );
     return getMemory(id);

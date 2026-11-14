@@ -150,6 +150,15 @@ export default function HelmHome({ onSelectTask, onSelectSession, scrollRestorat
                 </div>)}
               </div>}
             </Section>
+            {brief.onYou && brief.onYou.length > 0 && <Section label="On you" count={brief.onYou.length + (brief.onYouMore ?? 0)} level="page" surface>
+              {brief.onYou.map((entry) => <div key={`${entry.bridge}:${entry.taskId}`} className="border-t border-border py-2.5 first:border-t-0 first:pt-0">
+                <button type="button" className={cx(DS.focus, "text-left text-[13px] font-medium text-text-primary hover:underline")}
+                  onClick={() => open({ bridge: entry.bridge, taskId: entry.taskId, url: entry.url })}>{entry.title}{entry.bridge !== "local" && " ↗"}</button>
+                {entry.nextAction && <p className="text-[13px] text-text-secondary">{entry.nextAction}</p>}
+                <p className={DS.text.meta}>{entry.reasons.join(" · ")}</p>
+              </div>)}
+              {brief.onYouMore ? <p className={cx(DS.text.meta, "mt-2")}>{brief.onYouMore} more</p> : null}
+            </Section>}
             {data.proposed.length > 0 && <Section label="Helm suggests remembering" level="page" surface>
               {data.proposed.map((entry) => <div key={entry.id} className="border-t border-border py-3 first:border-t-0 first:pt-0">
                 <p className={DS.text.content}><span className="font-medium">{entry.kind === "rule" ? "Rule" : "Priority"}:</span> {entry.text}</p>

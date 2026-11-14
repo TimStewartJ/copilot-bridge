@@ -77,7 +77,7 @@ const BRIEF = {
   summary: "Quiet day.",
   items: [{ kind: "question", bridge: "local", title: "Install?", recommendation: "Yes.", actions: [{ label: "Yes", primary: true, type: "answer", sessionId: "s-q", requestId: "r1", answer: "Yes" }], replyTo: { sessionId: "s-q" } }],
   handled: [{ bridge: "local", sessionId: "s-r", why: "FYI" }],
-  memory: { threads: [{ bridge: "local", taskId: "t1", text: "Waiting on the return flight" }], proposeRules: [{ text: "Game mods are not urgent" }] },
+  memory: { threads: [{ bridge: "local", taskId: "t1", text: "Waiting on the return flight", owner: "others" }], proposeRules: [{ text: "Game mods are not urgent" }] },
 };
 
 function text(result: any): string {
@@ -101,7 +101,7 @@ const TEXT_LIMITS: Array<[string, (schema: any) => any, (value: string) => unkno
   ["proposal", (s) => s.proposals.items.properties.text, (value) => ({ summary: "x", items: [], proposals: [{ bridge: "local", text: value }] })],
   ["watching", (s) => s.watching.items.properties.text, (value) => ({ summary: "x", items: [], watching: [{ bridge: "local", text: value }] })],
   ["handled why", (s) => s.handled.items.properties.why, (value) => ({ summary: "x", items: [], handled: [{ bridge: "local", sessionId: "s-r", why: value }] })],
-  ["thread", (s) => s.memory.properties.threads.items.properties.text, (value) => withMemory({ threads: [{ bridge: "local", taskId: "t1", text: value }] })],
+  ["thread", (s) => s.memory.properties.threads.items.properties.text, (value) => withMemory({ threads: [{ bridge: "local", taskId: "t1", text: value, owner: "others" }] })],
   ["person", (s) => s.memory.properties.people.items.properties.text, (value) => withMemory({ people: [{ key: "k", text: value }] })],
   ["date", (s) => s.memory.properties.dates.items.properties.text, (value) => withMemory({ dates: [{ key: "k", text: value }] })],
   ["proposed rule", (s) => s.memory.properties.proposeRules.items.properties.text, (value) => withMemory({ proposeRules: [{ text: value }] })],
@@ -168,7 +168,7 @@ describe("Helm thinker", () => {
     // The FYI reply was marked read, only through what the run saw.
     expect(readStateStore.getReadStateFor(["s-r"])["s-r"]).toBe("2026-10-25T10:00:00.000Z");
     expect(emitReadStateChanged).toHaveBeenCalled();
-    expect(store.findByKey("thread", "local:t1")?.text).toBe("Waiting on the return flight");
+    expect(store.findByKey("thread", "local:t1")).toMatchObject({ text: "Waiting on the return flight", owner: "others", holdUntil: null });
     expect(store.listMemory().find((entry) => entry.kind === "rule")).toMatchObject({ status: "proposed", author: "helm" });
 
     store.finishRun(run.id, { status: "done" });
@@ -179,7 +179,7 @@ describe("Helm thinker", () => {
     expect(view.proposed).toHaveLength(1);
   });
 
-  it("lets a look read its own sources and marks what it writes with every source that may have shaped it", async () => {
+  it("lets a look read its own sources, marks the run with every source that may have shaped it, and each memory line with the sources it cites", async () => {
     const { store, thinker } = setup();
     await expect(thinker.patchSettings({ sources: [{ serverId: "nope", tools: ["x"] }] })).rejects.toThrow(/does not exist/);
     await thinker.patchSettings({ sources: [{ serverId: "mail-id", tools: ["search_mail"] }] });
@@ -192,8 +192,10 @@ describe("Helm thinker", () => {
       connect: async () => ({ tools: [{ name: "search_mail", readOnly: true }], call: async () => ({ text: "Landlord: rent is due Friday", isError: false }), close: async () => undefined }),
     });
     active.packet.outsideSources = [{ name: "mail", ok: true, lastReadAt: null, tools: [{ name: "search_mail" }] }];
-    // A rule an earlier look wrote from a calendar source reaches this run through memory.
+    // A rule an earlier look wrote from a calendar source reaches this run through memory, and so
+    // does a thread line it wrote then; that source is no longer read, so a rewrite keeps it.
     active.carriedSources = ["calendar-id"];
+    store.addMemory({ kind: "thread", key: "local:t1", text: "Flight held", author: "helm", status: "active", fromSources: ["calendar-id"] });
     const readSource = (thinker as any).getTools().find((tool: any) => tool.name === "read_source");
     const read = (sessionId: string) => readSource.handler({ source: "mail", tool: "search_mail", arguments: { query: "is:unread" } }, { sessionId, toolCallId: "c", toolName: "read_source" });
 
@@ -202,15 +204,16 @@ describe("Helm thinker", () => {
 
     expect(text(await publish({ ...BRIEF, items: [{ kind: "due", bridge: "local", source: "mail", title: "Rent", recommendation: "Pay it." }], memory: { ...BRIEF.memory, dates: [{ key: "rent", text: "Rent due Friday", source: "mail: landlord" }] } }))).toMatch(/"success":true/);
     const written = store.listMemory().filter((entry) => entry.author === "helm");
-    expect(written.length).toBeGreaterThan(1);
-    expect(written.every((entry) => entry.fromSources.join() === "calendar-id,mail-id")).toBe(true);
+    // A look that read mail no longer marks every line as written from mail: the thread cites
+    // nothing, the date cites mail through its source note, and a proposal carries the whole run's.
+    expect(Object.fromEntries(written.map((entry) => [entry.kind, entry.fromSources]))).toEqual({ thread: ["calendar-id"], date: ["mail-id"], rule: ["calendar-id", "mail-id"] });
     expect(store.getRun(run.id)).toMatchObject({ fromSources: ["calendar-id", "mail-id"], sources: [{ serverId: "mail-id", name: "mail", ok: true, used: true }] });
     expect(store.getSourceCoverage()).toEqual({ "mail-id": run.startedAt });
 
     // Tim correcting an entry keeps what may have shaped it.
     const date = written.find((entry) => entry.kind === "date")!;
     thinker.updateMemory(date.id, { text: "Rent due Thursday" });
-    expect(store.getMemory(date.id)?.fromSources).toEqual(["calendar-id", "mail-id"]);
+    expect(store.getMemory(date.id)?.fromSources).toEqual(["mail-id"]);
 
     store.finishRun(run.id, { status: "done" });
     (thinker as any).active = undefined;

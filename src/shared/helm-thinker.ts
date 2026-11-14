@@ -5,6 +5,9 @@
 export type HelmMemoryKind = "priority" | "rule" | "thread" | "person" | "date" | "picture";
 export type HelmMemoryAuthor = "user" | "helm";
 export type HelmMemoryStatus = "active" | "proposed" | "forgotten";
+/** Whose move a task is, in Helm's view: Tim, an agent, someone else, or no one yet. */
+export type HelmThreadOwner = "tim" | "agent" | "others" | "nobody";
+export const HELM_THREAD_OWNERS: readonly HelmThreadOwner[] = ["tim", "agent", "others", "nobody"];
 
 export interface HelmMemoryEntry {
   id: string;
@@ -25,6 +28,12 @@ export interface HelmMemoryEntry {
    * run that wrote it, or carried in through earlier memory or the last brief. Empty when none.
    */
   fromSources: string[];
+  /** Threads: whose move Helm says the task is. */
+  owner?: HelmThreadOwner | null;
+  /** Threads: Helm holds off raising the task until this local date (YYYY-MM-DD). */
+  holdUntil?: string | null;
+  /** Threads: fingerprint of the task's next step, waiting-for and revisit date the line was written from. */
+  basis?: string | null;
 }
 
 /** Most active entries of each kind; publication beyond these is refused so memory stays small. */
@@ -148,11 +157,34 @@ export interface HelmWatching {
   url?: string;
 }
 
+/**
+ * A task whose live fields say it needs Tim now: no agent is working on it, it waits on no one else,
+ * and a date presses. The server lists these itself, whatever Helm's thread line for it says.
+ */
+export interface HelmOnYou {
+  bridge: string;
+  taskId: string;
+  title: string;
+  nextAction?: string;
+  reasons: string[];
+  url?: string;
+}
+
+/** How Helm names an outside source whose server was deleted. */
+export const HELM_REMOVED_SOURCE = "a removed source";
+
+/** Most tasks the brief lists under "On you"; the rest are counted. */
+export const HELM_MAX_ON_YOU = 8;
+
 export interface HelmBrief {
   summary: string;
   items: HelmBriefItem[];
   proposals: HelmProposal[];
   watching: HelmWatching[];
+  /** Briefs written before this list existed have none. */
+  onYou?: HelmOnYou[];
+  /** Tasks that need Tim beyond those listed. */
+  onYouMore?: number;
 }
 
 /** "pending" while a clicked action is being carried out, so it can only run once. */

@@ -4,6 +4,8 @@
 // the run was shown, an answer must fit the question, and Helm can never change Tim's own memory.
 import {
   HELM_ENTRY_MAX_CHARS,
+  HELM_THREAD_OWNERS,
+  HELM_REMOVED_SOURCE,
   HELM_MEMORY_LIMITS,
   HELM_PICTURE_MAX_WORDS,
   type HelmAction,
@@ -15,10 +17,12 @@ import {
   type HelmMemoryEntry,
   type HelmMemoryKind,
   type HelmProposal,
+  type HelmThreadOwner,
   type HelmWatching,
 } from "../../../shared/helm-thinker.js";
 import { validateTaskStarters, type TaskStarterDraft } from "../../../shared/task-starters.js";
 import type { PacketBridge, ThinkerPacket } from "./context.js";
+import { formatDay, localDateKey } from "../attention.js";
 
 // helm_publish states these limits in its tool descriptions, so a run sees them before it writes.
 export const MAX_ITEMS = 6;
@@ -45,7 +49,12 @@ export const MAX_CHARS = {
 const ITEM_KINDS: HelmItemKind[] = ["question", "decision", "due", "connects", "fyi"];
 
 export type MemoryOp =
-  | { op: "upsert"; kind: HelmMemoryKind; key: string; text: string; source: string | null }
+  /** from: names of the outside sources the entry cites (threads, people and dates). */
+  | {
+    op: "upsert"; kind: HelmMemoryKind; key: string; text: string; source: string | null; from?: string[];
+    /** Threads: whose move it is, how long Helm holds off, and the task fields the line was written from. */
+    owner?: HelmThreadOwner; holdUntil?: string | null; basis?: string;
+  }
   | { op: "propose"; kind: "rule" | "priority"; text: string; source: string | null }
   | { op: "confirm"; id: string }
   | { op: "drop"; id: string };
@@ -218,7 +227,13 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
     const watchText = text(rawWatch?.text, MAX_CHARS.watching);
     if (!watchText) errors.push(`${where}: text is required (at most ${MAX_CHARS.watching} characters)`);
     if (!bridge || !watchText) return;
-    const taskOk = typeof rawWatch.taskId === "string" && bridge.tasks.some((task) => task.taskId === rawWatch.taskId);
+    const task = typeof rawWatch.taskId === "string" ? bridge.tasks.find((candidate) => candidate.taskId === rawWatch.taskId) : undefined;
+    const taskOk = !!task;
+    // Watching is for what waits on others. The live fields decide that, not Helm's own thread line.
+    if (task?.onTim === "fields") {
+      errors.push(`${where}: "${task.title}" waits on no one but Tim: no agent is working on it and it is not waiting on anyone else${task.needsTim?.length ? ` (${task.needsTim.join("; ")})` : ""}. Don't watch it; raise it as an item, or leave it out and Home lists it under On you.`);
+      return;
+    }
     watching.push({ text: watchText, bridge: bridge.id, ...(taskOk ? { taskId: rawWatch.taskId } : {}) });
   });
 
@@ -252,6 +267,25 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
   const memoryOps = validateMemory(input.memory, packet, memory, errors);
   if (errors.length > 0) return { ok: false, errors: errors.slice(0, 25) };
   return { ok: true, brief: { summary: summary!, items, proposals, watching }, handled, memory: memoryOps, starters };
+}
+
+/** The outside sources a memory entry cites: its from list, or a source note such as "mail: Ana, Nov 3". */
+function citedSources(rawFrom: unknown, sourceNote: string | null, packet: ThinkerPacket, where: string, errors: string[]): string[] {
+  // This run's sources, and those memory already cites, so a line can keep what it rests on.
+  const known = new Set([...packet.outsideSources.map((source) => source.name), ...Object.values(packet.sourceNames ?? {}).filter((name) => name !== HELM_REMOVED_SOURCE)]);
+  const cited = new Set<string>();
+  if (rawFrom !== undefined) {
+    const list = Array.isArray(rawFrom) ? rawFrom : [rawFrom];
+    for (const name of list) {
+      if (typeof name === "string" && known.has(name)) cited.add(name);
+      else errors.push(`${where}: from must list names from outsideSources (${[...known].join(", ") || "none this run"})`);
+    }
+  }
+  if (sourceNote) {
+    const lead = sourceNote.split(":")[0]!.trim();
+    if (known.has(lead)) cited.add(lead);
+  }
+  return [...cited];
 }
 
 function validateMemory(raw: unknown, packet: ThinkerPacket, memory: readonly HelmMemoryEntry[], errors: string[]): MemoryOp[] {
@@ -295,18 +329,40 @@ function validateMemory(raw: unknown, packet: ThinkerPacket, memory: readonly He
     else { ops.push({ op: "upsert", kind: "picture", key: "picture", text: picture, source: null }); add("picture", "picture"); }
   }
 
-  const bridgeTasks = new Map(packet.bridges.filter((bridge) => bridge.ok).map((bridge) => [bridge.id, new Map(bridge.tasks.map((task) => [task.taskId, task.title]))]));
+  const bridgeTasks = new Map(packet.bridges.filter((bridge) => bridge.ok).map((bridge) => [bridge.id, new Map(bridge.tasks.map((task) => [task.taskId, task]))]));
+  const today = localDateKey(packet.now, packet.timezone);
+  // A pause on Tim's own work must end before he goes away, so it comes up while he can still act.
+  const nextAway = (packet.away ?? []).filter((away) => away.start > today).sort((a, b) => a.start.localeCompare(b.start))[0];
   for (const [index, thread] of (Array.isArray(input.threads) ? input.threads : []).entries()) {
-    const title = bridgeTasks.get(thread?.bridge)?.get(thread?.taskId);
+    const where = `memory.threads ${index + 1}`;
+    const task = bridgeTasks.get(thread?.bridge)?.get(thread?.taskId);
     const threadText = text(thread?.text, HELM_ENTRY_MAX_CHARS);
-    if (!title) errors.push(`memory.threads ${index + 1}: needs bridge and taskId of a task listed in the packet`);
-    else if (!threadText) errors.push(`memory.threads ${index + 1}: text is required (at most ${HELM_ENTRY_MAX_CHARS} characters)`);
-    else {
-      const key = `${thread.bridge}:${thread.taskId}`;
-      if (userKeys.has(`thread:${key}`)) continue;
-      ops.push({ op: "upsert", kind: "thread", key, text: threadText, source: `${thread.bridge === "local" ? "" : `${thread.bridge} · `}${title}` });
-      add("thread", key);
+    const owner = HELM_THREAD_OWNERS.find((candidate) => candidate === thread?.owner);
+    const holdUntil = thread?.holdUntil === undefined || thread?.holdUntil === null ? null : typeof thread.holdUntil === "string" ? thread.holdUntil.trim() : "";
+    if (!task) { errors.push(`${where}: needs bridge and taskId of a task listed in the packet`); continue; }
+    if (!threadText) { errors.push(`${where}: text is required (at most ${HELM_ENTRY_MAX_CHARS} characters)`); continue; }
+    if (!owner) { errors.push(`${where}: owner is required: ${HELM_THREAD_OWNERS.join(", ")}`); continue; }
+    if (task.onTim === "fields" && owner !== "tim") {
+      errors.push(`${where}: "${task.title}" is Tim's move: no agent is working on it and it waits on no one else${task.needsTim?.length ? ` (${task.needsTim.join("; ")})` : ""}. Its owner must be tim.`);
+      continue;
     }
+    if (holdUntil !== null && (!/^\d{4}-\d{2}-\d{2}$/.test(holdUntil) || Number.isNaN(Date.parse(`${holdUntil}T00:00:00Z`)))) {
+      errors.push(`${where}: holdUntil must be a date like 2026-11-20, or left out`);
+      continue;
+    }
+    if (owner === "tim" && holdUntil && nextAway && holdUntil >= nextAway.start) {
+      const latest = new Date(Date.parse(`${nextAway.start}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+      errors.push(`${where}: Tim is away from ${formatDay(nextAway.start)} (${nextAway.title}); a pause on his own work must end by ${latest}.`);
+      continue;
+    }
+    const key = `${thread.bridge}:${thread.taskId}`;
+    if (userKeys.has(`thread:${key}`)) continue;
+    const from = citedSources(thread.from, null, packet, where, errors);
+    ops.push({
+      op: "upsert", kind: "thread", key, text: threadText, source: `${thread.bridge === "local" ? "" : `${thread.bridge} · `}${task.title}`,
+      ...(from.length ? { from } : {}), owner, holdUntil, ...(task.basis ? { basis: task.basis } : {}),
+    });
+    add("thread", key);
   }
 
   for (const kind of ["person", "date"] as const) {
@@ -316,7 +372,9 @@ function validateMemory(raw: unknown, packet: ThinkerPacket, memory: readonly He
       const entryText = text(entry?.text, HELM_ENTRY_MAX_CHARS);
       if (!key || !entryText) { errors.push(`memory.${field} ${index + 1}: key and text (at most ${HELM_ENTRY_MAX_CHARS} characters) are required`); continue; }
       if (userKeys.has(`${kind}:${key}`)) continue;
-      ops.push({ op: "upsert", kind, key, text: entryText, source: text(entry?.source, 200) ?? null });
+      const source = text(entry?.source, 200) ?? null;
+      const from = citedSources(entry?.from, source, packet, `memory.${field} ${index + 1}`, errors);
+      ops.push({ op: "upsert", kind, key, text: entryText, source, ...(from.length ? { from } : {}) });
       add(kind, key);
     }
   }

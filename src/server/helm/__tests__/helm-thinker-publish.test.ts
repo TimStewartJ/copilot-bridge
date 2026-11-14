@@ -51,7 +51,7 @@ describe("thinker publication", () => {
         { bridge: "local", text: "AWC's instructions hold old stories", actions: [{ label: "Tidy", type: "tidy_task", taskId: "t1" }] },
       ],
       handled: [{ bridge: "local", sessionId: "s-r", why: "FYI: fixed" }],
-      memory: { threads: [{ bridge: "local", taskId: "t1", text: "Return flight pending" }], picture: "Tim is planning AWC." },
+      memory: { threads: [{ bridge: "local", taskId: "t1", text: "Return flight pending", owner: "others" }], picture: "Tim is planning AWC." },
     }, packet(), []);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -61,7 +61,7 @@ describe("thinker publication", () => {
     expect(result.brief.items[0]!.reply).toEqual({ bridge: "local", sessionId: "s-q" });
     expect(result.handled).toEqual([{ bridge: "local", sessionId: "s-r", title: "Flyer", why: "FYI: fixed", activityAt: "2026-10-25T10:00:00.000Z" }]);
     expect(result.brief.proposals[1]!.actions[0]!.do).toEqual({ type: "tidy_task", bridge: "local", taskId: "t1" });
-    expect(result.memory).toContainEqual({ op: "upsert", kind: "thread", key: "local:t1", text: "Return flight pending", source: "AWC" });
+    expect(result.memory).toContainEqual({ op: "upsert", kind: "thread", key: "local:t1", text: "Return flight pending", source: "AWC", owner: "others", holdUntil: null });
   });
 
   it("refuses actions that point at anything the run was not shown, or answers outside the choices", () => {
@@ -150,7 +150,7 @@ describe("thinker publication", () => {
       summary: "x", items: [],
       memory: {
         drop: ["u1", "h1"],
-        threads: [{ bridge: "local", taskId: "t1", text: "Overwrite attempt" }],
+        threads: [{ bridge: "local", taskId: "t1", text: "Overwrite attempt", owner: "others" }],
         proposeRules: [{ text: "A rule" }, { text: "New rule" }],
       },
     }, packet(), [mine, theirs, userThread, memory({ id: "r0", text: "A rule" })]);
@@ -160,19 +160,27 @@ describe("thinker publication", () => {
 
     const ok = validatePublication({
       summary: "x", items: [],
-      memory: { drop: ["h1"], threads: [{ bridge: "local", taskId: "t1", text: "Overwrite attempt" }], proposeRules: [{ text: "a  RULE" }, { text: "New rule" }] },
+      memory: { drop: ["h1"], threads: [{ bridge: "local", taskId: "t1", text: "Overwrite attempt", owner: "others" }], proposeRules: [{ text: "a  RULE" }, { text: "New rule" }] },
     }, packet(), [mine, theirs, userThread, memory({ id: "r0", text: "A rule" })]);
     expect(ok.ok).toBe(true);
     if (!ok.ok) return;
     // Tim's thread is left alone, and a rule that already exists is not proposed again.
     expect(ok.memory).toEqual([{ op: "drop", id: "h1" }, { op: "propose", kind: "rule", text: "New rule", source: null }]);
 
-    const many = Array.from({ length: 121 }, (_, index) => ({ bridge: "local", taskId: "t1", text: `x${index}` }));
+    const many = Array.from({ length: 121 }, (_, index) => ({ bridge: "local", taskId: "t1", text: `x${index}`, owner: "others" }));
     const tasks = Array.from({ length: 121 }, (_, index) => ({ taskId: `t${index}`, title: `T${index}`, changed: true }));
     const big = validatePublication({ summary: "x", items: [], memory: { threads: many.map((thread, index) => ({ ...thread, taskId: `t${index}` })) } }, packet([bridge({ tasks })]), []);
     expect(big.ok).toBe(false);
     if (big.ok) return;
     expect(big.errors.at(-1)).toMatch(/121 thread entries; the limit is 120/);
+  });
+
+  it("records which outside sources a memory line cites, only by names the run was given", () => {
+    const withMail = { ...packet(), outsideSources: [{ name: "Mail", ok: false, error: "offline", lastReadAt: null, tools: [] }] };
+    const cited = validatePublication({ summary: "x", items: [], memory: { threads: [{ bridge: "local", taskId: "t1", text: "Hotel replied", owner: "others", from: ["Mail"] }], dates: [{ key: "rent", text: "Rent due Friday", source: "Mail: landlord, Nov 3" }] } }, withMail, []);
+    expect(cited.ok && cited.memory.map((op) => op.op === "upsert" && op.from)).toEqual([["Mail"], ["Mail"]]);
+    const unknown = validatePublication({ summary: "x", items: [], memory: { threads: [{ bridge: "local", taskId: "t1", text: "Hotel replied", owner: "others", from: ["Calendar"] }] } }, withMail, []);
+    expect(unknown.ok ? [] : unknown.errors).toEqual(["memory.threads 1: from must list names from outsideSources (Mail)"]);
   });
 
   it("caps the number of items and long pictures", () => {

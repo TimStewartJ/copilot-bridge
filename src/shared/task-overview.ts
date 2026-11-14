@@ -18,6 +18,8 @@ export interface TaskOverviewRow {
   nextAction?: string;
   waitingOn?: string;
   nextTouchAt?: string;
+  /** When waiting-for last changed, when known. */
+  waitingSince?: string;
   state: TaskState;
   reasons: TaskNeedsYouReason[];
   staleWait: boolean;

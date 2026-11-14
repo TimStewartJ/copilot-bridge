@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { taskBasis } from "../attention.js";
 import { describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
@@ -407,14 +408,25 @@ describe("Helm session profiles", () => {
       taskStore: {
         listTasks: () => [
           { id: "t-bridge", title: "Copilot Bridge", status: "active", deferred: false, priority: 0, updatedAt: "2026-09-01T00:00:00.000Z", sessionIds: ["s-bridge"] },
-          { id: "t-trip", title: "Trip plans", status: "active", deferred: false, priority: 0, updatedAt: "2026-09-10T00:00:00.000Z", sessionIds: [] },
+          // Its revisit date has passed and nothing else moves it: it needs the user, whatever its thread line says.
+          { id: "t-gift", title: "Gift list", status: "active", deferred: false, priority: 0, updatedAt: "2026-08-01T00:00:00.000Z", sessionIds: [], nextAction: "Order the gift", waitingOn: "Sam" },
+          { id: "t-trip", title: "Trip plans", status: "active", deferred: false, priority: 0, updatedAt: "2026-09-10T00:00:00.000Z", sessionIds: [], nextAction: "Book the hotel", nextTouchAt: "2026-09-01T12:00:00.000Z" },
         ],
+        getTask: () => undefined,
+        listMomentumSignals: () => new Map(),
       },
-      sessionMetaStore: { listMeta: () => ({ "s-bridge": { lastVisibleActivityAt: "2026-09-17T00:00:00.000Z" } }) },
+      sessionManager: Object.assign(ctx.sessionManager, { getSessionRunState: () => "idle" }),
+      taskGroupStore: { listGroups: () => [] },
+      scheduleStore: { listSchedules: () => [] },
+      sessionMetaStore: { listMeta: () => ({ "s-bridge": { lastVisibleActivityAt: "2026-09-17T00:00:00.000Z" } }), listArchivedSessionIds: () => [] },
       helmThinker: {
         listMemory: () => [
-          { kind: "thread", key: "local:t-bridge", text: "Calendar import in review.", status: "active", fromSources: [] },
-          { kind: "thread", key: "local:t-trip", text: "Hotel replied.", status: "active", fromSources: ["mail-server"] },
+          // Written from the task as it is now, with whose move it is.
+          { kind: "thread", key: "local:t-bridge", text: "Calendar import in review.", status: "active", fromSources: ["mail-server"], owner: "agent", basis: taskBasis({}) },
+          // Written before the task's next step was set: the task's live fields stand in for it.
+          { kind: "thread", key: "local:t-trip", text: "Agent books it; stay out.", status: "active", fromSources: [], owner: "agent", author: "helm" },
+          // Tim corrected this one himself: it stays as he wrote it.
+          { kind: "thread", key: "local:t-gift", text: "Waiting on Sam's sizes.", status: "active", fromSources: [], author: "user" },
           { kind: "thread", key: "laptop:t-bridge", text: "A peer Bridge's line.", status: "active", fromSources: [] },
           { kind: "rule", key: null, text: "Not a thread.", status: "active", fromSources: [] },
         ],
@@ -424,9 +436,10 @@ describe("Helm session profiles", () => {
     const conversation = await helm.createConversation();
     const profile = helm.getSessionProfile();
     const index = profile.conversationContext?.(conversation.sessionId, { afterLoss: false });
-    expect(index?.split("\n").slice(2, 4)).toEqual([
-      "- [Copilot Bridge](bridge://task/t-bridge): Calendar import in review.",
-      "- [Trip plans](bridge://task/t-trip): Hotel replied. [from Mail]",
+    expect(index?.split("\n").slice(4, 7)).toEqual([
+      "- [Trip plans](bridge://task/t-trip) NEEDS YOU (its revisit date (Tue, Sep 1) has passed): [Helm's line is out of date] next step: Book the hotel",
+      "- [Copilot Bridge](bridge://task/t-bridge): [an agent's] Calendar import in review. [from Mail]",
+      "- [Gift list](bridge://task/t-gift): Waiting on Sam's sizes.",
     ]);
     // A conversation that replied before this process started already has it, unless it was lost since.
     store.recordReply(conversation.sessionId, "2026-09-18T09:01:00.000Z");
