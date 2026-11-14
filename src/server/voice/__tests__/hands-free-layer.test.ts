@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StreamEvent } from "../../event-bus.js";
 import { fallbackSummary, HandsFreeLayer, toFullSpeech, verbatimSpeech, type ChatDelivery, type ReadbackPreference } from "../hands-free-layer.js";
 import type { AgentSpeech, AgentTurnInput } from "../voice-conversation.js";
-import type { HandsFreeRouteContext, HandsFreeRouteDecision } from "../hands-free-model.js";
+import type { HandsFreeRouteContext, HandsFreeRouteDecision, HandsFreeSpokenSummary } from "../hands-free-model.js";
 
 const SESSION_ID = "chat-1";
 const LONG_REPLY = "I fixed the archive race.\n\n| Check | Result |\n|---|---|\n| server | pass |\n\n```ts\nconst x = 1;\n```\n\nShould I deploy it?";
@@ -33,7 +33,7 @@ function harness() {
   const model = {
     warm: vi.fn(),
     route,
-    speak: vi.fn(async () => "I fixed the archive race. I can read you the whole thing. Should I deploy it?" as string | undefined),
+    speak: vi.fn(async (): Promise<HandsFreeSpokenSummary | undefined> => ({ say: "I fixed the archive race." })),
     progress: vi.fn(async () => "It's running the tests." as string | undefined),
     announce: vi.fn(async () => undefined),
   };
@@ -138,15 +138,26 @@ describe("HandsFreeLayer", () => {
 
     h.startRun("run-2");
     h.endRun({ type: "done", content: LONG_REPLY });
-    await vi.waitFor(() => expect(h.said.at(-1)).toMatchObject({ key: "end:run-2", offer: true }));
+    await vi.waitFor(() => expect(h.said.at(-1)).toMatchObject({
+      key: "end:run-2",
+      text: "I fixed the archive race. Want me to read the whole thing?",
+      offer: true,
+    }));
+
+    // Without a usable summary the fallback says the rest is on screen and makes no offer.
+    h.model.speak.mockResolvedValueOnce(undefined);
+    h.startRun("run-2a");
+    h.endRun({ type: "done", content: LONG_REPLY });
+    await vi.waitFor(() => expect(h.said.at(-1)).toMatchObject({ key: "end:run-2a", text: fallbackSummary(LONG_REPLY) }));
+    expect(h.said.at(-1)?.offer).toBeUndefined();
 
     // Asking for it in full while the summary is still being written: the summary is not said after it.
-    let finishSummary!: (text: string) => void;
+    let finishSummary!: (summary: HandsFreeSpokenSummary) => void;
     h.model.speak.mockImplementationOnce(() => new Promise((resolve) => { finishSummary = resolve; }));
     h.startRun("run-2b");
     h.endRun({ type: "done", content: LONG_REPLY });
     await h.turn({ kind: "command", command: "full", text: "read me the whole thing" });
-    finishSummary("A summary.");
+    finishSummary({ say: "A summary." });
     await vi.advanceTimersByTimeAsync(10);
     expect(h.said.some((item) => item.key === "end:run-2b")).toBe(false);
 
@@ -158,6 +169,21 @@ describe("HandsFreeLayer", () => {
     h.startRun("run-3");
     h.endRun({ type: "done", content: LONG_REPLY });
     await vi.waitFor(() => expect(h.said.at(-1)).toMatchObject({ key: "end:run-3", text: toFullSpeech(LONG_REPLY) }));
+  });
+
+  it("puts the reply's question last, so a yes answers it instead of asking for the whole reply", async () => {
+    const h = harness();
+    await h.layer.warm();
+    h.model.speak.mockResolvedValueOnce({ say: "I fixed the archive race.", question: "Should I deploy it?" });
+    h.startRun("run-1");
+    h.endRun({ type: "done", content: LONG_REPLY });
+    await vi.waitFor(() => expect(h.said.at(-1)).toMatchObject({
+      key: "end:run-1",
+      text: "I fixed the archive race. I can read you the whole thing. Should I deploy it?",
+    }));
+    expect(h.said.at(-1)?.offer).toBeUndefined();
+    await h.turn({ kind: "user", text: "yes" });
+    expect(h.route.mock.calls.at(-1)?.[0].offerPending).toBeUndefined();
   });
 
   it("says when a run fails or stops, and nothing more for one it stopped itself", async () => {

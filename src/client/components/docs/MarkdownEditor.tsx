@@ -59,6 +59,7 @@ const TOOLBAR_GROUPS: ToolbarItem[][] = [
   ],
 ];
 
+// agent-text-audit: format (browser user agent)
 const IS_MAC = typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.userAgent);
 
 /**

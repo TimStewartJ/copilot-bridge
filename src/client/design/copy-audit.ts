@@ -1,3 +1,4 @@
+// agent-text-audit-file: code (text in client source)
 import ts from "typescript";
 import type { DesignViolation } from "./audit";
 

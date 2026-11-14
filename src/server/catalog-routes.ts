@@ -39,6 +39,7 @@ export function registerCatalogRoutes(router: Router, ctx: AppContext, getCopilo
       res.json({ group: { ...group, tags } });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // agent-text-audit: error (the Bridge's own error messages)
       const status = err instanceof TaskGroupValidationError ? 400 : /Group .* not found/.test(message) ? 404 : 400;
       res.status(status).json({ error: message });
     }
@@ -113,6 +114,7 @@ export function registerCatalogRoutes(router: Router, ctx: AppContext, getCopilo
       res.json({ server });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // agent-text-audit: error (the Bridge's own error messages)
       res.status(/not found/i.test(message) ? 404 : 400).json({ error: message });
     }
   });
@@ -259,6 +261,7 @@ export function registerCatalogRoutes(router: Router, ctx: AppContext, getCopilo
       res.json({ status });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // agent-text-audit: error (the Bridge's own error messages)
       res.status(/not configured/i.test(message) ? 404 : 500).json({ error: message });
     }
   });

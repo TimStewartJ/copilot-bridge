@@ -264,6 +264,7 @@ export class SessionNameAutogenerator {
       await this.deps.deleteSession(sessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // agent-text-audit: error (agent runtime errors)
       if (!/not found/i.test(message)) {
         this.deps.logger?.warn(`[sdk] [${sessionId.slice(0, 8)}] Disposable title session delete failed: ${message}`);
       }

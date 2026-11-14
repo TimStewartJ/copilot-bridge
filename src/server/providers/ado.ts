@@ -423,6 +423,7 @@ export class AdoProvider implements WorkTrackingProvider {
     workItemId: string,
     relation: any,
   ): WorkItemPullRequestLink | null {
+    // agent-text-audit: tool-output (Azure DevOps link types)
     if (relation?.rel !== "ArtifactLink" || relation?.attributes?.name !== "Pull Request") {
       return null;
     }

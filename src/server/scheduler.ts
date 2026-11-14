@@ -521,6 +521,7 @@ export async function triggerSchedule(
           unlinkedCreatedSession = true;
         } catch (unlinkErr) {
           const message = unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr);
+          // agent-text-audit: error (the Bridge's own error messages)
           if (!/Task .* not found/.test(message)) {
             cleanupErrors.push(`unlink failed: ${message}`);
           }
@@ -794,6 +795,7 @@ async function rollbackAcceptedScheduleRun(
     unlinked = true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // agent-text-audit: error (the Bridge's own error messages)
     if (!/Task .* not found/.test(message)) {
       cleanupErrors.push(`unlink failed: ${message}`);
     }

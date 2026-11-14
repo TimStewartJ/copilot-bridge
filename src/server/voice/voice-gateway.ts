@@ -678,6 +678,7 @@ export class VoiceGateway {
 
   /** Records that a hands-free connection ended; a takeover is not a drop and leaves no note. */
   noteEnded(sessionId: string, reason: string, reply: { text: string; finished: boolean } | undefined): void {
+    // agent-text-audit: bridge-text (its own end reason)
     if (reason === "hands-free started somewhere else") return;
     this.recentEnds.set(sessionId, { at: Date.now(), ...(reply ? { reply } : {}) });
   }

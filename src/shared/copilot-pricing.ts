@@ -235,6 +235,7 @@ function findModelByNormalizedIdentity(
 
 function stripCopilotModelVariantSuffix(normalizedModel: string): string {
   return normalizedModel.replace(
+    // agent-text-audit: format (model id suffixes)
     /-(?:(?:\d+(?:k|m))|context|internal|only|reasoning|extra|xhigh|high|medium|low)$/u,
     "",
   );

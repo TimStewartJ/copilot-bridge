@@ -114,6 +114,7 @@ function readToken(tokens: string[], i: number, now: Date, state: State): number
     const unit = tokens[i + 2];
     if (Number.isInteger(amount) && amount > 0 && amount < 1000 && unit) {
       if (/^days?$/.test(unit)) return setDate(addDays(today, amount), 3);
+      // agent-text-audit: user-input (a date the user types)
       if (/^(weeks?|wks?)$/.test(unit)) return setDate(addDays(today, amount * 7), 3);
       if (/^months?$/.test(unit)) {
         const target = new Date(today.getFullYear(), today.getMonth() + amount, 1);
@@ -121,8 +122,10 @@ function readToken(tokens: string[], i: number, now: Date, state: State): number
         target.setDate(Math.min(today.getDate(), lastDay));
         return setDate(target, 3);
       }
+      // agent-text-audit: user-input (a date the user types)
       if (/^(hours?|hrs?|h)$/.test(unit) || /^(minutes?|mins?|m)$/.test(unit)) {
         if (state.date || state.time || state.relativeMs !== undefined) return 0;
+        // agent-text-audit: user-input (a date the user types)
         state.relativeMs = amount * (/^(hours?|hrs?|h)$/.test(unit) ? 3_600_000 : 60_000);
         return 3;
       }

@@ -657,7 +657,7 @@ describe("SessionManager run state", () => {
       data: {
         toolCallId: "tool-1",
         toolName: "bash",
-        arguments: { command: "true", description: "No-op" },
+        arguments: { command: "true", description: "Health probe" },
       },
       timestamp: "2026-04-24T12:00:01.000Z",
     });

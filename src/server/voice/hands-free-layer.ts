@@ -13,7 +13,7 @@ import type {
   VoiceAgentOutput,
 } from "./voice-conversation.js";
 import { countWords, SpokenTextFilter, toSpeakableText } from "./voice-text.js";
-import type { HandsFreeActivity, HandsFreeModel, HandsFreeRouteContext } from "./hands-free-model.js";
+import type { HandsFreeActivity, HandsFreeModel, HandsFreeRouteContext, HandsFreeSpokenSummary } from "./hands-free-model.js";
 
 export type ChatDelivery = "started" | "steered" | "queued" | "command";
 export type ReadbackPreference = "full" | "summary";
@@ -71,7 +71,6 @@ export const VERBATIM_MAX_WORDS = 60;
 const ACKS_STARTED = ["On it.", "Okay, on it.", "Got it."];
 const ACK_STEERED = "Got it, I'll pass that on.";
 const ACK_QUEUED = "It's busy, so I'll send that as soon as it's free.";
-const OFFER_RE = /\b(?:read (?:you )?(?:the )?whole thing|read (?:it|you) (?:all|in full))\b/i;
 
 interface WatchedRun {
   runId: string;
@@ -134,6 +133,17 @@ export function toFullSpeech(markdown: string): string {
     parts.push(/[.!?:;]$/.test(text) ? text : `${text}.`);
   }
   return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * A model summary as speech. The Bridge adds the offer to read the whole reply, so whether one was
+ * made never depends on the model's wording; a question the reply asks comes last.
+ */
+export function composeSummarySpeech(summary: HandsFreeSpokenSummary, offer: boolean): string {
+  const parts = [summary.say];
+  if (offer && !summary.plain) parts.push(summary.question ? "I can read you the whole thing." : "Want me to read the whole thing?");
+  if (summary.question) parts.push(summary.question);
+  return parts.filter(Boolean).join(" ");
 }
 
 /** A summary without the model: the first sentences of the spoken part, and where the rest is. */
@@ -314,9 +324,9 @@ export class HandsFreeLayer implements VoiceAgentApi {
         const reply = this.lastReply;
         if (!reply) return this.speakAndFinish(turn, "Okay, I'll keep it short.", "summary");
         this.supersedeReadback();
-        const summary = await this.summary(reply);
+        const summary = await this.summary(reply, false);
         if (turn.cancelled || this.detached) return;
-        return this.speakAndFinish(turn, summary, "summary");
+        return this.speakAndFinish(turn, summary.text, "summary");
       }
       case "leave":
         return this.finish(turn, { aborted: false, handled: "end" });
@@ -508,6 +518,7 @@ export class HandsFreeLayer implements VoiceAgentApi {
         const message = typeof event.message === "string" ? event.message : "";
         // The runtime's word for a turn that wrote nothing (it happens after steering, and the work
         // carries on in a new turn); like an empty reply, it is not something to announce.
+        // agent-text-audit: error (the agent runtime's error for a turn that wrote nothing)
         if (message.startsWith("No response was returned")) this.endRun(run, { kind: "done", content: "" });
         else this.endRun(run, { kind: "error", message });
         break;
@@ -556,7 +567,7 @@ export class HandsFreeLayer implements VoiceAgentApi {
       return;
     }
     const content = outcome.content.trim();
-    if (!content || content === "(no response)") return;
+    if (!content) return;
     void this.readBack(run, content);
   }
 
@@ -578,8 +589,7 @@ export class HandsFreeLayer implements VoiceAgentApi {
         if (this.options.preference.get() === "full") {
           text = toFullSpeech(content);
         } else {
-          text = await this.summary(content);
-          offer = OFFER_RE.test(text);
+          ({ text, offer } = await this.summary(content, true));
         }
       }
       if (this.detached || !text) return;
@@ -591,8 +601,18 @@ export class HandsFreeLayer implements VoiceAgentApi {
     }
   }
 
-  private async summary(content: string): Promise<string> {
-    return await this.options.model.speak(content) ?? fallbackSummary(content);
+  /**
+   * `offer` in the result is true only when the speech ends with the offer, so a "yes" to it means
+   * read it all; after a question, "yes" answers the question. The fallback summary says the rest is
+   * on screen instead of offering.
+   */
+  private async summary(content: string, offer: boolean): Promise<{ text: string; offer: boolean }> {
+    const summary = await this.options.model.speak(content);
+    if (!summary) return { text: fallbackSummary(content), offer: false };
+    return {
+      text: composeSummarySpeech(summary, offer),
+      offer: offer && !summary.plain && !summary.question,
+    };
   }
 
   private scheduleProgress(run: WatchedRun): void {

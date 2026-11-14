@@ -462,6 +462,7 @@ function getChatDeliveryErrorStatus(error: unknown): number {
   if (isBridgeRestartingError(error)) return 503;
   if (error instanceof ChatMessageIdConflictError) return 409;
   const message = error instanceof Error ? error.message : String(error);
+  // agent-text-audit: error (the Bridge's own error messages)
   if (/stalled|not accepting steering|\breconnecting\b|not busy|ended before steering/i.test(message)) return 409;
   return 500;
 }
@@ -1981,6 +1982,7 @@ export function createApiRouter(
           code: "message_not_found",
         });
       }
+      // agent-text-audit: error (the Bridge's own error messages)
       if (err instanceof Error && /must be an integer/.test(err.message)) {
         return res.status(400).json({ error: err.message });
       }
@@ -2212,6 +2214,7 @@ export function createApiRouter(
       res.json({ ready: true, servers });
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
+      // agent-text-audit: error (the Bridge's own error messages)
       if (err instanceof Error && err.message === "Cannot reload a busy session") {
         return res.status(409).json({ error: err.message });
       }
@@ -2348,7 +2351,9 @@ export function createApiRouter(
       res.json({ playbook: await ctx.sessionManager.setSessionPlaybook(sessionId, playbook, "user") });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // agent-text-audit: error (the Bridge's own error messages)
       if (/not found/i.test(message)) return res.status(404).json({ error: message });
+      // agent-text-audit: error (the Bridge's own error messages)
       if (/not installed|do not apply/i.test(message)) return res.status(409).json({ error: message });
       res.status(500).json({ error: message });
     }
@@ -2430,6 +2435,7 @@ export function createApiRouter(
   router.get("/session-model-move/models", async (req, res) => {
     try {
       const refresh = Array.isArray(req.query.refresh) ? req.query.refresh[0] : req.query.refresh;
+      // agent-text-audit: format (query flag)
       res.json(await sessionModelMover.getUsage({ refresh: /^(1|true|yes|on)$/i.test(String(refresh ?? "")) }));
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -2558,6 +2564,7 @@ export function createApiRouter(
 
   function getForkErrorMessage(err: unknown): string {
     const message = err instanceof Error ? err.message : String(err);
+    // agent-text-audit: error (the Bridge's own error messages)
     if (/not found or has no persisted events/i.test(message) || /no persisted events/i.test(message)) {
       return "Cannot fork a session before it has persisted conversation history.";
     }
@@ -2567,13 +2574,17 @@ export function createApiRouter(
   function handleForkError(res: express.Response, err: unknown) {
     if (sendSessionCapacityError(res, err)) return;
     const message = getForkErrorMessage(err);
+    // agent-text-audit: error (the Bridge's own error messages)
     if (/persisted conversation history/i.test(message)) return res.status(400).json({ error: message });
+    // agent-text-audit: error (the Bridge's own error messages)
     if (/event.*not found|toEventId.*not found/i.test(message)) {
       return res.status(400).json({ error: message });
     }
+    // agent-text-audit: error (the Bridge's own error messages)
     if (/session .*not found|session not found/i.test(message)) {
       return res.status(404).json({ error: message });
     }
+    // agent-text-audit: error (the Bridge's own error messages)
     if (/fork is not available/i.test(message)) {
       return res.status(501).json({ error: message });
     }
@@ -2652,6 +2663,7 @@ export function createApiRouter(
         return res.status(409).json({ error: error.message, code: error.code });
       }
       const message = error instanceof Error ? error.message : String(error);
+      // agent-text-audit: error (the Bridge's own error messages)
       if (/session .*not found|session not found/i.test(message)) {
         return res.status(404).json({ error: message });
       }
@@ -3070,7 +3082,9 @@ export function createApiRouter(
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
+      // agent-text-audit: error (the Bridge's own error messages)
       if (/busy session/i.test(message)) return res.status(409).json({ error: message });
+      // agent-text-audit: error (the Bridge's own error messages)
       if (/not configured for this session/i.test(message)) return res.status(404).json({ error: message });
       res.status(500).json({ error: message });
     }
@@ -3169,6 +3183,7 @@ export function createApiRouter(
       res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // agent-text-audit: error (the Bridge's own error messages)
       res.status(message === "Task not found" ? 404 : 400).json({ error: message });
     }
   });
@@ -3188,6 +3203,7 @@ export function createApiRouter(
       res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // agent-text-audit: error (the Bridge's own error messages)
       res.status(message === "Task not found" ? 404 : 400).json({ error: message });
     }
   });
@@ -3217,6 +3233,7 @@ export function createApiRouter(
       res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // agent-text-audit: error (the Bridge's own error messages)
       res.status(message === "Task not found" ? 404 : 400).json({ error: message });
     }
   });
@@ -3241,6 +3258,7 @@ export function createApiRouter(
       res.json(await buildSessionWorkspaceDetails(ctx, req.params.id, task));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // agent-text-audit: error (the Bridge's own error messages)
       res.status(message === "Task not found" ? 404 : 400).json({ error: message });
     }
   });
@@ -3544,6 +3562,7 @@ export function createApiRouter(
       const message = err instanceof Error ? err.message : String(err);
       const status = err instanceof InvalidTaskUpdateError
         ? 400
+        // agent-text-audit: error (the Bridge's own error messages)
         : /Task .* not found/.test(message)
           ? 404
           : 400;
@@ -4374,6 +4393,7 @@ export function createApiRouter(
   router.get("/server/commits", async (req, res) => {
     try {
       const refresh = Array.isArray(req.query.refresh) ? req.query.refresh[0] : req.query.refresh;
+      // agent-text-audit: format (query flag)
       const forceRefresh = /^(1|true|yes|on)$/i.test(String(refresh ?? ""));
       res.json(await getBridgeGitRevisions({ forceRefresh }));
     } catch (err) {

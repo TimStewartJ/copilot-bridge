@@ -2,30 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createToolLoopGuard, getNoOpShellReason } from "../tool-loop-guard.js";
 
 describe("tool loop guard (detection only)", () => {
-  it("detects explicit no-op and marker shell calls", () => {
-    expect(getNoOpShellReason({
-      toolName: "bash",
-      command: "true",
-      description: "No-op",
-    })).toContain("no-op");
-    expect(getNoOpShellReason({
-      toolName: "bash",
-      command: "echo deploy tool should be next",
-      description: "Marker",
-    })).toContain("marker");
-  });
-
-  it("does not treat useful shell probes as no-ops", () => {
-    expect(getNoOpShellReason({
-      toolName: "bash",
-      command: "true",
-      description: "Health probe",
-    })).toBeUndefined();
-    expect(getNoOpShellReason({
-      toolName: "bash",
-      command: "pwd",
-      description: "Print current directory",
-    })).toBeUndefined();
+  it("flags shell calls by their command alone, whatever the agent says they are for", () => {
+    expect(getNoOpShellReason({ toolName: "bash", command: "true" })).toBeDefined();
+    expect(getNoOpShellReason({ toolName: "bash", command: "printf ''" })).toBeDefined();
+    expect(getNoOpShellReason({ toolName: "bash", command: "echo deploy tool should be next" })).toBeUndefined();
+    expect(getNoOpShellReason({ toolName: "bash", command: "pwd" })).toBeUndefined();
   });
 
   it("reports a candidate for repeated identical mutating calls without blocking them", () => {

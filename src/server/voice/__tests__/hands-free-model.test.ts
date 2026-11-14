@@ -5,6 +5,7 @@ import {
   HANDS_FREE_SYSTEM_PROMPT,
   HandsFreeModel,
   parseRouteDecision,
+  parseSpokenSummary,
 } from "../hands-free-model.js";
 
 const priced = (inputPrice: number, outputPrice: number) => ({ tokenPrices: { inputPrice, outputPrice, cachePrice: 0, batchSize: 1_000_000 } });
@@ -25,6 +26,19 @@ describe("parseRouteDecision", () => {
     ["SILENT", undefined],
   ])("reads %j", (content, expected) => {
     expect(parseRouteDecision(content)).toEqual(expected);
+  });
+});
+
+describe("parseSpokenSummary", () => {
+  it.each([
+    ['{"say":"I fixed the **archive** race.","question":"Should I deploy it?"}', { say: "I fixed the archive race.", question: "Should I deploy it?" }],
+    ['{"say":"Done.","question":""}', { say: "Done." }],
+    ['{"say":"Fixed {the} race.","question":""}', { say: "Fixed {the} race." }],
+    ['{"say":"","question":"Deploy it?"}', { say: "", question: "Deploy it?" }],
+    ["I fixed the archive race.", { say: "I fixed the archive race.", plain: true }],
+    ['{"say":"broken', undefined],
+  ])("reads %j", (content, expected) => {
+    expect(parseSpokenSummary(content)).toEqual(expected);
   });
 });
 

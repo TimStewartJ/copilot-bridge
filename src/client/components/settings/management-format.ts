@@ -64,6 +64,7 @@ export function heartbeatAgeMs(job: ManagementJobSummary, fetchedAt: string | un
 }
 
 function isSensitiveKey(key: string): boolean {
+  // agent-text-audit: format (setting and header names)
   return /token|secret|password|authorization|api[-_]?key|private[-_]?key/i.test(key);
 }
 

@@ -1,5 +1,6 @@
 const TUNNEL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$/;
 const GITHUB_ACCOUNT_RE = /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i;
+// agent-text-audit: format (environment flag)
 const OFF_RE = /^(0|false|no|off)$/i;
 const GITHUB_PREFIX = "github:";
 

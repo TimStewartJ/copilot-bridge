@@ -388,6 +388,7 @@ export class ImageBudgetController {
     } catch (error) {
       detail = (error instanceof Error ? error.message : String(error)).slice(0, 200);
       // The runtime's own compaction is already shrinking the conversation.
+      // agent-text-audit: error (agent runtime errors)
       runtimeCompacting = /already in progress/i.test(detail);
       outcome = runtimeCompacting ? "skipped" : "failed";
       if (!runtimeCompacting) console.warn(`[image-budget] [${sessionId.slice(0, 8)}] Compaction failed: ${detail}`);

@@ -1,3 +1,4 @@
+// agent-text-audit-file: format (unified diff headers)
 import { useState, useCallback, useEffect, useRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { AlertTriangle, Copy, Check } from "lucide-react";
 import { writeClipboardText } from "../lib/clipboard";

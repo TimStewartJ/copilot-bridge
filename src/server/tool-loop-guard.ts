@@ -1,4 +1,4 @@
-// Detection helpers for tool-only loops and obvious no-op shell calls.
+// Detection helpers for tool-only loops and shell calls whose command does nothing.
 // Emits telemetry signals only — the session runner never blocks on these
 // findings. Use detected candidates to monitor whether the protocol-level
 // loop-prevention work is sufficient before adding any runtime enforcement.
@@ -46,7 +46,6 @@ const MUTATING_OR_CONTROL_TOOL_PATTERNS = [
   /(?:^|[-_])schedule_(?:create|update|delete|run|pause|resume)/,
   /(?:^|[-_])defer_(?:create|cancel|loop_create|loop_cancel)/,
 ];
-const NO_OP_INTENTION_PATTERN = /\b(no[-\s]?op|placeholder|marker)\b/i;
 const EMPTY_PRINTF_PATTERN = /^printf\s+(?:""|''|["']\\?n["'])$/i;
 const SHELL_NO_EFFECT_PATTERN = /^(?::|true|exit\s+0)$/i;
 
@@ -72,28 +71,19 @@ export function getToolLoopFingerprint(toolName: string, args: unknown): string 
   return `${toolName.trim().toLocaleLowerCase()}:${stableStringify(args ?? {})}`;
 }
 
+/** Judged from the command alone: what an agent says a call is for never decides anything. */
 export function getNoOpShellReason(input: {
   toolName?: unknown;
   command?: unknown;
-  description?: unknown;
-  intention?: unknown;
 }): string | undefined {
   const toolName = typeof input.toolName === "string" ? input.toolName.toLocaleLowerCase() : "";
   if (!/(?:^|[-_])(bash|powershell)$/.test(toolName)) return undefined;
   const command = typeof input.command === "string" ? normalizeWhitespace(input.command) : "";
-  const intentText = [
-    typeof input.description === "string" ? input.description : "",
-    typeof input.intention === "string" ? input.intention : "",
-  ].join(" ");
-
-  if (NO_OP_INTENTION_PATTERN.test(intentText)) {
-    return "shell call is explicitly described as a no-op, placeholder, or marker";
-  }
   if (EMPTY_PRINTF_PATTERN.test(command)) {
-    return "shell command prints no substantive output";
+    return "shell command prints nothing";
   }
-  if (SHELL_NO_EFFECT_PATTERN.test(command) && !/health|probe|check|test/i.test(intentText)) {
-    return "shell command has no side effect or diagnostic value";
+  if (SHELL_NO_EFFECT_PATTERN.test(command)) {
+    return "shell command is a trivial command with no effect";
   }
   return undefined;
 }
@@ -115,11 +105,7 @@ export function createToolLoopGuard(options: ToolLoopGuardOptions = {}) {
     detectCandidate(toolName: string, args: unknown): ToolLoopCandidate | undefined {
       const normalizedToolName = toolName.trim().toLocaleLowerCase();
       const noOpReason = isRecord(args)
-        ? getNoOpShellReason({
-          toolName: normalizedToolName,
-          command: args.command,
-          description: args.description,
-        })
+        ? getNoOpShellReason({ toolName: normalizedToolName, command: args.command })
         : undefined;
       const fingerprint = getToolLoopFingerprint(normalizedToolName, args);
       const count = (counts.get(fingerprint) ?? 0) + 1;

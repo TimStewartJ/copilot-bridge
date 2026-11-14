@@ -246,6 +246,7 @@ export function getUndoBoundaryEventId(event: any): string | undefined {
 }
 
 function getSkillLabel(source: string, content: string): string {
+  // agent-text-audit: format (the skill-context tag the runtime inserts)
   const fromContext = content.match(/<skill-context\s+name="([^"]+)"/);
   if (fromContext?.[1]?.trim()) return fromContext[1].trim();
   const fromSource = source.replace(/^skill[-:]?/i, "").trim();

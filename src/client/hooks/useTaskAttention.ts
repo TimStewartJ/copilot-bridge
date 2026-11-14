@@ -87,6 +87,7 @@ export function useTaskAttentionPresentation(
       taskSignals.set(task.id, displayed);
       taskGlyphs.set(task.id, getTaskLeadingGlyph(displayed, indicator, row?.activity));
       const description = getTaskActivityDescription(task, indicator, row?.activity);
+      // agent-text-audit: bridge-text (this hook's own placeholder)
       activityDescriptions.set(task.id, sharedGap && description === "Task activity unavailable" ? "" : description);
     }
     return { taskSignals, taskGlyphs, activityDescriptions, nextReadings };

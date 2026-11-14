@@ -52,8 +52,10 @@ export const PR_STATUS_STYLES: Record<string, { status: DsStatusKind; label: str
 /** Map a work item state string to a Tailwind color class (for Dashboard cards) */
 export function stateColor(state: string): string {
   const s = state.toLowerCase();
+  // agent-text-audit: tool-output (work item states from the provider)
   if (s === "active" || s === "in progress" || s === "committed" || s === "started")
     return "bg-info-surface text-info";
+  // agent-text-audit: tool-output (work item states from the provider)
   if (s === "new" || s === "to do" || s === "proposed" || s === "backlog" || s === "todo" || s === "triage")
     return "bg-text-muted/15 text-text-muted";
   if (s === "resolved" || s === "done" || s === "closed" || s === "completed")

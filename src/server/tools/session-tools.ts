@@ -256,6 +256,7 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        // agent-text-audit: error (the Bridge's own error message)
         if (message === "Cannot switch workspace for a busy session") {
           return {
             ...toolFailure(message, {

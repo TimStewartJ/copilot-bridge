@@ -430,7 +430,7 @@ function normalizeAssistantPreview(content: string): string | undefined {
     .map((part) => part.replace(/\s+/g, " ").trim())
     .find((part) => part.length > 0);
   const normalized = paragraph?.trim() ?? "";
-  if (!normalized || normalized === "(no response)") return undefined;
+  if (!normalized) return undefined;
   const chars = Array.from(normalized);
   if (chars.length <= ASSISTANT_PREVIEW_MAX_LENGTH) return normalized;
   return `${chars.slice(0, ASSISTANT_PREVIEW_MAX_LENGTH - 3).join("").trimEnd()}...`;

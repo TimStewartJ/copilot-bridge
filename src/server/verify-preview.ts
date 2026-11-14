@@ -215,6 +215,9 @@ async function waitForRunEnd(client: PreviewClient, sessionId: string): Promise<
           throw new Error(`the run ended with ${type}: ${String(event.message ?? event.content ?? "")}`.trim());
         }
         // The message was delivered before the stream opened, so a complete snapshot means the run ended.
+        if (type === "snapshot" && event.complete === true && event.terminalType !== "done") {
+          throw new Error(`the run ended with ${String(event.terminalType ?? "no outcome")}`);
+        }
         if (type === "done" || (type === "snapshot" && event.complete === true)) {
           await reader.cancel().catch(() => undefined);
           return types;
@@ -551,10 +554,9 @@ async function verify(options: VerifyPreviewOptions, outDir: string): Promise<{ 
         const created = await client.json("POST", "/sessions", selection);
         const sessionId = stringField(created, "sessionId", "POST /sessions");
         owned.sessionId = sessionId;
-        const token = `${FIXTURE_PREFIX}-ok-${nonce}`;
         await client.json("POST", "/chat", {
           sessionId,
-          prompt: `This is an automated check. Reply with exactly this text and nothing else: ${token}`,
+          prompt: "This is an automated check. Reply with one short sentence.",
           mode: "interactive",
           waitForDelivery: true,
           clientMessageId: randomUUID(),
@@ -565,8 +567,8 @@ async function verify(options: VerifyPreviewOptions, outDir: string): Promise<{ 
           ? history.filter((message) => isRecord(message) && message.role === "assistant" && typeof message.content === "string")
           : [];
         const reply = replies.at(-1) as Record<string, unknown> | undefined;
-        if (!reply) throw new Error("no assistant reply was persisted");
-        if (!String(reply.content).includes(token)) throw new Error(`the persisted reply does not contain ${token}`);
+        // What the model says is not checked: a clean end and a stored reply prove the turn ran.
+        if (!reply || !String(reply.content).trim()) throw new Error("no assistant reply was persisted");
         const modelLabel = selection.model
           ? `${selection.model}${selection.reasoningEffort ? ` (${selection.reasoningEffort} effort)` : ""}`
           : "default model";

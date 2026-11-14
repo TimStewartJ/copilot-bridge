@@ -226,6 +226,7 @@ export class PatchTermScanner {
       if (path !== "/dev/null") this.path = path;
       return;
     }
+    // agent-text-audit: tool-output (git diff output)
     if (line.startsWith("new file mode")) {
       const match = this.path ? findDenylistTerm(this.path, this.terms) : undefined;
       if (match) this.record({ kind: "term", where: "new file path", sha: this.sha, termLine: match.line });
@@ -282,6 +283,7 @@ export function formatDeployGuardFailure(
   }
   if (terms.length > 0) {
     const omitted = context.omitted ? [`- and ${context.omitted} more`] : [];
+    // agent-text-audit: bridge-text (its own finding label)
     const inCommits = terms.some((finding) => finding.where !== "deploy message");
     const fix = inCommits
       ? "Fix: remove the term. Every commit in the range is pushed, so rewrite the commit that added it " +

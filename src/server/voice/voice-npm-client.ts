@@ -1,3 +1,4 @@
+// agent-text-audit-file: tool-output (npm output)
 // Fetches pinned npm packages with the machine's own npm client. A host that blocks the public
 // registry in favour of an internal feed only serves tarballs to a real npm client, and npm
 // already carries the registry, credentials, proxy and CA settings that installed Bridge

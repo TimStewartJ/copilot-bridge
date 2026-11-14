@@ -132,7 +132,7 @@ export function SpeechEngineSection() {
       <SettingList>
         <SettingRow
           label={`${speechModelName(chatMic)} · Smart Turn · Kokoro`}
-          control={<span className={cx("text-xs font-medium", badge.text === "Setup failed" ? "text-error" : "text-text-secondary")}>{badge.text}</span>}
+          control={<span className={cx("text-xs font-medium", /* agent-text-audit: bridge-text (its own badge text) */ badge.text === "Setup failed" ? "text-error" : "text-text-secondary")}>{badge.text}</span>}
         >
           {installStatus && !installStatus.supported && (
             <p className={DS.field.help}>

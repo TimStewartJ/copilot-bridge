@@ -107,11 +107,13 @@ export function createCodingModeStatementRemover(identityText: string): (content
 
 /** tool_efficiency: Bridge output is rendered in a web and mobile chat, not a terminal. */
 export function removeCliOutputSurfaceNote(content: string): string {
+  // agent-text-audit: tool-output (the Copilot CLI's built-in system prompt)
   return content.replace(/^[^\S\r\n]*Your output appears in a command-line interface\b.*(?:\r?\n|$)/m, "").trimEnd();
 }
 
 /** last_instructions: response length is owned by the Bridge response-style setting. */
 export function removeConciseReplyDirective(content: string): string {
+  // agent-text-audit: tool-output (the Copilot CLI's built-in system prompt)
   return content.replace(/^[^\S\r\n]*Respond concisely to the user\b.*(?:\r?\n|$)/m, "").trimEnd();
 }
 

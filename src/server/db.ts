@@ -128,6 +128,7 @@ function getDocsFtsSchemaRow(db: DatabaseSync): { type?: string; sql?: string } 
 
 function isFts5VirtualTableSql(sql: string | undefined): boolean {
   const normalizedSql = (sql ?? "").toLowerCase().replace(/\s+/g, " ");
+  // agent-text-audit: code (SQL)
   return normalizedSql.includes("create virtual table") && normalizedSql.includes("using fts5");
 }
 
@@ -1002,6 +1003,7 @@ function initSchema(db: DatabaseSync): void {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
+      // agent-text-audit: error (SQLite errors)
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
   };
@@ -1114,6 +1116,7 @@ function initSchema(db: DatabaseSync): void {
       db.exec("ALTER TABLE tasks ADD COLUMN instructions TEXT NOT NULL DEFAULT ''");
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
+      // agent-text-audit: error (SQLite errors)
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
   }
@@ -1124,6 +1127,7 @@ function initSchema(db: DatabaseSync): void {
       db.exec("ALTER TABLE management_jobs ADD COLUMN originSessionId TEXT");
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
+      // agent-text-audit: error (SQLite errors)
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
   }
@@ -1135,6 +1139,7 @@ function initSchema(db: DatabaseSync): void {
       db.exec(`ALTER TABLE voice_jobs ADD COLUMN ${column} ${type}`);
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
+      // agent-text-audit: error (SQLite errors)
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
   }
@@ -1160,6 +1165,7 @@ function initSchema(db: DatabaseSync): void {
       db.exec("ALTER TABLE background_command_markers ADD COLUMN pid INTEGER");
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
+      // agent-text-audit: error (SQLite errors)
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
   }
@@ -1173,6 +1179,7 @@ function initSchema(db: DatabaseSync): void {
       db.exec("ALTER TABLE interrupted_run_markers ADD COLUMN retryScheduled INTEGER NOT NULL DEFAULT 0");
     } catch (error) {
       // The management job runner opens the same database and may have added it first.
+      // agent-text-audit: error (SQLite errors)
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
   }
@@ -1192,6 +1199,7 @@ function initSchema(db: DatabaseSync): void {
       // Briefs written before Bridge tracked this count as seen, so the update does not light Home.
       if (column === "seenAt") db.exec("UPDATE helm_runs SET seenAt = COALESCE(finishedAt, startedAt) WHERE seenAt IS NULL");
     } catch (error) {
+      // agent-text-audit: error (SQLite errors)
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
   }

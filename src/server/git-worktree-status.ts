@@ -122,6 +122,7 @@ function isUnmergedPorcelainStatus(code: string): code is UnmergedPorcelainStatu
 }
 
 function isNotRepoError(error: string): boolean {
+  // agent-text-audit: tool-output (git errors)
   return /not a git repository|outside repository|unable to find repository/i.test(error);
 }
 

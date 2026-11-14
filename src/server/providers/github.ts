@@ -166,6 +166,7 @@ function rateLimitCooldownMs(res: Response, detail: string, now: number): number
   }
 
   // Secondary limits can arrive as a bare 403 whose only signal is the message body.
+  // agent-text-audit: tool-output (GitHub API errors)
   if (/rate limit|abuse detection/i.test(detail)) return DEFAULT_COOLDOWN_MS;
 
   return res.status === 429 ? DEFAULT_COOLDOWN_MS : null;

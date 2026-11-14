@@ -90,7 +90,7 @@ export default function SortableTaskItem({
         <span data-task-row-leading="" className="flex w-3 shrink-0 items-center justify-center">
           {glyph && <StatusIcon kind={glyph} decorative />}
         </span>
-        <span className={`truncate flex-1 ${emphasizeTitle ? "font-semibold" : "font-medium"} ${task.title === "New Task" ? "italic text-text-muted" : "text-text-primary"}`}>
+        <span className={`truncate flex-1 ${emphasizeTitle ? "font-semibold" : "font-medium"} ${/* agent-text-audit: bridge-text (the default title of a new task; a stored untitled flag would be exact) */ task.title === "New Task" ? "italic text-text-muted" : "text-text-primary"}`}>
           {task.title}
         </span>
         <TaskKindBadge kind={task.kind} iconOnly className="shrink-0" />

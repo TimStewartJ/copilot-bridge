@@ -1,3 +1,4 @@
+// agent-text-audit-file: error (agent runtime and connection errors)
 // Messages and classifiers for "the agent backend cannot take this request
 // right now". Kept separate from session-manager.ts so runners and API
 // handlers can classify errors without importing the whole manager.

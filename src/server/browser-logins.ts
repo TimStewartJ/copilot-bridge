@@ -142,6 +142,7 @@ export class BrowserLogins {
     if (!(await this.read()).some((login) => login.id === id)) return false;
     const removed = await this.vault.remove(id, options);
     // A login the vault no longer has is gone all the same.
+    // agent-text-audit: tool-output (secret store command output)
     if (!removed.ok && !/not found/i.test(removed.output)) return false;
     await this.change((logins) => logins.filter((login) => login.id !== id));
     return true;

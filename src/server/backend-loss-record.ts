@@ -1,3 +1,4 @@
+// agent-text-audit-file: tool-output (the agent runtime's log lines)
 // A durable record of each agent-backend loss, kept under the data directory.
 //
 // Telemetry spans are pruned after a week and the runtime's own log holds only its last few

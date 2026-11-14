@@ -16,6 +16,7 @@ const REPO_ROOT = resolve(SRC_DIR, "..");
 const SOURCE_CHECKOUT_ONLY: Record<string, string> = {
   "server/preview-smoke.ts": "npm run preview:smoke checks a staging preview from a source checkout",
   "server/xplat-test-audit.ts": "npm run test:xplat-audit audits the tests of a source checkout",
+  "server/agent-text-audit.ts": "npm run test:agent-text-audit audits the source of a checkout",
 };
 
 const readJson = (path: string): unknown => JSON.parse(readFileSync(join(REPO_ROOT, path), "utf-8"));

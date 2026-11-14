@@ -262,6 +262,7 @@ export async function buildBrowserEnv(
 }
 
 function browserBuildKind(description: string): BrowserBuildKind {
+  // agent-text-audit: tool-output (browser names the OS reports)
   if (/for testing/i.test(description)) return "chrome-for-testing";
   if (/edge/i.test(description)) return "edge";
   if (/chromium/i.test(description)) return "chromium";

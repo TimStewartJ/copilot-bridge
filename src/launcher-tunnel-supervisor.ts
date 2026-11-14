@@ -51,6 +51,7 @@ const CONNECT_TOKEN_RENEW_MARGIN_MS = 60_000;
 const HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
 
 const HOST_STATUS_WAKE_RE =
+  // agent-text-audit: tool-output (devtunnel CLI output)
   /ClientSSH: Session closed unexpectedly|Error running client SSH session|Error connecting host tunnel session/i;
 type HealthObservation = {
   failed: boolean;
@@ -770,7 +771,9 @@ export class TunnelSupervisor {
       const onData = (data: Buffer) => {
         if (settled || generation !== this.generation) return;
         output += data.toString();
+        // agent-text-audit: tool-output (devtunnel CLI output)
         const match = output.match(/Connect via browser:\s+(https:\/\/\S+)/)
+          // agent-text-audit: tool-output (devtunnel CLI output)
           ?? output.match(/Hosting port \d+ at\s+(https:\/\/\S+)/);
         if (!match) return;
         settled = true;

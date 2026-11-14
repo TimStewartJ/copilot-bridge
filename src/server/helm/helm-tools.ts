@@ -107,6 +107,7 @@ function normalizeTitle(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
 }
 
+// agent-text-audit: search (Helm's lookups drop these words from a query; nothing is judged by them)
 const REFERENCE_STOPWORDS = new Set([
   "the", "a", "an", "my", "that", "this", "those", "these", "one", "session", "sessions", "chat", "chats",
   "thread", "about", "on", "for", "with", "in", "of", "to", "and", "or", "please", "it",

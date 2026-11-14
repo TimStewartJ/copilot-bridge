@@ -1,3 +1,4 @@
+// agent-text-audit-file: tool-output (agent-browser CLI output)
 // Shared agent-browser helpers with automatic recovery from stale Chrome state.
 
 import { createHash, randomUUID } from "node:crypto";

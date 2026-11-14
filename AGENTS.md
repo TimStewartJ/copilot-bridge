@@ -28,6 +28,16 @@ Add a rule here only if it applies across the repository and no check enforces i
 - Documentation-only edits need no test run unless they change generated docs, scripts, examples, or validation guidance.
 - Docs must not copy figures that another file determines: package versions, download or definition sizes, counts, totals worked out from several constants, or benchmark results. Name the file or constant that holds the value instead. A single configured limit can be stated, ideally with its constant named. A measurement kept as evidence says what it was measured on.
 
+## Agent output
+
+Never decide anything from the words a model wrote. That covers assistant replies and reasoning, the replies of helper, Helm and hands-free models, sub-agent and defer results, and the free text an agent puts in tool arguments (notes, summaries, titles, descriptions). Do not test such text with `includes`, `startsWith`, `===`, regexes or word lists, and do not ask a model to say a word so that code can look for it.
+
+- Decide from a structured signal instead: a tool call and its typed or enum arguments, a JSON reply with enum fields, event types, ids, or the Bridge's own state. When the Bridge needs to know what it said or showed (an offer, a placeholder), it decides that itself and keeps a record, rather than reading it back from text a model can also write.
+- Parsing a defined format in model output is fine (JSON, ids, links, ISO dates, markup the Bridge inserts), and so are display formatting and using the text as a search query.
+- Tests follow the same rule: mock model replies as structured values, check structured results, and never require a model to say particular words.
+
+`npm run test:agent-text-audit` (in `check:fast` and `check:pr`) flags regex literals that match words and multi-word string literals compared or searched for in production code. Each must name where its text comes from in an `agent-text-audit:` comment, and `agent` is never an accepted source; `src/server/agent-text-audit.ts` lists the sources. The audit cannot see needles held in variables, word sets or single-word checks, so the rule applies where it is silent too.
+
 ## Cross-platform code
 
 - Code and tests must work on Linux and Windows.

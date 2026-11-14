@@ -826,6 +826,7 @@ function AppShell() {
     addOptimisticSession(activity.sessionId, {
       runState: "busy",
       intentText: intent,
+      voiceIntent: true,
     });
     projectVoiceSessionActivity(queryClient, activity);
     if (activity.statusChanged !== false) {

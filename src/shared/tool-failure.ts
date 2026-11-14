@@ -1,3 +1,4 @@
+// agent-text-audit-file: tool-output (failed tool results and their error text)
 import { isRecord } from "./is-record.js";
 
 export type ToolFailureCategory = "transport" | "timeout" | "permission" | "authentication" | "invalid-input" | "query-server" | "initialization" | "catalog-changed" | "throttled" | "not-found" | "unknown";

@@ -547,6 +547,7 @@ export type SessionModelSwitchResult =
 
 function isMissingSessionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
+  // agent-text-audit: error (agent runtime and file system errors)
   return /not found|does not exist|no such (file|session)|ENOENT/i.test(message);
 }
 
@@ -2339,6 +2340,7 @@ export class SessionManager {
   /** The create config for a chat that can be made again (see `resumeRuntimeSession`), else undefined. */
   private async configToRecreateUnsavedSession(sessionId: string, error: unknown): Promise<any | undefined> {
     const message = error instanceof Error ? error.message : String(error);
+    // agent-text-audit: error (agent runtime and file system errors)
     if (!/\bSession not found\b/i.test(message) || !this.isSessionStatePathSegment(sessionId)) return undefined;
     const directory = this.getSessionStateDir(sessionId);
     const exists = (name: string) => access(join(directory, name)).then(() => true, () => false);
@@ -5038,6 +5040,7 @@ export class SessionManager {
         truncateResult = await session.truncateHistory({ eventId: boundaryEventId });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        // agent-text-audit: error (agent runtime and file system errors)
         if (/event.*not found|eventId.*not found/i.test(message)) {
           throw new SessionHistoryUndoError(
             "stale-boundary",

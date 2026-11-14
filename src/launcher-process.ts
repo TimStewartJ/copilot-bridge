@@ -8,6 +8,7 @@ type ErrorAwareChildProcess = Pick<ChildProcess, "on" | "pid">;
 export const LAUNCHER_STARTUP_GIT_PULL_ENV = "BRIDGE_GIT_PULL_ON_STARTUP";
 
 export function shouldPullOnLauncherStartup(env: NodeJS.ProcessEnv): boolean {
+  // agent-text-audit: format (environment flag)
   return /^(1|true|yes|on)$/i.test(env[LAUNCHER_STARTUP_GIT_PULL_ENV]?.trim() ?? "");
 }
 

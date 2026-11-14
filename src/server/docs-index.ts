@@ -198,8 +198,10 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
 
   function isRecoverableFtsError(error: unknown): boolean {
     const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    // agent-text-audit: error (SQLite errors)
     return message.includes("database disk image is malformed")
       || (message.includes("database") && message.includes("malformed"))
+      // agent-text-audit: error (SQLite errors)
       || message.includes("database corruption");
   }
 

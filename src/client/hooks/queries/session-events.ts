@@ -14,20 +14,15 @@ export function getVoiceSessionIntent(status: VoiceSessionActivity["status"]): s
   return "Processing voice input";
 }
 
-function isVoiceSessionIntent(intent: string): boolean {
-  return intent === "Uploading voice input"
-    || intent === "Processing voice input"
-    || intent === "Sending voice message";
-}
-
+/** Whether a chat shows the dictation placeholder is the voiceIntent flag, never the intent's wording. */
 export function projectVoiceSessionActivity(queryClient: QueryClient, activity: VoiceSessionActivity): void {
   const intent = getVoiceSessionIntent(activity.status);
   patchSessionQueryData(queryClient, [activity.sessionId], (session: Session): Partial<Session> => {
     const existingIntent = session.intentText?.trim() ?? "";
-    const preserveExistingIntent = isSessionActive(session) && existingIntent.length > 0 && !isVoiceSessionIntent(existingIntent);
+    const preserveExistingIntent = isSessionActive(session) && existingIntent.length > 0 && !session.voiceIntent;
     return {
       runState: session.runState === "stalled" ? "stalled" : "busy",
-      intentText: preserveExistingIntent ? session.intentText : intent,
+      ...(preserveExistingIntent ? {} : { intentText: intent, voiceIntent: true }),
     };
   });
 }
@@ -35,7 +30,7 @@ export function projectVoiceSessionActivity(queryClient: QueryClient, activity: 
 /** The dictation ended without starting a run, so a chat marked as working on it is idle again. */
 export function settleVoiceSessionActivity(queryClient: QueryClient, sessionId: string): void {
   patchSessionQueryData(queryClient, [sessionId], (session: Session): Partial<Session> =>
-    isVoiceSessionIntent(session.intentText?.trim() ?? "") ? { runState: "idle", intentText: null } : {});
+    session.voiceIntent ? { runState: "idle", intentText: null, voiceIntent: false } : {});
 }
 
 /** Puts a chat's new playbook into its cached model state; an empty view means none is active. */
@@ -91,12 +86,12 @@ export function projectSessionEvent(
       patch({ agentMode: event.agentMode === "autopilot" ? "autopilot" : null });
       break;
     case "session:idle":
-      patch({ runState: "idle", intentText: null });
+      patch({ runState: "idle", intentText: null, voiceIntent: false });
       if (isHelmSession) refetch(helmStateQueryKey);
       refetch(activeSessionsKey, queryKeys.dashboard);
       break;
     case "session:intent":
-      patch({ intentText: event.intent ?? null });
+      patch({ intentText: event.intent ?? null, voiceIntent: false });
       break;
     case "session:title":
       if (event.title) {

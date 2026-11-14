@@ -10,6 +10,7 @@ export const PROVIDER_RETRY_PROMPT =
 export function isRetryableProviderError(data: unknown): boolean {
   if (!isRecord(data) || (data.statusCode !== 400 && data.statusCode !== 500)) return false;
   return typeof data.message === "string"
+    // agent-text-audit: error (model provider errors)
     && /^(?:Execution failed:\s*)?(?:CAPIError:\s*)?(?:400|500)\s+internal server error(?:\s*\(Request[- ]ID: [^)]+\))?\s*$/i.test(data.message);
 }
 

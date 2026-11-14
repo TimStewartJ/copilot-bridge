@@ -47,6 +47,7 @@ const CANCEL_RE = new RegExp(`^${POLITE_PREFIX}(?:cancel|cancel (?:that|it|this|
 const PROGRESS_RE = new RegExp(`^${POLITE_PREFIX}(?:how(?:'s| is) it going|how(?:'s| is) it coming(?: along)?|how(?:'s| is) that going|how are you doing(?: with that| on that)?|how(?:'s| is) (?:the|that|it) (?:work|job|task) going|what(?:'s| is) it doing(?: now)?|what are you doing(?: now)?|what(?:'s| is) happening|is it (?:done|finished|ready)(?: yet)?|are you (?:done|finished)(?: yet)?|any (?:progress|news|update)|status(?: update)?|progress(?: update)?|still working(?: on it)?|are you still working(?: on it)?|how much longer|where are you at|where(?:'s| is) it at)$`);
 const REPEAT_RE = new RegExp(`^${POLITE_PREFIX}(?:say (?:that|it) again|repeat (?:that|it|yourself)|can you repeat (?:that|it)|what (?:was that|did you say)|come again|pardon(?: me)?|sorry what|what)$`);
 const FULL_RE = new RegExp(`^${POLITE_PREFIX}(?:read (?:me )?(?:the )?(?:whole|full|entire) (?:thing|reply|message|answer|response)|read (?:it|them) all|read (?:me )?(?:all of it|everything)|read the rest|give me the whole thing|yes read (?:it|the whole thing))$`);
+// agent-text-audit: user-input (spoken command)
 const END_RE = /^(?:end|exit|close|leave|turn off|stop) (?:voice mode|hands[- ]free(?: mode)?)$/;
 
 /** Short commands handled locally without a model round trip. */

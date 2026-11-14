@@ -1,3 +1,4 @@
+// agent-text-audit-file: tool-output (ask_user results the agent runtime writes)
 import type { ToolArgs, ToolCall } from "../api";
 import { readAutomaticAnswerReason } from "../../shared/automatic-answer.js";
 

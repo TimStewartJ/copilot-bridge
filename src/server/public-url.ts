@@ -4,6 +4,7 @@ import { resolveTunnelConfig } from "./tunnel-config.js";
 import { readTunnelRuntimeState } from "./tunnel-runtime-state.js";
 
 const PUBLIC_BASE_URL = normalizeBaseUrl(process.env.BRIDGE_PUBLIC_BASE_URL);
+// agent-text-audit: format (environment flag)
 const TRUST_PROXY = /^(1|true|yes|on)$/i.test(process.env.BRIDGE_TRUST_PROXY || "");
 const DATA_DIR = resolveRuntimePaths(process.env).dataDir;
 

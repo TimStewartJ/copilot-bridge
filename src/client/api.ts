@@ -294,6 +294,8 @@ export interface Session {
   externallyInUse?: boolean;
   isOptimistic?: boolean;
   optimisticUntil?: number;
+  /** Client only: intentText is this client's dictation placeholder, not an intent the agent reported. */
+  voiceIntent?: boolean;
 }
 
 export type SessionRunState = "busy" | "stalled" | "idle";

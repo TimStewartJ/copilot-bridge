@@ -6,7 +6,8 @@
 // Measured on 26 Oct 2026 (394 calls, prompts below): gpt-6.1-terra at low decided correctly on all
 // 46 routing cases, median 1.26 s (first token 0.97 s, p90 1.66 s); spoken summaries and progress
 // lines took 1.4-1.6 s and were the best of six fast models. A fresh helper session costs ~30 ms,
-// so every call gets its own and nothing builds up between calls.
+// so every call gets its own and nothing builds up between calls. SPEAK answered in plain text then;
+// it has answered in JSON since 14 Nov 2026, so the Bridge, not the model's wording, decides the offer.
 import type { AgentModelInfo, AgentSession, AgentSessionConfig } from "../agent-backend/index.js";
 import type { AppSettings } from "../settings-store.js";
 import { resolveModelRole } from "../model-roles.js";
@@ -65,7 +66,8 @@ For send, text is the transcript with only speech-recognition errors fixed: mish
 Reply with exactly one line of JSON and nothing else: {"action":"send","text":"..."}
 
 JOB: SPEAK
-You get a finished chat reply in markdown. Write what to say aloud: one to three short spoken sentences giving the gist: the answer, the outcome, or what the user has to decide. Plain speech only: no markdown, lists, code, URLs, file paths, ids, hashes or version strings, and no numbers nobody would say aloud. Do not start with "The reply" or "The assistant"; speak as the assistant ("I fixed...", "Done..."). If the reply is long (more than about four sentences, or it has a table, list or code), offer to read the whole thing. If the reply asks the user something, end with that question; when there is also an offer, make the offer a statement just before the question ("I can read you the whole thing."). Otherwise end with "Want me to read the whole thing?" Output only the words to speak.
+You get a finished chat reply in markdown. Write what to say aloud: one to three short spoken sentences giving the gist: the answer, the outcome, or what the user has to decide. Plain speech only: no markdown, lists, code, URLs, file paths, ids, hashes or version strings, and no numbers nobody would say aloud. Do not start with "The reply" or "The assistant"; speak as the assistant ("I fixed...", "Done..."). If the reply asks the user something, put that question, in plain speech, in question and leave it out of say; otherwise question is "". Never offer to read the reply; the Bridge adds that.
+Reply with exactly one line of JSON and nothing else: {"say":"...","question":"..."}
 
 JOB: PROGRESS
 You get the elapsed time and the running work's activity so far: steps with short arguments and short results, and any partial assistant text. Say in one or two short spoken sentences how it's going: what it is doing now and what it has found or done so far. Speak about the work as "it". Use only what the log shows. Never invent results, guess outcomes or promise how long it will take. If there is little activity yet, say it is still getting started. Plain speech only: no markdown, file paths, ids or tool names; describe actions in everyday words. Output only the words to speak.
@@ -90,7 +92,36 @@ export function parseRouteDecision(content: unknown): HandsFreeRouteDecision | u
   }
 }
 
-/** Plain spoken text from a SPEAK/PROGRESS/ANNOUNCE reply; undefined when empty. */
+/** What a SPEAK reply says: the gist, and the question the chat's reply asks the user, if any. */
+export interface HandsFreeSpokenSummary {
+  say: string;
+  question?: string;
+  /** The model answered in plain words instead of JSON, so the Bridge adds nothing to them. */
+  plain?: boolean;
+}
+
+/** Reads a SPEAK reply: its JSON, or plain words when the model ignored the format; undefined when empty. */
+export function parseSpokenSummary(content: unknown): HandsFreeSpokenSummary | undefined {
+  if (typeof content !== "string") return undefined;
+  const start = content.indexOf("{");
+  const end = content.lastIndexOf("}");
+  if (start === -1) {
+    const say = parseSpoken(content);
+    return say ? { say, plain: true } : undefined;
+  }
+  if (end < start) return undefined;
+  try {
+    const parsed = JSON.parse(content.slice(start, end + 1)) as { say?: unknown; question?: unknown };
+    const say = parseSpoken(parsed.say) ?? "";
+    const question = parseSpoken(parsed.question);
+    if (!say && !question) return undefined;
+    return { say, ...(question ? { question } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Plain spoken text from a PROGRESS/ANNOUNCE reply or a SPEAK field; undefined when empty. */
 export function parseSpoken(content: unknown): string | undefined {
   if (typeof content !== "string") return undefined;
   const text = content.replace(/```[\s\S]*?```/g, " ").replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
@@ -187,8 +218,8 @@ export class HandsFreeModel {
     return this.ask(formatRouteMessage(context), HANDS_FREE_TIMEOUTS_MS.route, "route").then(parseRouteDecision);
   }
 
-  speak(reply: string): Promise<string | undefined> {
-    return this.ask(`JOB: SPEAK\nReply:\n${reply.slice(0, 12_000)}`, HANDS_FREE_TIMEOUTS_MS.speak, "speak").then(parseSpoken);
+  speak(reply: string): Promise<HandsFreeSpokenSummary | undefined> {
+    return this.ask(`JOB: SPEAK\nReply:\n${reply.slice(0, 12_000)}`, HANDS_FREE_TIMEOUTS_MS.speak, "speak").then(parseSpokenSummary);
   }
 
   progress(activity: HandsFreeActivity): Promise<string | undefined> {

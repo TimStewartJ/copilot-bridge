@@ -413,6 +413,7 @@ export function describeVoiceCaptureError(error: unknown): string {
   if (
     name === "NotFoundError"
     || name === "DevicesNotFoundError"
+    // agent-text-audit: error (browser media errors)
     || normalizedMessage.includes("object can not be found here")
   ) {
     return "No microphone found. Check your browser and system audio input.";
@@ -429,7 +430,9 @@ export function describeVoiceCaptureError(error: unknown): string {
   if (
     name === "NotReadableError"
     || name === "TrackStartError"
+    // agent-text-audit: error (browser media errors)
     || normalizedMessage.includes("concurrent mic process limit")
+    // agent-text-audit: error (browser media errors)
     || normalizedMessage.includes("failed to allocate videosource")
   ) {
     return "Microphone unavailable. Close other apps or tabs using it, then retry.";

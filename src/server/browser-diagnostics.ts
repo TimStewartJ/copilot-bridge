@@ -46,6 +46,7 @@ function blockedPageIssues(spans: readonly TelemetrySpan[]): BrowserDiagnosticsI
     const product = getMetadataString(span, "by");
     if (!product || getMetadataString(span, "kind") === "captcha") continue;
     // A block no product was recognised in is the site's, so those are told apart by site.
+    // agent-text-audit: bridge-text (its own label)
     const by = product === "This site" ? getMetadataString(span, "urlHost") ?? "an unknown site" : product;
     byName.set(by, [...(byName.get(by) ?? []), span]);
   }
@@ -488,12 +489,14 @@ export async function checkAdoBrowserAuthentication(
       title = titleResult.output.trim();
       const parsed = new URL(finalUrl);
       if (parsed.origin === expectedOrigin) {
+        // agent-text-audit: tool-output (web page titles)
         if (/\bboards\b|\bwork items\b/i.test(title)) break;
         await new Promise((resolve) => setTimeout(resolve, 1_000));
         continue;
       }
       if (
         !parsed.hostname.toLowerCase().includes("login.microsoftonline.com")
+        // agent-text-audit: tool-output (web page titles)
         && !/working|sign in|log in/i.test(title)
       ) {
         break;
@@ -507,6 +510,7 @@ export async function checkAdoBrowserAuthentication(
   const parsedFinalUrl = new URL(result.finalUrl);
   const expected = new URL(expectedOrigin);
   const loginHost = parsedFinalUrl.hostname.toLowerCase().includes("login.microsoftonline.com");
+  // agent-text-audit: tool-output (web page titles)
   const titleIndicatesLogin = /\bsign in\b|\blog in\b/i.test(result.title);
   let check: AuthenticatedServiceCheck;
   if (loginHost || titleIndicatesLogin) {
@@ -519,6 +523,7 @@ export async function checkAdoBrowserAuthentication(
       expectedOrigin,
       message: "Azure DevOps redirected to a sign-in experience.",
     };
+  // agent-text-audit: tool-output (web page titles)
   } else if (parsedFinalUrl.origin === expected.origin && /\bboards\b|\bwork items\b/i.test(result.title)) {
     check = {
       service: "ado",

@@ -80,6 +80,7 @@ export function createVoiceJobManager({
   const SEND_REFUSED_RETRY_MS = 30_000;
   const SEND_REFUSED_POLL_MS = 500;
   /** Refused before reaching the agent, for a moment: the turn is starting, or just ended. */
+  // agent-text-audit: error (the Bridge's own steering errors)
   const SEND_REFUSED_FOR_NOW = /still starting|still reconnecting|not accepting steering|not busy|ended before steering|busy processing another message/i;
   const RESTART_RETRY_DELAY_MS = 30_000;
   let maintenanceRun: Promise<VoiceJobMaintenanceResult> | undefined;

@@ -685,7 +685,7 @@ function SessionUsageSkeleton() {
       <div className="grid grid-cols-1 gap-x-12 gap-y-7 lg:grid-cols-2">
         {["Heaviest sessions", "Models used"].map((label) => (
           <div key={label} className="space-y-1">
-            <Skeleton height={10} width={label === "Models used" ? 78 : 110} shape="pill" />
+            <Skeleton height={10} width={/* agent-text-audit: bridge-text (its own skeleton labels) */ label === "Models used" ? 78 : 110} shape="pill" />
             <div className={DS.surface.divided}>
               {Array.from({ length: 3 }, (_, index) => (
                 <div key={index} className="flex items-center gap-3 py-2.5">

@@ -286,6 +286,7 @@ export function getStaleMcpSessionServerName(
 ): string | undefined {
   if (!result) return undefined;
   const match = result.match(
+    // agent-text-audit: error (agent runtime errors)
     /MCP server ['"]([^'"]+)['"]:[\s\S]*MCP error\s+-32001:\s*Session not found\b/i,
   );
   const serverName = match?.[1]?.trim();
@@ -380,8 +381,11 @@ export function isStaleAgentSessionError(error: unknown): boolean {
   // The provider can also retain an input-item reference from the previous
   // session connection. It reports that as a 400 instead of a transport error,
   // but the cached SDK wrapper is stale and must take the same recovery path.
+  // agent-text-audit: error (agent runtime errors)
   return /\bSession not found\b/i.test(message)
+    // agent-text-audit: error (agent runtime errors)
     || /Pending response rejected since connection got disposed/i.test(message)
+    // agent-text-audit: error (agent runtime errors)
     || /input item ID does not belong to this connection/i.test(message);
 }
 
@@ -1690,7 +1694,7 @@ export class SessionRunner {
         handleEvent(ending.event, context);
         return;
       }
-      const content = pendingTerminalCompletion?.content ?? lastAssistantContent ?? "(no response)";
+      const content = pendingTerminalCompletion?.content ?? lastAssistantContent ?? "";
       endCurrentContextTurn(ending.event);
       recordRunCompletion(ending.event, context, "done", {
         finalContentLength: content.length,
@@ -2486,7 +2490,7 @@ export class SessionRunner {
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
           const terminalCompletion = extractTerminalCompletion(event);
           const resolvedTerminalCompletion = terminalCompletion ?? pendingTerminalCompletion;
-          const content = resolvedTerminalCompletion?.content ?? lastAssistantContent ?? "(no response)";
+          const content = resolvedTerminalCompletion?.content ?? lastAssistantContent ?? "";
           if (
             context.origin === "live"
             && liveAssistantTurnOpen

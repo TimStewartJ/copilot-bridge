@@ -11,6 +11,7 @@ export function countWords(text: string): number {
   return normalized ? normalized.split(" ").length : 0;
 }
 
+// agent-text-audit: user-input (filler sounds the user makes)
 const FILLER_WORD_RE = /^(?:u+h*m+|u+h+|h+m+|m+h*m*|a+h+|e+r+m*|huh|mhm|uh-?huh|oh+|ooh+)$/;
 
 /** True for utterances that carry no request: silence, breath noise, "um", "huh". */
