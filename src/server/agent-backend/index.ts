@@ -61,6 +61,8 @@ export interface CreateAgentBackendOptions {
    * disposable sessions).
    */
   clientEnv?: Record<string, string | undefined>;
+  /** Directory for the scratch Copilot home that agent shells use; see agent-shell-env.ts. */
+  agentShellDir?: string;
 }
 
 /**
@@ -73,7 +75,7 @@ export function createAgentBackend(opts: CreateAgentBackendOptions): AgentBacken
       const options = buildCopilotClientOptions(opts.clientEnv);
       // The pinned CLI's headless stdio mode owns its local session manager.
       // npm-loader.js forwards to a native child, so fencing must verify both.
-      return new CopilotBackend(new CopilotClient(options), { localStdioOwnership: true });
+      return new CopilotBackend(new CopilotClient(options), { localStdioOwnership: true, agentShellDir: opts.agentShellDir });
     }
     default: {
       const _exhaustive: never = opts.kind;

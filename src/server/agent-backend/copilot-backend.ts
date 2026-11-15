@@ -27,6 +27,7 @@ import {
   toRuntimeSessionConfig,
 } from "./copilot-fusion.js";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
+import { writeAgentShellInitScripts, type AgentShellInitScript } from "../agent-shell-env.js";
 import { signedInAccountIds, toCopilotAccounts } from "../copilot-accounts.js";
 import type { CopilotAccount } from "../../shared/copilot-accounts.js";
 import { capDeadline, createDeadline, settleByDeadline, sleepUntilDeadline, type Deadline } from "../deadline.js";
@@ -908,13 +909,18 @@ export class CopilotBackend implements AgentBackend {
   private modelCatalog: Promise<AgentModelInfo[]> | undefined;
   private readonly localStdioOwnership: boolean;
   private readonly startClient: () => Promise<void>;
+  private readonly agentShellDir: string | undefined;
+  private agentShellInitScripts: Promise<AgentShellInitScript[]> | undefined;
 
   constructor(private readonly client: CopilotClient, options: {
     logger?: Pick<Console, "warn" | "error">;
     /** Set only by the factory for the pinned, locally owning stdio runtime. */
     localStdioOwnership?: boolean;
+    /** Where agent shells get their scratch Copilot home; see agent-shell-env.ts. */
+    agentShellDir?: string;
   } = {}) {
     this.logger = options.logger ?? console;
+    this.agentShellDir = options.agentShellDir;
     this.startClient = client.start.bind(client);
     this.localStdioOwnership = options.localStdioOwnership === true;
     if (this.localStdioOwnership) {
@@ -1510,7 +1516,29 @@ export class CopilotBackend implements AgentBackend {
     }
   }
 
+  private async isolateAgentShells(session: any): Promise<void> {
+    if (!this.agentShellDir) return;
+    const sessionId = typeof session?.sessionId === "string" ? session.sessionId.slice(0, 8) : "?";
+    const update = session?.rpc?.options?.update;
+    if (typeof update !== "function") {
+      this.logger.warn(`[copilot-backend] [${sessionId}] Agent shells keep the Bridge's COPILOT_HOME: this Copilot SDK build cannot set shell options`);
+      return;
+    }
+    try {
+      this.agentShellInitScripts ??= writeAgentShellInitScripts(this.agentShellDir).catch((error: unknown) => {
+        this.agentShellInitScripts = undefined;
+        throw error;
+      });
+      const initScripts = await this.agentShellInitScripts;
+      const updated: unknown = await this.rpc("session.updateOptions", () => update.call(session.rpc.options, { shell: { initScripts } }));
+      if (!isRecord(updated) || updated.success !== true) throw new Error("the runtime did not apply the shell options");
+    } catch (error) {
+      this.logger.warn(`[copilot-backend] [${sessionId}] Agent shells keep the Bridge's COPILOT_HOME: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private async wrapSession(session: any, prepared: ReturnType<typeof prepareCopilotSessionConfig>, initialModel: string | undefined): Promise<AgentSession> {
+    await this.isolateAgentShells(session);
     const wrapped = wrapCopilotSession(
       session,
       prepared.pendingInteractionEvents,

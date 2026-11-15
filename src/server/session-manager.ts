@@ -127,6 +127,7 @@ import { createNativeBridgeTools, DEFERRED_BRIDGE_TOOL_NAMES, type BridgeNativeT
 import { getBrowserRuntime } from "./browser-runtime.js";
 import { createBridgeBrowserLifecycle, noopBrowserLifecycle, type BrowserLifecycle } from "./browser-lifecycle.js";
 import type { RuntimePaths } from "./runtime-paths.js";
+import { AGENT_SHELL_DIR_NAME } from "./agent-shell-env.js";
 import type {
   PendingUserInputRequestView,
   UserInputRequestId,
@@ -3305,7 +3306,11 @@ export class SessionManager {
 
   private createBackend(): AgentBackend {
 
-    return this.deps.createBackend?.() ?? createAgentBackend({ kind: "copilot", clientEnv: this.deps.clientEnv });
+    return this.deps.createBackend?.() ?? createAgentBackend({
+      kind: "copilot",
+      clientEnv: this.deps.clientEnv,
+      ...(this.deps.runtimePaths ? { agentShellDir: join(this.deps.runtimePaths.dataDir, AGENT_SHELL_DIR_NAME) } : {}),
+    });
   }
 
   private captureRuntimeOwner(backend: AgentBackend | null = this.backend): SessionRuntimeOwner {

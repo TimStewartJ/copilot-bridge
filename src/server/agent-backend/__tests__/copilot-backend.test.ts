@@ -1,8 +1,11 @@
 // Copilot adapter delegation and native permission readiness.
 
 import { describe, expect, it, vi } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { CopilotBackend } from "../copilot-backend.js";
 import { AGENT_RPC_TIMEOUTS_MS } from "../rpc-timeouts.js";
+import { makeTestDir } from "../../__tests__/helpers.js";
 
 function createFakeSession(rpc: any = {}) {
   return {
@@ -347,6 +350,22 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(switchTo).toHaveBeenLastCalledWith({ modelId: "claude-opus-5.5" });
     await wrapped.setModel("auto", { reasoningEffort: "hydrafusion-max" });
     expect(switchTo).toHaveBeenLastCalledWith({ modelId: "auto", autoTier: "hydrafusion-max", modelCapabilities: capabilities });
+  });
+
+  it("points agent shells at a scratch COPILOT_HOME on create and resume", async () => {
+    const update = vi.fn(async () => ({ success: true }));
+    const client = createFakeClient(createFakeSession({ options: { update } }));
+    const dir = join(makeTestDir("agent-shell"), "agent-shell");
+    const backend = new CopilotBackend(client as any, { agentShellDir: dir });
+
+    await backend.createSession({});
+    await backend.resumeSession("chat", {});
+
+    const expected = { shell: { initScripts: [{ path: join(dir, "env.sh"), shell: "bash" }, { path: join(dir, "env.ps1"), shell: "powershell" }] } };
+    expect(update.mock.calls).toEqual([[expected], [expected]]);
+    expect(readFileSync(join(dir, "env.sh"), "utf8")).toContain(join(dir, "copilot-home"));
+    expect(readFileSync(join(dir, "env.ps1"), "utf8")).toContain(join(dir, "copilot-home"));
+    expect(existsSync(join(dir, "copilot-home"))).toBe(true);
   });
 
   it("advertises pending interaction events without leaving an in-process elicitation handler", async () => {
