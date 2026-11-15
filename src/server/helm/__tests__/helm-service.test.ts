@@ -377,9 +377,12 @@ describe("Helm session profiles", () => {
     expect(profile.configOptions?.()).toMatchObject({
       promptRole: expect.stringContaining("you are Helm"),
       extraGuidance: expect.stringContaining("(claude-opus-5)"),
+      playbooks: false,
     });
-    const expected = profile.expectedToolNames(["task_list", "session_start"]);
+    const expected = profile.expectedToolNames(["task_list", "session_start", "playbook_select", "verify_complete"]);
     expect(expected).toEqual(expect.arrayContaining(["task_list", "session_start", "bridge_overview", "read_bridge"]));
+    expect(expected).not.toContain("playbook_select");
+    expect(expected).not.toContain("verify_complete");
     const applied = profile.apply({
       sessionId: "abc",
       tools: [{ name: "task_list" }, { name: "bridge_overview" }],
@@ -395,7 +398,7 @@ describe("Helm session profiles", () => {
     // Its reused, size-capped wrappers of Bridge tools are for the looks; the chat has the originals.
     expect(names.filter((name: string) => name === "task_list")).toHaveLength(1);
     expect(new Set(names).size).toBe(names.length);
-    expect(applied.excludedTools).toEqual(["report_intent", "ask_user"]);
+    expect(applied.excludedTools).toEqual(["report_intent", "ask_user", "playbook_select", "verify_complete"]);
     expect(applied.mcpServers).toEqual({ github: {} });
     expect(applied.skillDirectories).toEqual(["/skills"]);
     expect(applied.availableTools).toBeUndefined();

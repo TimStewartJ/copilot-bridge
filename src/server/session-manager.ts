@@ -674,7 +674,7 @@ export interface SessionConfigProfile {
    */
   expectedToolNames(bridgeToolNames: readonly string[]): readonly string[];
   /** Prompt choices for the ordinary config the profile starts from; they win over the chat's stored ones. */
-  configOptions?(): Pick<SessionConfigOptions, "promptRole" | "extraGuidance">;
+  configOptions?(): Pick<SessionConfigOptions, "promptRole" | "extraGuidance" | "playbooks">;
   apply<T extends Record<string, unknown>>(config: T): T;
   /**
    * Reasoning effort for a turn that did not ask for one. Read at the start of each turn, so
@@ -5998,7 +5998,7 @@ export class SessionManager {
     this.deliveredTurnContext.set(sessionId, { generation: (current?.generation ?? 0) + 1, hashes: emptyBridgeContextHashes() });
   }
 
-  /** The playbook a chat follows and who chose it. Undefined for chats with their own instructions (Helm). */
+  /** The playbook a chat follows and who chose it. Undefined for profiled chats (Helm), which do not use playbooks. */
   getSessionPlaybook(sessionId: string): SessionPlaybookView | undefined {
     if (this.deps.resolveSessionProfile?.(sessionId)) return undefined;
     const resolved = resolveSessionPlaybook(
@@ -6020,7 +6020,7 @@ export class SessionManager {
     const store = this.deps.sessionPlaybookStore;
     if (!store) throw new Error("Playbooks are not available");
     if (this.deps.resolveSessionProfile?.(sessionId)) {
-      throw new Error("This chat uses its own instructions, so playbooks do not apply");
+      throw new Error("This chat does not use playbooks");
     }
     if (playbook !== null && playbook !== NO_PLAYBOOK && !this.deps.skillCatalog?.findPlaybook(playbook)) {
       throw new Error(`Playbook "${playbook}" is not installed`);

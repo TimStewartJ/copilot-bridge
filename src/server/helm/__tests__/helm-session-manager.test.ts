@@ -90,8 +90,8 @@ function createManager(
   const chatTools = [HELM_TOOLS[0]!];
   const profile: SessionConfigProfile = {
     expectedToolNames: (bridgeToolNames) => [...bridgeToolNames, ...chatTools.map((tool) => tool.name)],
-    configOptions: () => ({ promptProfile: "assistant", promptRole: "In this chat you are Helm.", extraGuidance: "<helm>Helm's guidance</helm>" }),
-    apply: (config) => applyHelmChatProfile(config, { tools: chatTools }),
+    configOptions: () => ({ promptRole: "In this chat you are Helm.", extraGuidance: "<helm>Helm's guidance</helm>", playbooks: false }),
+    apply: (config) => applyHelmChatProfile(config, { tools: chatTools, playbookSkills: ["bug-fix"] }),
     ...(options.defaultTurnEffort ? { defaultTurnReasoningEffort: options.defaultTurnEffort } : {}),
     ...(options.conversationContext ? { conversationContext: options.conversationContext } : {}),
   };
@@ -159,7 +159,11 @@ describe("SessionManager with the Helm profile", () => {
         expect(config.systemMessage.content).toMatch(/<helm>Helm's guidance<\/helm>$/);
         expect(config.tools.map((tool: { name: string }) => tool.name)).toEqual(expect.arrayContaining(["staging_deploy", "task_list", "bridge_overview"]));
         expect(config.availableTools).toBeUndefined();
-        expect(config.excludedTools).toContain("ask_user");
+        expect(config.excludedTools).toEqual(expect.arrayContaining(["ask_user", "playbook_select", "verify_complete"]));
+        // No playbooks: neither the method's step that picks one nor the skills that need the tools.
+        expect(config.systemMessage.sections.guidelines.content).not.toContain("playbook_select");
+        expect(config.systemMessage.sections.guidelines.content).not.toContain("verify_complete");
+        expect(config.disabledSkills).toEqual(["bug-fix"]);
         expect(Object.keys(config.mcpServers)).toContain("custom");
         expect(config.skillDirectories.length).toBeGreaterThan(0);
       }
@@ -170,6 +174,9 @@ describe("SessionManager with the Helm profile", () => {
       expect(plainConfig.systemMessage.content).not.toContain("<helm>");
       expect(plainConfig.tools.map((tool: { name: string }) => tool.name)).not.toContain("bridge_overview");
       expect(plainConfig.excludedTools).not.toContain("ask_user");
+      expect(plainConfig.excludedTools).not.toContain("playbook_select");
+      expect(plainConfig.systemMessage.sections.guidelines.content).toContain("playbook_select");
+      expect(plainConfig.disabledSkills).toBeUndefined();
     } finally {
       await manager.gracefulShutdown();
       db.close();

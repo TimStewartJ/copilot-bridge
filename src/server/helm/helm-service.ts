@@ -244,6 +244,7 @@ export class HelmService implements HelmToolRuntime {
           const settings = this.ctx.settingsStore.getSettings();
           return {
             promptRole: HELM_CHAT_ROLE,
+            playbooks: false,
             extraGuidance: buildHelmChatGuidance({
               timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
               ...(settings.model ? { defaultWorkModel: settings.model } : {}),
@@ -251,7 +252,10 @@ export class HelmService implements HelmToolRuntime {
             }),
           };
         },
-        apply: (config) => applyHelmChatProfile(config, { tools }),
+        apply: (config) => applyHelmChatProfile(config, {
+          tools,
+          playbookSkills: this.ctx.skillCatalog?.playbooks().map((skill) => skill.id) ?? [],
+        }),
         conversationContext: (sessionId, { afterLoss }) => {
           // Without a loss, a conversation that already replied before this Bridge process started
           // got its index then (or predates it): resending would only repeat it.

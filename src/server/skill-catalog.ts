@@ -143,6 +143,7 @@ Playbooks name roles instead of services. No installed skill fills a role on thi
 export function formatModelRolesBlock(
   settings: Pick<AppSettings, "modelRoles" | "modelPresets" | "model"> | undefined,
   models?: readonly RoleModelInfo[],
+  options: { playbooks?: false } = {},
 ): string | undefined {
   if (!settings) return undefined;
   const helpers = resolveModelRole(settings, "subagents", models);
@@ -165,7 +166,9 @@ export function formatModelRolesBlock(
   const panelLines = [...panel.entries()].map(([model, label]) => `${model} (${getModelFamilyLabel(getModelFamily(model))}, ${label})`);
   return [
     "<model_roles>",
-    "Playbooks ask for models by role. Pass the model to the task tool when a step names a role.",
+    options.playbooks === false
+      ? "Models by role, for the task tool when work calls for a helper, a reviewer or a panel."
+      : "Playbooks ask for models by role. Pass the model to the task tool when a step names a role.",
     `- helpers (searches, commands, routine sub-tasks): ${describe(helpers, "the runtime's default for sub-agents")}`,
     `- reviewers (review and judgment): ${describe(reviewers, "the chat's own model")}`,
     `- panel (cross-model review, different families first): ${panelLines.length > 0 ? panelLines.join("; ") : "only the chat's own model is configured"}`,

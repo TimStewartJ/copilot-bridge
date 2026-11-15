@@ -685,7 +685,7 @@ describe("SessionManager bounded session lifecycle", () => {
       await expect(manager.readPreviousRunReport("never-ran")).resolves.toBeUndefined();
     });
 
-    it("refuses unknown chats, failed creations, uninstalled playbooks and chats with their own prompt", async () => {
+    it("refuses unknown chats, failed creations, uninstalled playbooks and chats that do not use playbooks", async () => {
       const { manager } = createManager();
       manager.deps.skillCatalog = catalog;
       await expect(manager.setSessionPlaybook("missing", "watch", "user")).rejects.toThrow("Session not found");
@@ -701,7 +701,7 @@ describe("SessionManager bounded session lifecycle", () => {
 
       mkdirSync(manager.getSessionStateDir("helm-chat"), { recursive: true });
       manager.deps.resolveSessionProfile = (sessionId: string) => (sessionId === "helm-chat" ? { apply: (cfg: unknown) => cfg } : undefined);
-      await expect(manager.setSessionPlaybook("helm-chat", "watch", "user")).rejects.toThrow(/do not apply/);
+      await expect(manager.setSessionPlaybook("helm-chat", "watch", "user")).rejects.toThrow(/does not use playbooks/);
       expect(manager.getSessionPlaybook("helm-chat")).toBeUndefined();
     });
 

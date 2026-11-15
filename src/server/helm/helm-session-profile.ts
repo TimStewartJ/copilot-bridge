@@ -65,21 +65,33 @@ export function applyHelmSessionProfile<T extends Record<string, unknown>>(base:
 }
 
 /**
- * Built-in tools Helm's chat goes without. ask_user shows a form, and hands-free has no way to
- * speak one or take its answer; Helm asks its questions in its reply instead.
+ * Tools Helm's chat goes without. ask_user shows a form, and hands-free has no way to speak one or
+ * take its answer; Helm asks its questions in its reply instead. Helm's chat does not use
+ * playbooks, so it has neither the tool that picks one nor the one that reports a playbook done.
  */
-export const HELM_CHAT_EXCLUDED_TOOLS = ["ask_user"] as const;
+export const HELM_CHAT_EXCLUDED_TOOLS = ["ask_user", "playbook_select", "verify_complete"] as const;
 
-/** Adds Helm's own tools to an ordinary chat's config. */
-export function applyHelmChatProfile<T extends Record<string, unknown>>(base: T, options: { tools: readonly BridgeToolDefinition[] }): T {
+/**
+ * Adds Helm's own tools to an ordinary chat's config and hides playbook skills, which would tell
+ * Helm to call the playbook tools it does not have.
+ */
+export function applyHelmChatProfile<T extends Record<string, unknown>>(
+  base: T,
+  options: { tools: readonly BridgeToolDefinition[]; playbookSkills?: readonly string[] },
+): T {
   const own = createNativeBridgeTools(options.tools);
   const ownNames = new Set(own.map((tool) => tool.name));
   const baseTools = Array.isArray(base.tools) ? (base.tools as Array<{ name: string }>).filter((tool) => !ownNames.has(tool.name)) : [];
   const excluded = Array.isArray(base.excludedTools) ? (base.excludedTools as string[]) : [];
+  const disabledSkills = [...new Set([
+    ...(Array.isArray(base.disabledSkills) ? (base.disabledSkills as string[]) : []),
+    ...(options.playbookSkills ?? []),
+  ])];
   return {
     ...base,
     clientName: HELM_CLIENT_NAME,
     tools: [...baseTools, ...own],
     excludedTools: [...new Set([...excluded, ...HELM_CHAT_EXCLUDED_TOOLS])],
+    ...(disabledSkills.length > 0 ? { disabledSkills } : {}),
   } as unknown as T;
 }

@@ -188,6 +188,9 @@ describe("session-config-builder base method", () => {
     expect(content).toContain("- messaging (sending messages, posts, replies or email as the user): pack-sender");
     expect(content).toContain("- ci (builds, pipelines, test runs and artifacts): none installed");
     expect(content).toContain("- pr-to-merge-ready: host-reviews");
+    // A chat without playbooks (Helm's) gets no role map for them.
+    const withoutPlaybooks = buildSessionConfig({ deps: createDeps(deps), callbacks: createCallbacks(), options: { playbooks: false } });
+    expect(withoutPlaybooks.systemMessage.content).not.toContain("<skill_roles>");
     expect(cfg.skillDirectories).toEqual([join("/home", "bridge-user", ".copilot", "skills"), "/packs/team/skills", join(TEST_REPO_ROOT, "skills")]);
   });
 
