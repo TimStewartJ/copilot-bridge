@@ -16,7 +16,7 @@ beforeEach(() => {
   starters = createTaskStartersStore(db);
 });
 
-function service(reply: string | undefined, extra: Record<string, unknown> = {}, options = {}) {
+function service(reply: string | undefined, extra: Record<string, unknown> = {}, options = {}, transcripts: Record<string, Array<{ role: string; content: string; timestamp?: string }>> = {}) {
   const prompts: string[] = [];
   const ctx = {
     ...extra,
@@ -25,7 +25,8 @@ function service(reply: string | undefined, extra: Record<string, unknown> = {},
     settingsStore: { getSettings: () => ({}) },
     sessionTitles: { getTitle: () => undefined },
     sessionManager: {
-      isSessionBusy: () => false,
+      isSessionBusy: (id: string) => ((extra.busy as string[] | undefined) ?? []).includes(id),
+      readMessagesFromDisk: async (sessionId: string) => ({ messages: (transcripts[sessionId] ?? []).map((entry) => ({ type: "message", ...entry })) }),
       listModels: async () => [],
       createHelperSession: async () => ({
         session: {
@@ -71,6 +72,26 @@ describe("task starters refresh", () => {
     expect(after.starters.map((starter) => starter.label)).toEqual(["Draft the notes"]);
   });
 
+  it("shows the model the latest reply of the task's most recent chat that isn't a scheduled run or still working", async () => {
+    const task = taskStore.createTask("Example move");
+    for (const id of ["old-chat", "new-chat", "monitor", "running"]) taskStore.linkSession(task.id, id);
+    const states: Record<string, { triggeredBy?: string; lastVisibleActivityAt?: string }> = {
+      "old-chat": { lastVisibleActivityAt: "2026-01-01T10:00:00Z" },
+      "new-chat": { lastVisibleActivityAt: "2026-01-02T10:00:00Z" },
+      monitor: { triggeredBy: "schedule", lastVisibleActivityAt: "2026-01-03T10:00:00Z" },
+      running: { lastVisibleActivityAt: "2026-01-04T10:00:00Z" },
+    };
+    const { svc, prompts } = service(JSON.stringify({ chats: [] }), { busy: ["running"], bridgeSessionStateStore: { getState: (id: string) => states[id] } }, {}, {
+      "old-chat": [{ role: "assistant", content: "Booked the movers." }],
+      "new-chat": [{ role: "assistant", content: "Compared three quotes." }, { role: "user", content: "Which is cheapest?" }, { role: "assistant", content: "The second quote is cheapest. Want me to book it?", timestamp: "2026-01-02T10:00:00Z" }],
+      monitor: [{ role: "assistant", content: "Nothing new." }],
+      running: [{ role: "assistant", content: "Checking the second quote now." }],
+    });
+    await svc.refresh(task.id);
+    const packet = JSON.parse(prompts[0]!);
+    expect(packet).toMatchObject({ latestReply: "The second quote is cheapest. Want me to book it?", latestReplyAt: "2026-01-02T10:00:00Z" });
+  });
+
   it("finds the JSON in a reply with text around it", () => {
     expect(parseStartersReply("Sure! {\"chats\": []} Done.")).toEqual([]);
     expect(() => parseStartersReply("no json")).toThrow(/no suggestions/);
@@ -88,7 +109,10 @@ describe("task starters auto-refresh", () => {
     taskStore.linkSession(task.id, "monitor-1");
     const states: Record<string, { triggeredBy?: string }> = { "monitor-1": { triggeredBy: "schedule" } };
     const reply = JSON.stringify({ chats: [{ label: "Order seeds", prompt: "Order the seeds on the list." }] });
-    const { svc, prompts } = service(reply, { globalBus: bus, bridgeSessionStateStore: { getState: (id: string) => states[id] } }, { autoRefresh: true });
+    const fullReply = `Drafted the bed layout. ${"Row details. ".repeat(200)}Shall I order the seeds?`;
+    const { svc, prompts } = service(reply, { globalBus: bus, bridgeSessionStateStore: { getState: (id: string) => states[id] } }, { autoRefresh: true }, {
+      "chat-1": [{ role: "assistant", content: fullReply }],
+    });
 
     bus.emit({ type: "session:idle", sessionId: "monitor-1", assistantPreview: "Nothing new." });
     await vi.advanceTimersByTimeAsync(AUTO_REFRESH_QUIET_MS);
@@ -99,7 +123,10 @@ describe("task starters auto-refresh", () => {
     expect(prompts).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(svc.get(task.id).refreshing).toBe(false));
-    expect(prompts[0]).toContain("Drafted the bed layout.");
+    const { latestReply } = JSON.parse(prompts[0]!) as { latestReply: string };
+    expect(latestReply.startsWith("Drafted the bed layout. Row details.")).toBe(true);
+    expect(latestReply.endsWith("Shall I order the seeds?")).toBe(true);
+    expect(latestReply.length).toBeLessThan(fullReply.length);
     expect(svc.get(task.id).starters).toMatchObject([{ label: "Order seeds", source: "auto" }]);
 
     bus.emit({ type: "session:idle", sessionId: "chat-1", assistantPreview: "Done." });

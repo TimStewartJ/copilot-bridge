@@ -19,6 +19,11 @@ const REFRESH_EFFORT = "medium";
 const MAX_HISTORY = 8;
 const MAX_CHECKLIST = 15;
 const MAX_CHATS = 8;
+/** The latest reply the model sees: its start and end, where replies put the outcome and any question. */
+const REPLY_HEAD = 1_000;
+const REPLY_TAIL = 500;
+/** Transcript entries read to find a chat's latest reply; an agentic run has many entries per reply. */
+const REPLY_SCAN_ENTRIES = 80;
 /** How long a task's chats must stay quiet after a reply before its suggestions refresh by themselves. */
 export const AUTO_REFRESH_QUIET_MS = 3 * 60_000;
 /** An automatic refresh waits this long after the task's last refresh of any kind. */
@@ -33,7 +38,7 @@ export class TaskStartersError extends Error {
 }
 
 type StartersContext = Pick<AppContext, "taskStore" | "settingsStore" | "sessionTitles"> & {
-  sessionManager: Pick<AppContext["sessionManager"], "listModels" | "createHelperSession" | "isSessionBusy">;
+  sessionManager: Pick<AppContext["sessionManager"], "listModels" | "createHelperSession" | "isSessionBusy" | "readMessagesFromDisk">;
   globalBus?: AppContext["globalBus"];
   bridgeSessionStateStore?: Pick<AppContext["bridgeSessionStateStore"], "getState">;
   taskStartersStore?: AppContext["taskStartersStore"];
@@ -50,7 +55,7 @@ const SYSTEM_PROMPT = [
   `- prompt: a complete, self-contained request written as Tim would type it, at most ${TASK_STARTER_PROMPT_MAX} characters. The chat sees the task's notes and instructions, so refer to them instead of copying them.`,
   "- Base every chat on what the task shows: its next step, open checklist items, what it is waiting for, recent history and chats. Do not invent facts, people or deadlines.",
   "- Do not suggest a chat that only repeats one already running or one that just finished, or one like those Tim dismissed.",
-  "- latestReplyStart, when present, is the start of the reply a chat on this task just gave: suggest what comes after it, not what it already did.",
+  "- latestReply, when present, is the latest reply in a chat on this task (a long one keeps its start and end): suggest what comes after it, not what it already did.",
   "- playbook: optional; one of bug-fix, feature, investigate, research, decide, write, plan-project, refactor, pr-to-merge-ready, buy-or-book, schedule-it, watch, sweep, or \"none\" for a small direct request. Leave it out when unsure.",
 ].join("\n");
 
@@ -60,8 +65,20 @@ function clip(text: string | undefined, max: number): string | undefined {
   return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
 }
 
+function headAndTail(text: string): string {
+  const trimmed = text.trim();
+  const chars = Array.from(trimmed);
+  if (chars.length <= REPLY_HEAD + REPLY_TAIL) return trimmed;
+  return `${chars.slice(0, REPLY_HEAD).join("").trimEnd()}\n…\n${chars.slice(-REPLY_TAIL).join("").trimStart()}`;
+}
+
+export interface LatestReply {
+  text: string;
+  at?: string;
+}
+
 /** What the refresh model is shown: one task, bounded. */
-export function buildTaskStartersPacket(ctx: StartersContext, taskId: string, latestReply?: string): string {
+export function buildTaskStartersPacket(ctx: StartersContext, taskId: string, latestReply?: LatestReply): string {
   const task = ctx.taskStore.getTask(taskId);
   if (!task) throw new TaskStartersError("Task not found", 404);
   const checklist = (ctx.checklistStore?.listChecklistItems(task.id) ?? []).filter((item) => !item.done).slice(0, MAX_CHECKLIST)
@@ -88,7 +105,7 @@ export function buildTaskStartersPacket(ctx: StartersContext, taskId: string, la
     openChecklist: checklist,
     recentHistory: history,
     recentChats: chats,
-    ...(latestReply ? { latestReplyStart: clip(latestReply, 1500) } : {}),
+    ...(latestReply?.text.trim() ? { latestReply: headAndTail(latestReply.text), ...(latestReply.at ? { latestReplyAt: latestReply.at } : {}) } : {}),
     currentSuggestions: current,
     dismissedByTim: dismissed,
   }, null, 1);
@@ -114,6 +131,12 @@ function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
+/** The chat whose reply a refresh reads, and the short preview to use if its transcript can't be read. */
+export interface ReplySource {
+  sessionId: string;
+  preview?: string;
+}
+
 export class TaskStartersService {
   private readonly refreshing = new Map<string, Promise<void>>();
   private readonly errors = new Map<string, string>();
@@ -121,7 +144,7 @@ export class TaskStartersService {
   private readonly generations = new Map<string, number>();
 
   /** Tasks waiting for their chats to stay quiet, with the reply that started the wait. */
-  private readonly quietTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; sessionIds: Set<string>; reply: string }>();
+  private readonly quietTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; sessionIds: Set<string>; replySessionId: string; reply: string }>();
   private readonly unsubscribe?: () => void;
   private readonly now: () => number;
 
@@ -148,24 +171,26 @@ export class TaskStartersService {
       if (previous) clearTimeout(previous.timer);
       const sessionIds = previous?.sessionIds ?? new Set<string>();
       sessionIds.add(sessionId);
-      this.waitForQuiet(link.id, sessionIds, reply, 0);
+      this.waitForQuiet(link.id, sessionIds, sessionId, reply, 0);
     }
   }
 
-  private waitForQuiet(taskId: string, sessionIds: Set<string>, reply: string, attempt: number): void {
+  private waitForQuiet(taskId: string, sessionIds: Set<string>, replySessionId: string, reply: string, attempt: number): void {
     const timer = setTimeout(() => {
       this.quietTimers.delete(taskId);
       // Checked now rather than at the reply: a scheduled run is marked after it starts delivering.
       const fromUser = [...sessionIds].filter((id) => this.ctx.bridgeSessionStateStore?.getState(id)?.triggeredBy !== "schedule");
       if (fromUser.length === 0) return;
       if (this.taskHasBusyChat(taskId)) {
-        if (attempt < AUTO_REFRESH_MAX_WAITS) this.waitForQuiet(taskId, new Set(fromUser), reply, attempt + 1);
+        if (attempt < AUTO_REFRESH_MAX_WAITS) this.waitForQuiet(taskId, new Set(fromUser), replySessionId, reply, attempt + 1);
         return;
       }
-      this.autoRefresh(taskId, reply);
+      // The chat that replied last, unless it was a scheduled run.
+      const from = fromUser.includes(replySessionId) ? replySessionId : fromUser[fromUser.length - 1]!;
+      this.autoRefresh(taskId, { sessionId: from, preview: from === replySessionId ? reply : undefined });
     }, AUTO_REFRESH_QUIET_MS);
     timer.unref?.();
-    this.quietTimers.set(taskId, { timer, sessionIds, reply });
+    this.quietTimers.set(taskId, { timer, sessionIds, replySessionId, reply });
   }
 
   private taskHasBusyChat(taskId: string): boolean {
@@ -175,7 +200,7 @@ export class TaskStartersService {
   }
 
   /** Refreshes a task whose chats went quiet, unless it refreshed recently or today's cap is spent. */
-  autoRefresh(taskId: string, latestReply?: string): boolean {
+  autoRefresh(taskId: string, reply?: ReplySource): boolean {
     const store = this.ctx.taskStartersStore;
     if (!store || this.refreshing.has(taskId)) return false;
     const task = this.ctx.taskStore.getTask(taskId);
@@ -185,7 +210,7 @@ export class TaskStartersService {
     const dayStart = new Date(this.now());
     dayStart.setHours(0, 0, 0, 0);
     if (store.countRefreshesSince("auto", dayStart.toISOString()) >= AUTO_REFRESH_DAILY_CAP) return false;
-    void this.refresh(taskId, { trigger: "auto", latestReply });
+    void this.refresh(taskId, { trigger: "auto", reply });
     return true;
   }
 
@@ -204,7 +229,7 @@ export class TaskStartersService {
   }
 
   /** Starts a refresh of one task; a second call while one runs joins it. Resolves when it is done. */
-  refresh(taskId: string, options: { trigger?: TaskStarterRefreshTrigger; latestReply?: string } = {}): Promise<void> {
+  refresh(taskId: string, options: { trigger?: TaskStarterRefreshTrigger; reply?: ReplySource } = {}): Promise<void> {
     if (!this.ctx.taskStore.getTask(taskId)) throw new TaskStartersError("Task not found", 404);
     const running = this.refreshing.get(taskId);
     if (running) return running;
@@ -213,7 +238,7 @@ export class TaskStartersService {
     this.generations.set(taskId, generation);
     const trigger = options.trigger ?? "manual";
     const logId = this.ctx.taskStartersStore?.startRefresh(taskId, trigger);
-    const work = withTimeout(this.runRefresh(taskId, generation, trigger, options.latestReply), REFRESH_TIMEOUT_MS + 30_000)
+    const work = withTimeout(this.runRefresh(taskId, generation, trigger, options.reply), REFRESH_TIMEOUT_MS + 30_000)
       .then((count) => { if (logId !== undefined) this.ctx.taskStartersStore?.finishRefresh(logId, count === null ? "skipped" : "ok", count); })
       .catch((error: unknown) => {
         if (logId !== undefined) this.ctx.taskStartersStore?.finishRefresh(logId, error instanceof Error ? error.message : String(error), null);
@@ -232,9 +257,41 @@ export class TaskStartersService {
     return store;
   }
 
+  /** The task's chat that was active most recently, leaving out scheduled runs and chats still working, whose last message is progress. */
+  private latestChat(taskId: string): string | undefined {
+    const task = this.ctx.taskStore.getTask(taskId);
+    let latest: { id: string; at: string } | undefined;
+    for (const id of task?.sessionIds ?? []) {
+      const state = this.ctx.bridgeSessionStateStore?.getState(id);
+      if (state?.triggeredBy === "schedule" || this.ctx.sessionManager.isSessionBusy(id)) continue;
+      const at = state?.lastVisibleActivityAt ?? "";
+      if (!latest || at > latest.at) latest = { id, at };
+    }
+    return latest?.id;
+  }
+
+  /** A chat's latest reply from its transcript, falling back to the short preview when it can't be read. */
+  private async readLatestReply(taskId: string, source?: ReplySource): Promise<LatestReply | undefined> {
+    const sessionId = source?.sessionId ?? this.latestChat(taskId);
+    const fallback = source?.preview ? { text: source.preview } : undefined;
+    if (!sessionId) return fallback;
+    try {
+      const { messages } = await this.ctx.sessionManager.readMessagesFromDisk(sessionId, { limit: REPLY_SCAN_ENTRIES });
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const entry = messages[index] as { type?: string; role?: string; content?: unknown; timestamp?: string };
+        if (entry.type === "message" && entry.role === "assistant" && typeof entry.content === "string" && entry.content.trim()) {
+          return { text: entry.content, ...(entry.timestamp ? { at: entry.timestamp } : {}) };
+        }
+      }
+    } catch (error) {
+      console.warn(`[task-starters] Could not read the latest reply: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return fallback;
+  }
+
   /** The number of suggestions written, or null when the answer arrived too late to use. */
-  private async runRefresh(taskId: string, generation: number, trigger: TaskStarterRefreshTrigger, latestReply?: string): Promise<number | null> {
-    const packet = buildTaskStartersPacket(this.ctx, taskId, latestReply);
+  private async runRefresh(taskId: string, generation: number, trigger: TaskStarterRefreshTrigger, reply?: ReplySource): Promise<number | null> {
+    const packet = buildTaskStartersPacket(this.ctx, taskId, await this.readLatestReply(taskId, reply));
     const models = await this.ctx.sessionManager.listModels().catch(() => [] as AgentModelInfo[]);
     const choice = chooseHelmModel(this.ctx.settingsStore.getSettings(), usableModels(models), { fallbackEffort: REFRESH_EFFORT });
     const helper = await this.ctx.sessionManager.createHelperSession({
