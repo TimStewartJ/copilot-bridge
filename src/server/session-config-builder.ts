@@ -32,6 +32,7 @@ import {
   HOME_GUIDANCE,
   IMAGE_GENERATION_GUIDANCE,
   LONG_RUNNING_WORK_GUIDANCE,
+  applyConciseReplyDirective,
   createCodingModeStatementRemover,
   removeCliOutputSurfaceNote,
   removeConciseReplyDirective,
@@ -43,7 +44,7 @@ import {
   DOC_LINK_GUIDANCE,
   WRITING_GUIDANCE,
 } from "./session-instructions.js";
-import { renderResponseStyle } from "../shared/response-style.js";
+import { renderResponseStyle, resolveResponseStyle } from "../shared/response-style.js";
 import {
   buildGitHubCopilotMcpToolConfig,
   buildGitHubCopilotSearchMcpServer,
@@ -467,13 +468,16 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   sections.identity = { action: createCodingModeStatementRemover(preambleText) };
   sections.preamble = { action: "replace", content: preambleText };
   // The CLI's tone differs by model family and conflicts with the Bridge style setting.
+  const resolvedStyle = resolveResponseStyle(settings?.responseStyle);
   sections.tone = {
     action: "replace",
-    content: `${renderResponseStyle(settings?.responseStyle)}\n\n${WRITING_GUIDANCE}\n\n${BASE_METHOD_REPORTING}`,
+    content: `${renderResponseStyle(resolvedStyle)}\n\n${WRITING_GUIDANCE}\n\n${BASE_METHOD_REPORTING}`,
   };
   sections.guidelines = { action: "append", content: params.options?.playbooks === false ? BASE_METHOD_WITHOUT_PLAYBOOKS : BASE_METHOD };
   sections.tool_efficiency = { action: removeCliOutputSurfaceNote };
-  sections.last_instructions = { action: removeConciseReplyDirective };
+  sections.last_instructions = {
+    action: resolvedStyle.detail === "concise" ? applyConciseReplyDirective : removeConciseReplyDirective,
+  };
 
   // Tighten the SDK's native task/write_agent contract, say how to use the time a slow command
   // takes, make ask_user forms carry their own context, and teach web_fetch escalation without

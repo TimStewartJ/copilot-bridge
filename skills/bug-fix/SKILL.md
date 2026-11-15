@@ -45,4 +45,4 @@ A reproduction that shows the bug is `reproduced` with result "pass". If you cou
 
 ## Reply
 
-The cause, the fix with file references, the failing-then-passing output, what you did not verify, and any commit, branch or pull request.
+The cause and fix in a few lines with file references, any preview, commit or pull request link, and any material gap not verified. When a verify_complete card is in the chat, leave the reproduction and test output to the card unless asked; sub-agents return their evidence directly.

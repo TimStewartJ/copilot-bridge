@@ -41,4 +41,4 @@ Checks of the named public behavior give the same results before and after. Call
 
 ## Reply
 
-What changed structurally, what was deleted, the before and after comparison, and any behavior difference with its approval.
+What changed structurally and what was deleted, plus any approved behavior difference. When a verify_complete card is in the chat, leave the before-and-after test runs to the card unless asked; sub-agents return their evidence directly.

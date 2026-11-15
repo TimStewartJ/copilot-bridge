@@ -114,9 +114,13 @@ async function fixture(signal: AbortSignal, completeAutopilot = false) {
     forResume = false,
     identity?: string,
     projectFolder = true,
+    detail?: "adaptive" | "concise" | "detailed",
   ): AgentSessionConfig => {
-    const settingsStore = identity ? createSettingsStore(setupTestDb()) : undefined;
-    settingsStore?.updateSettings({ identity });
+    const settingsStore = identity || detail ? createSettingsStore(setupTestDb()) : undefined;
+    settingsStore?.updateSettings({
+      ...(identity ? { identity } : {}),
+      ...(detail ? { responseStyle: { detail, guidance: "" } } : {}),
+    });
     const bridgeConfig = buildSessionConfig({
       deps: { config: { sessionMcpServers: {} }, clientEnv: { BRIDGE_COPILOT_GITHUB_TOKEN: "" }, settingsStore },
       options: { forResume },
@@ -383,13 +387,16 @@ describe("native Bridge system prompt", () => {
   it("keeps a custom identity intact even when it repeats the runtime mode statement", async ({ signal }) => {
     const { backend, configFor, requests, cleanup } = await fixture(signal);
     const statement = "You are an interactive tool that helps users with software engineering tasks.";
-    const identity = `You are Tim's assistant. ${statement}`;
+    const identity = `You are Alex's assistant. ${statement}`;
     try {
-      const session = await backend.createSession(configFor("gpt-5-mini", false, identity));
+      const session = await backend.createSession(configFor("gpt-5-mini", false, identity, true, "concise"));
       await session.sendAndWait({ prompt: "Return the fixture response." }, null);
       const prompt = systemPromptOf(requests.at(-1));
       expect(prompt.startsWith(`${identity}\n\n${BASE_METHOD_ROLE}\n\n<response_style>`)).toBe(true);
       expect(prompt.split(statement).length - 1).toBe(1);
+      expect(prompt).not.toContain("Respond concisely to the user");
+      const reminder = "Response style is concise: lead with the answer, skip unasked walkthroughs and card repeats, and stop once the request is met.";
+      expect(prompt.indexOf(reminder)).toBeGreaterThan(prompt.indexOf("</task_completion>"));
       await session.release();
     } finally { await cleanup(); }
   });

@@ -6,6 +6,7 @@ import { createSettingsStore, type SettingsStore } from "../settings-store.js";
 import { DEFAULT_RESPONSE_STYLE_GUIDANCE } from "../../shared/response-style.js";
 import { SYSTEM_MESSAGE_SECTIONS } from "@github/copilot-sdk";
 import {
+  applyConciseReplyDirective,
   BROWSER_GUIDANCE,
   DEFAULT_IDENTITY,
   ASK_OR_PROCEED_GUIDANCE,
@@ -165,6 +166,7 @@ describe("session-config-builder base method", () => {
     expect(config.systemMessage.content).toContain("<model_roles>");
     expect(config.systemMessage.sections.tone.content).toContain("Default detail: concise.");
     expect(config.systemMessage.sections.tone.content).toContain("Use plain language.");
+    expect(config.systemMessage.sections.last_instructions).toEqual({ action: applyConciseReplyDirective });
     expect(config.systemMessage.sections.tool_instructions.content).toContain(BROWSER_GUIDANCE);
   });
 

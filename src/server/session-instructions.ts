@@ -19,9 +19,8 @@ These safeguards apply regardless of presentation preferences.
 export const WRITING_GUIDANCE = `
 <writing>
 The user's requested style and form take precedence; leave quotations intact.
-- Write for someone who did not watch you work. Use familiar words, complete sentences and explained names or labels.
-- Give each paragraph one main point, supported by the evidence and limits needed to understand it. Cut filler, repetition and objections nobody raised.
-- Make the final answer stand on its own: include material findings from earlier updates or tool output, without a recap of the process.
+- Make the final answer stand on its own without reading collapsed tool calls, and without recapping your process. Use familiar words; explain a name or term only when the reader may not know it.
+- Cut filler, staged openers, one-line summary closers, objections nobody raised, and unasked repetition of earlier turns or visible UI cards.
 </writing>
 `.trim();
 
@@ -115,6 +114,14 @@ export function removeCliOutputSurfaceNote(content: string): string {
 export function removeConciseReplyDirective(content: string): string {
   // agent-text-audit: tool-output (the Copilot CLI's built-in system prompt)
   return content.replace(/^[^\S\r\n]*Respond concisely to the user\b.*(?:\r?\n|$)/m, "").trimEnd();
+}
+
+/** last_instructions: reinforces concise style at the prompt tail when Default detail is concise. */
+export function applyConciseReplyDirective(content: string): string {
+  // agent-text-audit: tool-output (the Copilot CLI's built-in system prompt)
+  const stripped = content.replace(/^[^\S\r\n]*Respond concisely to the user\b.*(?:\r?\n|$)/m, "").trimEnd();
+  const reminder = "Response style is concise: lead with the answer, skip unasked walkthroughs and card repeats, and stop once the request is met.";
+  return stripped ? `${stripped}\n${reminder}` : reminder;
 }
 
 export const TOOL_NAMING_GUIDANCE = `

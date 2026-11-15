@@ -64,7 +64,7 @@ export function createCompletionToolDefinitions(ctx: AppContext): BridgeToolDefi
         "An item's result says whether the check supports the work you are reporting: for `reproduced`, pass means the defect was reproduced. A premise you checked and found false (for example a build that has not passed) is a pass item whose claim states what you found; use fail only when your own work failed a check. " +
         "Mark an in-scope check you could not run honestly: result \"not_run\", or list it in unverified; either makes the report partial. Caveats outside what was asked (not pushed, no pull request, other platforms) go in notes, which never change the status. " +
         "Every claim must point to something that happened in this chat or on the real system. " +
-        "The chat shows the report as a card; still tell the user the outcome. For delegated work, return the evidence to the parent instead.",
+        "The chat shows the report as a card with your summary, checks and notes; state the outcome and any material caveat or next decision without re-listing the card's checks unless asked. For delegated work, return the evidence to the parent instead.",
       parameters: {
         type: "object",
         properties: {
@@ -163,7 +163,7 @@ export function createCompletionToolDefinitions(ctx: AppContext): BridgeToolDefi
           ...(playbookName ? { playbook: playbookName } : {}),
           ...(playbookLabel ? { playbookLabel } : {}),
           ...(historyEntryId !== undefined ? { historyEntryId } : {}),
-          message: `Recorded as ${word}. The card is in the chat; tell the user the outcome${status === "verified" ? "" : " and what remains"}.`,
+          message: `Recorded as ${word}. The card is in the chat with the checks and notes; state the outcome${status === "verified" ? "" : " and what remains"} without re-listing the card's checks unless asked.`,
         };
       },
     }),

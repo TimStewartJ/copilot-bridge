@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyConciseReplyDirective,
   createCodingModeStatementRemover,
   removeCliOutputSurfaceNote,
   removeConciseReplyDirective,
@@ -17,6 +18,16 @@ describe("system prompt section transforms", () => {
   it("removes only the concise-reply directive from last_instructions", () => {
     const content = "<task_completion>\n* Verify.\n</task_completion>\nRespond concisely to the user, but be thorough in your work.\n";
     expect(removeConciseReplyDirective(content)).toBe("<task_completion>\n* Verify.\n</task_completion>");
+  });
+
+  it("replaces the CLI concise-reply directive with the Bridge tail reminder when concise is active", () => {
+    const content = "<task_completion>\n* Verify.\n</task_completion>\nRespond concisely to the user, but be thorough in your work.\n";
+    const expected = "<task_completion>\n* Verify.\n</task_completion>\nResponse style is concise: lead with the answer, skip unasked walkthroughs and card repeats, and stop once the request is met.";
+    expect(applyConciseReplyDirective(content)).toBe(expected);
+    expect(applyConciseReplyDirective(content.replace(/\n/g, "\r\n"))).toBe(
+      "<task_completion>\r\n* Verify.\r\n</task_completion>\nResponse style is concise: lead with the answer, skip unasked walkthroughs and card repeats, and stop once the request is met.",
+    );
+    expect(applyConciseReplyDirective("<task_completion>\n* Verify.\n</task_completion>")).toBe(expected);
   });
 
   it("removes the software-engineering mode statement whether it is its own paragraph or joined to the identity", () => {

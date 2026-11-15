@@ -43,4 +43,4 @@ The feature works on the real surface, not only in tests. Call verify_complete w
 
 ## Reply
 
-What the feature does now, how it was checked (with screenshots published via publish_visual for UI), any commits or pull request, and what is not covered.
+What the feature does now, any preview, commit or pull request link (with UI screenshots published via publish_visual), and any material gap not covered. When a verify_complete card is in the chat, leave the check-by-check proof to the card unless asked; sub-agents return their evidence directly.

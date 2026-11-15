@@ -38,4 +38,4 @@ Every claim the answer depends on is backed by a source you opened or output you
 
 ## Reply
 
-The answer in one or two sentences, then the cited evidence, the confidence, open unknowns, and the next playbook if a change is needed.
+The answer in one or two sentences with the key file or source citations, plus any material unknown that could change it. When a verify_complete card is in the chat, leave the full check list to the card unless asked (sub-agents return their evidence directly); suggest a follow-up change only if asked.
