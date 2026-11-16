@@ -27,6 +27,7 @@ import {
 } from "./session-view.js";
 import { resolveSessionCreationOptions as resolveSessionCreationOptionsForContext } from "./session-creation-options.js";
 import { startTaskTidyChat } from "./task-tidy.js";
+import { buildTaskPagePrompt, startTaskChat } from "./task-chat-start.js";
 import { TaskStartersError, TaskStartersService } from "./task-starters.js";
 import { parseWorkspaceCwd } from "./session-formatting.js";
 import { buildTaskOverview, toOverviewSessions } from "./task-overview.js";
@@ -3838,6 +3839,20 @@ export function createApiRouter(
       res.json(launch.ok
         ? { sessionId: launch.sessionId }
         : { sessionId: launch.sessionId, error: "The tidy-up chat started, but its first message wasn't confirmed. Open it to check." });
+    } catch (err) {
+      if (sendSessionCapacityError(res, err)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Start a chat that makes the task's page
+  router.post("/tasks/:id/page/start", async (req, res) => {
+    if (!ctx.taskStore.getTask(req.params.id)) return res.status(404).json({ error: "Task not found" });
+    try {
+      const launch = await startTaskChat(ctx, req.params.id, buildTaskPagePrompt, () => sessionList.invalidate("route:task-page:create"));
+      res.json(launch.ok
+        ? { sessionId: launch.sessionId }
+        : { sessionId: launch.sessionId, error: "The page chat started, but its first message wasn't confirmed. Open it to check." });
     } catch (err) {
       if (sendSessionCapacityError(res, err)) return;
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

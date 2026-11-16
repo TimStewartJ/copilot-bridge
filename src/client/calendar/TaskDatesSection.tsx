@@ -1,5 +1,5 @@
-// A task's dates in one place: its revisit, checklist deadlines, events and next agent runs over the
-// coming month, with anything overdue first. Hidden when the task has none.
+// A task's dates in one place: checklist deadlines, events and next agent runs over the coming month,
+// with anything overdue first. The revisit is left to the task's Status. Hidden when the task has none.
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
@@ -9,30 +9,36 @@ import { DS, cx } from "../design/tokens";
 import { addDaysKey, toDateKey } from "./calendar-model";
 import { useCalendarQuery } from "./calendar-api";
 import { calendarEntryState } from "./calendar-entry";
-import { ItemMark, KIND_LABEL, formatShortDate, itemDayKey, itemTime } from "./calendar-ui";
+import { ItemMark, formatShortDate, itemDayKey, itemTime } from "./calendar-ui";
 
 const SHOWN = 5;
 
+/** The task's month of dates. Data kept from the previous task while this one loads counts as not loaded. */
+export function useTaskDatesQuery(taskId: string, enabled = true) {
+  const today = toDateKey(new Date());
+  const calendar = useCalendarQuery(today, addDaysKey(today, 30), { taskId, enabled });
+  const data = calendar.isPlaceholderData ? undefined : calendar.data;
+  return { today, data, settled: data !== undefined || calendar.isError };
+}
+
 export default function TaskDatesSection({ taskId }: { taskId: string }) {
   const navigate = useNavigate();
-  const today = toDateKey(new Date());
-  const calendar = useCalendarQuery(today, addDaysKey(today, 30), { taskId });
+  const { today, data } = useTaskDatesQuery(taskId);
   const rows = useMemo(() => {
-    const data = calendar.data;
     if (!data) return [];
     // One line per schedule: its next run says enough.
     const seenSchedules = new Set<string>();
     const upcoming = data.items.filter((item) => {
-      if (item.done) return false;
+      if (item.done || item.kind === "revisit") return false;
       if (item.kind !== "run") return true;
       if (seenSchedules.has(item.scheduleId ?? item.id)) return false;
       seenSchedules.add(item.scheduleId ?? item.id);
       return true;
     });
     const overdueIds = new Set(data.overdue.map((item) => item.id));
-    return [...data.overdue.map((item) => ({ item, overdue: true })),
+    return [...data.overdue.filter((item) => item.kind !== "revisit").map((item) => ({ item, overdue: true })),
       ...upcoming.filter((item) => !overdueIds.has(item.id)).map((item) => ({ item, overdue: false }))];
-  }, [calendar.data]);
+  }, [data]);
   if (rows.length === 0) return null;
 
   const when = (item: CalendarItem) => {
@@ -50,9 +56,9 @@ export default function TaskDatesSection({ taskId }: { taskId: string }) {
             <span className={cx("w-28 shrink-0 truncate text-xs tabular-nums", overdue ? "text-warning" : "text-text-secondary")}>
               {overdue ? `${formatShortDate(itemDayKey(item))} · late` : when(item)}
             </span>
-            <ItemMark item={item} colors={calendar.data?.colors} />
+            <ItemMark item={item} colors={data?.colors} />
             <span className="min-w-0 flex-1 truncate text-text-secondary">
-              {item.kind === "revisit" ? KIND_LABEL.revisit : item.title}
+              {item.title}
             </span>
           </div>
         ))}

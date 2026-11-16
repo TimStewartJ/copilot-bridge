@@ -4,7 +4,7 @@
 // own: it proposes moves, the user picks which to apply, and only then does it change anything.
 // Helm's weekly look offers one for tasks that show the signs below; a task's menu starts one too.
 import type { AppContext } from "./app-context.js";
-import { resolveSessionCreationOptions } from "./session-creation-options.js";
+import { startTaskChat, type TaskChatLaunch } from "./task-chat-start.js";
 import type { Task } from "./task-store.js";
 
 const MONTH = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?![a-z])\\.?";
@@ -55,31 +55,11 @@ export function buildTaskTidyPrompt(task: Pick<Task, "id" | "title" | "kind" | "
   ].join("\n");
 }
 
-export type TaskTidyLaunch =
-  | { ok: true; sessionId: string }
-  /** The chat exists but its first message was not confirmed; open it rather than starting another. */
-  | { ok: false; sessionId: string; error: string };
-
 /** Starts a chat on the task that tidies it, and waits until its first message is accepted. */
-export async function startTaskTidyChat(
+export function startTaskTidyChat(
   ctx: Pick<AppContext, "settingsStore" | "sessionManager" | "taskStore">,
   taskId: string,
   onCreated?: () => void,
-): Promise<TaskTidyLaunch> {
-  const task = ctx.taskStore.getTask(taskId);
-  if (!task) throw new Error("Task not found");
-  const creation = await resolveSessionCreationOptions(ctx, {});
-  if (creation.error) throw new Error(creation.error);
-  // Created in the foreground, so a chat that failed to start is an error rather than a chat to open.
-  const { sessionId } = await ctx.sessionManager.createTaskSession(
-    task.id, task.title, task.workItems, task.notes, task.cwd, undefined, creation.options,
-  );
-  ctx.taskStore.linkSession(task.id, sessionId);
-  onCreated?.();
-  try {
-    await ctx.sessionManager.startWorkAndWaitForDelivery(sessionId, buildTaskTidyPrompt(task));
-    return { ok: true, sessionId };
-  } catch (error) {
-    return { ok: false, sessionId, error: error instanceof Error ? error.message : String(error) };
-  }
+): Promise<TaskChatLaunch> {
+  return startTaskChat(ctx, taskId, buildTaskTidyPrompt, onCreated);
 }

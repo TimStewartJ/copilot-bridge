@@ -1,14 +1,12 @@
-import { useEffect, useState } from "react";
-import { Plus } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Pencil, Plus } from "lucide-react";
 import type { Task } from "../api";
 import { patchTask } from "../api";
 import { DS, cx } from "../design/tokens";
-import { Button, DisclosureRow, Field, FieldList, Notice, Section, TextInput } from "../design/primitives";
+import { Button, Field, FieldList, IconButton, Notice, Section, TextInput } from "../design/primitives";
 import { formatRevisit, formatRevisitMoment, toDateTimeInputValue, toDateTimeStorageValue } from "../lib/task-revisit";
 import { parseWhen, whenToDate } from "../../shared/typed-date";
-import { getTaskLifecycleDisplayState, getTaskStatusLabel } from "../task-completion-helpers";
 import TaskDeferralDialog from "./TaskDeferralDialog";
-import TaskMomentumHistory, { LatestMomentumChange } from "./TaskMomentumHistory";
 
 type MomentumFieldKey = "doneWhen" | "nextAction" | "waitingOn" | "nextTouchAt";
 
@@ -18,7 +16,8 @@ interface TaskMomentumFieldsProps {
   task: Task;
   onSaved?: () => void;
   onPatched?: (task: Task) => void;
-  onSelectSession?: (sessionId: string) => void;
+  /** Rows that belong with the task's status, such as its notes, drawn beneath the fields. */
+  children?: ReactNode;
 }
 
 interface FieldConfig {
@@ -59,19 +58,6 @@ export function isExpandablePanelValue(value: string): boolean {
   return value.length > PANEL_EXPAND_THRESHOLD || /\r?\n/.test(value);
 }
 
-export function getTaskContextSummary(task: Task): string {
-  if (getTaskLifecycleDisplayState(task) !== "active") return getTaskStatusLabel(task);
-  const revisit = task.nextTouchAt ? `Revisit ${new Date(task.nextTouchAt).toLocaleDateString(undefined, {
-    month: "short", day: "numeric", year: "numeric",
-  })}` : undefined;
-  if (task.deferred) return revisit ? `Deferred · ${revisit}` : "Deferred";
-  if (task.nextAction?.trim()) return `Next: ${task.nextAction.trim().replace(/\s+/g, " ")}`;
-  if (task.waitingOn?.trim()) return `Waiting for: ${task.waitingOn.trim().replace(/\s+/g, " ")}`;
-  if (revisit) return revisit;
-  if (task.kind !== "ongoing" && task.doneWhen?.trim()) return `Done when: ${task.doneWhen.trim().replace(/\s+/g, " ")}`;
-  return "No next step set";
-}
-
 export default function TaskMomentumFields(props: TaskMomentumFieldsProps) {
   return <TaskMomentumEditor key={props.task.id} {...props} />;
 }
@@ -80,7 +66,7 @@ function TaskMomentumEditor({
   task,
   onSaved,
   onPatched,
-  onSelectSession,
+  children,
 }: TaskMomentumFieldsProps) {
   const [values, setValues] = useState<FieldValues>(() => toFieldValues(task));
   const [drafts, setDrafts] = useState<FieldValues>(() => toFieldValues(task));
@@ -89,9 +75,6 @@ function TaskMomentumEditor({
   const [expandedFields, setExpandedFields] = useState<Set<MomentumFieldKey>>(() => new Set());
   const [deferralOpen, setDeferralOpen] = useState(false);
   const [saveError, setSaveError] = useState("");
-  const [expanded, setExpanded] = useState(false);
-  const summary = getTaskContextSummary({ ...task, ...values,
-    nextTouchAt: values.nextTouchAt ? toDateTimeStorageValue(values.nextTouchAt) : undefined });
 
   useEffect(() => {
     const next = toFieldValues(task);
@@ -109,8 +92,6 @@ function TaskMomentumEditor({
     .map((key) => FIELD_CONFIG_BY_KEY[key]);
   const visiblePanelFields = orderedPanelFields.filter((field) => values[field.key] || editingField === field.key);
   const quickAddFields = orderedPanelFields.filter((field) => !values[field.key] && editingField !== field.key);
-  // Nothing set: one closed line says so and when it last changed; the history opens beneath it.
-  const isEmpty = visiblePanelFields.length === 0 && !task.deferred && !saveError;
 
   const persistField = async (field: MomentumFieldKey, rawValue: string) => {
     const normalized = normalizeDraft(field, rawValue);
@@ -191,18 +172,11 @@ function TaskMomentumEditor({
 
   return (
     // Deferring lives in the task menu; resuming stays here because a deferred task needs it.
-    <><Section label="Where things stand" surface action={task.status === "active" && task.deferred ? <Button size="sm" variant="ghost"
+    <><Section label="Status" surface action={task.status === "active" && task.deferred ? <Button size="sm" variant="ghost"
       className="-mr-2" disabled={!!savingField} onClick={() => setDeferralOpen(true)}>Resume task</Button> : undefined}>
       {saveError && <Notice tone="danger" title="The change was not saved">{saveError}</Notice>}
-      <DisclosureRow
-        label={<span className={cx(DS.row.touch, "flex items-center")}><span className="truncate">{summary}</span></span>}
-        title={summary}
-        meta={isEmpty ? <LatestMomentumChange taskId={task.id} /> : undefined}
-        expanded={expanded}
-        onToggle={setExpanded}
-      >
       {visiblePanelFields.length > 0 && (
-        <FieldList>
+        <FieldList className="-mt-1">
           {visiblePanelFields.map((field) => {
             const currentValue = values[field.key];
             const isEditing = editingField === field.key;
@@ -218,16 +192,26 @@ function TaskMomentumEditor({
                 label={field.label}
                 action={isSaving ? (
                   <span className={DS.text.meta} role="status">Saving…</span>
-                ) : currentValue && !isEditing ? (
-                  <div className="-mr-2.5 flex shrink-0 items-center">
-                    <Button size="sm" variant="ghost" onClick={() => startEditingField(field.key)} aria-label={`Edit ${field.label}`}>
-                      Edit
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => clearField(field.key)} aria-label={`Clear ${field.label}`}>
+                ) : isEditing ? (
+                  currentValue ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="-my-1.5 -mr-2.5"
+                      data-clear-field={field.key}
+                      // Keeps focus in the field, so its blur does not save the draft first.
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={() => clearField(field.key)}
+                      aria-label={`Clear ${field.label}`}
+                    >
                       Clear
                     </Button>
-                  </div>
-                ) : undefined}
+                  ) : undefined
+                ) : (
+                  <IconButton label={`Edit ${field.label}`} className="-my-2 -mr-2" onClick={() => startEditingField(field.key)}>
+                    <Pencil size={13} aria-hidden="true" />
+                  </IconButton>
+                )}
               >
                 {isEditing ? (
                   <TextInput
@@ -240,7 +224,9 @@ function TaskMomentumEditor({
                       const nextValue = event.target.value;
                       setDrafts((current) => ({ ...current, [field.key]: nextValue }));
                     }}
-                    onBlur={() => {
+                    onBlur={(event) => {
+                      // Tabbing to this field's Clear keeps the edit open, so Clear stays there to press.
+                      if ((event.relatedTarget as HTMLElement | null)?.dataset?.clearField === field.key) return;
                       void persistField(field.key, drafts[field.key]);
                     }}
                     onKeyDown={(event) => {
@@ -281,7 +267,7 @@ function TaskMomentumEditor({
                 {field.key === "nextTouchAt" && isEditing && drafts.nextTouchAt.trim() && <p className={cx(DS.text.meta, "mt-1.5")}>
                   {readRevisit(drafts.nextTouchAt) ? formatRevisitMoment(toDateTimeStorageValue(readRevisit(drafts.nextTouchAt))) : "Not a date yet"}
                 </p>}
-                {field.key === "nextTouchAt" && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows under Needs you when it arrives. Nothing starts by itself.</p>}
+                {field.key === "nextTouchAt" && isEditing && <p id={`revisit-help-${task.id}`} className={cx(DS.text.meta, "mt-2")}>Shows under Needs you when it arrives. Nothing starts by itself.</p>}
               </Field>
             );
           })}
@@ -296,16 +282,15 @@ function TaskMomentumEditor({
               size="sm"
               variant="ghost"
               icon={<Plus size={12} aria-hidden="true" />}
+              aria-label={field.actionLabel}
               onClick={() => startEditingField(field.key)}
             >
-              {field.actionLabel}
+              {field.label}
             </Button>
           ))}
         </div>
       )}
-      {isEmpty && <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} />}
-      </DisclosureRow>
-      {!isEmpty && <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} />}
+      {children && <div className={cx(DS.surface.divided, "mt-1 border-t border-surface-edge pt-1")}>{children}</div>}
     </Section>{deferralOpen && <TaskDeferralDialog task={task} onClose={() => setDeferralOpen(false)} onSaved={updated => { onPatched?.(updated); onSaved?.(); }} />}</>
   );
 }

@@ -77,9 +77,9 @@ export function TaskStartersSection({
             );
           })}
         </ul>
-      ) : (
-        <EmptyHint>{refreshing ? "Asking Helm…" : "None yet"}</EmptyHint>
-      )}
+      ) : refreshing ? (
+        <EmptyHint>Asking Helm…</EmptyHint>
+      ) : null}
       {error && !refreshing && <p className={cx(DS.text.rowDetail, "mt-1")}>{error}</p>}
     </Section>
   );

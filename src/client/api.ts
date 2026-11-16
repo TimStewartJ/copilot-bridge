@@ -1821,6 +1821,11 @@ export async function startTaskTidy(taskId: string): Promise<{ sessionId: string
   return apiFetch<{ sessionId: string; error?: string }>(`/api/tasks/${encodeURIComponent(taskId)}/tidy`, {});
 }
 
+/** Starts a chat on the task that makes its page; resolves once the chat has its first message. */
+export async function startTaskPageChat(taskId: string): Promise<{ sessionId: string; error?: string }> {
+  return apiFetch<{ sessionId: string; error?: string }>(`/api/tasks/${encodeURIComponent(taskId)}/page/start`, {});
+}
+
 // ── Task Group API ────────────────────────────────────────────────
 
 export async function fetchTaskGroups(): Promise<TaskGroup[]> {

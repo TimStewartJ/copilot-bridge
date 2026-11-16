@@ -5,8 +5,9 @@ import type { TaskStartersResponse } from "../../../shared/task-starters.js";
 
 const REFRESHING_POLL_MS = 2_000;
 
-export function useTaskStartersQuery(taskId: string) {
+export function useTaskStartersQuery(taskId: string, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: queryKeys.taskStarters(taskId),
     queryFn: ({ signal }) => fetchTaskStarters(taskId, { signal }),
     // Helm's looks write suggestions in the background, so coming back to the panel checks again.

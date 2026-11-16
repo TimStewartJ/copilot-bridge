@@ -259,6 +259,34 @@ describe("SessionList archived paging", () => {
   });
 });
 
+describe("SessionList active limit", () => {
+  it("lists the first chats and the open one, then the rest on request", async () => {
+    const harness = await createReactDomHarness();
+    const { default: SessionList } = await import("./SessionList");
+    try {
+      await harness.render(createElement(SessionList, {
+        variant: "compact",
+        sessions: Array.from({ length: 8 }, (_, index) => createSession({ sessionId: `chat-${index}`, summary: `Chat ${index}` })),
+        activeSessionId: "chat-6",
+        onSelectSession: vi.fn(),
+        onNewSession: vi.fn(),
+        showNewButton: false,
+        activeLimit: 3,
+      }));
+      const rows = () => findAllByTag(harness.dom.container, "BUTTON")
+        .map((candidate) => candidate.textContent?.trim() ?? "")
+        .filter((text) => /^Chat \d/.test(text))
+        .map((text) => text.slice(0, 6));
+      expect(rows()).toEqual(["Chat 0", "Chat 1", "Chat 2", "Chat 6"]);
+      const more = findAllByTag(harness.dom.container, "BUTTON").find((candidate) => candidate.textContent === "Show 4 more");
+      await harness.act(async () => { getReactProps(more)?.onClick?.({}); });
+      expect(rows()).toHaveLength(8);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
 describe("SessionList defer summary indicator", () => {
   it("shows scheduled, running and cleared defers on their own session rows", async () => {
     const nextRunAt = minutesFromNow(5);

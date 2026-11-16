@@ -1,11 +1,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { Task, Session } from "../api";
 import type { TaskOverviewRow } from "../../shared/task-overview";
 import { createTaskActivity } from "../../test-support/task-attention";
-import { createReactDomHarness, findAllByTag, getReactProps } from "../test-react-harness";
+import { advanceTimersByTimeAct, createReactDomHarness, findAllByTag, getReactProps } from "../test-react-harness";
 
 const useTaskWorkspaceMock = vi.hoisted(() => vi.fn());
 const useSessionWorkspaceQueryMock = vi.hoisted(() => vi.fn());
@@ -46,8 +46,21 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 vi.mock("./TaskMomentumHistory", () => ({ default: () => null, LatestMomentumChange: () => null }));
-vi.mock("../calendar/TaskDatesSection", () => ({ default: () => null }));
-vi.mock("./TaskPageSection", () => ({ default: () => null, RemoveTaskPageItem: () => null }));
+const datesSettledMock = vi.hoisted(() => ({ value: true }));
+vi.mock("../calendar/TaskDatesSection", () => ({
+  default: () => null,
+  useTaskDatesQuery: () => ({ settled: datesSettledMock.value }),
+}));
+vi.mock("./TaskPageSection", () => ({
+  default: () => null,
+  RemoveTaskPageItem: () => null,
+  TaskPageSlot: () => null,
+  useTaskPageQuery: () => ({ isPending: false, data: null }),
+}));
+vi.mock("../hooks/queries/useTaskStarters", () => ({
+  useTaskStartersQuery: () => ({ isPending: false }),
+  useTaskStartersActions: () => ({}),
+}));
 const taskHistoryMock = vi.hoisted(() => vi.fn((_taskId: string, _limit?: number, _enabled?: boolean) => ({
   data: undefined as undefined | { entries: Array<{ id: number; taskId: string; at: string; source: "agent" | "user" | "system"; text: string }>; total: number },
 })));
@@ -69,13 +82,13 @@ const taskArchivedSessionsQueryMock = vi.hoisted(() => vi.fn((_taskId: string | 
   refetch: vi.fn(),
 })));
 
-const detailsExpandedMock = vi.hoisted(() => ({ value: true }));
+const agentSetupExpandedMock = vi.hoisted(() => ({ value: true }));
 vi.mock("../task-panel-disclosure-state", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../task-panel-disclosure-state")>();
   return {
     ...actual,
-    getTaskPanelDetailsExpanded: () => detailsExpandedMock.value,
-    setTaskPanelDetailsExpanded: (expanded: boolean) => { detailsExpandedMock.value = expanded; },
+    getTaskPanelAgentSetupExpanded: () => agentSetupExpandedMock.value,
+    setTaskPanelAgentSetupExpanded: (expanded: boolean) => { agentSetupExpandedMock.value = expanded; },
   };
 });
 
@@ -184,6 +197,7 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
     reloadEnriched: async () => {},
     sched: {
       schedules: [],
+      settled: true,
       reload: async () => {},
       trigger: async () => {},
       toggle: async () => {},
@@ -236,6 +250,7 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
     inheritedTagIds: new Set(),
     effectiveTags: [],
     relatedDocs: [],
+    relatedDocsSettled: true,
     refresh: async () => {},
     ...overrides,
   };
@@ -441,7 +456,7 @@ describe("TaskPanel", () => {
     }
   });
 
-  it("shows Instructions and History rows in Details, prompting when they are empty", async () => {
+  it("shows Instructions and History rows in Agent setup, prompting when they are empty", async () => {
     taskHistoryMock.mockReturnValueOnce({ data: undefined }).mockReturnValue({ data: undefined });
     await renderTaskPanelHtml(createTask());
     const rows = taskPanelSummaryRowMock.mock.calls.map(([props]) => props as { label: string; title: string; placeholder?: boolean; chips?: Array<{ label: string }> });
@@ -518,7 +533,7 @@ describe("TaskPanel", () => {
       const lastProps = () => sessionListMock.mock.calls[sessionListMock.mock.calls.length - 1]?.[0] as ListProps;
       const active = ["session-2", "session-4", "session-3", "session-1"];
       expect(lastProps().sessions.map((session) => session.sessionId)).toEqual(active);
-      expect(findAllByTag(harness.dom.container, "H3").map((heading) => heading.textContent)).toContain("Sessions4");
+      expect(findAllByTag(harness.dom.container, "H3").map((heading) => heading.textContent)).toContain("Chats4");
       expect(taskArchivedSessionsQueryMock).toHaveBeenLastCalledWith("task-1", false);
       expect(lastProps().archivedLoaded).toBe(false);
       expect(lastProps().archivedLoading).toBe(false);
@@ -562,7 +577,7 @@ describe("TaskPanel", () => {
     const due = await renderTaskPanelHtml(createTask({ deferred: true, nextTouchAt: "2000-01-01T00:00:00.000Z" }));
     expect(due).toContain("Time to revisit");
     expect(due).toContain("Resume task");
-    expect(due.indexOf("Time to revisit")).toBeLessThan(due.indexOf("Where things stand"));
+    expect(due.indexOf("Time to revisit")).toBeLessThan(due.indexOf(">Status<"));
     // The prompt replaces the header chip, so the date is said once.
     expect(due).not.toContain("Ready to revisit");
     await expect(renderTaskPanelHtml(createTask({ nextTouchAt: "9999-01-01T00:00:00.000Z" }))).resolves.not.toContain("Time to revisit");
@@ -570,7 +585,7 @@ describe("TaskPanel", () => {
   });
 
   it("force-refreshes git status when opening workspace details", async () => {
-    detailsExpandedMock.value = false;
+    agentSetupExpandedMock.value = false;
     const linkedSession = createSession();
     useTaskWorkspaceMock.mockReturnValue(createWorkspace({ linkedSessions: [linkedSession] }));
     useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
@@ -596,7 +611,7 @@ describe("TaskPanel", () => {
       );
 
       const details = findAllByTag(harness.dom.container, "SECTION")
-        .find((section) => findAllByTag(section, "H3")[0]?.textContent === "Details");
+        .find((section) => findAllByTag(section, "H3")[0]?.textContent === "Agent setup");
       const toggle = findAllByTag(details, "BUTTON")[0];
       expect(getReactProps(toggle)?.["aria-expanded"]).toBe(false);
       expect(taskPanelSummaryRowMock).not.toHaveBeenCalled();
@@ -628,7 +643,7 @@ describe("TaskPanel", () => {
       });
 
     } finally {
-      detailsExpandedMock.value = true;
+      agentSetupExpandedMock.value = true;
       await harness.cleanup();
     }
   });
@@ -655,5 +670,54 @@ describe("TaskPanel", () => {
     expect(archived).not.toContain("Archived tasks cannot be completed");
     expect(archived).not.toContain("Done when");
     expect(archived).not.toContain("QA signs off");
+  });
+
+  describe("while the lower sections load", () => {
+    afterEach(() => {
+      datesSettledMock.value = true;
+      vi.useRealTimers();
+    });
+
+    it("keeps the chats visible and shows the rest in one step once it has loaded or waited long enough", async () => {
+      vi.useFakeTimers();
+      useTaskWorkspaceMock.mockReturnValue(createWorkspace());
+      useSessionWorkspaceQueryMock.mockReturnValue({ data: undefined });
+      const { default: TaskPanel } = await import("./TaskPanel");
+      const harness = await createReactDomHarness();
+      const panel = (taskId: string) => createElement(MemoryRouter, null, createElement(TaskPanel, {
+        task: createTask({ id: taskId }), taskGroups: [], sessions: [], activeSessionId: null,
+        onSelectSession: vi.fn(), onNewSession: vi.fn(), onUpdateTask: async () => null,
+      }));
+      const lowerElement = () => findAllByTag(harness.dom.container, "DIV")
+        .find((div) => getReactProps(div)?.["data-testid"] === "task-panel-lower");
+      const lower = () => ({
+        className: String(getReactProps(lowerElement())?.className),
+        busy: getReactProps(lowerElement())?.["aria-busy"],
+      });
+      const headings = (root: unknown) => findAllByTag(root, "H3").map((heading) => heading.textContent ?? "");
+      try {
+        datesSettledMock.value = false;
+        await harness.render(panel("task-1"));
+        expect(lower().className).toContain("invisible");
+        expect(lower().busy).toBe(true);
+        expect(headings(harness.dom.container).some((heading) => heading.startsWith("Chats"))).toBe(true);
+        expect(headings(lowerElement()).some((heading) => heading.startsWith("Chats"))).toBe(false);
+
+        datesSettledMock.value = true;
+        await harness.render(panel("task-1"));
+        expect(lower().className).not.toContain("invisible");
+
+        // A refresh of a task already shown never hides it again; a new task waits at most the cap.
+        datesSettledMock.value = false;
+        await harness.render(panel("task-1"));
+        expect(lower().className).not.toContain("invisible");
+        await harness.render(panel("task-2"));
+        expect(lower().className).toContain("invisible");
+        await advanceTimersByTimeAct(harness.act, 600);
+        expect(lower().className).not.toContain("invisible");
+      } finally {
+        await harness.cleanup();
+      }
+    });
   });
 });

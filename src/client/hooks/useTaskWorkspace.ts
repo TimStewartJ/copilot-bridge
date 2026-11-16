@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
-import type { Task, TaskGroup, Session, RelatedDoc } from "../api";
+import { useState, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { Task, TaskGroup, Session } from "../api";
 import { fetchRelatedDocs } from "../api";
+import { queryKeys } from "../queryClient";
 import { isChecklistItemsReadyForFocus } from "../task-detail-focus";
 import { useTaskEnrichment } from "./useTaskEnrichment";
 import { useTaskSchedules } from "./useTaskSchedules";
@@ -82,14 +84,14 @@ export function useTaskWorkspace(
   ];
 
   // ── Related docs ────────────────────────────────────────────
-  const [relatedDocs, setRelatedDocs] = useState<RelatedDoc[]>([]);
-  const effectiveTagKey = effectiveTags.map((t) => t.id).join(",");
-
-  useEffect(() => {
-    const tagIds = effectiveTags.map((t) => t.id);
-    if (tagIds.length === 0) { setRelatedDocs([]); return; }
-    fetchRelatedDocs(tagIds).then(setRelatedDocs).catch(() => setRelatedDocs([]));
-  }, [effectiveTagKey]);
+  const effectiveTagIds = effectiveTags.map((t) => t.id);
+  const relatedDocsQuery = useQuery({
+    queryKey: queryKeys.relatedDocs(effectiveTagIds),
+    queryFn: () => fetchRelatedDocs(effectiveTagIds),
+    enabled: effectiveTagIds.length > 0,
+  });
+  const relatedDocs = effectiveTagIds.length > 0 ? relatedDocsQuery.data ?? [] : [];
+  const relatedDocsSettled = effectiveTagIds.length === 0 || !relatedDocsQuery.isPending;
 
   // ── Refresh ─────────────────────────────────────────────────
   const refresh = useCallback(async () => {
@@ -98,9 +100,10 @@ export function useTaskWorkspace(
       refetchChecklistItems(),
       sched.reload(),
     ];
+    if (effectiveTagIds.length > 0) work.push(relatedDocsQuery.refetch());
     if (task?.cwd) work.push(refetchTaskGitStatus());
     await Promise.all(work);
-  }, [reloadEnriched, refetchChecklistItems, refetchTaskGitStatus, sched.reload, task?.cwd]);
+  }, [reloadEnriched, refetchChecklistItems, refetchTaskGitStatus, sched.reload, relatedDocsQuery.refetch, effectiveTagIds.length, task?.cwd]);
 
   return {
     // Enrichment
@@ -135,6 +138,7 @@ export function useTaskWorkspace(
     effectiveTags,
     // Docs
     relatedDocs,
+    relatedDocsSettled,
     // Actions
     refresh,
   };

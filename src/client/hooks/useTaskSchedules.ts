@@ -6,7 +6,7 @@ import { queryKeys } from "../queryClient";
 
 /** Manages schedule CRUD for a single task. */
 export function useTaskSchedules(taskId: string | undefined) {
-  const { data: schedules = [] } = useTaskSchedulesQuery(taskId);
+  const { data: schedules = [], isPending } = useTaskSchedulesQuery(taskId);
   const queryClient = useQueryClient();
   const triggerMutation = useTriggerScheduleMutation(taskId);
   const toggleMutation = useToggleScheduleMutation(taskId);
@@ -32,6 +32,8 @@ export function useTaskSchedules(taskId: string | undefined) {
 
   return {
     schedules,
+    /** False until the first answer (or error) for this task arrives. */
+    settled: !taskId || !isPending,
     reload,
     trigger,
     toggle,

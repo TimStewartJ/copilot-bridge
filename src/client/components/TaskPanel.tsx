@@ -1,11 +1,11 @@
-import TaskDatesSection from "../calendar/TaskDatesSection";
+import TaskDatesSection, { useTaskDatesQuery } from "../calendar/TaskDatesSection";
 import { TaskStartersSection } from "./task-sections/TaskStartersSection";
 import type { TaskStarter } from "../../shared/task-starters.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Task, TaskGroup, Session } from "../api";
-import { fetchTaskGitStatus, patchTask, startTaskTidy } from "../api";
+import { fetchTaskGitStatus, patchTask, startTaskPageChat, startTaskTidy } from "../api";
 import { useToast } from "../useToast";
 import { useTaskWorkspace } from "../hooks/useTaskWorkspace";
 import { useTaskAttention } from "../hooks/useTaskAttention";
@@ -22,7 +22,7 @@ import TaskSessionList from "./TaskSessionList";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
 import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import NotesSheet from "./NotesSheet";
-import TaskPageSection, { RemoveTaskPageItem } from "./TaskPageSection";
+import TaskPageSection, { RemoveTaskPageItem, TaskPageSlot, useTaskPageQuery } from "./TaskPageSection";
 import TaskHistorySheet, { describeHistoryActor, useTaskHistory } from "./TaskHistorySheet";
 import { TagPillList } from "./TagPill";
 import TagPicker from "./TagPicker";
@@ -47,14 +47,15 @@ import TaskMomentumHistory from "./TaskMomentumHistory";
 import TaskPanelSummaryRow, { type TaskPanelSummaryChip } from "./TaskPanelSummaryRow";
 import TaskPlaybookRow from "./TaskPlaybookRow";
 import { describeTaskGitStatusSummary } from "../lib/task-git-status-summary";
-import { getTaskPanelDetailsExpanded, setTaskPanelDetailsExpanded } from "../task-panel-disclosure-state";
+import { getTaskPanelAgentSetupExpanded, setTaskPanelAgentSetupExpanded } from "../task-panel-disclosure-state";
+import { useRevealWhenSettled } from "../hooks/useRevealWhenSettled";
+import { useTaskStartersQuery } from "../hooks/queries/useTaskStarters";
 import { TaskContextMenu } from "./task-list";
 import { CtxItem } from "./ContextMenu";
 import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
-import { getTaskAlertChips, type TaskAlertTone } from "./task-momentum-alerts";
 import { LoadingSkeletonRegion, Skeleton, SkeletonRow, SkeletonText } from "./shared/Skeleton";
 import { DS, cx } from "../design/tokens";
-import { Badge, Button, IconButton, Section, IdentitySwatch } from "../design/primitives";
+import { Button, IconButton, Section, IdentitySwatch } from "../design/primitives";
 import {
   WorkItemList,
   PullRequestList,
@@ -65,9 +66,8 @@ import {
 } from "./task-sections";
 
 
-function pluralize(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
+/** Chats the panel lists before "Show more"; the open chat is always listed. */
+const TASK_PANEL_CHAT_LIMIT = 5;
 
 function getPathTail(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "");
@@ -194,17 +194,27 @@ export default function TaskPanel({
   const queryClient = useQueryClient();
   const { showToast, dismissToast } = useToast();
 
-  async function startTidy(taskId: string) {
-    const toastId = showToast({ tone: "info", title: "Starting a tidy-up chat", loading: true, durationMs: 0, haptic: false });
+  /** Starts a chat the Bridge writes the first message for, and opens it. */
+  async function startPresetChat(
+    start: () => Promise<{ sessionId: string; error?: string }>,
+    copy: { starting: string; failed: string },
+  ) {
+    const toastId = showToast({ tone: "info", title: copy.starting, loading: true, durationMs: 0, haptic: false });
     try {
-      const started = await startTaskTidy(taskId);
+      const started = await start();
       if (started.error) showToast({ id: toastId, tone: "error", title: started.error, loading: false, durationMs: undefined });
       else dismissToast(toastId);
       onSelectSession(started.sessionId);
     } catch (error) {
-      showToast({ id: toastId, tone: "error", title: "Couldn't start the tidy-up chat", description: error instanceof Error ? error.message : String(error), loading: false, durationMs: undefined });
+      showToast({ id: toastId, tone: "error", title: copy.failed, description: error instanceof Error ? error.message : String(error), loading: false, durationMs: undefined });
     }
   }
+  const startTidy = (taskId: string) => startPresetChat(() => startTaskTidy(taskId), {
+    starting: "Starting a tidy-up chat", failed: "Couldn't start the tidy-up chat",
+  });
+  const startPage = (taskId: string) => startPresetChat(() => startTaskPageChat(taskId), {
+    starting: "Starting a chat to make the page", failed: "Couldn't start the page chat",
+  });
   const ws = useTaskWorkspace(task ?? undefined, taskGroups, sessions);
   const {
     enrichedWIs,
@@ -244,12 +254,29 @@ export default function TaskPanel({
   const [isUpdatingCompletion, setIsUpdatingCompletion] = useState(false);
   const [taskMenuPosition, setTaskMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [checklistComposerOpen, setChecklistComposerOpen] = useState(false);
-  const [detailsExpanded, setDetailsExpanded] = useState(getTaskPanelDetailsExpanded);
+  const [agentSetupExpanded, setAgentSetupExpanded] = useState(getTaskPanelAgentSetupExpanded);
   const sessionMap = useMemo(() => new Map(sessions.map((session) => [session.sessionId, session])), [sessions]);
   const activeLinkedSessionCount = linkedSessions.filter((session) => !session.archived).length;
   const highlightTimerRef = useRef<number | null>(null);
   const latestTaskIdRef = useRef(task?.id ?? null);
   const pendingChecklistItemId = searchParams.get("checklistItem");
+
+  // Everything below the chats loads separately; it appears in one step, so nothing a reader is about
+  // to tap above it moves. The chats and everything above them come from data already in memory.
+  const startersShown = Boolean(onStartSuggestedChat && task?.status === "active" && !task.completedAt);
+  // A task that is archived without being completed has no Status fields, so its page stays in Linked.
+  const pageInStatus = Boolean(task && !(task.status === "archived" && !task.completedAt));
+  const pageQuery = useTaskPageQuery(task?.id ?? "", Boolean(task));
+  const startersQuery = useTaskStartersQuery(task?.id ?? "", Boolean(task) && startersShown);
+  const datesQuery = useTaskDatesQuery(task?.id ?? "", Boolean(task));
+  const lowerSettled = checklistLoaded
+    && (pageInStatus || !pageQuery.isPending)
+    && (!startersShown || !startersQuery.isPending)
+    && datesQuery.settled
+    && sched.settled
+    && ws.relatedDocsSettled;
+  const lowerRevealed = useRevealWhenSettled(task?.id ?? "", lowerSettled);
+
 
   const openWorkspaceSheet = () => {
     setWorkspaceSheetOpen(true);
@@ -294,7 +321,7 @@ export default function TaskPanel({
       checklistItemsReady,
     });
 
-    if (!pendingChecklistItemId || !resolvedHighlight.consumeParam) return;
+    if (!pendingChecklistItemId || !resolvedHighlight.consumeParam || !lowerRevealed) return;
 
     setPanelHighlightRequest({ highlightId: resolvedHighlight.highlightId });
     setSearchParams((prev) => {
@@ -302,7 +329,7 @@ export default function TaskPanel({
       next.delete("checklistItem");
       return next;
     }, { replace: true });
-  }, [checklistItems, checklistItemsReady, pendingChecklistItemId, setSearchParams]);
+  }, [checklistItems, checklistItemsReady, lowerRevealed, pendingChecklistItemId, setSearchParams]);
 
   useEffect(() => {
     if (!panelHighlightRequest) return;
@@ -346,14 +373,6 @@ export default function TaskPanel({
   const currentTask = task && momentumTask && momentumTask.id === task.id ? momentumTask : task;
   const attentionTasks = useMemo(() => currentTask ? [currentTask] : [], [currentTask]);
   const { taskSignals, activityDescriptions } = useTaskAttention(attentionTasks, sessions, isUnread, activeSessionId, readStateReady, readStateError, sessionSource);
-  const alertChips = useMemo(() => {
-    if (!currentTask) return [];
-    return getTaskAlertChips({
-      task: currentTask,
-      pullRequests: enrichedPRs,
-    });
-  }, [currentTask, enrichedPRs]);
-
   const completionCounts = useMemo(() => getTaskCompletionCounts({
     checklistItems,
     linkedSessions,
@@ -406,36 +425,52 @@ export default function TaskPanel({
       ? { label: `${workspaceGit.branch} · ${workspaceGit.stateLabel}` }
       : null,
   ].filter((chip): chip is TaskPanelSummaryChip => chip !== null);
-  const detailsSummary: Array<{ label: string; tone?: "warning" | "danger" }> = [
-    task.workItems.length > 0 ? { label: pluralize(task.workItems.length, "work item") } : null,
-    task.pullRequests.length > 0 ? { label: pluralize(task.pullRequests.length, "PR") } : null,
-    hasInstructions ? { label: "instructions" } : null,
-    hasNotesSummary ? { label: "notes" } : null,
-    historyTotal > 0 ? { label: `${historyTotal} history ${historyTotal === 1 ? "entry" : "entries"}` } : null,
-    relatedDocs.length > 0 ? { label: pluralize(relatedDocs.length, "doc") } : null,
-    sched.schedules.length > 0 ? { label: pluralize(sched.schedules.length, "schedule") } : null,
+  const agentSetupSummary: Array<{ label: string; tone?: "warning" | "danger" }> = [
+    hasInstructions ? { label: "Instructions" } : null,
+    task.playbook ? { label: task.playbook } : null,
     workspaceProblem
-      ? { label: sessionWorkspace?.pathState === "missing" ? "workspace missing" : "workspace needs a look", tone: sessionWorkspace?.pathState === "missing" ? "danger" as const : "warning" as const }
-      : activeWorkspacePath
-        ? { label: workspaceGit ? `${workspaceTitle} · ${workspaceGit.branch}` : workspaceTitle }
-        : { label: "no workspace" },
+      ? { label: sessionWorkspace?.pathState === "missing" ? "Workspace missing" : "Workspace needs a look", tone: sessionWorkspace?.pathState === "missing" ? "danger" as const : "warning" as const }
+      : activeWorkspacePath ? { label: workspaceTitle } : null,
+    historyTotal > 0 ? { label: `${historyTotal} history ${historyTotal === 1 ? "entry" : "entries"}` } : null,
   ].filter((part): part is { label: string; tone?: "warning" | "danger" } => part !== null);
-  const toggleDetails = (expanded: boolean) => {
-    setTaskPanelDetailsExpanded(expanded);
-    setDetailsExpanded(expanded);
+  const toggleAgentSetup = (expanded: boolean) => {
+    setTaskPanelAgentSetupExpanded(expanded);
+    setAgentSetupExpanded(expanded);
   };
+  const hasLinked = (!pageInStatus && Boolean(pageQuery.data)) || task.workItems.length > 0 || task.pullRequests.length > 0
+    || relatedDocs.length > 0 || sched.schedules.length > 0;
   const showChecklistComposer = checklistItems.some((item) => !item.done) || checklistComposerOpen;
   const attention = taskSignals.get(task.id);
 
   const showCompletionButton = currentTask.kind !== "ongoing"
     && Boolean(completionState.ctaNextStatus || completionState.ctaCompletionAction);
   const completionDisabled = !showCompletionButton || isUpdatingCompletion;
-  // An ongoing task's kind badge already says it has no finish line, so it gets no note.
-  const completionDescription = currentTask.kind === "ongoing"
-    ? undefined
-    : completionState.ctaDescription;
   const showMomentumFields = completionState.ctaState !== "archived";
-  const completionNote = completionState.ctaState !== "archived" ? completionDescription : undefined;
+  // Reopening depends only on the task, so it sits in the header. Completing depends on the checklist,
+  // chats and pull requests, so it closes the checklist, below the chats, where its arrival moves nothing.
+  const showReopen = showCompletionButton && completionState.ctaState === "completed";
+  const showCompletionFooter = currentTask.kind !== "ongoing"
+    && (completionState.ctaState === "ready" || completionState.ctaState === "default");
+  // Ready: the finish line, when there is one. Not ready: what still stands in the way.
+  const completionFooterNote = completionState.ctaState === "ready"
+    ? currentTask.doneWhen?.trim() || undefined
+    : completionState.ctaDescription;
+  const hasHeaderMeta = currentTask.kind === "ongoing" || Boolean(group) || effectiveTags.length > 0;
+  const tagPicker = onSetTaskTags ? (
+    <TagPicker
+      selectedTagIds={taskOwnTags.map((tag) => tag.id)}
+      inheritedTagIds={inheritedTagIds}
+      onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
+      compact
+      touch
+    />
+  ) : null;
+  const statusLine = attention
+    ? <TaskAttentionBadge signal={attention} icon />
+    : completionState.ctaState === "completed" ? "Completed"
+      : currentTask.status === "archived" ? "Archived"
+        : currentTask.deferred ? "Set aside"
+          : activityDescriptions.get(task.id);
   const handleCompletionAction = async () => {
     if (completionDisabled) return;
     const requestedTaskId = task.id;
@@ -458,6 +493,15 @@ export default function TaskPanel({
     }
   };
 
+  const notesRow = hasNotesSummary ? (
+    <TaskNotesSection
+      notes={task.notes || undefined}
+      onView={notes.openToView}
+      onEdit={notes.openToEdit}
+      variant="summary"
+    />
+  ) : null;
+
   return (
     <div className={cx(DS.surface.pane, "relative min-h-0 min-w-0 flex-1")}>
       <PullToRefresh
@@ -466,106 +510,83 @@ export default function TaskPanel({
         scrollRestoration={scrollRestoration}
       >
         <div className="mx-auto w-full max-w-3xl">
-        <div className={cx(DS.surface.group, "mx-3 mt-3 space-y-2 p-3")}>
-        <div className="flex items-start gap-1">
-          <div className="min-w-0 flex-1 space-y-1.5">
+        <header className="space-y-1 px-4 pb-1 pt-4">
+          <div className="flex items-start gap-1">
             {onViewDashboard ? (
               <button
                 type="button"
                 onClick={openTaskOverview}
                 aria-label={`Open overview for ${task.title}`}
-                className={cx(DS.text.title, "block min-w-0 rounded text-left hover:underline hover:decoration-text-faint hover:underline-offset-4", DS.focus)}
+                className={cx(DS.text.title, "block min-w-0 flex-1 rounded text-left hover:underline hover:decoration-text-faint hover:underline-offset-4", DS.focus)}
                 title="Open task overview"
               >
                 <span className="line-clamp-3">{task.title}</span>
               </button>
             ) : (
-              <h1 className={cx(DS.text.title, "line-clamp-3")}>{task.title}</h1>
+              <h1 className={cx(DS.text.title, "line-clamp-3 min-w-0 flex-1")}>{task.title}</h1>
             )}
-
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              {attention && <TaskAttentionBadge signal={attention} icon />}
-              <TaskKindBadge kind={currentTask.kind} showTask />
-              {group && (
-                <div className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted" title={`Group: ${group.name}`}>
-                  <IdentitySwatch color={group.color} />
-                  <span className="max-w-[112px] truncate">{group.name}</span>
-                </div>
-              )}
-              {(effectiveTags.length > 0 || onSetTaskTags) && (
-                <div className="flex min-w-0 flex-wrap items-center gap-1">
-                  {/* Tags are removed from the picker, not with a tiny inline ×. */}
-                  <TagPillList
-                    tags={effectiveTags}
-                    inheritedTagIds={inheritedTagIds}
-                    max={3}
-                  />
-                  {onSetTaskTags && (
-                    <TagPicker
-                      selectedTagIds={taskOwnTags.map((tag) => tag.id)}
-                      inheritedTagIds={inheritedTagIds}
-                      onChange={(tagIds) => onSetTaskTags(task.id, tagIds)}
-                      compact
-                      touch
-                    />
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-          <IconButton
-            label="Task actions"
-            className="-mr-1.5 -mt-1.5 md:-mt-0.5"
-            aria-haspopup="menu"
-            aria-expanded={taskMenuPosition !== null}
-            onClick={(event) => {
-              const rect = event.currentTarget.getBoundingClientRect();
-              setTaskMenuPosition({ x: Math.max(8, rect.right - 220), y: rect.bottom + 4 });
-            }}
-          >
-            <MoreHorizontal size={16} aria-hidden="true" />
-          </IconButton>
-        </div>
-
-        {!attention && currentTask.status === "active" && !currentTask.completedAt && (
-          <p className={DS.text.meta}>{activityDescriptions.get(task.id)}</p>
-        )}
-        {alertChips.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {alertChips.map((chip) => (
-              <Badge key={chip.kind} tone={ALERT_BADGE_TONE[chip.tone]} title={chip.title}>
-                {chip.label}
-              </Badge>
-            ))}
-          </div>
-        )}
-
-        {showCompletionButton && (
-          <div className="space-y-2 pt-1">
-            <Button
-              fullWidth
-              onClick={() => { void handleCompletionAction(); }}
-              disabled={completionDisabled}
-              title={completionDescription}
-              icon={completionState.ctaState === "completed"
-                ? <RotateCcw size={13} aria-hidden="true" />
-                : <CheckCircle2 size={13} aria-hidden="true" />}
+            <IconButton
+              label="Task actions"
+              size="md"
+              className="-mr-2 -mt-1.5"
+              aria-haspopup="menu"
+              aria-expanded={taskMenuPosition !== null}
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setTaskMenuPosition({ x: Math.max(8, rect.right - 220), y: rect.bottom + 4 });
+              }}
             >
-              {completionState.ctaLabel}
-            </Button>
-            {completionDescription && (
-              <p className="text-xs leading-relaxed text-text-muted">
-                {completionDescription}
-              </p>
+              <MoreHorizontal size={16} aria-hidden="true" />
+            </IconButton>
+          </div>
+
+          {/* One fixed-height line, so a badge arriving with the read state never moves what follows. */}
+          <div className="flex h-6 min-w-0 items-center gap-2">
+            <div data-testid="task-status-line" className={cx(DS.text.meta, "flex min-w-0 items-center truncate")}>
+              {statusLine}
+            </div>
+            {!hasHeaderMeta && tagPicker}
+          </div>
+
+          {hasHeaderMeta && (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <TaskKindBadge kind={currentTask.kind} />
+            {group && (
+              <div className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted" title={`Group: ${group.name}`}>
+                <IdentitySwatch color={group.color} />
+                <span className="max-w-[140px] truncate">{group.name}</span>
+              </div>
+            )}
+            {(effectiveTags.length > 0 || tagPicker) && (
+              <div className="flex min-w-0 flex-wrap items-center gap-1">
+                {/* Tags are removed from the picker, not with a tiny inline ×. */}
+                <TagPillList
+                  tags={effectiveTags}
+                  inheritedTagIds={inheritedTagIds}
+                  max={3}
+                />
+                {tagPicker}
+              </div>
             )}
           </div>
-        )}
-        {!showCompletionButton && completionNote && (
-          <p className="text-xs leading-relaxed text-text-muted">{completionNote}</p>
-        )}
-      </div>
+          )}
 
-        <div className="space-y-3 px-3 pb-6 pt-3">
+          {showReopen && (
+            <div className="pt-2">
+              <Button
+                size="sm"
+                onClick={() => { void handleCompletionAction(); }}
+                disabled={completionDisabled}
+                title={completionState.ctaDescription}
+                icon={<RotateCcw size={13} aria-hidden="true" />}
+              >
+                {completionState.ctaLabel}
+              </Button>
+            </div>
+          )}
+        </header>
+
+        <div className="space-y-3 px-3 pb-6 pt-2">
           {showMomentumFields && currentTask && (
             <RevisitPrompt
               task={currentTask}
@@ -579,27 +600,22 @@ export default function TaskPanel({
             <TaskMomentumFields
               task={currentTask}
               onPatched={setMomentumTask}
-              onSelectSession={onSelectSession}
               onSaved={() => {
                 void onTasksChanged?.();
               }}
-            />
-          ) : (
-            <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} standalone />
-          )}
-
-          <TaskPageSection taskId={task.id} taskTitle={currentTask.title} />
-
-          {onStartSuggestedChat && currentTask.status === "active" && !currentTask.completedAt && (
-            <TaskStartersSection
-              taskId={task.id}
-              onStart={(starter) => onStartSuggestedChat(task.id, starter)}
-            />
-          )}
+            >
+              {notesRow && <div className="@container/task-details">{notesRow}</div>}
+              <TaskPageSlot taskId={task.id} taskTitle={currentTask.title} onMakePage={() => startPage(task.id)} />
+            </TaskMomentumFields>
+          ) : notesRow ? (
+            <Section label="Status" surface>
+              <div className="@container/task-details">{notesRow}</div>
+            </Section>
+          ) : null}
 
           <Section
             surface
-            label="Sessions"
+            label="Chats"
             count={activeLinkedSessionCount}
             action={(
               <Button
@@ -633,10 +649,16 @@ export default function TaskPanel({
               onBulkAction={onBulkAction}
               hasDraft={hasDraft}
               showNewButton={false}
+              activeLimit={TASK_PANEL_CHAT_LIMIT}
               className="-mx-3 min-w-0 overflow-x-hidden"
             />
           </Section>
 
+          <div
+            data-testid="task-panel-lower"
+            aria-busy={!lowerRevealed || undefined}
+            className={cx("space-y-3", !lowerRevealed && "invisible")}
+          >
           <Section
             surface
             label="Checklist"
@@ -669,39 +691,40 @@ export default function TaskPanel({
               showComposer={showChecklistComposer}
               onComposerDone={() => setChecklistComposerOpen(false)}
             />
+            {showCompletionFooter && (
+              <div className={cx("flex min-w-0 items-center gap-3", checklistItems.length > 0 && "mt-2 border-t border-surface-edge pt-2.5")}>
+                {showCompletionButton && (
+                  <Button
+                    size="sm"
+                    onClick={() => { void handleCompletionAction(); }}
+                    disabled={completionDisabled}
+                    icon={<CheckCircle2 size={13} aria-hidden="true" />}
+                  >
+                    {completionState.ctaLabel}
+                  </Button>
+                )}
+                {completionFooterNote && (
+                  <p className={cx(DS.text.meta, "min-w-0 flex-1 truncate")} title={completionFooterNote}>
+                    {completionFooterNote}
+                  </p>
+                )}
+              </div>
+            )}
           </Section>
 
           <TaskDatesSection taskId={task.id} />
 
-          <Section
-            label="Details"
-            surface
-            action={detailsExpanded ? (
-              <Button size="sm" variant="ghost" className="-mr-2" aria-expanded onClick={() => toggleDetails(false)}>
-                Hide
-              </Button>
-            ) : undefined}
-          >
-            {!detailsExpanded ? (
-              <button
-                type="button"
-                aria-expanded={false}
-                onClick={() => toggleDetails(true)}
-                title={detailsSummary.map((part) => part.label).join(" · ")}
-                className={cx(DS.row.base, DS.row.touch, DS.row.interactive)}
-              >
-                <span className="min-w-0 flex-1 truncate text-text-secondary">
-                  {detailsSummary.map((part, index) => (
-                    <span key={part.label} className={part.tone ? DS.tone[part.tone] : undefined}>
-                      {index > 0 && " · "}
-                      {part.label}
-                    </span>
-                  ))}
-                </span>
-                <ChevronRight size={12} aria-hidden="true" className={DS.row.chevron} />
-              </button>
-            ) : (
+          {startersShown && onStartSuggestedChat && (
+            <TaskStartersSection
+              taskId={task.id}
+              onStart={(starter) => onStartSuggestedChat(task.id, starter)}
+            />
+          )}
+
+          {hasLinked && (
+            <Section label="Linked" surface>
               <div className="@container/task-details space-y-0.5">
+                {!pageInStatus && <TaskPageSection taskId={task.id} taskTitle={currentTask.title} />}
                 {task.workItems.length > 0 && (
                   <WorkItemList
                     enrichedWIs={enrichedWIs}
@@ -720,33 +743,6 @@ export default function TaskPanel({
                     onTasksChanged={onTasksChanged}
                   />
                 )}
-                <TaskNotesSection
-                  notes={task.instructions || undefined}
-                  onView={instructionsSheet.openToView}
-                  onEdit={instructionsSheet.openToEdit}
-                  variant="summary"
-                  label="Instructions"
-                  icon={<ScrollText size={14} />}
-                  emptyTitle="Add standing rules for agents"
-                />
-                <TaskPlaybookRow task={task} onTasksChanged={onTasksChanged} />
-                {hasNotesSummary && (
-                  <TaskNotesSection
-                    notes={task.notes || undefined}
-                    onView={notes.openToView}
-                    onEdit={notes.openToEdit}
-                    variant="summary"
-                  />
-                )}
-                <TaskPanelSummaryRow
-                  label="History"
-                  icon={<History size={14} />}
-                  title={latestHistoryEntry ? latestHistoryEntry.text : "Nothing recorded yet"}
-                  subtitle={latestHistoryEntry ? `${describeHistoryActor(latestHistoryEntry)} · ${new Date(latestHistoryEntry.at).toLocaleString()}` : undefined}
-                  placeholder={!latestHistoryEntry}
-                  chips={historyTotal > 0 ? [{ label: String(historyTotal) }] : []}
-                  onClick={historySheet.openToView}
-                />
                 {relatedDocs.length > 0 && (
                   <RelatedDocsSection
                     docs={relatedDocs}
@@ -768,6 +764,49 @@ export default function TaskPanel({
                     onDelete={(id) => sched.remove(id)}
                   />
                 )}
+              </div>
+            </Section>
+          )}
+
+          <Section
+            label="Agent setup"
+            surface
+            action={agentSetupExpanded ? (
+              <Button size="sm" variant="ghost" className="-mr-2" aria-expanded onClick={() => toggleAgentSetup(false)}>
+                Hide
+              </Button>
+            ) : undefined}
+          >
+            {!agentSetupExpanded ? (
+              <button
+                type="button"
+                aria-expanded={false}
+                onClick={() => toggleAgentSetup(true)}
+                title={agentSetupSummary.map((part) => part.label).join(" · ")}
+                className={cx(DS.row.base, DS.row.touch, DS.row.interactive)}
+              >
+                <span className="min-w-0 flex-1 truncate text-text-secondary">
+                  {agentSetupSummary.length > 0 ? agentSetupSummary.map((part, index) => (
+                    <span key={part.label} className={part.tone ? DS.tone[part.tone] : undefined}>
+                      {index > 0 && " · "}
+                      {part.label}
+                    </span>
+                  )) : "Instructions, playbook, workspace"}
+                </span>
+                <ChevronRight size={12} aria-hidden="true" className={DS.row.chevron} />
+              </button>
+            ) : (
+              <div className="@container/task-details space-y-0.5">
+                <TaskNotesSection
+                  notes={task.instructions || undefined}
+                  onView={instructionsSheet.openToView}
+                  onEdit={instructionsSheet.openToEdit}
+                  variant="summary"
+                  label="Instructions"
+                  icon={<ScrollText size={14} />}
+                  emptyTitle="Add standing rules for agents"
+                />
+                <TaskPlaybookRow task={task} onTasksChanged={onTasksChanged} />
                 <TaskPanelSummaryRow
                   label="Workspace"
                   icon={workspaceProblem
@@ -778,9 +817,20 @@ export default function TaskPanel({
                   chips={workspaceChips}
                   onClick={openWorkspaceSheet}
                 />
+                <TaskPanelSummaryRow
+                  label="History"
+                  icon={<History size={14} />}
+                  title={latestHistoryEntry ? latestHistoryEntry.text : "Nothing recorded yet"}
+                  subtitle={latestHistoryEntry ? `${describeHistoryActor(latestHistoryEntry)} · ${new Date(latestHistoryEntry.at).toLocaleString()}` : undefined}
+                  placeholder={!latestHistoryEntry}
+                  chips={historyTotal > 0 ? [{ label: String(historyTotal) }] : []}
+                  onClick={historySheet.openToView}
+                />
+                <TaskMomentumHistory taskId={task.id} onSelectSession={onSelectSession} />
               </div>
             )}
           </Section>
+          </div>
 
           {schedDetail.isOpen && (
             <ScheduleDetailSheet
@@ -895,12 +945,3 @@ export default function TaskPanel({
     </div>
   );
 }
-
-const ALERT_BADGE_TONE: Record<TaskAlertTone, "accent" | "info" | "success" | "warning" | "danger" | "neutral"> = {
-  neutral: "neutral",
-  accent: "accent",
-  info: "info",
-  success: "success",
-  warning: "warning",
-  danger: "danger",
-};

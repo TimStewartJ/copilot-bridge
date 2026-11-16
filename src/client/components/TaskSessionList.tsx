@@ -29,6 +29,7 @@ interface TaskSessionListProps {
   className?: string;
   /** When false, hides the embedded SessionList new-chat button (e.g. when parent already provides one) */
   showNewButton?: boolean;
+  activeLimit?: number;
 }
 
 export default function TaskSessionList({
@@ -52,6 +53,7 @@ export default function TaskSessionList({
   hasDraft,
   className,
   showNewButton = true,
+  activeLimit,
 }: TaskSessionListProps) {
   const queryClient = useQueryClient();
   const [archivedRequestedTaskId, setArchivedRequestedTaskId] = useState<string | null>(null);
@@ -132,6 +134,7 @@ export default function TaskSessionList({
         else void archivedQuery.refetch();
       }}
       showNewButton={showNewButton}
+      activeLimit={activeLimit}
       className={className}
     />
   );

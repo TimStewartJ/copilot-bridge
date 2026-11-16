@@ -68,21 +68,21 @@ export function setTaskPanelDisclosureExpanded(
   }
 }
 
-export const TASK_PANEL_DETAILS_STORAGE_KEY = "bridge-task-panel-details-open";
+export const TASK_PANEL_AGENT_SETUP_STORAGE_KEY = "bridge-task-panel-agent-setup-open";
 
-/** The task panel's Details group starts closed; once the reader opens it, it stays open everywhere. */
-export function getTaskPanelDetailsExpanded(): boolean {
+/** The task panel's Agent setup group starts closed; once the reader opens it, it stays open everywhere. */
+export function getTaskPanelAgentSetupExpanded(): boolean {
   try {
-    return localStorage.getItem(TASK_PANEL_DETAILS_STORAGE_KEY) === "true";
+    return localStorage.getItem(TASK_PANEL_AGENT_SETUP_STORAGE_KEY) === "true";
   } catch {
     return false;
   }
 }
 
-export function setTaskPanelDetailsExpanded(expanded: boolean): void {
+export function setTaskPanelAgentSetupExpanded(expanded: boolean): void {
   try {
-    if (expanded) localStorage.setItem(TASK_PANEL_DETAILS_STORAGE_KEY, "true");
-    else localStorage.removeItem(TASK_PANEL_DETAILS_STORAGE_KEY);
+    if (expanded) localStorage.setItem(TASK_PANEL_AGENT_SETUP_STORAGE_KEY, "true");
+    else localStorage.removeItem(TASK_PANEL_AGENT_SETUP_STORAGE_KEY);
   } catch {
     // Best-effort, like the per-row disclosures above.
   }

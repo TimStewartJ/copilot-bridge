@@ -233,6 +233,8 @@ interface SessionListProps {
   onRetryArchived?: () => void;
   // Hide the new-session button (e.g. when the parent already provides one)
   showNewButton?: boolean;
+  /** Draw only this many active sessions until the reader asks for the rest; the open one always shows. */
+  activeLimit?: number;
 }
 
 export default function SessionList({
@@ -268,9 +270,11 @@ export default function SessionList({
   archivedError = false,
   onRetryArchived,
   showNewButton = true,
+  activeLimit,
 }: SessionListProps) {
   const s = styles[variant];
   const [showArchived, setShowArchived] = useState(false);
+  const [showAllActive, setShowAllActive] = useState(false);
   const [archivedRenderLimit, setArchivedRenderLimit] = useState(ARCHIVED_SESSION_RENDER_PAGE);
   const { bind: bindLongPress, menu: ctxMenu, closeMenu: rawCloseMenu, isTarget } = useLongPressMenu<string>();
   const [copied, setCopied] = useState(false);
@@ -318,6 +322,12 @@ export default function SessionList({
 
   const activeSessions = sessions.filter((sess) => !sess.archived && !archivingIds?.has(sess.sessionId));
   const archivedSessions = sessions.filter((sess) => sess.archived);
+  // Select mode always draws every active session, so a bulk action never acts on rows the reader cannot see.
+  const limitActive = activeLimit !== undefined && !showAllActive && !selectMode && activeSessions.length > activeLimit;
+  const visibleActiveSessions = limitActive
+    ? activeSessions.filter((sess, index) => index < activeLimit || sess.sessionId === activeSessionId)
+    : activeSessions;
+  const hiddenActiveCount = activeSessions.length - visibleActiveSessions.length;
   const archivedCount = Math.max(archivedTotal ?? 0, archivedSessions.length);
   const archivedRemaining = Math.max(0, archivedCount - Math.min(archivedRenderLimit, archivedSessions.length));
   const ctxModelQuery = useSessionModelQuery(ctxSession?.sessionId);
@@ -661,12 +671,21 @@ export default function SessionList({
         />
       )}
       {showEmptyState && activeSessions.length === 0 && archivedSessions.length === 0 && archivedLoaded !== false && !archivedLoading ? (
-        <div className="text-xs text-text-faint px-3 py-1">No sessions yet</div>
+        <div className="text-xs text-text-faint px-3 py-1">{variant === "compact" ? "No chats yet" : "No sessions yet"}</div>
       ) : (
         <>
           <div className={s.listGap}>
-            {activeSessions.map(renderItem)}
+            {visibleActiveSessions.map(renderItem)}
           </div>
+          {hiddenActiveCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllActive(true)}
+              className={`w-full px-3 py-1.5 text-left text-xs text-text-muted hover:text-text-secondary transition-colors ${DS.row.touch}`}
+            >
+              Show {hiddenActiveCount} more
+            </button>
+          )}
           {!selectMode && (archivedSessions.length > 0 || archivedLoading || (onRequestArchived && !archivedLoaded)) && (
             <>
               <button
