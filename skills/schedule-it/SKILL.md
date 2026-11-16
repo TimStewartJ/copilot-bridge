@@ -38,4 +38,4 @@ The event exists with the right details, and invitations had approval. Call veri
 
 ## Reply
 
-The time in the user's time zone (and attendees' where different), who was invited, where it is on the calendar, and any attendee whose availability you could not see.
+The scheduled time (with attendee time zones where different), who was invited, where it is on the calendar, and any availability gap. When a verify_complete card is in the chat, leave the read-back checks to the card unless asked.

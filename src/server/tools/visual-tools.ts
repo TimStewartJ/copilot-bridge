@@ -27,7 +27,7 @@ export function createVisualToolDefinitions(ctx: AppContext): BridgeToolDefiniti
       "For mermaid: provide `content` as plain text Mermaid diagram source (no base64). " +
       "For vega-lite: provide `content` as a JSON string (or object) containing the Vega-Lite spec. " +
       "SVG is not supported for images. " +
-      "Artifacts render inline automatically — you do not need to include any markdown for them.",
+      "Artifacts render inline automatically — do not include markdown for them, and state the takeaway without re-listing the diagram's stages, chart values, or image text in prose or a duplicate table unless asked.",
     parameters: {
       type: "object",
       properties: {

@@ -41,4 +41,4 @@ This sweep compared every readable source against its saved marker. Call verify_
 
 ## Reply
 
-New, worse and resolved items since the last sweep, ordered by what the user must act on, each with a link; task state you corrected; sources you could not read. If nothing changed, say so in one sentence.
+New, worse and resolved items since the last sweep, ordered by what the user must act on, each with a link; task state you corrected; sources you could not read. Leave routine per-source read checks on the verify_complete card. If nothing changed, say so in one sentence.

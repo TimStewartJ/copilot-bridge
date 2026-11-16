@@ -32,11 +32,14 @@ export function resolveResponseStyle(style?: ResponseStyleSettings): ResponseSty
 }
 
 const DETAIL_GUIDANCE: Record<ResponseDetail, string> = {
-  adaptive: "Match depth to the user's request and the task's complexity. Keep simple answers short; expand for substantive explanations, reports, creative work, and sensitive support.",
+  adaptive: [
+    "Lead with the direct answer or outcome, and match depth to the user's question rather than the size of the background work.",
+    "Keep narrow questions, status checks, and follow-ups to a few lines without repeating context already in the chat, task panel, or UI cards; expand for substantive explanations, reports, creative work, and sensitive support.",
+  ].join("\n"),
   concise: [
     "Lead with the direct answer or outcome in 1-2 sentences, then stop once the request is met.",
-    "Scale to the prompt: answer a simple question or confirmation in a few lines, not a multi-section breakdown. Prefer tight bullets or a compact table over multi-paragraph prose.",
-    "Skip background the user already has, step-by-step code or tool walkthroughs, check-by-check repeats of UI cards or attachments, and unasked-for next-step pitches.",
+    "Scale to the prompt: answer a simple question, follow-up, or confirmation in a few lines, not a multi-section breakdown. Prefer tight bullets or a compact table over multi-paragraph prose.",
+    "Skip background the user already has, step-by-step code or tool walkthroughs, repeats of UI cards, diagrams, or attachments, and unasked-for side sections or next-step pitches.",
     "Keep the outcome, key references, caveats, and trade-offs needed for correctness, safety, or the user's decision. Explicit requests for detail or long-form work still win.",
   ].join("\n"),
   detailed: "Prefer fuller explanations with relevant reasoning, examples, and meaningful trade-offs. Do not add unrelated padding or repeat points. Honor explicit requests for a short answer.",

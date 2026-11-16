@@ -40,4 +40,4 @@ The user accepted a plan and it lives on the task. Call verify_complete with `ap
 
 ## Reply
 
-The finish line, the milestones with dependencies, the top risks, the first action, and where the plan is stored.
+The finish line, the milestones with dependencies, the top risks, the first action, and where the plan is stored (when saved to a knowledge base page or task notes, summarize briefly and link rather than repeating the full text). When a verify_complete card is in the chat, leave the delivery checklist to the card unless asked.

@@ -36,4 +36,4 @@ A fresh chat could resume from what is on disk. Call verify_complete with `deliv
 
 ## Reply
 
-What is now on disk (commit, branch, notes, files, automation kept or cancelled), anything that is still only in this chat's context and why it was not written, and the first action to take on resume.
+Where the work is saved (branch/commit, notes or doc link, automation kept or cancelled), anything not persisted and why, and the one resume action. When a verify_complete card is in the chat, leave the item-by-item delivery checks to the card unless asked.

@@ -106,6 +106,8 @@ export interface LiveAssistantSegment {
   sourceEventId?: string;
   /** Bridge-produced text with no events.jsonl representation; never handed off to history. */
   bridgeNative?: boolean;
+  /** Emitted alongside non-interactive tool calls rather than as a standalone reply. */
+  progressUpdate?: boolean;
   turnId?: string;
   turnInstanceId?: string;
   timestamp?: string;
@@ -294,6 +296,7 @@ export function normalizeLiveAssistantSegment(value: unknown): LiveAssistantSegm
     content: value.content,
     ...(optionalString(value.sourceEventId) ? { sourceEventId: optionalString(value.sourceEventId) } : {}),
     ...(value.bridgeNative === true ? { bridgeNative: true } : {}),
+    ...(value.progressUpdate === true ? { progressUpdate: true } : {}),
     ...(optionalString(value.turnId) ? { turnId: optionalString(value.turnId) } : {}),
     ...(optionalString(value.turnInstanceId)
       ? { turnInstanceId: optionalString(value.turnInstanceId) }
@@ -980,6 +983,7 @@ export function useSessionStream(
               content,
               ...(sourceEventId ? { sourceEventId } : {}),
               ...(event.bridgeNative === true ? { bridgeNative: true } : {}),
+              ...(event.progressUpdate === true ? { progressUpdate: true } : {}),
               ...(getEventTurnId(event) ? { turnId: getEventTurnId(event) } : {}),
               ...(getEventTurnInstanceId(event)
                 ? { turnInstanceId: getEventTurnInstanceId(event) }

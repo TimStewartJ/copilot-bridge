@@ -244,11 +244,22 @@ describe("bridge context block", () => {
     const block = renderBridgeContextBlock([section!]);
     expect(block).toBe([
       "<bridge_context>",
-      "Copilot Bridge added this block with the latest state; the user did not type it. Each section replaces any earlier section with the same name.",
+      "Copilot Bridge added this block with the latest state; the user did not type it, and can already see task state and notes in the UI—use them as background rather than summarizing them back unless asked. Each section replaces any earlier section with the same name.",
       section!.content,
       "</bridge_context>",
     ].join("\n"));
     expect(renderBridgeContextBlock([])).toBeUndefined();
+  });
+
+  it("tells active playbooks to answer follow-up questions directly without repeating closeout reports", () => {
+    const sections = buildBridgeContextSections(
+      {},
+      createTask(),
+      null,
+      { playbook: "decide", source: "agent", label: "Decide", installed: true, extensions: [] },
+    );
+    const playbook = sections.find((candidate) => candidate.name === "playbook")!;
+    expect(playbook.content).toContain("answering follow-up questions directly without repeating the playbook's full closeout report");
   });
 
 });

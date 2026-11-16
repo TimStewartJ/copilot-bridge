@@ -45,4 +45,4 @@ Either only human actions remain, or every blocker is named with evidence. Call 
 
 ## Reply
 
-The mode, the current state (conflicts, threads, CI, approvals), what you changed with commit links, what remains and who owns it, and the pull request link.
+The pull request link, its merge-readiness state in a few lines, any commits you pushed, and the remaining blockers with their owners. When a verify_complete card is in the chat, leave the check-by-check host and CI listing to the card unless asked; sub-agents return their evidence directly.

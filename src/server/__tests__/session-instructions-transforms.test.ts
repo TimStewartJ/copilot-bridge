@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyAdaptiveReplyDirective,
   applyConciseReplyDirective,
   createCodingModeStatementRemover,
   removeCliOutputSurfaceNote,
   removeConciseReplyDirective,
 } from "../session-instructions.js";
+import { fingerprintPromptConfig } from "../session-prompt-fingerprint.js";
 
 const MODE = "You are an interactive tool that helps users with software engineering tasks.";
 
@@ -20,14 +22,23 @@ describe("system prompt section transforms", () => {
     expect(removeConciseReplyDirective(content)).toBe("<task_completion>\n* Verify.\n</task_completion>");
   });
 
-  it("replaces the CLI concise-reply directive with the Bridge tail reminder when concise is active", () => {
+  it("replaces the CLI concise-reply directive with style-specific Bridge tail reminders and fingerprints each distinctly", () => {
     const content = "<task_completion>\n* Verify.\n</task_completion>\nRespond concisely to the user, but be thorough in your work.\n";
-    const expected = "<task_completion>\n* Verify.\n</task_completion>\nResponse style is concise: lead with the answer, skip unasked walkthroughs and card repeats, and stop once the request is met.";
-    expect(applyConciseReplyDirective(content)).toBe(expected);
+    const conciseReminder = "Response style is concise (unless the user asked for detail): lead with the answer in short plain sentences, skip unasked side sections, walkthroughs, and repeats of UI cards or task notes, and stop once the request is met.";
+    const adaptiveReminder = "Match reply length to the user's question: lead with the answer in short plain sentences, keep narrow questions and follow-ups brief without repeating UI cards or task notes, and expand only when depth is requested or needed.";
+
+    expect(applyConciseReplyDirective(content)).toBe(`<task_completion>\n* Verify.\n</task_completion>\n${conciseReminder}`);
     expect(applyConciseReplyDirective(content.replace(/\n/g, "\r\n"))).toBe(
-      "<task_completion>\r\n* Verify.\r\n</task_completion>\nResponse style is concise: lead with the answer, skip unasked walkthroughs and card repeats, and stop once the request is met.",
+      `<task_completion>\r\n* Verify.\r\n</task_completion>\n${conciseReminder}`,
     );
-    expect(applyConciseReplyDirective("<task_completion>\n* Verify.\n</task_completion>")).toBe(expected);
+    expect(applyConciseReplyDirective("<task_completion>\n* Verify.\n</task_completion>"))
+      .toBe(`<task_completion>\n* Verify.\n</task_completion>\n${conciseReminder}`);
+
+    expect(applyAdaptiveReplyDirective(content)).toBe(`<task_completion>\n* Verify.\n</task_completion>\n${adaptiveReminder}`);
+
+    const hashes = [applyConciseReplyDirective, applyAdaptiveReplyDirective, removeConciseReplyDirective]
+      .map((action) => fingerprintPromptConfig({ systemMessage: { sections: { last_instructions: { action } } } }).sections);
+    expect(new Set(hashes).size).toBe(3);
   });
 
   it("removes the software-engineering mode statement whether it is its own paragraph or joined to the identity", () => {

@@ -67,7 +67,7 @@ describe("publish_visual tool", () => {
     expect(result.artifactId).toMatch(/^[0-9a-f-]{36}$/i);
     expect(result.source).toBeUndefined();
     expect(result.message).toBeUndefined();
-    expect(result.content).toBe('Visual artifact "My Chart" published as a visual card.');
+    expect(result.content).toBe('Visual artifact "My Chart" published as a visual card in the chat; state the takeaway without re-listing what the card already shows unless asked.');
   });
 
   it("publishes an image from base64 content", async () => {
@@ -127,7 +127,7 @@ describe("publish_visual tool", () => {
     expect(result.mimeType).toBe("text/vnd.mermaid");
     expect(result.source).toBeUndefined();
     expect(result.message).toBeUndefined();
-    expect(result.content).toBe('Mermaid diagram "My Flow" published as a visual card.');
+    expect(result.content).toBe('Mermaid diagram "My Flow" published as a visual card in the chat; state the takeaway without re-listing what the card already shows unless asked.');
     expect(result.url).toMatch(/\/visuals\//);
     expect(result.downloadUrl).toMatch(/\/download/);
     expect(typeof result.artifactId).toBe("string");
@@ -163,7 +163,7 @@ describe("publish_visual tool", () => {
     expect(result.artifactId).toMatch(/^[0-9a-f-]{36}$/i);
     expect(result.source).toBeUndefined();
     expect(result.message).toBeUndefined();
-    expect(result.content).toBe('Vega-Lite chart "My Chart" published as a visual card.');
+    expect(result.content).toBe('Vega-Lite chart "My Chart" published as a visual card in the chat; state the takeaway without re-listing what the card already shows unless asked.');
   });
 
   it("returns toolFailure for empty vega-lite content", async () => {

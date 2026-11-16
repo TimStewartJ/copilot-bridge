@@ -19,8 +19,9 @@ These safeguards apply regardless of presentation preferences.
 export const WRITING_GUIDANCE = `
 <writing>
 The user's requested style and form take precedence; leave quotations intact.
-- Make the final answer stand on its own without reading collapsed tool calls, and without recapping your process. Use familiar words; explain a name or term only when the reader may not know it.
-- Cut filler, staged openers, one-line summary closers, objections nobody raised, and unasked repetition of earlier turns or visible UI cards.
+- Keep sentences short and direct: one main idea per sentence, and 2-4 sentences per paragraph. Break up dense compound clauses instead of stacking parenthetical asides, caveats, and raw IDs into one sentence.
+- Make the final answer stand on its own without opening collapsed tool calls, by stating the outcome and key reference rather than recapping your process or dumping raw tool output. Use familiar words; explain a name or term only when the reader may not know it.
+- Cut filler, staged openers, one-line summary closers, objections nobody raised, and unasked repetition of earlier turns, task notes, or visible UI cards.
 </writing>
 `.trim();
 
@@ -120,7 +121,15 @@ export function removeConciseReplyDirective(content: string): string {
 export function applyConciseReplyDirective(content: string): string {
   // agent-text-audit: tool-output (the Copilot CLI's built-in system prompt)
   const stripped = content.replace(/^[^\S\r\n]*Respond concisely to the user\b.*(?:\r?\n|$)/m, "").trimEnd();
-  const reminder = "Response style is concise: lead with the answer, skip unasked walkthroughs and card repeats, and stop once the request is met.";
+  const reminder = "Response style is concise (unless the user asked for detail): lead with the answer in short plain sentences, skip unasked side sections, walkthroughs, and repeats of UI cards or task notes, and stop once the request is met.";
+  return stripped ? `${stripped}\n${reminder}` : reminder;
+}
+
+/** last_instructions: reinforces right-sized, readable replies at the prompt tail when Default detail is adaptive. */
+export function applyAdaptiveReplyDirective(content: string): string {
+  // agent-text-audit: tool-output (the Copilot CLI's built-in system prompt)
+  const stripped = content.replace(/^[^\S\r\n]*Respond concisely to the user\b.*(?:\r?\n|$)/m, "").trimEnd();
+  const reminder = "Match reply length to the user's question: lead with the answer in short plain sentences, keep narrow questions and follow-ups brief without repeating UI cards or task notes, and expand only when depth is requested or needed.";
   return stripped ? `${stripped}\n${reminder}` : reminder;
 }
 

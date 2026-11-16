@@ -52,7 +52,7 @@ export function visualPublishedToolResult(artifact: PublishedVisualArtifact) {
     downloadUrl: artifact.downloadUrl,
     ...(artifact.caption ? { caption: artifact.caption } : {}),
     ...(artifact.altText ? { altText: artifact.altText } : {}),
-    content: `${noun} "${artifact.title}" published as a visual card.`,
+    content: `${noun} "${artifact.title}" published as a visual card in the chat; state the takeaway without re-listing what the card already shows unless asked.`,
   };
 }
 

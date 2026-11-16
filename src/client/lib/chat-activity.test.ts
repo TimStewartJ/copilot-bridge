@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatEntry, ChatReasoningEntry, ChatToolEntry, ToolCall, TranscriptAgent } from "../api";
 import { buildTranscriptAgentDirectory } from "../../shared/transcript-agents.js";
 import {
+  findSupersededProgressBlockIndices,
   getReasoningHeadline,
   getReasoningTail,
   getStepStatus,
@@ -399,3 +400,57 @@ describe("reasoning text helpers", () => {
     expect(getReasoningTail("short **thought**")).toBe("short thought");
   });
 });
+
+describe("findSupersededProgressBlockIndices", () => {
+  const question = { message: "Which option?", requestedSchema: { properties: { pick: { type: "string" } } } };
+
+  it.each([
+    {
+      name: "marks tool-accompanying updates once a standalone reply finishes the exchange",
+      entries: [
+        { role: "user", content: "Check status" },
+        { role: "assistant", content: "Reading logs.", progressUpdate: true },
+        tool("view", "turn-a"),
+        { role: "assistant", content: "Comparing builds.", progressUpdate: true },
+        tool("grep", "turn-b"),
+        { role: "assistant", content: "Everything passed." },
+      ] satisfies ChatEntry[],
+      expected: [1, 3],
+    },
+    {
+      name: "keeps an in-flight or interrupted progress update full-contrast until a standalone reply arrives",
+      entries: [
+        { role: "user", content: "Check status" },
+        { role: "assistant", content: "Reading logs.", progressUpdate: true },
+        tool("view", "turn-a"),
+        { role: "user", content: "Try again" },
+        { role: "assistant", content: "Done." },
+      ] satisfies ChatEntry[],
+      expected: [],
+    },
+    {
+      name: "never dims text preceding a lifted question or across an Autopilot continuation",
+      entries: [
+        { role: "assistant", content: "Two configs match.", progressUpdate: true },
+        tool("ask_user", "turn-a", { args: question, success: true, completedAt: at(10), result: "User responded:\npick: a" }),
+        { role: "assistant", content: "Step 1 complete.", progressUpdate: true },
+        { id: "cont-1", type: "continuation", turnId: "turn-c" } as ChatEntry,
+        { role: "assistant", content: "Finished step 2." },
+      ] satisfies ChatEntry[],
+      expected: [],
+    },
+    {
+      name: "keeps multiple standalone assistant replies in one exchange full-contrast",
+      entries: [
+        { role: "user", content: "Summarize" },
+        { role: "assistant", content: "Part one." },
+        { role: "assistant", content: "Part two." },
+      ] satisfies ChatEntry[],
+      expected: [],
+    },
+  ])("$name", ({ entries, expected }) => {
+    const blocks = groupActivitySegments(segmentChatEntries(entries), { includeUnfinishedQuestions: true });
+    expect([...findSupersededProgressBlockIndices(blocks)]).toEqual(expected);
+  });
+});
+

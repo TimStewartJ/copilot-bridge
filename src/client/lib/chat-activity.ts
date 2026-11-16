@@ -314,6 +314,33 @@ export function groupActivitySegments(
   return blocks;
 }
 
+/**
+ * Indices of in-turn tool-accompanying assistant updates (`progressUpdate: true`) that have been
+ * superseded within the same user exchange by a standalone assistant reply (`!progressUpdate`),
+ * without crossing a user prompt, an Autopilot continuation, or a lifted `ask_user` question.
+ */
+export function findSupersededProgressBlockIndices(blocks: readonly ChatRenderBlock[]): ReadonlySet<number> {
+  const superseded = new Set<number>();
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index]!;
+    if (block.type !== "message" || block.entry.role !== "assistant" || block.entry.progressUpdate !== true) {
+      continue;
+    }
+    for (let nextIndex = index + 1; nextIndex < blocks.length; nextIndex += 1) {
+      const next = blocks[nextIndex]!;
+      if (next.type === "continuation-segment" || next.type === "question") break;
+      if (next.type === "message") {
+        if (next.entry.role === "user") break;
+        if (next.entry.role === "assistant" && !next.entry.progressUpdate) {
+          superseded.add(index);
+          break;
+        }
+      }
+    }
+  }
+  return superseded;
+}
+
 function parseTime(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const ms = Date.parse(value);

@@ -37,4 +37,4 @@ The recommendation rests on evidence for the forks that decide it. Call verify_c
 
 ## Reply
 
-The recommendation and its main tradeoff first, then the options table, what would change the answer, and the decision the user still needs to make.
+The recommendation and its main tradeoff first, a compact options table when comparing multiple choices, what would change the answer, and the decision left for the user. When a verify_complete card is in the chat, leave the check-by-check proof to the card unless asked; sub-agents return their evidence directly.

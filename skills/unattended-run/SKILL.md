@@ -45,4 +45,4 @@ The exit condition passed on the real system, or the run stopped at the escape h
 
 ## Reply
 
-Whether the exit condition passed, the starting and final measurements, the key decisions with history pointers, what is gated and waiting on the user, and the reviewer's Attention section unchanged.
+Whether the exit condition passed, the starting and final measurements, what is gated and waiting on the user, and the reviewer's Attention section unchanged, pointing to task history and the verify_complete card rather than replaying every iteration.

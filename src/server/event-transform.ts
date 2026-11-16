@@ -24,6 +24,7 @@ import {
 import { AgentEventOwners, showsAgentTurnsAreStamped } from "./agent-event-ownership.js";
 import { transcriptTurnDetails } from "./transcript-turn-details.js";
 import type { ChatTurnDetails } from "../shared/chat-turn-details.js";
+import { isToolAccompanyingProgress } from "../shared/progress-update.js";
 
 // Shared event→entry transform logic
 // Produces a flat chronological list of text messages, tool calls, and visual artifacts.
@@ -54,6 +55,8 @@ export interface TransformedEntry {
   role?: string;
   content?: string;
   model?: string;
+  /** Assistant text emitted alongside non-interactive tool calls during a turn. */
+  progressUpdate?: boolean;
   turnDetails?: ChatTurnDetails;
   timestamp?: string;
   forkBoundaryEventId?: string;
@@ -941,6 +944,7 @@ export function transformEventsToMessages(
       if (content.trim()) {
         const rawEventId = getRawEventId(event);
         const forkBoundaryEventId = rawEventId ? assistantForkBoundaries.get(rawEventId) : undefined;
+        const progressUpdate = isToolAccompanyingProgress(data?.toolRequests);
         entries.push({
           id: `entry-${idx++}`,
           type: "message",
@@ -948,6 +952,7 @@ export function transformEventsToMessages(
           role: "assistant",
           content,
           ...(typeof data?.model === "string" && data.model ? { model: data.model } : {}),
+          ...(progressUpdate ? { progressUpdate: true } : {}),
           ...(rawEventId && turnDetailsByMessageId.has(rawEventId)
             ? { turnDetails: turnDetailsByMessageId.get(rawEventId) }
             : {}),

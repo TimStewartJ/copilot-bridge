@@ -38,4 +38,4 @@ The state is rebuilt and the work is routed. Pickup usually hands off to another
 
 ## Reply
 
-What the work was, what is done (with evidence) and what is pending, any stale claims you found, the resume point, and the playbook you routed to.
+A brief summary of what is done and pending, any stale claim you corrected, the one resume action, and the playbook you routed to. When a verify_complete card is in the chat, leave the check-by-check verification list to the card unless asked.

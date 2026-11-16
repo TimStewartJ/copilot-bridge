@@ -25,7 +25,7 @@ export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefi
       "Use this when the user asks you to send them a file, export, image, report, or other artifact. " +
       "Provide exactly one of `path` or `content`. For HTML (.html or .htm), save the file and send its `path`, not its contents. To share an update, edit that file and send its path again; earlier copies stay unchanged. " +
       "When using `path`, absolute paths work best and relative paths resolve from the bridge repository root. " +
-      "After calling this tool, put the returned `markdown` snippet verbatim in your next assistant response, in a paragraph of its own, so the file appears in chat.",
+      "After calling this tool, put the returned `markdown` snippet verbatim in your next assistant response, in a paragraph of its own, so the file appears in chat; state the takeaway briefly without pasting or re-listing the file's contents in prose unless asked.",
     parameters: {
       type: "object",
       properties: {
@@ -52,7 +52,7 @@ export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefi
       const rendered = renderPublishedAttachment(attachmentApiBasePath, invocation.sessionId, attachment);
       const instructions =
         `Attachment "${attachment.displayName}" is ready. ` +
-        `In your next response, include this markdown exactly, in a paragraph of its own:\n\n${rendered.recommendedMarkdown}`;
+        `In your next response, include this markdown exactly, in a paragraph of its own (and state the takeaway briefly without pasting the file's contents unless asked):\n\n${rendered.recommendedMarkdown}`;
       return {
         success: true,
         content: instructions,

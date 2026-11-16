@@ -77,7 +77,7 @@ import { deriveLiveRunHeaderState } from "../lib/live-run-phase";
 import { summarizeAutopilotRuns } from "../lib/autopilot-runs";
 import { resolveExternalSessionWorkAction } from "../lib/external-session-work";
 import { buildToolCallForest, getActiveToolCallRoots, segmentChatEntries } from "../lib/tool-call-tree";
-import { groupActivitySegments, mapLatestAgentBlocks } from "../lib/chat-activity";
+import { findSupersededProgressBlockIndices, groupActivitySegments, mapLatestAgentBlocks } from "../lib/chat-activity";
 import { describeToolCall, describeToolCallBriefly } from "../lib/tool-presentation";
 import {
   attachTranscriptAgents,
@@ -1902,6 +1902,7 @@ export default function ChatView({
         type: "message",
         role: "assistant",
         content: segment.content,
+        ...(segment.progressUpdate ? { progressUpdate: true } : {}),
         ...(segment.turnId ? { turnId: segment.turnId } : {}),
         ...(segment.turnInstanceId ? { turnInstanceId: segment.turnInstanceId } : {}),
         ...(segment.timestamp ? { timestamp: segment.timestamp } : {}),
@@ -2150,6 +2151,10 @@ export default function ChatView({
       agents: agentDirectory,
     }),
     [agentDirectory, displayEntries, runActive],
+  );
+  const supersededProgressBlocks = useMemo(
+    () => findSupersededProgressBlockIndices(renderBlocks),
+    [renderBlocks],
   );
   // Most changes to the transcript move no agent to another stretch; the rows that read this are
   // only told when one does.
@@ -2897,6 +2902,7 @@ export default function ChatView({
         >
           <MessageBubble
             message={msg}
+            progressNote={supersededProgressBlocks.has(index)}
             actions={isLiveStreamingMessage || isSelectingText ? undefined : messageActions}
             messageKey={messageAnchorKey}
             copied={copiedMessageKey === messageAnchorKey}
@@ -2936,6 +2942,7 @@ export default function ChatView({
     openMessageActionsMenu,
     selectingMessageTarget,
     sessionId,
+    supersededProgressBlocks,
     historicalMode,
     targetSourceEventId,
     toolForest,

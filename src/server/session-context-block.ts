@@ -186,7 +186,7 @@ function buildPlaybook(playbook: PlaybookContext | undefined, choices: readonly 
   }
   const name = playbook.label ? `${playbook.playbook} ("${playbook.label}")` : playbook.playbook;
   return section("playbook", [
-    `Active playbook: ${name}; ${PLAYBOOK_CHOSEN_BY[playbook.source]}. Keep it for clarifications and asides. If the user asks for a different outcome, select the method that fits before answering, including Direct for a new small goal. If it still fits and its steps aren't in the conversation, fetch them with playbook_select. Verify the work you actually complete.`,
+    `Active playbook: ${name}; ${PLAYBOOK_CHOSEN_BY[playbook.source]}. Keep it for clarifications and asides, answering follow-up questions directly without repeating the playbook's full closeout report. If the user asks for a different outcome, select the method that fits before answering, including Direct for a new small goal. If it still fits and its steps aren't in the conversation, fetch them with playbook_select. Verify the work you actually complete.`,
     ...(playbook.extensions.length > 0 ? [`On this machine ${playbook.extensions.join(", ")} add steps to it; playbook_select returns them too.`] : []),
   ], "");
 }
@@ -220,7 +220,7 @@ export function renderBridgeContextBlock(sections: readonly BridgeContextSection
   if (sections.length === 0) return undefined;
   return [
     "<bridge_context>",
-    "Copilot Bridge added this block with the latest state; the user did not type it. Each section replaces any earlier section with the same name.",
+    "Copilot Bridge added this block with the latest state; the user did not type it, and can already see task state and notes in the UI—use them as background rather than summarizing them back unless asked. Each section replaces any earlier section with the same name.",
     ...sections.map((candidate) => candidate.content),
     "</bridge_context>",
   ].join("\n");

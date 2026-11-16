@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node";
 
 import { getGeneratedImageVisuals, getTranscriptCompletion, getVisibleEventTimestamp } from "./event-transform.js";
+import { isToolAccompanyingProgress } from "../shared/progress-update.js";
 import type { EventBusRegistry, SessionEventBus } from "./event-bus.js";
 import { createFusionProgress, FUSION_PROGRESS_EVENT_TYPES } from "./fusion-progress.js";
 import type { GlobalBus } from "./global-bus.js";
@@ -2062,9 +2063,11 @@ export class SessionRunner {
             });
           }
           if (data?.content || data?.toolRequests?.length) {
+            const progressUpdate = isToolAccompanyingProgress(data?.toolRequests);
             bus.emit({
               type: "assistant_partial",
               content: data.content ?? "",
+              ...(progressUpdate ? { progressUpdate: true } : {}),
               timestamp: event.timestamp,
               ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
             });

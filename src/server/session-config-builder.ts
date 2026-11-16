@@ -32,6 +32,7 @@ import {
   HOME_GUIDANCE,
   IMAGE_GENERATION_GUIDANCE,
   LONG_RUNNING_WORK_GUIDANCE,
+  applyAdaptiveReplyDirective,
   applyConciseReplyDirective,
   createCodingModeStatementRemover,
   removeCliOutputSurfaceNote,
@@ -476,7 +477,11 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   sections.guidelines = { action: "append", content: params.options?.playbooks === false ? BASE_METHOD_WITHOUT_PLAYBOOKS : BASE_METHOD };
   sections.tool_efficiency = { action: removeCliOutputSurfaceNote };
   sections.last_instructions = {
-    action: resolvedStyle.detail === "concise" ? applyConciseReplyDirective : removeConciseReplyDirective,
+    action: resolvedStyle.detail === "concise"
+      ? applyConciseReplyDirective
+      : resolvedStyle.detail === "adaptive"
+        ? applyAdaptiveReplyDirective
+        : removeConciseReplyDirective,
   };
 
   // Tighten the SDK's native task/write_agent contract, say how to use the time a slow command

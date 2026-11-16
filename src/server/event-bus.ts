@@ -145,6 +145,8 @@ export interface LiveAssistantSegment {
    * disk history and survives turn boundaries.
    */
   bridgeNative?: boolean;
+  /** Emitted alongside non-interactive tool calls rather than as a standalone reply. */
+  progressUpdate?: boolean;
   turnId?: string;
   turnInstanceId?: string;
   timestamp?: string;
@@ -1042,6 +1044,7 @@ export class SessionEventBus {
               ? event.sourceEventId
               : undefined;
             const bridgeNative = event.bridgeNative === true;
+            const progressUpdate = event.progressUpdate === true;
             const id = sourceEventId ?? `assistant-${randomUUID()}`;
             const prior = this.liveAssistantSegments[this.liveAssistantSegments.length - 1];
             if (!prior || prior.id !== id) {
@@ -1050,6 +1053,7 @@ export class SessionEventBus {
                 content,
                 ...(sourceEventId ? { sourceEventId } : {}),
                 ...(bridgeNative ? { bridgeNative: true } : {}),
+                ...(progressUpdate ? { progressUpdate: true } : {}),
                 ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
                 ...(this.currentTurnInstanceId
                   ? { turnInstanceId: this.currentTurnInstanceId }

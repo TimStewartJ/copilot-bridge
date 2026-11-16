@@ -343,4 +343,27 @@ describe("MessageBubble actions", () => {
       await harness.cleanup();
     }
   });
+
+  it("renders superseded progress notes in secondary text without changing standalone replies", async () => {
+    const harness = await createReactDomHarness();
+    const message = { role: "assistant", content: "Checking the logs.", progressUpdate: true } satisfies ChatMessage;
+
+    try {
+      await harness.render(createElement(MessageBubble, { message }));
+      const fullContrast = findAllByTag(harness.dom.container, "DIV")
+        .find((candidate) => candidate.getAttribute?.("class")?.includes("ds-prose"));
+      expect(fullContrast?.getAttribute("data-progress-note")).toBeNull();
+      expect(fullContrast?.getAttribute("class")).toContain("text-text-primary");
+
+      await harness.render(createElement(MessageBubble, { message, progressNote: true }));
+      const quietNote = findAllByTag(harness.dom.container, "DIV")
+        .find((candidate) => candidate.getAttribute?.("data-progress-note") === "true");
+      expect(quietNote).toBeDefined();
+      expect(quietNote?.getAttribute("class")).toContain("text-text-secondary");
+      expect(quietNote?.getAttribute("class")).not.toContain("text-text-primary");
+    } finally {
+      await harness.cleanup();
+    }
+  });
 });
+

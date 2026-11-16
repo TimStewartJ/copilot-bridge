@@ -1174,6 +1174,37 @@ describe("event-transform model thinking", () => {
     expect(entries.map((entry) => entry.type)).toEqual(["reasoning", "tool"]);
   });
 
+  it("marks assistant text as progressUpdate only when emitted alongside non-interactive tool requests", () => {
+    const entries = transformEventsToMessages([
+      turnStart,
+      {
+        id: "msg-progress",
+        type: "assistant.message",
+        timestamp: "2026-09-20T08:00:01.000Z",
+        data: { content: "Checking files.", toolRequests: [{ toolCallId: "t1", name: "view" }] },
+      },
+      {
+        id: "msg-question",
+        type: "assistant.message",
+        timestamp: "2026-09-20T08:00:02.000Z",
+        data: { content: "Pick a target.", toolRequests: [{ toolCallId: "t2", name: "ask_user" }] },
+      },
+      {
+        id: "msg-final",
+        type: "assistant.message",
+        timestamp: "2026-09-20T08:00:03.000Z",
+        data: { content: "All set.", toolRequests: [] },
+      },
+    ]);
+
+    const messages = entries.filter((entry) => entry.type === "message");
+    expect(messages.map((entry) => ({ id: entry.sourceEventId, progressUpdate: entry.progressUpdate }))).toEqual([
+      { id: "msg-progress", progressUpdate: true },
+      { id: "msg-question", progressUpdate: undefined },
+      { id: "msg-final", progressUpdate: undefined },
+    ]);
+  });
+
   it("ignores blank thinking and never treats thinking alone as visible activity", () => {
     const blank = {
       id: "assistant-message-1",

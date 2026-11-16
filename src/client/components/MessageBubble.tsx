@@ -37,6 +37,8 @@ interface MessageBubbleProps {
   sessionId?: string;
   /** Sends a user message the agent never got (`message.unsent`) again. Edit and Discard are in its menu. */
   onResendUnsent?: () => void;
+  /** Quieter secondary contrast for a tool-accompanying progress note superseded by a later reply. */
+  progressNote?: boolean;
 }
 
 const UNSENT_REASON: Record<NonNullable<ChatMessage["unsent"]>["state"], { label: string; title: string }> = {
@@ -118,6 +120,7 @@ export default memo(function MessageBubble({
   onFinishSelectingText,
   sessionId,
   onResendUnsent,
+  progressNote = false,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const actionSlot = actions && messageKey !== undefined && (
@@ -262,7 +265,10 @@ export default memo(function MessageBubble({
         <BubbleActions side="left">{actionSlot}</BubbleActions>
         {hasContent && (
           <div
-            className={`ds-prose max-w-none py-0.5 text-sm leading-[1.7] text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`}
+            data-progress-note={progressNote ? "true" : undefined}
+            className={`ds-prose max-w-none py-0.5 text-sm leading-[1.7] ${
+              progressNote ? "text-text-secondary" : "text-text-primary"
+            } ${APP_PROSE} prose-p:my-2.5 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-table:my-3 prose-pre:bg-bg-surface prose-th:bg-bg-surface`}
             aria-busy={isStreaming || undefined}
           >
             <div className={isStreaming ? "streaming-text-fade" : undefined}>

@@ -6,6 +6,7 @@ import { createSettingsStore, type SettingsStore } from "../settings-store.js";
 import { DEFAULT_RESPONSE_STYLE_GUIDANCE } from "../../shared/response-style.js";
 import { SYSTEM_MESSAGE_SECTIONS } from "@github/copilot-sdk";
 import {
+  applyAdaptiveReplyDirective,
   applyConciseReplyDirective,
   BROWSER_GUIDANCE,
   DEFAULT_IDENTITY,
@@ -123,8 +124,13 @@ describe("session-config-builder base method", () => {
     expect(project.sections.tone.content.indexOf("</response_style>"))
       .toBeLessThan(project.sections.tone.content.indexOf(BASE_METHOD_REPORTING));
     expect(project.sections.guidelines).toEqual({ action: "append", content: BASE_METHOD });
-    expect(project.sections.last_instructions).toEqual({ action: removeConciseReplyDirective });
+    expect(project.sections.last_instructions).toEqual({ action: applyAdaptiveReplyDirective });
     expect(project.sections.code_change_rules).toBeUndefined();
+
+    const detailedStore = createSettingsStore(setupTestDb());
+    detailedStore.updateSettings({ responseStyle: { detail: "detailed", guidance: "" } });
+    expect(sectionsFor({}, { settingsStore: detailedStore }).sections.last_instructions)
+      .toEqual({ action: removeConciseReplyDirective });
 
     expect(sectionsFor({}, {}, { isNeutralWorkspaceCwd: () => true }).sections.code_change_rules).toEqual({ action: "remove" });
     expect(sectionsFor({}, {}, { resolveEffectiveSessionCwd: () => undefined }).sections.code_change_rules).toEqual({ action: "remove" });
@@ -299,7 +305,7 @@ describe("session-config-builder", () => {
       `Custom Bridge identity\n\n${engineerRole}\n\nYou are an interactive tool that helps users with software engineering tasks.\n\nNext`,
     )).toBe(`Custom Bridge identity\n\n${engineerRole}\n\nNext`);
     expect(cfg.systemMessage.sections.tool_efficiency).toEqual({ action: removeCliOutputSurfaceNote });
-    expect(cfg.systemMessage.sections.last_instructions).toEqual({ action: removeConciseReplyDirective });
+    expect(cfg.systemMessage.sections.last_instructions).toEqual({ action: applyAdaptiveReplyDirective });
     expect(cfg.systemMessage.sections.environment_context.content).toContain("Server timezone:");
     expect(cfg.systemMessage.sections.tool_instructions).toMatchObject({
       action: "append",

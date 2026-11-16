@@ -41,4 +41,4 @@ The draft is delivered where it was meant to go. When nothing is sent (no approv
 
 ## Reply
 
-The full draft text (or a link when it was saved elsewhere), where it went or is waiting to go, and any fact you could not verify.
+The full draft text (or its link or attachment card when saved elsewhere, without pasting it twice), where it went or is waiting to go, and any fact you could not verify. When a verify_complete card is in the chat, leave the fact-check list to the card unless asked.

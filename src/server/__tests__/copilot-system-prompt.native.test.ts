@@ -395,7 +395,7 @@ describe("native Bridge system prompt", () => {
       expect(prompt.startsWith(`${identity}\n\n${BASE_METHOD_ROLE}\n\n<response_style>`)).toBe(true);
       expect(prompt.split(statement).length - 1).toBe(1);
       expect(prompt).not.toContain("Respond concisely to the user");
-      const reminder = "Response style is concise: lead with the answer, skip unasked walkthroughs and card repeats, and stop once the request is met.";
+      const reminder = "Response style is concise (unless the user asked for detail): lead with the answer in short plain sentences, skip unasked side sections, walkthroughs, and repeats of UI cards or task notes, and stop once the request is met.";
       expect(prompt.indexOf(reminder)).toBeGreaterThan(prompt.indexOf("</task_completion>"));
       await session.release();
     } finally { await cleanup(); }

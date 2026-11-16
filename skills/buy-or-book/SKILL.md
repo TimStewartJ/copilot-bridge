@@ -41,4 +41,4 @@ Prices and availability were checked live, and every gated action had explicit a
 
 ## Reply
 
-The recommendation or what was bought or booked, the total, the confirmation number and cancellation deadline, and anything still waiting on the user.
+The recommendation (with a compact shortlist table if comparing options) or what was bought or booked with total, confirmation number and cancellation deadline, plus anything waiting on the user. When a verify_complete card is in the chat, leave the check-by-check source URLs to the card unless asked.

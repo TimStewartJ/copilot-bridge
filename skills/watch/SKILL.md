@@ -45,4 +45,4 @@ This run compared against a recorded baseline, or recorded the first one. Call v
 
 ## Reply
 
-The first sentence answers whether anything that matters changed since the last check. For each confirmed change: what changed, where and when you saw it, the evidence, and what the user should do. If nothing changed, stop after one or two sentences.
+The first sentence answers whether anything that matters changed since the last check. For each confirmed change: what changed, when and where you saw it, and what the user should do, leaving routine baseline checks on the verify_complete card. If nothing changed, stop after one or two sentences.

@@ -411,6 +411,8 @@ export interface ChatMessage {
   clientMessageId?: string;
   role: "user" | "assistant";
   content: string;
+  /** Emitted alongside non-interactive tool calls rather than as a standalone reply. */
+  progressUpdate?: boolean;
   /** Model and usage for a completed assistant turn, when the event log has enough attribution. */
   model?: string;
   turnDetails?: ChatTurnDetails;
