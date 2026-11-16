@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     { createApiServices },
     {
       createAppContext,
-      initializeSchedulerAndDeferredRunners,
+      initializeTriggerAndDeliveryRunners,
     },
     { shutdownAppContextServices },
     { resolveRuntimePaths },
@@ -148,7 +148,7 @@ async function main(): Promise<void> {
   } catch (error) {
     console.error("[staging-preview] Background command recovery failed:", error);
   }
-  initializeSchedulerAndDeferredRunners(ctx);
+  initializeTriggerAndDeliveryRunners(ctx);
 
   app.use(createResponseCompressionMiddleware());
   app.get("/__health", (_req, res) => {

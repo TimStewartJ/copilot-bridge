@@ -27,7 +27,7 @@ You own a bounded run toward one pass/fail condition, every decision along the w
 6. Each iteration: make the smallest change the evidence justifies, verify it against the condition, keep it if it helps and discard it if not, then add one task_history_add row with the decision, why, the evidence and the result.
 7. On a plateau, change the approach (a different hypothesis, a different lens, a sub-agent's idea) rather than stopping.
 8. Never relax the condition: do not edit the tests, thresholds or doneWhen to make the run pass.
-9. Schedule each wake with defer_create: a one-shot defer (delaySeconds) for the next step, or, for an external wait, a recurring defer (intervalSeconds of at least 300, with maxRuns or expiresAt) whose `check` command wakes the worker only when its exit code or output changes.
+9. Schedule each wake with trigger_create: a one-time trigger (delaySeconds) for the next step, or, for an external wait, a recurring trigger (intervalSeconds, with maxRuns or expiresAt) whose `check` command wakes the worker only when its output changes or it exits with 10.
    - Example: `check: { command: ["gh", "run", "view", "4567", "--json", "status,conclusion"] }`. The command is an argument array with the executable first and no shell; `cwd` must be an absolute path.
 10. Do not ask questions mid-run. When a gated action is needed, ask with ask_user and keep doing work that does not depend on the answer, or stop at the escape hatch.
 11. When the condition passes or the escape hatch triggers, verify the exit condition once more on the real system.

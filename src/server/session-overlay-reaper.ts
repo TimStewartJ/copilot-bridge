@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppContext } from "./app-context.js";
 import type { BridgeSessionState } from "./bridge-session-state-store.js";
-import type { DeletedScheduleRunGroup } from "./schedule-store.js";
 
 const DEFAULT_MINIMUM_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -12,11 +11,10 @@ export type SessionOverlayReaperReason =
   | "exists_on_disk"
   | "cli_catalog_unavailable"
   | "task_link"
-  | "schedule_reference"
-  | "schedule_run_history"
-  | "schedule_claim"
-  | "deferred_prompt"
-  | "defer_loop"
+  | "trigger_reference"
+  | "trigger_run_history"
+  | "outbox_message"
+  | "trigger"
   | "active_session"
   | "pending_user_input"
   | "event_bus"
@@ -43,8 +41,7 @@ export interface SessionOverlayReaperReport {
   skippedDuringApply: number;
   reasonCounts: Record<string, number>;
   rows: SessionOverlayReaperRow[];
-  deletedScheduleRuns: {
-    groups: DeletedScheduleRunGroup[];
+  deletedTriggerRuns: {
     wouldDelete: number;
     deleted: number;
   };
@@ -52,7 +49,7 @@ export interface SessionOverlayReaperReport {
 
 export interface SessionOverlayReaperOptions {
   dryRun?: boolean;
-  cleanupDeletedScheduleRuns?: boolean;
+  cleanupDeletedTriggerRuns?: boolean;
   minimumAgeMs?: number;
 }
 
@@ -60,9 +57,8 @@ interface ReaperReferences {
   cliCatalogAvailable: boolean;
   cliSessionIds: Set<string>;
   taskSessionIds: Set<string>;
-  scheduleSessionIds: Set<string>;
-  scheduleRunSessionIds: Set<string>;
-  scheduleClaimSessionIds: Set<string>;
+  triggerSessionIds: Set<string>;
+  triggerRunSessionIds: Set<string>;
   activeSessionIds: Set<string>;
 }
 
@@ -101,12 +97,10 @@ async function getReferences(ctx: AppContext): Promise<ReaperReferences> {
     for (const sessionId of task.sessionIds) taskSessionIds.add(sessionId);
   }
 
-  const scheduleSessionIds = new Set<string>();
-  for (const schedule of ctx.scheduleStore.listSchedules()) {
-    if (schedule.lastSessionId) scheduleSessionIds.add(schedule.lastSessionId);
+  const triggerSessionIds = new Set<string>();
+  for (const trigger of ctx.triggerStore?.list({ includeInactive: true }) ?? []) {
+    if (trigger.lastSessionId) triggerSessionIds.add(trigger.lastSessionId);
   }
-
-  const scheduleClaimSessionIds = new Set(ctx.scheduleStore.listClaimedSessionIds());
   const sessionManager = ctx.sessionManager as unknown as {
     getActiveSessions?: () => string[];
   };
@@ -115,9 +109,8 @@ async function getReferences(ctx: AppContext): Promise<ReaperReferences> {
     cliCatalogAvailable: catalogSessions !== undefined,
     cliSessionIds: new Set((catalogSessions ?? []).map((session) => session.sessionId)),
     taskSessionIds,
-    scheduleSessionIds,
-    scheduleRunSessionIds: new Set(ctx.scheduleStore.listScheduleRunSessionIds()),
-    scheduleClaimSessionIds,
+    triggerSessionIds,
+    triggerRunSessionIds: new Set(ctx.triggerStore?.listRunSessionIds() ?? []),
     activeSessionIds: new Set(sessionManager.getActiveSessions?.() ?? []),
   };
 }
@@ -145,11 +138,10 @@ function classifyState(
   if (existsOnDisk) reasons.push("exists_on_disk");
   if (!refs.cliCatalogAvailable && !existsOnDisk) reasons.push("cli_catalog_unavailable");
   if (refs.taskSessionIds.has(sessionId)) reasons.push("task_link");
-  if (refs.scheduleSessionIds.has(sessionId)) reasons.push("schedule_reference");
-  if (refs.scheduleRunSessionIds.has(sessionId)) reasons.push("schedule_run_history");
-  if (refs.scheduleClaimSessionIds.has(sessionId)) reasons.push("schedule_claim");
-  if (ctx.deferredPromptStore?.hasActiveForSession(sessionId)) reasons.push("deferred_prompt");
-  if (ctx.deferLoopStore?.hasActiveForSession(sessionId)) reasons.push("defer_loop");
+  if (refs.triggerSessionIds.has(sessionId)) reasons.push("trigger_reference");
+  if (refs.triggerRunSessionIds.has(sessionId)) reasons.push("trigger_run_history");
+  if (ctx.deferredPromptStore?.hasActiveForSession(sessionId)) reasons.push("outbox_message");
+  if (ctx.triggerStore?.hasActiveForSession(sessionId)) reasons.push("trigger");
   if (refs.activeSessionIds.has(sessionId)) reasons.push("active_session");
   if (hasPendingUserInput(ctx, sessionId)) reasons.push("pending_user_input");
   if (ctx.eventBusRegistry.hasBus(sessionId)) reasons.push("event_bus");
@@ -216,10 +208,9 @@ export async function runSessionOverlayReaper(
     }
   }
 
-  const deletedScheduleRunGroups = ctx.scheduleStore.listDeletedScheduleRunGroups();
-  const wouldDeleteScheduleRuns = deletedScheduleRunGroups.reduce((sum, group) => sum + group.runs, 0);
-  const deletedScheduleRuns = !dryRun && options.cleanupDeletedScheduleRuns === true
-    ? ctx.scheduleStore.deleteRunsForDeletedSchedules()
+  const wouldDeleteTriggerRuns = ctx.triggerStore?.countRunsForDeletedTriggers() ?? 0;
+  const deletedTriggerRuns = !dryRun && options.cleanupDeletedTriggerRuns === true
+    ? ctx.triggerStore?.deleteRunsForDeletedTriggers() ?? 0
     : 0;
 
   return {
@@ -232,10 +223,9 @@ export async function runSessionOverlayReaper(
     skippedDuringApply,
     reasonCounts: countReasons(rows),
     rows,
-    deletedScheduleRuns: {
-      groups: deletedScheduleRunGroups,
-      wouldDelete: wouldDeleteScheduleRuns,
-      deleted: deletedScheduleRuns,
+    deletedTriggerRuns: {
+      wouldDelete: wouldDeleteTriggerRuns,
+      deleted: deletedTriggerRuns,
     },
   };
 }

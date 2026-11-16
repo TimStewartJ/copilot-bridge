@@ -10,8 +10,8 @@ export interface TaskActivity {
   runningCommandCount: number;
   heldCount: number;
   externalCount: number;
-  deferredCount: number;
-  scheduledCount: number;
+  chatTriggerCount: number;
+  taskTriggerCount: number;
   pendingDeliveryCount: number;
   managementJobCount: number;
 }
@@ -50,11 +50,11 @@ export function deriveTaskAttention(input: TaskAttentionInput, now = Date.now())
   const activity = input.activity;
   if (!activity) return "unavailable";
   const counts = [activity.runCount, activity.runningAgentCount, activity.runningCommandCount,
-    activity.heldCount, activity.externalCount, activity.deferredCount, activity.scheduledCount,
+    activity.heldCount, activity.externalCount, activity.chatTriggerCount, activity.taskTriggerCount,
     activity.pendingDeliveryCount, activity.managementJobCount];
   if (counts.some(count => !Number.isFinite(count) || count < 0)) return "unavailable";
   if (activity.runCount + activity.runningAgentCount + activity.runningCommandCount
-    + activity.heldCount + activity.externalCount + activity.deferredCount + activity.scheduledCount
+    + activity.heldCount + activity.externalCount + activity.chatTriggerCount + activity.taskTriggerCount
     + activity.pendingDeliveryCount + activity.managementJobCount > 0) return null;
   if (!input.readStateKnown || !input.sessionStateKnown || activity.sessionIndexKnown === false) return "unavailable";
   if (!activity.known) return "unavailable";

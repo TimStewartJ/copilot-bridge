@@ -57,11 +57,10 @@ afterEach(() => {
 
 function createShutdownSpies() {
   return {
-    setGlobalPause: vi.fn(),
-    schedulerShutdown: vi.fn(),
+    taskTriggerShutdown: vi.fn(),
     overlayStop: vi.fn(),
     deferredPromptShutdown: vi.fn(),
-    deferLoopShutdown: vi.fn(),
+    chatTriggerShutdown: vi.fn(),
     usageReaderShutdown: vi.fn(async () => {}),
     searchShutdown: vi.fn(async () => {}),
     sessionManagerStopAdmitting: vi.fn(),
@@ -78,10 +77,10 @@ function createShutdownSpies() {
 
 function createFakeContext(spies: ReturnType<typeof createShutdownSpies>): AppContext {
   return {
-    scheduler: { setGlobalPause: spies.setGlobalPause, shutdown: spies.schedulerShutdown },
+    triggerTaskRunner: { shutdown: spies.taskTriggerShutdown },
     sessionOverlayMaintenance: { stop: spies.overlayStop },
     deferredPromptRunner: { shutdown: spies.deferredPromptShutdown },
-    deferLoopRunner: { shutdown: spies.deferLoopShutdown },
+    triggerChatRunner: { shutdown: spies.chatTriggerShutdown },
     copilotUsageReader: { shutdown: spies.usageReaderShutdown },
     searchIndex: { shutdown: spies.searchShutdown },
     sessionManager: { stopAdmittingWork: spies.sessionManagerStopAdmitting, gracefulShutdown: spies.sessionManagerShutdown },
@@ -203,7 +202,7 @@ describe("shutdownAppContextServices", () => {
     const operation = shutdownAppContextServices(ctx, deadline);
     try {
       expect(spies.sessionManagerStopAdmitting).toHaveBeenCalledOnce();
-      expect(spies.setGlobalPause).toHaveBeenCalledWith(true);
+      expect(spies.taskTriggerShutdown).toHaveBeenCalledOnce();
       expect(spies.sessionManagerShutdown).not.toHaveBeenCalled();
       expect(shutdownAppContextServices(ctx, deadline)).toBe(operation);
     } finally { release(); await operation; }
@@ -212,12 +211,12 @@ describe("shutdownAppContextServices", () => {
     expect(spies.sessionManagerShutdown).toHaveBeenCalledOnce();
     expect(spies.overlayStop).toHaveBeenCalledTimes(1);
     expect(spies.deferredPromptShutdown).toHaveBeenCalledTimes(1);
-    expect(spies.deferLoopShutdown).toHaveBeenCalledTimes(1);
+    expect(spies.chatTriggerShutdown).toHaveBeenCalledTimes(1);
     expect(spies.usageReaderShutdown).toHaveBeenCalledTimes(1);
     expect(spies.searchShutdown).toHaveBeenCalledTimes(1);
     expect(spies.sessionManagerShutdown).toHaveBeenCalledWith(deadline);
     expect(spies.voiceShutdown).toHaveBeenCalledTimes(1);
-    expect(spies.schedulerShutdown).toHaveBeenCalledTimes(1);
+    expect(spies.taskTriggerShutdown).toHaveBeenCalledTimes(1);
     expect(spies.pushUnsubscribe).toHaveBeenCalledTimes(1);
     expect(spies.focusDispose).not.toHaveBeenCalled();
     expect(spies.launchStop).not.toHaveBeenCalled();
@@ -251,7 +250,6 @@ describe("shutdownAppContextServices", () => {
     await expect(shutdownAppContextServices(ctx, createDeadline(1_000))).resolves.toBeUndefined();
 
     expect(spies.voiceShutdown).toHaveBeenCalledTimes(1);
-    expect(spies.schedulerShutdown).toHaveBeenCalledTimes(1);
     consoleError.mockRestore();
   });
 
@@ -262,7 +260,7 @@ describe("shutdownAppContextServices", () => {
     await shutdownAppContextServices(createFakeContext(firstSpies), createDeadline(1_000));
     await shutdownAppContextServices(createFakeContext(secondSpies), createDeadline(1_000));
 
-    expect(firstSpies.schedulerShutdown).toHaveBeenCalledTimes(1);
-    expect(secondSpies.schedulerShutdown).toHaveBeenCalledTimes(1);
+    expect(firstSpies.taskTriggerShutdown).toHaveBeenCalledTimes(1);
+    expect(secondSpies.taskTriggerShutdown).toHaveBeenCalledTimes(1);
   });
 });

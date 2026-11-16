@@ -18,7 +18,7 @@ describe("task attention", () => {
 
   it.each([
     "runCount", "runningAgentCount", "runningCommandCount", "heldCount", "externalCount",
-    "deferredCount", "scheduledCount", "pendingDeliveryCount", "managementJobCount",
+    "chatTriggerCount", "taskTriggerCount", "pendingDeliveryCount", "managementJobCount",
   ] satisfies Array<keyof Omit<TaskActivity, "known">>)("keeps %s unmarked without losing an explicit request", (key) => {
     const activity = createTaskActivity({ [key]: 1 });
     expect(deriveTaskAttention(input({ activity }), NOW)).toBeNull();
@@ -29,7 +29,7 @@ describe("task attention", () => {
   it("keeps dated or checked waits and future revisits quiet, marks a bare wait, and marks reached dates", () => {
     expect(deriveTaskAttention(input({ waitingOn: "Reviewer approval" }), NOW)).toBe("review");
     expect(deriveTaskAttention(input({ waitingOn: "Reviewer approval", nextTouchAt: "2026-10-20T22:00:00Z" }), NOW)).toBeNull();
-    expect(deriveTaskAttention(input({ waitingOn: "Reviewer approval", activity: createTaskActivity({ deferredCount: 1 }) }), NOW)).toBeNull();
+    expect(deriveTaskAttention(input({ waitingOn: "Reviewer approval", activity: createTaskActivity({ chatTriggerCount: 1 }) }), NOW)).toBeNull();
     expect(deriveTaskAttention(input({ waitingOn: "Reviewer approval", liveWorkCount: 1 }), NOW)).toBeNull();
     expect(deriveTaskAttention(input({ nextTouchAt: "2026-10-20T22:00:00Z" }), NOW)).toBeNull();
     expect(deriveTaskAttention(input({ nextTouchAt: "2026-10-19T22:00:00Z" }), NOW)).toBe("revisit");
@@ -43,8 +43,8 @@ describe("task attention", () => {
       { activity: createTaskActivity({ runningCommandCount: Number.NaN }) },
     ]) expect(deriveTaskAttention(input(overrides), NOW)).toBe("unavailable");
     expect(deriveTaskAttention(input({ liveWorkCount: 1, activity: undefined }), NOW)).toBeNull();
-    expect(deriveTaskAttention(input({ activity: createTaskActivity({ known: false, scheduledCount: 1 }) }), NOW)).toBeNull();
-    expect(deriveTaskAttention(input({ activity: createTaskActivity({ known: false, sessionIndexKnown: false, scheduledCount: 1 }) }), NOW)).toBeNull();
+    expect(deriveTaskAttention(input({ activity: createTaskActivity({ known: false, taskTriggerCount: 1 }) }), NOW)).toBeNull();
+    expect(deriveTaskAttention(input({ activity: createTaskActivity({ known: false, sessionIndexKnown: false, taskTriggerCount: 1 }) }), NOW)).toBeNull();
     expect(deriveTaskAttention(input({ readStateKnown: false, sessionStateKnown: false, liveWorkCount: 1 }), NOW)).toBeNull();
     expect(deriveTaskAttention(input({ readStateKnown: false, nextTouchAt: "2026-10-20T22:00:00Z" }), NOW)).toBeNull();
   });

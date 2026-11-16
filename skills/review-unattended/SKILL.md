@@ -1,6 +1,6 @@
 ---
 name: review-unattended
-description: "Helper: have a reviewer on a different model family audit work that ran while the user was away, and end with an Attention section of specific flags. Use at the end of an unattended run, scheduled run or defer chain, or when the user asks what happened while I was away, review the overnight run, or check what the agent did."
+description: "Helper: have a reviewer on a different model family audit work that ran while the user was away, and end with an Attention section of specific flags. Use at the end of an unattended run, trigger-started chat or chain of triggers, or when the user asks what happened while I was away, review the overnight run, or check what the agent did."
 metadata:
   bridge-kind: helper
   bridge-label: Review unattended work
@@ -12,7 +12,7 @@ You own an independent check of unattended work, done by a model from a differen
 
 ## Steps
 
-1. Identify the work under review: the runs (defers, scheduled runs, unattended-run iterations), the time span, the task, and the model that did the work.
+1. Identify the work under review: the runs (trigger worker runs, chats triggers started, unattended-run iterations), the time span, the task, and the model that did the work.
 2. Pick the reviewer from <model_roles>: the reviewer role if it is a different model family from the worker, otherwise a panel model from a different family.
    - If no different family is available, use the best available model and mark the review as degraded in the Attention header.
 3. Collect the material into a file in the session folder: the task doneWhen and instructions, the task_history_list rows in the span, the chat's recent turns, verify_complete reports, and paths to diffs, logs or artifacts.

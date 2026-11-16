@@ -19,7 +19,7 @@ function fixture() {
     summary: sessionId,
     runState: "idle",
     modifiedTime: "2026-10-16T17:00:00.000Z",
-    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
   }));
   const activeKey = queryKeys.sessions({ includeArchived: false });
   const allKey = queryKeys.sessions({ includeArchived: true });
@@ -163,15 +163,15 @@ describe("session event projection", () => {
     ]);
   });
 
-  it("updates defer automation and history hints without inventing transcript state", () => {
+  it("updates chat trigger and history hints without inventing transcript state", () => {
     const { project, effects } = fixture();
     project({
-      type: "session:defer-summary",
+      type: "session:trigger-summary",
       sessionId: "one",
-      deferSummary: { count: 1, runningCount: 0, nextRunAt: null },
+      triggerSummary: { count: 1, runningCount: 0, nextRunAt: null },
     });
     expect(effects.queries.invalidateQueries.mock.calls).toEqual([
-      [{ queryKey: queryKeys.sessionDefers("one") }],
+      [{ queryKey: queryKeys.sessionTriggers("one") }],
       [{ queryKey: TASK_OVERVIEW_KEY }],
     ]);
     effects.queries.invalidateQueries.mockClear();
@@ -180,16 +180,17 @@ describe("session event projection", () => {
     expect(effects.queries.invalidateQueries).not.toHaveBeenCalled();
   });
 
-  it("announces scheduled work through the same busy hint and refresh path", () => {
+  it("announces a fired task trigger through the same busy hint and refresh path", () => {
     const { project, effects, activeKey } = fixture();
-    project({ type: "schedule:triggered", sessionId: "one", taskId: "task", scheduleId: "schedule" });
+    project({ type: "trigger:fired", sessionId: "one", taskId: "task", triggerId: "trigger", triggerName: "Daily" });
     expect(effects.onBusy).toHaveBeenCalledExactlyOnceWith("one");
     expect(effects.queries.invalidateQueries.mock.calls).toEqual([
       [{ queryKey: activeKey }],
       [{ queryKey: queryKeys.tasks }],
       [{ queryKey: TASK_OVERVIEW_KEY }],
       [{ queryKey: queryKeys.task("task") }],
-      [{ queryKey: queryKeys.scheduleSessions("schedule") }],
+      [{ queryKey: queryKeys.taskTriggers("task") }],
+      [{ queryKey: queryKeys.triggerChats("trigger") }],
     ]);
   });
 
@@ -226,7 +227,7 @@ describe("session event projection", () => {
     resolve([{
       sessionId: "one", summary: "Fresh title", runState: "idle",
       modifiedTime: "2026-10-16T17:00:00.000Z",
-      deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+      triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
     }]);
     await pending;
     expect(queryClient.getQueryData<Session[]>(activeKey)?.[0]).toMatchObject({

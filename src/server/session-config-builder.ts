@@ -82,9 +82,9 @@ export interface ScheduleContext {
   lastRunAt?: string;
   /** Resolved against Settings › Models when the session is created; unset follows New chats. */
   modelTier?: ModelPresetSlot;
-  /** The playbook the schedule pins for its runs. */
+  /** The playbook the trigger pins for the chats it starts. */
   playbook?: string;
-  /** The session of the schedule's previous run. */
+  /** The chat the trigger started last time. */
   previousSessionId?: string;
   /** What the previous run left, for playbooks that compare runs (Watch, Sweep). */
   previousRunReport?: PreviousRunReport;
@@ -95,7 +95,7 @@ export interface SessionConfigOptions {
   task?: Task | null;
   /**
    * Adds this task's tag-linked MCP servers without the rest of the task (prompt context, working
-   * directory). Defer workers use it to get their parent chat's servers.
+   * directory). Trigger workers use it to get their parent chat's servers.
    */
   mcpServerTask?: Pick<Task, "id" | "groupId"> | null;
   scheduleContext?: ScheduleContext;
@@ -347,7 +347,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       ? resolveModelTier(settings, tierSlot, modelMetadata)
       : undefined;
     if (scheduleTier && "warning" in scheduleTier) {
-      const owner = scheduleContext ? `[schedule] "${scheduleContext.name}"` : "[model-ab-test]";
+      const owner = scheduleContext ? `[trigger] "${scheduleContext.name}"` : "[model-ab-test]";
       console.warn(`${owner}: ${scheduleTier.warning} Running on the New chats model instead.`);
     }
     const tierChoice = scheduleTier?.model ? scheduleTier : undefined;
@@ -437,7 +437,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       ? `, run #${scheduleContext.runCount + 1}`
       : "";
     contextParts.push(
-      `\nThis session was triggered by schedule "${scheduleContext.name}" (${kind}${runLabel}). There is no human waiting — work autonomously and avoid asking clarifying questions.`,
+      `\nThis session was started by trigger "${scheduleContext.name}" (${kind}${runLabel}). There is no human waiting — work autonomously and avoid asking clarifying questions.`,
     );
     // Only playbooks that compare runs ask for it; the session manager reads it for those.
     if (scheduleContext.previousRunReport) {

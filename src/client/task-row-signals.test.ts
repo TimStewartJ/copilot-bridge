@@ -15,14 +15,14 @@ const NOW = new Date("2026-10-19T22:00:00Z");
 describe("attention-only task rows", () => {
   it("keeps normal work and dated or checked waits blank while leaving their context available", () => {
     expect(getTaskAttentionSignal(task, indicator({ busy: true, busyCount: 1 }), NOW)).toBeNull();
-    expect(getTaskAttentionSignal(task, indicator({ deferCount: 1 }), NOW)).toBeNull();
+    expect(getTaskAttentionSignal(task, indicator({ triggerCount: 1 }), NOW)).toBeNull();
     const waiting = { ...task, waitingOn: "Reviewer" };
     const review = getTaskAttentionSignal(waiting, indicator(), NOW, { activity: createTaskActivity() });
     expect(review).toMatchObject({ kind: "needs-look", detail: expect.stringContaining("Reviewer") });
     expect(review?.detail).toMatch(/\brevisit\b/i);
     expect(review?.detail).toMatch(/\b(add|set|choose|schedule)\b/i);
     expect(getTaskAttentionSignal({ ...waiting, nextTouchAt: "2026-10-25T22:00:00Z" }, indicator(), NOW)).toBeNull();
-    expect(getTaskAttentionSignal(waiting, indicator({ deferCount: 1 }), NOW)).toBeNull();
+    expect(getTaskAttentionSignal(waiting, indicator({ triggerCount: 1 }), NOW)).toBeNull();
     expect(getTaskActivityDescription(waiting, indicator())).toBe("Waiting for: Reviewer");
     expect(getTaskActivityDescription(task, indicator(), createTaskActivity({ pendingDeliveryCount: 1 }))).toContain("queued");
   });
@@ -37,7 +37,7 @@ describe("attention-only task rows", () => {
     const busy = indicator({ busy: true, busyCount: 1 });
     expect(getTaskLeadingGlyph(null, busy)).toBe("working");
     expect(getTaskLeadingGlyph(null, indicator(), createTaskActivity({ runCount: 1 }))).toBe("working");
-    expect(getTaskLeadingGlyph(null, indicator({ deferCount: 1 }), createTaskActivity({ deferredCount: 1 }))).toBeNull();
+    expect(getTaskLeadingGlyph(null, indicator({ triggerCount: 1 }), createTaskActivity({ chatTriggerCount: 1 }))).toBeNull();
     const unread = getTaskAttentionSignal(task, { ...busy, unreadCount: 1 }, NOW);
     const question = getTaskAttentionSignal(task, { ...busy, unreadCount: 1, needsUserInputCount: 1 }, NOW);
     expect(unread).toMatchObject({ kind: "unread", status: "unread" });

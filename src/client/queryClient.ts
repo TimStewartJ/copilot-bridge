@@ -56,8 +56,11 @@ export const queryKeys = {
   taskEnriched: (id: string) => ["task", id, "enriched"] as const,
   taskSessionStorage: (id: string, sessionLinksRevision: string) =>
     ["task", id, "session-storage", sessionLinksRevision] as const,
-  taskSchedules: (id: string) => ["task", id, "schedules"] as const,
-  scheduleSessions: (id: string) => ["schedule", id, "sessions"] as const,
+  /** Every trigger list and trigger's chats: refreshed together when a trigger changes. */
+  triggersRoot: ["triggers"] as const,
+  taskTriggers: (taskId: string) => ["triggers", "task", taskId] as const,
+  sessionTriggers: (sessionId: string) => ["triggers", "session", sessionId] as const,
+  triggerChats: (triggerId: string) => ["triggers", "chats", triggerId] as const,
   /** Kept outside ["sessions"]: those caches hold Session[] and are patched in place. */
   taskArchivedSessionsRoot: ["task-archived-sessions"] as const,
   taskArchivedSessions: (id: string) => ["task-archived-sessions", id] as const,
@@ -65,7 +68,6 @@ export const queryKeys = {
     ["session-workspace", sessionId, taskId ?? null] as const,
   sessionModel: (sessionId: string) => ["session-model", sessionId] as const,
   sessionUsageMetrics: (sessionId: string) => ["session-usage-metrics", sessionId] as const,
-  sessionDefers: (sessionId: string) => ["session-defers", sessionId] as const,
   chatMessages: (sessionId: string) =>
     ["chat", sessionId, "messages"] as const,
   mcpStatus: (sessionId: string) => ["chat", sessionId, "mcp"] as const,

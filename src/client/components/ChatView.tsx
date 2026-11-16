@@ -191,7 +191,7 @@ interface ChatViewProps {
   onRetryVoiceJobUpload?: (composerKey: string) => void;
   onDiscardVoiceRecording?: (composerKey: string) => void;
   reloadToken?: number;
-  /** Incremented when an external source (e.g. schedule) starts work on this session */
+  /** Incremented when an external source (e.g. a trigger) starts work on this session */
   busySignal?: number;
   /** Incremented when server history was truncated and the loaded window must be replaced. */
   historySignal?: number;
@@ -1413,7 +1413,7 @@ export default function ChatView({
     if (action === "reconnect") historyRef.current.refresh();
   }, [busySignal, creating, historicalMode, isStreaming, loading, loadingMore, pendingOrigin, refreshingHistory, sessionId]);
 
-  // The server truncated this session's history (an undo, or a quiet defer replacing its own
+  // The server truncated this session's history (an undo, or a quiet trigger replacing its own
   // tail), so nothing that is loaded can be trusted, nor anything a finished run left on screen.
   useCounterAdvance(sessionId, historySignal, () => {
     if (historicalMode) return;

@@ -20,7 +20,7 @@ import {
 } from "../task-detail-focus";
 import TaskSessionList from "./TaskSessionList";
 import PullToRefresh, { type PullToRefreshScrollRestoration } from "./PullToRefresh";
-import ScheduleDetailSheet from "./ScheduleDetailSheet";
+import TriggerDetailSheet from "./TriggerDetailSheet";
 import NotesSheet from "./NotesSheet";
 import TaskPageSection, { RemoveTaskPageItem, TaskPageSlot, useTaskPageQuery } from "./TaskPageSection";
 import TaskHistorySheet, { describeHistoryActor, useTaskHistory } from "./TaskHistorySheet";
@@ -33,6 +33,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronRight,
+  Clock,
   MoreHorizontal,
   Plus,
   RotateCcw,
@@ -62,7 +63,7 @@ import {
   TaskChecklistSection,
   TaskNotesSection,
   RelatedDocsSection,
-  ScheduleSection,
+  TriggerSection,
 } from "./task-sections";
 
 
@@ -219,8 +220,8 @@ export default function TaskPanel({
   const {
     enrichedWIs,
     enrichedPRs,
-    sched,
-    schedDetail,
+    triggers,
+    triggerDetail,
     notes,
     instructionsSheet,
     historySheet,
@@ -273,7 +274,7 @@ export default function TaskPanel({
     && (pageInStatus || !pageQuery.isPending)
     && (!startersShown || !startersQuery.isPending)
     && datesQuery.settled
-    && sched.settled
+    && triggers.settled
     && ws.relatedDocsSettled;
   const lowerRevealed = useRevealWhenSettled(task?.id ?? "", lowerSettled);
 
@@ -438,7 +439,7 @@ export default function TaskPanel({
     setAgentSetupExpanded(expanded);
   };
   const hasLinked = (!pageInStatus && Boolean(pageQuery.data)) || task.workItems.length > 0 || task.pullRequests.length > 0
-    || relatedDocs.length > 0 || sched.schedules.length > 0;
+    || relatedDocs.length > 0 || triggers.triggers.length > 0;
   const showChecklistComposer = checklistItems.some((item) => !item.done) || checklistComposerOpen;
   const attention = taskSignals.get(task.id);
 
@@ -751,19 +752,17 @@ export default function TaskPanel({
                     taskId={task.id}
                   />
                 )}
-                {sched.schedules.length > 0 && (
-                  <ScheduleSection
-                    schedules={sched.schedules}
-                    variant="summary"
-                    taskId={task.id}
-                    onAdd={() => schedDetail.openForCreate(task.id)}
-                    onOpen={(schedule) => schedDetail.openSheet(schedule)}
-                    onTrigger={(id) => sched.trigger(id)}
-                    onToggle={(schedule) => sched.toggle(schedule)}
-                    onEdit={(schedule) => schedDetail.openSheet(schedule, "edit")}
-                    onDelete={(id) => sched.remove(id)}
-                  />
-                )}
+                <TriggerSection
+                  triggers={triggers.triggers}
+                  taskId={task.id}
+                  onAdd={triggerDetail.openForCreate}
+                  onOpen={(trigger) => triggerDetail.openSheet(trigger.id)}
+                  onAction={(action, id) => {
+                    void triggers.act(action, id).catch((error: unknown) => {
+                      showToast({ tone: "error", title: "The trigger was not changed", description: error instanceof Error ? error.message : String(error) });
+                    });
+                  }}
+                />
               </div>
             </Section>
           )}
@@ -832,21 +831,19 @@ export default function TaskPanel({
           </Section>
           </div>
 
-          {schedDetail.isOpen && (
-            <ScheduleDetailSheet
-              schedule={schedDetail.schedule}
+          {triggerDetail.isOpen && (
+            <TriggerDetailSheet
+              key={triggerDetail.triggerId ?? "new"}
+              trigger={triggers.triggers.find((trigger) => trigger.id === triggerDetail.triggerId) ?? null}
               taskId={task.id}
-              taskTitle={task.title}
-              mode={schedDetail.mode}
-              onClose={schedDetail.close}
-              onSwitchToEdit={schedDetail.switchToEdit}
-              onSwitchToView={schedDetail.switchToView}
-              onTrigger={sched.trigger}
-              onToggle={sched.toggle}
-              onDelete={sched.remove}
-              onSaved={() => {
-                schedDetail.close();
-                sched.reload();
+              mode={triggerDetail.mode}
+              onClose={triggerDetail.close}
+              onSwitchToEdit={triggerDetail.switchToEdit}
+              onSwitchToView={triggerDetail.switchToView}
+              onAction={triggers.act}
+              onSaved={(trigger) => {
+                triggers.saved(trigger);
+                triggerDetail.showSaved(trigger.id);
               }}
               onSelectSession={onSelectSession}
             />
@@ -933,6 +930,11 @@ export default function TaskPanel({
                     icon={<Sparkles size={14} />}
                     label="Tidy instructions and notes"
                     onClick={() => { closeMenu(); void startTidy(currentTask.id); }}
+                  />
+                  <CtxItem
+                    icon={<Clock size={14} />}
+                    label="Add trigger"
+                    onClick={() => { closeMenu(); triggerDetail.openForCreate(); }}
                   />
                   <RemoveTaskPageItem taskId={currentTask.id} closeMenu={closeMenu} />
                 </>

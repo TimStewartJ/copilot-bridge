@@ -95,7 +95,7 @@ async function withHarness(
       summary: sessionId,
       modifiedTime: "2026-04-27T18:00:00.000Z",
       runState: "idle",
-      deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+      triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
     })));
   let state: HookState | null = null;
   let sessions: Session[] = [];

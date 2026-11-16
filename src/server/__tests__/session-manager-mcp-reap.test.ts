@@ -1391,20 +1391,20 @@ describe("SessionManager bounded session lifecycle", () => {
     expect(manager.getSessionCapacityWait()).toBeUndefined();
   });
 
-  it("refuses a deferred worker at once when no context is free, instead of waiting for one", async () => {
+  it("refuses a trigger worker at once when no context is free, instead of waiting for one", async () => {
     const { manager, telemetryStore } = createManager({ telemetry: true });
     manager.maxCachedContexts = 1;
     const lease = await manager.beginSessionResume("resuming-chat", {});
 
     // The configured wait (30 s by default) is for chats a person is waiting on. A check goes back to its queue.
     expect(manager.sessionCapacityWaitTimeoutMs).toBeGreaterThan(0);
-    await expect(manager.deferWorker.deps.reserveCapacity({}))
+    await expect(manager.triggerWorker.deps.reserveCapacity({}))
       .rejects.toBeInstanceOf(SessionCapacityError);
     // It is retried on the runner's own schedule, so a span for each try would be noise.
     expect(telemetryStore!.querySpans({ name: "session.capacity.wait" })).toEqual([]);
 
     manager.endSessionResume(lease);
-    const release = await manager.deferWorker.deps.reserveCapacity({});
+    const release = await manager.triggerWorker.deps.reserveCapacity({});
     expect(manager.getSessionCapacityWait()).toContain("All 1 live Copilot contexts are currently in use.");
     release();
     expect(manager.getSessionCapacityWait()).toBeUndefined();

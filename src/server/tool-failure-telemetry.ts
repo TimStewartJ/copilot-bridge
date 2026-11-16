@@ -5,7 +5,7 @@ export interface ToolFailureContext {
   toolName: string;
   toolCallId?: string;
   durationMs?: number;
-  deferId?: string;
+  triggerId?: string;
   runCount?: number;
   workerSessionId?: string;
 }

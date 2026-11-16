@@ -13,7 +13,6 @@ import {
   PendingInteractionError,
   publishOutboundAttachment,
   request,
-  scheduler,
   writeFileSync,
 } from "../test-support/api-routes.js";
 
@@ -26,14 +25,10 @@ installApiRouteTestHooks((state) => {
 });
 
 describe("Shutdown route", () => {
-  it("POST /api/shutdown pauses scheduling until sessions drain, then shuts the scheduler down", async () => {
+  it("POST /api/shutdown stops the trigger and delivery runners before sessions drain", async () => {
     const order: string[] = [];
-    const pauseSpy = vi.spyOn(scheduler, "setGlobalPause").mockImplementation((paused: boolean) => {
-      order.push(paused ? "pause" : "resume");
-    });
-    const shutdownSpy = vi.spyOn(scheduler, "shutdown").mockImplementation(() => {
-      order.push("shutdown");
-    });
+    ctx.triggerTaskRunner = { shutdown: vi.fn(() => { order.push("task-triggers"); }) } as unknown as NonNullable<typeof ctx.triggerTaskRunner>;
+    ctx.triggerChatRunner = { shutdown: vi.fn(() => { order.push("chat-triggers"); }) } as unknown as NonNullable<typeof ctx.triggerChatRunner>;
     const deferredPromptRunner: DeferredPromptRunner = {
       start: vi.fn(),
       poke: vi.fn(),
@@ -67,10 +62,8 @@ describe("Shutdown route", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ok: true, message: "Shutting down..." });
-      expect(order).toEqual(["pause", "deferred", "graceful", "shutdown", "exit:0"]);
+      expect(order).toEqual(["task-triggers", "deferred", "chat-triggers", "graceful", "exit:0"]);
     } finally {
-      pauseSpy.mockRestore();
-      shutdownSpy.mockRestore();
       exitSpy.mockRestore();
     }
   });

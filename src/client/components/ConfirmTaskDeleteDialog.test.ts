@@ -42,7 +42,7 @@ function makePreview(overrides: Partial<TaskDeletionPreview> = {}): TaskDeletion
     unarchivedCount: 2,
     sharedSessionCount: 0,
     busySessionIds: [],
-    scheduleCount: 0,
+    triggerCount: 0,
     fingerprint: "abc",
     ...overrides,
   };

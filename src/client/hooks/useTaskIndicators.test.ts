@@ -40,7 +40,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
     lastVisibleActivityAt: NOW,
     archived: false,
     diskSizeBytes: 0,
-    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
 }

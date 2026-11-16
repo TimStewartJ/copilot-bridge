@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
-import { installApiRouteTestHooks, request, scheduler } from "../test-support/api-routes.js";
+import { installApiRouteTestHooks, request } from "../test-support/api-routes.js";
 import { deleteTaskWithOwnedState } from "../server/task-deletion.js";
 
 let app: ApiRouteTestState["app"];
@@ -11,60 +11,29 @@ installApiRouteTestHooks((state) => {
   ({ app, ctx, db } = state);
 });
 
-function initScheduler(): void {
-  scheduler.initialize(ctx.sessionManager as any, {
-    scheduleStore: ctx.scheduleStore,
-    taskStore: ctx.taskStore,
-    sessionMetaStore: ctx.sessionMetaStore,
-    globalBus: ctx.globalBus,
-  });
+function createTaskTrigger(taskId: string, name: string, timing: Record<string, unknown> = { cron: "0 0 * * *", timezone: "UTC" }): string {
+  const result = ctx.triggerService!.create({ taskId, name, prompt: "run", then: "new_chat", ...timing });
+  if (!result.ok) throw new Error(result.error);
+  return result.trigger.id;
 }
 
-function seedSchedules(taskId: string): { cronId: string; onceId: string } {
-  const cronSchedule = ctx.scheduleStore.createSchedule({
-    taskId,
-    name: "Cron child",
-    prompt: "run",
-    type: "cron",
-    cron: "0 0 * * *",
-  });
-  const onceSchedule = ctx.scheduleStore.createSchedule({
-    taskId,
-    name: "One-shot child",
-    prompt: "run once",
-    type: "once",
-    runAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-  });
-  scheduler.registerSchedule(cronSchedule.id);
-  scheduler.armOneShot(onceSchedule.id, onceSchedule.runAt!);
-  return { cronId: cronSchedule.id, onceId: onceSchedule.id };
+function countRuns(triggerId: string): number {
+  return (db.prepare("SELECT COUNT(*) AS count FROM trigger_runs WHERE triggerId = ?").get(triggerId) as { count: number }).count;
 }
 
-describe("task deletion removes child schedules", () => {
-  it("DELETE /api/tasks/:id deletes child schedules and unregisters their timers", async () => {
-    initScheduler();
-    const task = ctx.taskStore.createTask("Scheduled task");
+describe("task deletion removes the task's triggers", () => {
+  it("DELETE /api/tasks/:id deletes the task's triggers with their run history and announces each", async () => {
+    const task = ctx.taskStore.createTask("Automated task");
     const otherTask = ctx.taskStore.createTask("Other task");
     const tag = ctx.tagStore!.createTag("linked");
     ctx.tagStore!.setEntityTags("task", task.id, [tag.id]);
     const child = ctx.checklistStore.createChecklistItem(task.id, "Child item");
     ctx.taskStore.linkWorkItem(task.id, "77", "github");
-    const { cronId, onceId } = seedSchedules(task.id);
-    const survivor = ctx.scheduleStore.createSchedule({
-      taskId: otherTask.id,
-      name: "Survivor",
-      prompt: "run",
-      type: "cron",
-      cron: "0 1 * * *",
-    });
-    scheduler.registerSchedule(survivor.id);
-
-    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-      .run(cronId, "run-session", new Date().toISOString());
-
-    const before = scheduler.getRegisteredScheduleIdsForTests();
-    expect(before.cron).toContain(cronId);
-    expect(before.oneShot).toContain(onceId);
+    const cronId = createTaskTrigger(task.id, "Cron child");
+    const onceId = createTaskTrigger(task.id, "One-time child", { delaySeconds: 3600 });
+    const survivorId = createTaskTrigger(otherTask.id, "Survivor", { cron: "0 1 * * *", timezone: "UTC" });
+    ctx.triggerStore!.recordRun({ triggerId: cronId, sessionId: "run-session" });
+    const emit = vi.spyOn(ctx.globalBus, "emit");
 
     const deleted = await request(app).delete(`/api/tasks/${task.id}`).expect(200);
     expect(deleted.body.ok).toBe(true);
@@ -74,43 +43,24 @@ describe("task deletion removes child schedules", () => {
     expect((await request(app).get(`/api/tasks/${otherTask.id}`)).body.task.title).toBe("Other task");
     expect((await request(app).get("/api/tags")).body.tags[0].id).toBe(tag.id);
 
-    expect(ctx.scheduleStore.getSchedule(cronId)).toBeUndefined();
-    expect(ctx.scheduleStore.getSchedule(onceId)).toBeUndefined();
-    expect(ctx.scheduleStore.getSchedule(survivor.id)).toBeDefined();
-
-    const after = scheduler.getRegisteredScheduleIdsForTests();
-    expect(after.cron).not.toContain(cronId);
-    expect(after.oneShot).not.toContain(onceId);
-    expect(after.cron).toContain(survivor.id);
-
-    // No enabled orphan schedule survives its parent task.
-    const orphans = db.prepare(`
-      SELECT s.id FROM schedules s
-      LEFT JOIN tasks t ON t.id = s.taskId
-      WHERE t.id IS NULL AND s.enabled = 1
-    `).all() as Array<{ id: string }>;
-    expect(orphans).toEqual([]);
-
-    // Run history for the deleted schedules is gone too.
-    expect(
-      (db.prepare("SELECT COUNT(*) AS count FROM schedule_runs WHERE scheduleId = ?").get(cronId) as any).count,
-    ).toBe(0);
+    expect(ctx.triggerStore!.get(cronId)).toBeUndefined();
+    expect(ctx.triggerStore!.get(onceId)).toBeUndefined();
+    expect(ctx.triggerStore!.get(survivorId)).toBeDefined();
+    expect(countRuns(cronId)).toBe(0);
+    const announced = emit.mock.calls.map(([event]) => event).filter((event) => event.type === "trigger:changed");
+    expect(announced).toEqual(expect.arrayContaining([
+      { type: "trigger:changed", taskId: task.id, triggerId: cronId },
+      { type: "trigger:changed", taskId: task.id, triggerId: onceId },
+    ]));
   });
 
   it("rolls back the whole cascade when the task delete fails mid-transaction", () => {
     const task = ctx.taskStore.createTask("Rollback task");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Child",
-      prompt: "run",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-      .run(schedule.id, "run-session", new Date().toISOString());
+    const triggerId = createTaskTrigger(task.id, "Child");
+    ctx.triggerStore!.recordRun({ triggerId, sessionId: "run-session" });
 
     // The task row is deleted last, so dropping `tasks` makes the final
-    // statement in the transaction throw after the schedule deletes ran.
+    // statement in the transaction throw after the trigger deletes ran.
     db.exec("PRAGMA foreign_keys = OFF");
     db.exec("ALTER TABLE tasks RENAME TO tasks_hidden");
 
@@ -119,15 +69,12 @@ describe("task deletion removes child schedules", () => {
     db.exec("ALTER TABLE tasks_hidden RENAME TO tasks");
     db.exec("PRAGMA foreign_keys = ON");
 
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toBeDefined();
-    expect(
-      (db.prepare("SELECT COUNT(*) AS count FROM schedule_runs WHERE scheduleId = ?").get(schedule.id) as any).count,
-    ).toBe(1);
+    expect(ctx.triggerStore!.get(triggerId)).toBeDefined();
+    expect(countRuns(triggerId)).toBe(1);
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
   });
 
 });
-
 describe("task deletion session disposition", () => {
   function isArchived(sessionId: string): boolean {
     const row = db
@@ -167,8 +114,8 @@ describe("task deletion session disposition", () => {
       ["has a work item", (taskId) => {
         db.prepare("INSERT INTO task_work_items (taskId, itemId, provider) VALUES (?, '123', 'ado')").run(taskId);
       }],
-      ["has a schedule", (taskId) => {
-        ctx.scheduleStore.createSchedule({ taskId, name: "Daily", prompt: "run", type: "cron", cron: "0 0 * * *" });
+      ["has a trigger", (taskId) => {
+        createTaskTrigger(taskId, "Daily");
       }],
       ["has a checklist item", (taskId) => {
         ctx.checklistStore.createChecklistItem(taskId, "Call the dealer");
@@ -195,10 +142,10 @@ describe("task deletion session disposition", () => {
     const task = ctx.taskStore.createTask("Archive me");
     ctx.taskStore.linkSession(task.id, "session-a");
     ctx.taskStore.linkSession(task.id, "session-b");
-    const schedule = ctx.scheduleStore.createSchedule({ taskId: task.id, name: "Nightly", prompt: "run", type: "cron", cron: "0 0 * * *" });
-    ctx.sessionMetaStore.setScheduleMeta("session-a", schedule.id, "Nightly");
+    const triggerId = createTaskTrigger(task.id, "Nightly");
+    ctx.sessionMetaStore.setScheduleMeta("session-a", triggerId, "Nightly");
     const cancelPrompts = vi.spyOn(ctx.deferredPromptStore!, "cancelForSession");
-    const cancelLoops = vi.spyOn(ctx.deferLoopStore!, "cancelForSession");
+    const cancelTriggers = vi.spyOn(ctx.triggerStore!, "cancelForSession");
     const cancelJobResults = vi.spyOn(ctx.deferredPromptStore!, "cancelManagementJobDeliveriesForSession");
     const invalidate = vi.spyOn(ctx.sessionManager, "invalidateSessionConfig");
 
@@ -210,7 +157,7 @@ describe("task deletion session disposition", () => {
     // Kept chats rebuild their prompt, which named the deleted task.
     expect(invalidate.mock.calls).toEqual([["session-a", "task deleted"], ["session-b", "task deleted"]]);
     expect(cancelPrompts.mock.calls).toEqual([["session-a"], ["session-b"]]);
-    expect(cancelLoops.mock.calls).toEqual([["session-a"], ["session-b"]]);
+    expect(cancelTriggers.mock.calls).toEqual([["session-a"], ["session-b"]]);
     expect(cancelJobResults.mock.calls).toEqual([["session-a"], ["session-b"]]);
     const provenance = db.prepare("SELECT scheduleId, scheduleName FROM bridge_session_state WHERE sessionId = ?").get("session-a");
     expect(provenance).toMatchObject({ scheduleId: null, scheduleName: "Nightly" });
@@ -365,50 +312,4 @@ describe("task deletion session disposition", () => {
     });
   });
 
-});
-
-describe("scheduler self-heals pre-existing orphaned schedules", () => {
-  it("disables and unregisters a schedule whose task is already gone", async () => {
-    initScheduler();
-    const task = ctx.taskStore.createTask("Doomed");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Orphan",
-      prompt: "run",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-    scheduler.registerSchedule(schedule.id);
-
-    // Simulate a legacy install where the task row vanished without cascade.
-    db.prepare("DELETE FROM tasks WHERE id = ?").run(task.id);
-
-    const result = await scheduler.triggerSchedule(schedule.id, { source: "manual" });
-
-    expect(result).toMatchObject({ skipped: "Parent task not found" });
-    expect(ctx.scheduleStore.getSchedule(schedule.id)?.enabled).toBe(false);
-    expect(scheduler.getRegisteredScheduleIdsForTests().cron).not.toContain(schedule.id);
-  });
-});
-
-describe("schedule deletion is atomic", () => {
-  it("rolls back run history when the schedule row delete fails", () => {
-    const task = ctx.taskStore.createTask("Schedule host");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id,
-      name: "Rollback",
-      prompt: "run",
-      type: "cron",
-      cron: "0 0 * * *",
-    });
-    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-      .run(schedule.id, "run-1", new Date().toISOString());
-
-    db.exec("ALTER TABLE schedules RENAME TO schedules_hidden");
-    expect(() => ctx.scheduleStore.deleteSchedule(schedule.id)).toThrow();
-    db.exec("ALTER TABLE schedules_hidden RENAME TO schedules");
-
-    expect(ctx.scheduleStore.getSchedule(schedule.id)).toBeDefined();
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schedule_runs WHERE scheduleId = ?").get(schedule.id) as any).count).toBe(1);
-  });
 });

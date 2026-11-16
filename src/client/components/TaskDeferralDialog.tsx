@@ -64,7 +64,7 @@ export default function TaskDeferralDialog({ task, onClose, onSaved }: {
       {initial.reached && !date && <p className={DS.text.prose}>Its revisit date ({formatRevisitMoment(initial.reached)}) has passed and will be cleared.</p>}
       {date && <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={() => setDate("")}>Clear revisit date</Button>}
       {revisitsNow && <Notice title="Date already reached">It will show under Needs you right away.</Notice>}
-      <p className={DS.text.prose}>Sessions, schedules and deferred jobs keep running.</p>
+      <p className={DS.text.prose}>Chats and triggers keep running.</p>
       {stale && <Notice title="Task changed">Nothing was saved. Reopen to see its current state.</Notice>}
       {error && <Notice tone="danger" title="The change was not saved">{error}</Notice>}
       <div className="flex flex-wrap justify-end gap-2">

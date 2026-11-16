@@ -14,7 +14,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
     sessionId: "session-1",
     summary: "Session",
     modifiedTime: "2026-04-27T18:00:00.000Z",
-    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
 }
@@ -43,7 +43,7 @@ describe("optimistic session insertion", () => {
         sessionId: "new", runState: "busy", summary: "Draft",
         isOptimistic: true, optimisticUntil: Date.now() + 2 * 60_000,
         lastVisibleActivityAt: "2026-10-16T17:00:00.000Z",
-        deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+        triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
       });
       addOptimisticSessionToCache(queryClient, "new", { summary: "Do not replace" });
       expect(queryClient.getQueryData(key)).toBe(cached);
@@ -370,21 +370,21 @@ describe("patchSessionQueryData", () => {
     const clearedSummary = { count: 0, runningCount: 0, nextRunAt: null };
 
     queryClient.setQueryData<Session[]>(activeQueryKey, [
-      createSession({ sessionId: "session-1", deferSummary: pendingSummary }),
-      createSession({ sessionId: "session-2", deferSummary: otherSummary }),
+      createSession({ sessionId: "session-1", triggerSummary: pendingSummary }),
+      createSession({ sessionId: "session-2", triggerSummary: otherSummary }),
     ]);
     queryClient.setQueryData<Session[]>(archivedQueryKey, [
-      createSession({ sessionId: "session-1", archived: true, deferSummary: pendingSummary }),
+      createSession({ sessionId: "session-1", archived: true, triggerSummary: pendingSummary }),
     ]);
 
-    patchSessionQueryData(queryClient, ["session-1"], { deferSummary: clearedSummary });
+    patchSessionQueryData(queryClient, ["session-1"], { triggerSummary: clearedSummary });
 
     expect(queryClient.getQueryData<Session[]>(activeQueryKey)).toMatchObject([
-      { sessionId: "session-1", deferSummary: clearedSummary },
-      { sessionId: "session-2", deferSummary: otherSummary },
+      { sessionId: "session-1", triggerSummary: clearedSummary },
+      { sessionId: "session-2", triggerSummary: otherSummary },
     ]);
     expect(queryClient.getQueryData<Session[]>(archivedQueryKey)).toMatchObject([
-      { sessionId: "session-1", deferSummary: clearedSummary },
+      { sessionId: "session-1", triggerSummary: clearedSummary },
     ]);
   });
 });

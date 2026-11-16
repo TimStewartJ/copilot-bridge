@@ -3,14 +3,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { archivedEventSessionIds } from "../../shared/session-archive-event.js";
 import type { DatabaseSync } from "../db.js";
-import { createDeferLoopStore } from "../defer-loop-store.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
-import { createReturnedDeferDelivery } from "../defer-result-message.js";
 import { createGlobalBus, type StatusEvent } from "../global-bus.js";
 import { setSessionsArchived } from "../session-archive.js";
 import { createSessionMetaStore, type SessionMetaStore } from "../session-meta-store.js";
 import { createSessionToolDefinitions, SESSION_ARCHIVE_MAX_SESSIONS } from "../tools/session-tools.js";
-import { makeTestDir, setupTestDb } from "./helpers.js";
+import { createTriggerResultDelivery } from "../triggers/messages.js";
+import { createTriggerStore } from "../triggers/store.js";
+import { createChatTrigger, makeTestDir, setupTestDb } from "./helpers.js";
 
 const ID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -61,13 +61,13 @@ describe("session_archive tool", () => {
   function createHarness(options: { busy?: string[]; waiting?: string[] } = {}) {
     const copilotHome = makeTestDir("session-archive-tool");
     const deferredPromptStore = createDeferredPromptStore(db);
-    const deferLoopStore = createDeferLoopStore(db);
+    const triggerStore = createTriggerStore(db);
     const tool = createSessionToolDefinitions({
       copilotHome,
       sessionMetaStore,
       globalBus,
       deferredPromptStore,
-      deferLoopStore,
+      triggerStore,
       sessionManager: {
         isSessionBusy: (sessionId: string) => options.busy?.includes(sessionId) ?? false,
         getPendingUserInputCount: (sessionId: string) => (options.waiting?.includes(sessionId) ? 1 : 0),
@@ -79,16 +79,16 @@ describe("session_archive tool", () => {
       args,
       { sessionId: ID(99), toolCallId: "tool-1", toolName: "session_archive", arguments: args },
     );
-    return { call, addSession, deferredPromptStore };
+    return { call, addSession, deferredPromptStore, triggerStore };
   }
 
   it("archives many sessions with one announcement and leaves the ones in use alone", async () => {
     const busy = [ID(3)];
-    const { call, addSession, deferredPromptStore } = createHarness({ busy, waiting: [ID(4)] });
+    const { call, addSession, deferredPromptStore, triggerStore } = createHarness({ busy, waiting: [ID(4)] });
     for (const n of [1, 2, 3, 4, 5, 6, 8]) addSession(ID(n));
-    deferredPromptStore.create(ID(5), "Later", new Date(Date.now() + 60_000).toISOString());
-    deferredPromptStore.enqueueDelivery(createReturnedDeferDelivery(
-      { deferId: "once_1", kind: "once", parentSessionId: ID(8) },
+    createChatTrigger(triggerStore, ID(5));
+    deferredPromptStore.enqueueDelivery(createTriggerResultDelivery(
+      { triggerId: "trigger-1", parentSessionId: ID(8) },
       "Deploy finished.",
       { deliveryId: "delivery-1" },
     ));
@@ -105,7 +105,7 @@ describe("session_archive tool", () => {
       skipped: [
         { sessionId: ID(3), reason: "running" },
         { sessionId: ID(4), reason: "waiting on the user" },
-        { sessionId: ID(5), reason: "deferred work pending" },
+        { sessionId: ID(5), reason: "triggers pending" },
         { sessionId: ID(7), reason: "not found" },
         { sessionId: "not-an-id", reason: "not found" },
         { sessionId: ID(8), reason: "a result is waiting to be delivered" },

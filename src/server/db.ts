@@ -6,9 +6,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseReturnedDeferPrompt } from "./defer-result-message.js";
+import { parseTriggerResultPrompt, triggerDeliverySourceId } from "./triggers/messages.js";
 import { initializeDashboardRetirementSchema } from "./dashboard-retirement-schema.js";
 import { initializeSessionUserMessagesSchema } from "./session-user-messages-schema.js";
+import { migrateToTriggersOnce } from "./triggers/migration.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = "bridge.db";
 
@@ -885,6 +886,56 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_defer_loops_sessionId_status_nextRunAt
       ON defer_loops(sessionId, status, nextRunAt);
 
+    -- Triggers: every automation (chat wake-ups, task chats, new tasks). See src/server/triggers.
+    CREATE TABLE IF NOT EXISTS triggers (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      prompt TEXT NOT NULL,
+      sessionId TEXT,
+      taskId TEXT,
+      lane TEXT NOT NULL,
+      whenJson TEXT NOT NULL,
+      checkJson TEXT,
+      actionJson TEXT NOT NULL,
+      status TEXT NOT NULL,
+      nextRunAt TEXT,
+      runNow INTEGER NOT NULL DEFAULT 0,
+      runCount INTEGER NOT NULL DEFAULT 0,
+      fireCount INTEGER NOT NULL DEFAULT 0,
+      maxRuns INTEGER,
+      expiresAt TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      claimToken TEXT,
+      leaseExpiresAt TEXT,
+      lastError TEXT,
+      lastRunAt TEXT,
+      lastFiredAt TEXT,
+      lastSessionId TEXT,
+      lastTaskId TEXT,
+      checkpoint TEXT,
+      lastCheckJson TEXT,
+      checkPendingJson TEXT,
+      createdBySessionId TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_triggers_lane_status_nextRunAt ON triggers(lane, status, nextRunAt);
+    CREATE INDEX IF NOT EXISTS idx_triggers_session_status ON triggers(sessionId, status);
+    CREATE INDEX IF NOT EXISTS idx_triggers_task_status ON triggers(taskId, status);
+
+    -- Chats (and tasks) a trigger started
+    CREATE TABLE IF NOT EXISTS trigger_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      triggerId TEXT NOT NULL,
+      sessionId TEXT NOT NULL,
+      taskId TEXT,
+      occurrence TEXT,
+      recordedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_trigger_runs_trigger ON trigger_runs(triggerId, recordedAt DESC, id DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_trigger_runs_occurrence
+      ON trigger_runs(triggerId, occurrence) WHERE occurrence IS NOT NULL;
+
     -- Browser Web Push subscriptions
     CREATE TABLE IF NOT EXISTS push_subscriptions (
       id TEXT PRIMARY KEY,
@@ -1284,8 +1335,8 @@ function initSchema(db: DatabaseSync): void {
           WHERE id = ?
         `);
         for (const row of legacyDeliveryRows) {
-          const parsed = parseReturnedDeferPrompt(row.prompt);
-          if (parsed) markLegacyDelivery.run(parsed.deferId, row.id);
+          const parsed = parseTriggerResultPrompt(row.prompt);
+          if (parsed) markLegacyDelivery.run(triggerDeliverySourceId(parsed.triggerId), row.id);
         }
       }
       db.exec("COMMIT");
@@ -1298,6 +1349,7 @@ function initSchema(db: DatabaseSync): void {
   initializeDashboardRetirementSchema(db);
   initializeSessionUserMessagesSchema(db);
   settleArchivedTaskConversationsOnce(db);
+  migrateToTriggersOnce(db);
 
   // Docs FTS5 virtual table (separate from main schema — FTS5 needs special handling)
   initializeDocsFts(db);

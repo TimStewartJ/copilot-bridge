@@ -2,9 +2,9 @@
 //
 // Tiers are the three composer presets, given names: Fast, Standard and Deep. Each is a model with
 // its effort and context size, edited only in Settings › Models. A role is a kind of work Bridge
-// runs (your new chats, Helm, hands-free voice, chat titles, background checks, sub-agents); each
+// runs (your new chats, Helm, hands-free voice, chat titles, trigger workers, sub-agents); each
 // points at a tier or at a model of its own ("custom"). A role nobody set runs on its recommended
-// tier; New chats and Background checks instead keep their older setting, and Reviewers run on the
+// tier; New chats and Trigger workers instead keep their older setting, and Reviewers run on the
 // chat's own model. Sub-agents are two roles: `subagents` (shown as Helpers)
 // and `reviewers`; rubber-duck follows the tiers by itself (shared/subagent-settings.ts).
 import type { CopilotContextTier } from "./copilot-context.js";
@@ -30,7 +30,7 @@ export interface ModelRoleInfo {
 export const MODEL_ROLE_INFO: Record<ModelRole, ModelRoleInfo> = {
   chat: {
     label: "New chats",
-    description: "Chats you start, plus ones Helm, agents or schedules start for you.",
+    description: "Chats you start, plus ones Helm, agents or triggers start for you.",
     automatic: "The Copilot default model",
     recommended: "preset2",
   },
@@ -48,8 +48,8 @@ export const MODEL_ROLE_INFO: Record<ModelRole, ModelRoleInfo> = {
     effortNote: "Always low effort, even if the tier is set higher.",
   },
   background: {
-    label: "Background checks",
-    description: "Follow-ups and checks agents schedule for themselves.",
+    label: "Trigger workers",
+    description: "Workers that triggers start to check on a chat.",
     automatic: "The cheapest model, at low effort",
     recommended: "preset1",
   },

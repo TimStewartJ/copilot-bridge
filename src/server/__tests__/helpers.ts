@@ -13,6 +13,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openMemoryDatabase } from "../db.js";
 import type { DatabaseSync } from "../db.js";
+import type { TriggerStore } from "../triggers/store.js";
+import type { Trigger, TriggerCreate } from "../triggers/types.js";
 import { createGlobalBus } from "../global-bus.js";
 import { resolveRuntimePaths } from "../runtime-paths.js";
 import type { RuntimePathOverrides, RuntimePaths } from "../runtime-paths.js";
@@ -172,22 +174,37 @@ export function setupTestDb(): DatabaseSync {
 }
 
 /**
- * Put a recurring defer straight into a finished state, as a fixture. The store has no call for
- * this: a loop ends only through its runner, cancellation, or (in older rows) a failure.
+ * Put a trigger straight into a stopped state, as a fixture. The store has no call for this: a
+ * trigger stops only through its runner, cancellation, or its limits.
  */
-export function endDeferLoop(
+export function endTrigger(
   db: DatabaseSync,
-  loopId: string,
+  triggerId: string,
   status: "completed" | "expired" | "failed",
   lastError: string | null = null,
 ): void {
   db.prepare(`
-    UPDATE defer_loops
+    UPDATE triggers
     SET status = ?, lastError = ?, claimToken = NULL, leaseExpiresAt = NULL, updatedAt = ?
     WHERE id = ?
-  `).run(status, lastError, new Date().toISOString(), loopId);
+  `).run(status, lastError, new Date().toISOString(), triggerId);
 }
 
+/** A recurring worker trigger owned by a chat, as a fixture. */
+export function createChatTrigger(
+  store: TriggerStore,
+  sessionId: string,
+  fields: Partial<TriggerCreate> = {},
+): Trigger {
+  return store.create({
+    sessionId,
+    prompt: "check it",
+    when: { kind: "every", seconds: 600 },
+    action: { kind: "chat", via: "worker" },
+    nextRunAt: "2099-01-01T00:00:00.000Z",
+    ...fields,
+  });
+}
 /** Create a test global bus (no-op emitter) */
 export function createTestBus() {
   return createGlobalBus();

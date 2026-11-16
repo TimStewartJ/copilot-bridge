@@ -109,7 +109,7 @@ One vocabulary everywhere. Each kind has one meaning, and a row shows at most on
 | `danger` | filled `!` | error | Overdue, failed, disconnected |
 | `done` | check in a ring | faint | Finished; it steps back |
 | `open` / `closed` | ring / cross in a ring | neutral / faint | A pull request or similar object's state |
-| `paused` / `on` | bars in a ring / solid dot | faint / success | A schedule or switch, always beside its word |
+| `paused` / `on` | bars in a ring / solid dot | faint / success | A trigger or switch, always beside its word |
 | `autopilot` | two chasing arrows, turning | agent | A run on Autopilot is working on its own; it stops under reduced motion |
 | idle | nothing | none | An absent state is not drawn |
 

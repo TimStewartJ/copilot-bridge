@@ -294,7 +294,7 @@ function ItemDialog({ item, onClose, onSelectTask, onChanged }: {
       <div className="space-y-3">
         <p className="flex items-center gap-1.5 text-[13px] text-text-secondary"><KindIcon kind={item.kind} />{KIND_LABEL[item.kind]} · {when}</p>
         {context && <p className={DS.text.prose}>{item.kind === "revisit" ? null : context}</p>}
-        {item.kind === "run" && <p className={DS.text.prose}>A scheduled agent run. It doesn't take your time.</p>}
+        {item.kind === "run" && <p className={DS.text.prose}>A trigger run. It doesn't take your time.</p>}
         {error && <Notice tone="danger" title="Not saved">{error}</Notice>}
         <div className="flex flex-wrap justify-end gap-2">
           {item.kind === "deadline" && <Button disabled={pending} onClick={() => void markDone()}>{item.done ? "Not done" : "Mark done"}</Button>}

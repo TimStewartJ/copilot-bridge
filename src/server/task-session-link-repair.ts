@@ -11,7 +11,7 @@ import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppContext } from "./app-context.js";
-import { hasActiveDeferredWork } from "./schedule-session-retention.js";
+import { hasPendingChatAutomation } from "./triggers/retention.js";
 import type { SessionLink } from "./task-store.js";
 
 /** A link younger than this is left alone: its chat may still be on its way to disk. */
@@ -59,7 +59,7 @@ function inUseSessionIds(ctx: AppContext, sessionIds: Iterable<string>): Set<str
       || manager.isSessionBusy?.(sessionId)
       || (manager.getPendingUserInputCount?.(sessionId) ?? 0) > 0
       || ctx.eventBusRegistry.hasBus(sessionId)
-      || hasActiveDeferredWork(sessionId, ctx)) {
+      || hasPendingChatAutomation(sessionId, ctx)) {
       inUse.add(sessionId);
     }
   }

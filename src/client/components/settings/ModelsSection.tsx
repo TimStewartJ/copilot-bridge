@@ -53,7 +53,7 @@ const ROLE_GROUPS: ReadonlyArray<{ label: string; roles: readonly ModelRole[] }>
   { label: "Agent work", roles: ["background", "subagents", "reviewers", "helper"] },
 ];
 
-/** New chats and Background checks keep a model of their own in their older settings; empty means this. */
+/** New chats and Trigger workers keep a model of their own in their older settings; empty means this. */
 const EMPTY_CUSTOM_LABEL: Partial<Record<ModelRole, string>> = {
   chat: "Copilot's default",
   background: "Cheapest available",
@@ -201,7 +201,7 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
       nextRoles[role] = { tier: value };
     } else {
       delete nextRoles[role];
-      // Custom starts from what the role runs on now. New chats and Background checks already
+      // Custom starts from what the role runs on now. New chats and Trigger workers already
       // hold it in their own settings, which a tier keeps up to date.
       if (value === "custom" && role !== "chat" && role !== "background") {
         const from = resolved.get(role);
@@ -295,7 +295,7 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
 }
 
 // copy-ok: says which chats the test changes, a scope the reader cannot see
-const AB_TEST_SCOPE = "New chats, and schedules that follow them, start on A or B at random.";
+const AB_TEST_SCOPE = "New chats, and triggers that follow them, start on A or B at random.";
 
 /** Starts new chats on one of two tiers at random, so the two can be compared on the same work. */
 function ModelAbTestBlock({ draft, setDraft, models }: {

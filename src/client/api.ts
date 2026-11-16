@@ -180,54 +180,79 @@ export interface SessionWorkspaceDetails extends SessionWorkspaceSummary {
   gitStatus: TaskGitStatus;
 }
 
-/** Content-free defer indicator data for a single session. */
-export interface DeferSummary {
+/** Content-free indicator data for a chat's triggers. */
+export interface TriggerSummary {
   count: number;
   runningCount: number;
   nextRunAt: string | null;
 }
 
-export type DeferredWorkKind = "once" | "interval";
-export type DeferredWorkStatus =
-  | "pending"
-  | "active"
-  | "running"
-  | "cancelled"
-  | "completed"
-  | "failed"
-  | "expired";
-export type DeferredWorkRunAction = "continue" | "notify" | "finish" | "return" | "expired" | "error";
+/** What a trigger does when it fires: wake its chat (worker, message) or start a chat or task in its task. */
+export type TriggerThen = "worker" | "message" | "new_chat" | "new_task";
+export type TriggerStatus = "active" | "running" | "paused" | "completed" | "cancelled" | "expired" | "failed";
+export type TriggerWhen =
+  | { kind: "at"; at: string }
+  | { kind: "every"; seconds: number }
+  | { kind: "cron"; cron: string; timezone: string };
+export type TriggerCheckFireOn = "change" | "exit_code";
+export type TriggerCheckOutcome = "baseline" | "unchanged" | "changed" | "quiet" | "fired";
 
-export interface DeferredWorkItem {
-  deferId: string;
-  kind: DeferredWorkKind;
+export interface TriggerCheckSpec {
+  /** Executable then arguments, run without a shell. */
+  command: string[];
+  cwd?: string;
+  timeoutSeconds: number;
+  fireOn: TriggerCheckFireOn;
+  fireOnFirstRun?: boolean;
+}
+
+export interface TriggerView {
+  id: string;
   name?: string;
   prompt: string;
-  /** Latest private checkpoint saved by a recurring defer worker. */
-  checkpoint?: DeferCheckpoint;
-  status: DeferredWorkStatus;
-  nextRunAt: string;
-  intervalSeconds?: number;
-  runCount?: number;
+  then: TriggerThen;
+  sessionId?: string;
+  taskId?: string;
+  when: TriggerWhen;
+  whenLabel: string;
+  check?: TriggerCheckSpec;
+  lastCheck?: { outcome: TriggerCheckOutcome; at: string; exitCode?: number; actionPending?: boolean };
+  status: TriggerStatus;
+  nextRunAt?: string;
+  runNow: boolean;
+  runCount: number;
+  fireCount: number;
   maxRuns?: number;
   expiresAt?: string;
   attempts: number;
+  lastError?: string;
+  lastRunAt?: string;
+  lastFiredAt?: string;
+  lastSessionId?: string;
+  lastTaskId?: string;
+  title?: string;
+  modelTier?: ModelPresetSlot;
+  playbook?: string;
+  keepChats?: number;
+  /** Private JSON state a worker hands to its next occurrence. */
+  checkpoint?: DeferCheckpoint;
   createdAt: string;
   updatedAt: string;
-  lastError?: string;
+  canRun: boolean;
+  canPause: boolean;
+  canResume: boolean;
   canCancel: boolean;
+  /** Restart it, or (with failedDelivery) send its last undelivered result again. */
   canReactivate: boolean;
   failedDelivery?: boolean;
-  /** Command run each interval; the worker starts only when its output changes. */
-  check?: { command: string[]; cwd?: string };
-  lastCheck?: { outcome: "baseline" | "unchanged" | "changed"; at: string; exitCode?: number; workerPending?: boolean };
 }
 
-export interface DeferredWorkRun {
+export type TriggerDeliveryStatus = "pending" | "running" | "completed" | "failed";
+
+export interface TriggerWorkerRun {
   id: number;
-  deferId: string;
-  kind: DeferredWorkKind;
-  action: DeferredWorkRunAction;
+  triggerId: string;
+  action: "continue" | "notify" | "finish" | "return" | "expired" | "error";
   durationMs: number;
   completedAt: string;
   model?: string;
@@ -235,7 +260,8 @@ export interface DeferredWorkRun {
   contextTier?: string;
   runCount?: number;
   error?: string;
-  deliveryStatus?: "pending" | "running" | "completed" | "failed";
+  deliveryId?: string;
+  deliveryStatus?: TriggerDeliveryStatus;
   deliveryError?: string;
   usageCaptured?: boolean;
   totalTokens?: number;
@@ -243,20 +269,64 @@ export interface DeferredWorkRun {
   estimatedAiCredits?: number;
 }
 
-export interface DeferredWorkDelivery {
+export interface TriggerDeliveryView {
   id: string;
-  deferId: string;
-  status: "pending" | "running" | "completed" | "failed";
+  triggerId: string;
+  status: TriggerDeliveryStatus;
   createdAt: string;
   updatedAt: string;
   error?: string;
 }
 
-export interface SessionDeferredWork {
+export interface SessionTriggers {
   sessionId: string;
-  defers: DeferredWorkItem[];
-  recentRuns: DeferredWorkRun[];
-  recentDeliveries: DeferredWorkDelivery[];
+  triggers: TriggerView[];
+  recentRuns: TriggerWorkerRun[];
+  recentDeliveries: TriggerDeliveryView[];
+}
+
+export interface TaskTriggers {
+  taskId: string;
+  triggers: TriggerView[];
+}
+
+/** Exactly one timing field: delaySeconds, runAt, intervalSeconds or cron (timezone only with cron). */
+export interface TriggerTimingInput {
+  delaySeconds?: number;
+  runAt?: string;
+  intervalSeconds?: number;
+  cron?: string;
+  timezone?: string;
+}
+
+export interface TriggerCreateInput extends TriggerTimingInput {
+  name?: string;
+  prompt: string;
+  then: TriggerThen;
+  sessionId?: string;
+  taskId?: string;
+  title?: string;
+  modelTier?: ModelPresetSlot;
+  playbook?: string;
+  keepChats?: number;
+  check?: TriggerCheckSpec;
+  maxRuns?: number;
+  expiresAt?: string;
+}
+
+export interface TriggerUpdateInput extends TriggerTimingInput {
+  name?: string;
+  prompt?: string;
+  title?: string;
+  modelTier?: ModelPresetSlot | null;
+  playbook?: string | null;
+  keepChats?: number | null;
+  /** null removes the check. */
+  check?: TriggerCheckSpec | null;
+  maxRuns?: number | null;
+  expiresAt?: string | null;
+  /** false pauses; true resumes a paused trigger or restarts a stopped one. */
+  active?: boolean;
 }
 
 export interface Session {
@@ -281,11 +351,12 @@ export interface Session {
   archived?: boolean;
   archivedAt?: string;
   linkedTaskIds?: string[];
+  /** "schedule" means a trigger started the chat. */
   triggeredBy?: "user" | "schedule";
-  scheduleId?: string;
-  scheduleName?: string;
-  scheduleEnabled?: boolean;
-  deferSummary: DeferSummary;
+  triggerId?: string;
+  triggerName?: string;
+  triggerActive?: boolean;
+  triggerSummary: TriggerSummary;
   context?: {
     cwd?: string;
     gitRoot?: string;
@@ -856,12 +927,13 @@ export function fetchTaskOverview(signal?: AbortSignal): Promise<import("../shar
 export function fetchHomeInput(input: import("../shared/home").HomeInputSummary, signal?: AbortSignal): Promise<import("../shared/home").HomeInput> {
   return apiFetch(`/api/home/inputs/${encodeURIComponent(input.sessionId)}/${input.kind}/${encodeURIComponent(input.requestId)}`, undefined, { signal });
 }
-/** A chat where a defer or schedule ran turns since the user last wrote in it. */
+/** A chat where a trigger ran turns since the user last wrote in it. */
 export interface UnattendedRun {
   sessionId: string;
   turnCount: number;
   firstAt: string;
   lastAt: string;
+  /** "defer" for a chat trigger, "schedule" for a task trigger. */
   origins: Array<"defer" | "schedule">;
   taskId?: string;
   taskTitle?: string;
@@ -1496,58 +1568,6 @@ export async function submitElicitationResponse(
   );
 }
 
-export async function fetchSessionDefers(
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<SessionDeferredWork> {
-  return apiFetch<SessionDeferredWork>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/defers`,
-    undefined,
-    { signal },
-  );
-}
-
-export async function fetchSessionDeferRuns(
-  sessionId: string,
-  deferId: string,
-  signal?: AbortSignal,
-): Promise<{ sessionId: string; deferId: string; runs: DeferredWorkRun[] }> {
-  return apiFetch(
-    `/api/sessions/${encodeURIComponent(sessionId)}/defers/${encodeURIComponent(deferId)}/runs`,
-    undefined,
-    { signal },
-  );
-}
-
-export async function cancelSessionDefer(
-  sessionId: string,
-  deferId: string,
-): Promise<{ ok: true; deferId: string; kind: DeferredWorkKind; status: "cancelled" }> {
-  const res = await fetch(
-    `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/defers/${encodeURIComponent(deferId)}/cancel`,
-    { method: "POST" },
-  );
-  return parseApiResponse(res);
-}
-
-export async function reactivateSessionDefer(
-  sessionId: string,
-  deferId: string,
-): Promise<{
-  ok: true;
-  deferId: string;
-  kind: DeferredWorkKind;
-  status: DeferredWorkStatus;
-  nextRunAt?: string;
-  deliveryRetried?: boolean;
-}> {
-  const res = await fetch(
-    `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/defers/${encodeURIComponent(deferId)}/reactivate`,
-    { method: "POST" },
-  );
-  return parseApiResponse(res);
-}
-
 function buildSessionWorkspaceQuery(taskId?: string): string {
   if (!taskId) return "";
   const params = new URLSearchParams();
@@ -1687,7 +1707,7 @@ export interface TaskDeletionPreview {
   unarchivedCount: number;
   sharedSessionCount: number;
   busySessionIds: string[];
-  scheduleCount: number;
+  triggerCount: number;
   fingerprint: string;
 }
 
@@ -3239,99 +3259,79 @@ export async function fetchLauncherLogTail(lines = 8): Promise<LauncherLogTail> 
   return apiFetch<LauncherLogTail>(`/api/server/launcher-log?lines=${lines}`);
 }
 
-// ── Schedule API ──────────────────────────────────────────────────
+// ── Trigger API ───────────────────────────────────────────────────
 
-export interface Schedule {
-  id: string;
-  taskId: string;
-  name: string;
-  prompt: string;
-  type: "cron" | "once";
-  cron?: string;
-  runAt?: string;
-  timezone?: string;
-  /** Follows this tier's current model, effort and context; unset follows New chats. */
-  modelTier?: ModelPresetSlot;
-  playbook?: string;
-  enabled: boolean;
-  lastSessionId?: string;
-  createdAt: string;
-  updatedAt: string;
-  lastRunAt?: string;
-  nextRunAt?: string;
-  runCount: number;
-  maxRuns?: number;
-  expiresAt?: string;
-  autoArchiveKeep?: number;
+const triggerPath = (id: string) => `/api/triggers/${encodeURIComponent(id)}`;
+
+export async function fetchSessionTriggers(sessionId: string, signal?: AbortSignal): Promise<SessionTriggers> {
+  const qs = new URLSearchParams({ sessionId }).toString();
+  return apiFetch<SessionTriggers>(`/api/triggers?${qs}`, undefined, { signal });
 }
 
-export type ScheduleCreateInput = Pick<Schedule, "taskId" | "name" | "prompt" | "type"> &
-  Partial<Pick<Schedule,
-    "cron" | "runAt" | "timezone" | "modelTier" | "playbook"
-    | "maxRuns" | "expiresAt" | "autoArchiveKeep"
-  >>;
-
-export type ScheduleUpdateInput = Partial<Pick<Schedule,
-  "name" | "prompt" | "cron" | "runAt" | "timezone" | "enabled" | "maxRuns" | "expiresAt"
->> & {
-  modelTier?: ModelPresetSlot | null;
-  playbook?: string | null;
-  autoArchiveKeep?: number | null;
-};
-
-export async function fetchSchedules(taskId: string): Promise<Schedule[]> {
+export async function fetchTaskTriggers(taskId: string, signal?: AbortSignal): Promise<TaskTriggers> {
   const qs = new URLSearchParams({ taskId }).toString();
-  return apiFetch<Schedule[]>(`/api/schedules?${qs}`);
+  return apiFetch<TaskTriggers>(`/api/triggers?${qs}`, undefined, { signal });
 }
 
-export async function createSchedule(input: ScheduleCreateInput): Promise<Schedule> {
-  return apiFetch<Schedule>("/api/schedules", input);
+export async function fetchTrigger(id: string): Promise<TriggerView> {
+  return apiFetch<TriggerView>(triggerPath(id));
 }
 
-export async function patchSchedule(id: string, updates: ScheduleUpdateInput): Promise<Schedule> {
-  const res = await fetch(`${API_BASE}/api/schedules/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(updates),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
-  }
-  return res.json();
+export async function fetchTriggerRuns(id: string): Promise<{ triggerId: string; runs: TriggerWorkerRun[]; deliveries: TriggerDeliveryView[] }> {
+  return apiFetch(`${triggerPath(id)}/runs`);
 }
 
-export async function deleteSchedule(id: string): Promise<void> {
-  await requestDelete(`/api/schedules/${id}`);
+export async function createTrigger(input: TriggerCreateInput): Promise<TriggerView> {
+  return apiFetch<TriggerView>("/api/triggers", input);
 }
 
-export async function triggerSchedule(id: string): Promise<{ sessionId?: string; skipped?: string }> {
-  return apiFetch<{ sessionId?: string; skipped?: string }>(`/api/schedules/${id}/trigger`, {});
+export async function updateTrigger(id: string, input: TriggerUpdateInput): Promise<TriggerView> {
+  return apiFetch<TriggerView>(triggerPath(id), input, { method: "PATCH" });
 }
 
-export interface ScheduleRun extends Session {
+export async function deleteTrigger(id: string): Promise<void> {
+  await requestDelete(triggerPath(id));
+}
+
+/** Runs it now, skipping its check. */
+export async function runTrigger(id: string): Promise<TriggerView> {
+  return apiFetch<TriggerView>(`${triggerPath(id)}/run`, {});
+}
+
+export async function cancelTrigger(id: string): Promise<TriggerView> {
+  return apiFetch<TriggerView>(`${triggerPath(id)}/cancel`, {});
+}
+
+export async function reactivateTrigger(id: string): Promise<TriggerView & { deliveryRetried?: true }> {
+  return apiFetch<TriggerView & { deliveryRetried?: true }>(`${triggerPath(id)}/reactivate`, {});
+}
+
+/** A chat a task trigger started. */
+export interface TriggerChat extends Session {
   runId: number;
   recordedAt: string;
   recordedAtKnown?: boolean;
+  /** The task a new_task trigger created for this chat. */
+  createdTaskId?: string;
   missing?: boolean;
 }
 
-export interface ScheduleSessionsResponse {
-  sessions: ScheduleRun[];
+export interface TriggerChatsResponse {
+  sessions: TriggerChat[];
   total: number;
   offset: number;
   limit: number;
 }
 
-export async function fetchScheduleSessions(
-  scheduleId: string,
+export async function fetchTriggerChats(
+  id: string,
   opts: { limit?: number; offset?: number } = {},
-): Promise<ScheduleSessionsResponse> {
+): Promise<TriggerChatsResponse> {
   const params = new URLSearchParams();
   if (opts.limit) params.set("limit", String(opts.limit));
   if (opts.offset) params.set("offset", String(opts.offset));
   const qs = params.toString();
-  return apiFetch<ScheduleSessionsResponse>(`/api/schedules/${scheduleId}/sessions${qs ? `?${qs}` : ""}`);
+  return apiFetch<TriggerChatsResponse>(`${triggerPath(id)}/chats${qs ? `?${qs}` : ""}`);
 }
 
 // ── Checklist item API ────────────────────────────────────────────

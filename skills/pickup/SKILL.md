@@ -18,7 +18,7 @@ You own rebuilding the state of earlier work accurately enough to continue it wi
 2. Locate the trail. Read task_get_info (instructions, notes, doneWhen, momentum, linked chats, pull requests, work items), task_history_list, and any knowledge base pages the notes link.
    - Read the prior chat when a tool for its history is available; otherwise use the chat previews from task_get_info.
    - For code, inspect the branch and worktree: status, recent commits, uncommitted changes, stashes, and whether the branch is pushed.
-3. Check what is still in flight: defer_list, schedule_list, background commands and open pull requests or runs.
+3. Check what is still in flight: trigger_list, background commands and open pull requests or runs.
 4. Reconstruct the state: the goal, accepted decisions, what was done and with what evidence, what was pending, and what was in progress when it stopped.
 5. Write a short done-versus-pending table: item | state | evidence.
 6. Re-verify inherited claims on the real artifact only where the outcome depends on them (tests passing before a merge, a branch being pushed, a price still holding). Trust the rest and mark any claim you found stale.

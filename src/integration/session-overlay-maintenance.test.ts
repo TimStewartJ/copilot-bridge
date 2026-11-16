@@ -4,8 +4,8 @@ import { join } from "node:path";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import { installApiRouteTestHooks } from "../test-support/api-routes.js";
 import { createSessionOverlayMaintenance } from "../server/session-overlay-maintenance.js";
-import { createReturnedDeferDelivery } from "../server/defer-result-message.js";
-import { endDeferLoop } from "../server/__tests__/helpers.js";
+import { createTriggerResultDelivery } from "../server/triggers/messages.js";
+import { createChatTrigger, endTrigger } from "../server/__tests__/helpers.js";
 
 let ctx: ApiRouteTestState["ctx"];
 let db: ApiRouteTestState["db"];
@@ -21,12 +21,12 @@ function ageState(sessionId: string, updatedAt = OLD_ISO): void {
     .run(updatedAt, updatedAt, sessionId);
 }
 
-function ageDefer(table: string, id: string, updatedAt = OLD_ISO): void {
+function ageRow(table: string, id: string, updatedAt = OLD_ISO): void {
   db.prepare(`UPDATE ${table} SET updatedAt = ? WHERE id = ?`).run(updatedAt, id);
 }
 
 describe("session overlay maintenance", () => {
-  it("removes dangling task links, runs the reaper, deletes deleted-schedule runs, and prunes terminal defers", async () => {
+  it("removes dangling task links, runs the reaper, deletes deleted-trigger runs, and prunes stopped rows", async () => {
     ctx.cliSessionCatalog = { listSessions: () => [], hasSession: async () => false } as any;
     ctx.bridgeSessionStateStore.setTitleOverride("orphan-overlay", "Orphan");
     ageState("orphan-overlay");
@@ -38,39 +38,28 @@ describe("session overlay maintenance", () => {
     ctx.bridgeSessionStateStore.setTitleOverride("gone-linked", "Gone");
     ageState("gone-linked");
 
-    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-      .run("deleted-schedule", "run-1", OLD_ISO);
+    ctx.triggerStore!.recordRun({ triggerId: "deleted-trigger", sessionId: "run-1" }, OLD_ISO);
 
     const deferStore = ctx.deferredPromptStore!;
-    const loopStore = ctx.deferLoopStore!;
+    const triggerStore = ctx.triggerStore!;
     const terminalPrompt = deferStore.create("gone-session", "done", OLD_ISO);
     deferStore.complete(terminalPrompt.id);
-    ageDefer("deferred_prompts", terminalPrompt.id);
+    ageRow("deferred_prompts", terminalPrompt.id);
     const recentTerminal = deferStore.create("present-session", "recent", OLD_ISO);
     deferStore.complete(recentTerminal.id);
-    const terminalDelivery = deferStore.enqueueDelivery(createReturnedDeferDelivery(
-      { deferId: "once_1", kind: "once", parentSessionId: "gone-session" },
+    const terminalDelivery = deferStore.enqueueDelivery(createTriggerResultDelivery(
+      { triggerId: "trigger-1", parentSessionId: "gone-session" },
       "Done.",
       { deliveryId: "terminal-delivery" },
     ), OLD_ISO);
     deferStore.complete(terminalDelivery.id);
-    ageDefer("deferred_prompts", terminalDelivery.id);
+    ageRow("deferred_prompts", terminalDelivery.id);
     const livePrompt = deferStore.create("live-session", "future", "2099-01-01T00:00:00.000Z");
 
-    const terminalLoop = loopStore.create({
-      sessionId: "gone-session",
-      prompt: "done loop",
-      intervalSeconds: 600,
-      nextRunAt: OLD_ISO,
-    });
-    endDeferLoop(db, terminalLoop.id, "completed");
-    ageDefer("defer_loops", terminalLoop.id);
-    const liveLoop = loopStore.create({
-      sessionId: "live-session",
-      prompt: "live loop",
-      intervalSeconds: 600,
-      nextRunAt: "2099-01-01T00:00:00.000Z",
-    });
+    const terminalTrigger = createChatTrigger(triggerStore, "gone-session", { nextRunAt: OLD_ISO });
+    endTrigger(db, terminalTrigger.id, "completed");
+    ageRow("triggers", terminalTrigger.id);
+    const liveTrigger = createChatTrigger(triggerStore, "live-session");
 
     const sessionsChanged: string[] = [];
     ctx.globalBus.subscribe((event: any) => {
@@ -85,9 +74,9 @@ describe("session overlay maintenance", () => {
     expect(ctx.taskStore.getTask(task.id)!.sessionIds).toEqual(["present-session"]);
     expect(result.reaped).toBe(2);
     expect(ctx.bridgeSessionStateStore.getState("gone-linked")).toBeUndefined();
-    expect(result.deletedScheduleRuns).toBe(1);
+    expect(result.deletedTriggerRuns).toBe(1);
     expect(result.prunedDeferredPrompts).toBe(2);
-    expect(result.prunedDeferLoops).toBe(1);
+    expect(result.prunedTriggers).toBe(1);
     expect(sessionsChanged).toHaveLength(1);
 
     expect(ctx.bridgeSessionStateStore.getState("orphan-overlay")).toBeUndefined();
@@ -95,8 +84,8 @@ describe("session overlay maintenance", () => {
     expect(deferStore.get(recentTerminal.id)).toBeDefined();
     expect(deferStore.get(terminalDelivery.id)).toBeUndefined();
     expect(deferStore.get(livePrompt.id)).toBeDefined();
-    expect(loopStore.get(terminalLoop.id)).toBeUndefined();
-    expect(loopStore.get(liveLoop.id)).toBeDefined();
+    expect(triggerStore.get(terminalTrigger.id)).toBeUndefined();
+    expect(triggerStore.get(liveTrigger.id)).toBeDefined();
   });
 
   it("arms an unref'd interval on start and disposes it on stop", async () => {

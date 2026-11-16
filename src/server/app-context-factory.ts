@@ -22,7 +22,6 @@ import { createSessionTitlesStore } from "./session-titles.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
-import { createScheduleStore } from "./schedule-store.js";
 import { createReadStateStore } from "./read-state-store.js";
 import { createModelAbTestStore } from "./model-ab-test.js";
 import { createChecklistStore } from "./checklist-store.js";
@@ -40,7 +39,6 @@ import { createSessionContextStore } from "./session-context-store.js";
 import { createVoiceJobStore } from "./voice-job-store.js";
 import { createPushNotificationService, initPushEventNotifications } from "./push-notification-service.js";
 import { createPushSubscriptionStore } from "./push-subscription-store.js";
-import * as scheduler from "./scheduler.js";
 import { createEventBusRegistry } from "./event-bus.js";
 import { createGlobalBus } from "./global-bus.js";
 import type { AppContext } from "./app-context.js";
@@ -52,12 +50,14 @@ import { createHelmThinkerStore } from "./helm/thinker/store.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import { createDeferredPromptStore } from "./deferred-prompt-store.js";
 import { createDeferredPromptRunner } from "./deferred-prompt-runner.js";
-import { createDeferLoopStore } from "./defer-loop-store.js";
+import { createTriggerStore } from "./triggers/store.js";
+import { createTriggerService } from "./triggers/service.js";
+import { createTriggerChatRunner } from "./triggers/chat-runner.js";
+import { createTriggerTaskRunner } from "./triggers/task-runner.js";
 import { createInterruptedRunStore } from "./interrupted-run-store.js";
 import { createChatMessageIdStore } from "./chat-message-id-store.js";
 import { createUnsentMessageStore } from "./unsent-message-store.js";
 import { createBackgroundCommandStore } from "./background-command-store.js";
-import { createDeferLoopRunner } from "./defer-loop-runner.js";
 import { createDeferDeliveryGuard } from "./defer-delivery-guard.js";
 import { createSessionManager } from "./session-manager.js";
 
@@ -95,7 +95,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const eventBusRegistry = createEventBusRegistry();
   const taskStore = createTaskStore(db, globalBus, { runtimePaths });
   const taskGroupStore = createTaskGroupStore(db, globalBus);
-  const scheduleStore = createScheduleStore(db);
   const settingsStore = createSettingsStore(db);
   const sessionMetaStore = createSessionMetaStore(db);
   const sessionWorkspaceStore = createSessionWorkspaceStore(db);
@@ -162,7 +161,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     }
   }
   const deferredPromptStore = createDeferredPromptStore(db);
-  const deferLoopStore = createDeferLoopStore(db);
+  const triggerStore = createTriggerStore(db);
   const interruptedRunStore = createInterruptedRunStore(db);
   const chatMessageIdStore = createChatMessageIdStore(db);
   const unsentMessageStore = createUnsentMessageStore(db);
@@ -186,7 +185,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const ctx: AppContext = {
     taskStore,
     taskGroupStore,
-    scheduleStore,
     settingsStore,
     sessionMetaStore,
     sessionWorkspaceStore,
@@ -232,12 +230,11 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     pushSubscriptionStore,
     managementJobStore,
     deferredPromptStore,
-    deferLoopStore,
+    triggerStore,
     interruptedRunStore,
     chatMessageIdStore,
     unsentMessageStore,
     backgroundCommandStore,
-    scheduler,
     copilotHome,
     apiBasePath: options.apiBasePath,
     runtimePaths,
@@ -325,54 +322,56 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     })),
     startImmediately: false,
   });
+  const emitTriggerSummary = (sessionId: string) => ctx.triggerService?.emitChatSummary(sessionId);
   ctx.deferredPromptRunner = createDeferredPromptRunner(
     deferredPromptStore,
     sessionManager,
     globalBus,
     deferDeliveryGuard,
-    { deferredPromptStore, deferLoopStore },
     {
       telemetryStore,
-      // A recurring check may be waiting for the chat or the worker a one-time check just let go of.
-      onSettled: () => ctx.deferLoopRunner?.poke(),
+      // A trigger may be waiting for the chat a message just let go of.
+      onSettled: () => ctx.triggerChatRunner?.poke(),
     },
   );
-  ctx.deferLoopRunner = createDeferLoopRunner(
-    deferLoopStore,
+  ctx.triggerChatRunner = createTriggerChatRunner(triggerStore, sessionManager, globalBus, deferDeliveryGuard, {
+    telemetryStore,
+    emitSummary: emitTriggerSummary,
+    onParentMessageQueued: () => ctx.deferredPromptRunner?.poke(),
+  });
+  ctx.triggerTaskRunner = createTriggerTaskRunner({
+    store: triggerStore,
+    taskStore,
+    taskHistoryStore,
     sessionManager,
+    sessionMetaStore,
     globalBus,
-    deferDeliveryGuard,
-    { deferredPromptStore, deferLoopStore },
-    {
-      telemetryStore,
-      onParentMessageQueued: () => ctx.deferredPromptRunner?.poke(),
-    },
-  );
-
+    telemetryStore,
+  });
+  ctx.triggerService = createTriggerService({
+    store: triggerStore,
+    taskStore,
+    globalBus,
+    deferredPromptStore,
+    chatRunner: ctx.triggerChatRunner,
+    taskRunner: ctx.triggerTaskRunner,
+    outboxRunner: ctx.deferredPromptRunner,
+  });
   return { ctx, db };
 }
 
-export function initializeSchedulerAndDeferredRunners(ctx: AppContext): void {
+export function initializeTriggerAndDeliveryRunners(ctx: AppContext): void {
   void ctx.stopPushEventNotifications?.flush();
   startSkillCatalog(ctx);
-  ctx.scheduler?.initialize(ctx.sessionManager, {
-    scheduleStore: ctx.scheduleStore,
-    taskStore: ctx.taskStore,
-    sessionMetaStore: ctx.sessionMetaStore,
-    globalBus: ctx.globalBus,
-    deferredPromptStore: ctx.deferredPromptStore,
-    deferLoopStore: ctx.deferLoopStore,
-    taskHistoryStore: ctx.taskHistoryStore,
-  });
   try {
     ctx.managementJobStore?.reconcileResultDeliveries();
   } catch (error) {
     console.error("[management-jobs] Could not queue unsent job results at startup:", error);
   }
   ctx.deferredPromptRunner?.start();
-  ctx.deferLoopRunner?.start();
+  ctx.triggerChatRunner?.start();
+  ctx.triggerTaskRunner?.start();
 }
-
 /** Git packs older than this are fetched again when the server starts. */
 const SKILL_PACK_STARTUP_STALE_MS = 12 * 60 * 60_000;
 

@@ -90,31 +90,29 @@ describe("session overlay reaper", () => {
     expect(ctx.bridgeSessionStateStore.getState("catalog-unknown")).toBeDefined();
   });
 
-  it("reports deleted-schedule run groups and deletes them only on explicit apply", async () => {
+  it("reports run rows of deleted triggers and deletes them only on explicit apply", async () => {
     const { ctx, db } = createTestApp({
       cliSessionCatalog: { listSessions: () => [] } as any,
     });
-    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-      .run("deleted-schedule", "run-1", oldIso);
-    db.prepare("INSERT INTO schedule_runs (scheduleId, sessionId, recordedAt) VALUES (?, ?, ?)")
-      .run("deleted-schedule", "run-2", oldIso);
+    ctx.triggerStore!.recordRun({ triggerId: "deleted-trigger", sessionId: "run-1" }, oldIso);
+    ctx.triggerStore!.recordRun({ triggerId: "deleted-trigger", sessionId: "run-2" }, oldIso);
 
     const dryRun = await runSessionOverlayReaper(ctx, {
       dryRun: true,
-      cleanupDeletedScheduleRuns: true,
+      cleanupDeletedTriggerRuns: true,
       minimumAgeMs: 0,
     });
 
-    expect(dryRun.deletedScheduleRuns).toMatchObject({ wouldDelete: 2, deleted: 0 });
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schedule_runs").get() as any).count).toBe(2);
+    expect(dryRun.deletedTriggerRuns).toMatchObject({ wouldDelete: 2, deleted: 0 });
+    expect((db.prepare("SELECT COUNT(*) AS count FROM trigger_runs").get() as any).count).toBe(2);
 
     const applied = await runSessionOverlayReaper(ctx, {
       dryRun: false,
-      cleanupDeletedScheduleRuns: true,
+      cleanupDeletedTriggerRuns: true,
       minimumAgeMs: 0,
     });
 
-    expect(applied.deletedScheduleRuns).toMatchObject({ wouldDelete: 2, deleted: 2 });
-    expect((db.prepare("SELECT COUNT(*) AS count FROM schedule_runs").get() as any).count).toBe(0);
+    expect(applied.deletedTriggerRuns).toMatchObject({ wouldDelete: 2, deleted: 2 });
+    expect((db.prepare("SELECT COUNT(*) AS count FROM trigger_runs").get() as any).count).toBe(0);
   });
 });

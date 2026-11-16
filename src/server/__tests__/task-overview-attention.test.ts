@@ -2,13 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTaskStore } from "../task-store.js";
 import { createTaskGroupStore } from "../task-group-store.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
-import { createScheduleStore } from "../schedule-store.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
-import { createDeferLoopStore } from "../defer-loop-store.js";
+import { createTriggerStore } from "../triggers/store.js";
 import { createManagementJobStore } from "../management-job-store.js";
-import { createReturnedDeferDelivery } from "../defer-result-message.js";
+import { createTriggerResultDelivery } from "../triggers/messages.js";
 import { buildTaskOverview, toOverviewSessions, type TaskOverviewContext } from "../task-overview.js";
-import { createTestBus, setupTestDb, makeTestDir } from "./helpers.js";
+import { createChatTrigger, createTestBus, endTrigger, setupTestDb, makeTestDir } from "./helpers.js";
 import type { DatabaseSync } from "../db.js";
 
 const NOW = Date.parse("2026-10-19T22:00:00Z");
@@ -26,8 +25,8 @@ describe("task continuation evidence", () => {
     };
     const ctx = {
       taskStore: createTaskStore(db, bus), taskGroupStore: createTaskGroupStore(db, bus),
-      sessionMetaStore: createSessionMetaStore(db), scheduleStore: createScheduleStore(db),
-      deferredPromptStore: createDeferredPromptStore(db), deferLoopStore: createDeferLoopStore(db),
+      sessionMetaStore: createSessionMetaStore(db),
+      deferredPromptStore: createDeferredPromptStore(db), triggerStore: createTriggerStore(db),
       managementJobStore: createManagementJobStore(db, { dataDir: makeTestDir("task-attention-jobs") }),
       sessionManager: manager,
     } satisfies TaskOverviewContext;
@@ -43,58 +42,48 @@ describe("task continuation evidence", () => {
   it("shows a task’s pending results without changing the task or counting finished deliveries", () => {
     const { ctx, task, read } = setup();
     const before = ctx.taskStore.getTask(task.id);
-    const result = ctx.deferredPromptStore.enqueueDelivery(createReturnedDeferDelivery(
-      { deferId: "once_result", kind: "once", parentSessionId: "conversation" }, "Result", { deliveryId: "result-1" },
+    const result = ctx.deferredPromptStore.enqueueDelivery(createTriggerResultDelivery(
+      { triggerId: "result", parentSessionId: "conversation" }, "Result", { deliveryId: "result-1" },
     ));
-    expect(ctx.deferredPromptStore.getSummaryForSession("conversation").count).toBe(0);
     expect(read().activity?.pendingDeliveryCount).toBe(1);
     const claim = ctx.deferredPromptStore.claimDue(result.id, 60_000);
     expect(claim).toBeDefined();
     expect(read().activity?.pendingDeliveryCount).toBe(1);
     ctx.deferredPromptStore.complete(result.id, { claimToken: claim!.claimToken });
-    expect(read().activity).toMatchObject({ known: true, runCount: 0, deferredCount: 0, pendingDeliveryCount: 0 });
+    expect(read().activity).toMatchObject({ known: true, runCount: 0, chatTriggerCount: 0, pendingDeliveryCount: 0 });
     expect(ctx.taskStore.getTask(task.id)).toEqual(before);
-    const failed = ctx.deferredPromptStore.enqueueDelivery(createReturnedDeferDelivery(
-      { deferId: "once_failed", kind: "once", parentSessionId: "conversation" }, "Result", { deliveryId: "result-2" },
+    const failed = ctx.deferredPromptStore.enqueueDelivery(createTriggerResultDelivery(
+      { triggerId: "failed", parentSessionId: "conversation" }, "Result", { deliveryId: "result-2" },
     ));
     ctx.deferredPromptStore.fail(failed.id, "Delivery failed");
     expect(read().activity?.pendingDeliveryCount).toBe(0);
   });
 
-  it("attributes live runtime, pending defers and eligible schedules to their own tasks", () => {
+  it("attributes live runtime, chat triggers and task triggers that will run again to their own tasks", () => {
     const { ctx, task, manager } = setup();
     const terminal = ctx.taskStore.createTask("Terminal plans");
-    const invalid = ctx.taskStore.createTask("Unknown expiry");
     ctx.taskStore.linkSession(terminal.id, "terminal-chat");
-    const daily = (taskId: string, name: string) => ctx.scheduleStore.createSchedule({
-      taskId, name, type: "cron", cron: "0 9 * * *", prompt: "Check",
+    const daily = (taskId: string, name: string) => ctx.triggerStore.create({
+      taskId, name, prompt: "Check", when: { kind: "cron", cron: "0 9 * * *", timezone: "UTC" },
+      action: { kind: "new_chat" }, nextRunAt: "2026-10-20T09:00:00Z",
     });
     daily(task.id, "Ready");
-    ctx.scheduleStore.updateSchedule(daily(terminal.id, "Disabled").id, { enabled: false });
-    ctx.scheduleStore.updateSchedule(daily(terminal.id, "Expired").id, { expiresAt: "2026-10-19T21:00:00Z" });
-    const exhausted = daily(terminal.id, "Exhausted");
-    ctx.scheduleStore.updateSchedule(exhausted.id, { maxRuns: 1, expiresAt: "2026-10-20T22:00:00Z" });
-    const malformed = daily(invalid.id, "Invalid expiry");
-    ctx.scheduleStore.updateSchedule(malformed.id, { enabled: false });
-    ctx.scheduleStore.updateSchedule(malformed.id, { enabled: true, maxRuns: 1, expiresAt: "invalid date" });
-    db.prepare("UPDATE schedules SET runCount = 1 WHERE id IN (?, ?)").run(exhausted.id, malformed.id);
+    ctx.triggerStore.pause(daily(terminal.id, "Paused").id);
+    endTrigger(db, daily(terminal.id, "Expired").id, "expired");
+    ctx.triggerStore.cancel(daily(terminal.id, "Cancelled").id);
 
-    ctx.deferredPromptStore.create("conversation", "Pending", "2026-10-20T22:00:00Z");
-    const cancelled = ctx.deferredPromptStore.create("terminal-chat", "Cancelled", "2026-10-20T22:00:00Z");
-    expect(ctx.deferredPromptStore.cancelById(cancelled.id)).toBe(true);
-    expect(ctx.deferredPromptStore.get(cancelled.id)?.status).toBe("cancelled");
-    manager.getSessionContinuationState.mockImplementation((id) => id === "conversation"
+    createChatTrigger(ctx.triggerStore, "conversation");
+    expect(ctx.triggerStore.cancel(createChatTrigger(ctx.triggerStore, "terminal-chat").id)).toBe(true);    manager.getSessionContinuationState.mockImplementation((id) => id === "conversation"
       ? { runningAgentCount: 2, runningCommandCount: 1, held: true }
       : { runningAgentCount: 0, runningCommandCount: 0, held: false });
     const { sessions } = toOverviewSessions([{ sessionId: "conversation", externallyInUse: true }, { sessionId: "terminal-chat" }]);
 
     const overview = buildTaskOverview(ctx, sessions, NOW);
     const activity = new Map(overview.tasks.map((row) => [row.id, row.activity]));
-    expect(activity.get(task.id)).toMatchObject({ known: true, deferredCount: 1, scheduledCount: 1,
+    expect(activity.get(task.id)).toMatchObject({ known: true, chatTriggerCount: 1, taskTriggerCount: 1,
       runningAgentCount: 2, runningCommandCount: 1, heldCount: 1, externalCount: 1 });
-    expect(activity.get(terminal.id)).toMatchObject({ known: true, deferredCount: 0, scheduledCount: 0,
+    expect(activity.get(terminal.id)).toMatchObject({ known: true, chatTriggerCount: 0, taskTriggerCount: 0,
       runningAgentCount: 0, runningCommandCount: 0, heldCount: 0, externalCount: 0 });
-    expect(activity.get(invalid.id)).toMatchObject({ known: false, scheduledCount: 0 });
   });
 
   it("counts management jobs and deploys awaiting activation without counting terminal jobs", () => {
@@ -118,8 +107,8 @@ describe("task continuation evidence", () => {
     expect(read([]).activity?.unavailable).toBeUndefined();
     ctx.sessionMetaStore.setArchived("conversation", true);
     expect(read([]).activity).toMatchObject({ known: true, sessionIndexKnown: true });
-    ctx.deferredPromptStore.create("conversation", "Check archived work", "2026-10-20T22:00:00Z");
-    expect(read([]).activity?.deferredCount).toBe(1);
+    createChatTrigger(ctx.triggerStore, "conversation");
+    expect(read([]).activity?.chatTriggerCount).toBe(1);
   });
 
   it("keeps known questions visible on linked tasks when the conversation source is unavailable", () => {

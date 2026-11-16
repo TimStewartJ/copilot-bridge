@@ -156,9 +156,9 @@ describe("task attention source gaps", () => {
     await harness.act(async () => { await harness.queryClient.refetchQueries({ queryKey: TASK_OVERVIEW_KEY }); });
     await waitUntilAct(harness.act, () => result.overview.data?.tasks[0]?.activity?.known === false);
     expect(result!.taskSignals.get("task")?.kind).toBe("needs-look");
-    api.fetchTaskOverview.mockResolvedValue(overview([row("task", { activity: createTaskActivity({ scheduledCount: 1 }) })]));
+    api.fetchTaskOverview.mockResolvedValue(overview([row("task", { activity: createTaskActivity({ taskTriggerCount: 1 }) })]));
     await harness.act(async () => { await harness.queryClient.refetchQueries({ queryKey: TASK_OVERVIEW_KEY }); });
-    await waitUntilAct(harness.act, () => result.overview.data?.tasks[0]?.activity?.scheduledCount === 1);
+    await waitUntilAct(harness.act, () => result.overview.data?.tasks[0]?.activity?.taskTriggerCount === 1);
     expect(result!.taskSignals.get("task")).toBeNull();
   });
 

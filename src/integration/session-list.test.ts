@@ -160,7 +160,7 @@ describe("session list: what a response reads", () => {
       vi.spyOn(ctx.taskStore, "listTasks"),
       vi.spyOn(ctx.taskStore, "findTaskBySessionId"),
       vi.spyOn(ctx.sessionWorkspaceStore, "listWorkspaces"),
-      vi.spyOn(ctx.scheduleStore, "listSchedules"),
+      vi.spyOn(ctx.triggerStore!, "list"),
     ];
 
     const rows = await list.read();
@@ -182,10 +182,9 @@ describe("session list: what a response reads", () => {
     const task = ctx.taskStore.createTask("Linked later");
     ctx.taskStore.linkSession(task.id, "b");
     ctx.sessionMetaStore.setLastVisibleActivityAt("c", "2026-05-01T12:00:00.000Z");
-    const schedule = ctx.scheduleStore.createSchedule({
-      taskId: task.id, name: "Nightly", prompt: "run", type: "cron", cron: "0 3 * * *",
-    } as any);
-    ctx.sessionMetaStore.setScheduleMeta("c", schedule.id, "Nightly");
+    const created = ctx.triggerService!.create({ taskId: task.id, name: "Nightly", prompt: "run", then: "new_chat", cron: "0 3 * * *" });
+    if (!created.ok) throw new Error(created.error);
+    ctx.sessionMetaStore.setScheduleMeta("c", created.trigger.id, "Nightly");
     const rows = await list.read();
 
     expect(ids(rows)).toEqual(["c", "b"]);
@@ -193,13 +192,14 @@ describe("session list: what a response reads", () => {
       lastVisibleActivityAt: "2026-05-01T12:00:00.000Z",
       modifiedTime: "2026-05-01T12:00:00.000Z",
       triggeredBy: "schedule",
-      scheduleName: "Nightly",
-      scheduleEnabled: true,
+      triggerId: created.trigger.id,
+      triggerName: "Nightly",
+      triggerActive: true,
     });
     expect(rows[1]).toMatchObject({ linkedTaskIds: [task.id], archived: false, archivedAt: null });
 
-    ctx.scheduleStore.updateSchedule(schedule.id, { enabled: false });
-    expect((await list.read())[0]).toMatchObject({ scheduleEnabled: false });
+    ctx.triggerStore!.pause(created.trigger.id);
+    expect((await list.read())[0]).toMatchObject({ triggerActive: false });
     expect(listing).toHaveBeenCalledTimes(1);
   });
 

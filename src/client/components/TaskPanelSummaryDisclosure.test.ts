@@ -78,14 +78,14 @@ describe("TaskPanelSummaryDisclosure persistence", () => {
       expect(saved).toEqual({ "task-1": { "work-items": true } });
       // Other disclosures were opened before this one was closed.
       storage.setItem(TASK_PANEL_DISCLOSURE_STORAGE_KEY, JSON.stringify({
-        "task-1": { ...saved["task-1"], docs: true }, "task-2": { schedules: true },
+        "task-1": { ...saved["task-1"], docs: true }, "task-2": { triggers: true },
       }));
       await clickDisclosure(harness);
 
       expect(harness.dom.container.textContent).not.toContain("Expanded content");
       expect(JSON.parse(storage.getItem(TASK_PANEL_DISCLOSURE_STORAGE_KEY) ?? "{}")).toEqual({
         "task-1": { docs: true },
-        "task-2": { schedules: true },
+        "task-2": { triggers: true },
       });
     } finally {
       await harness.cleanup();

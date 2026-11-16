@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
-import { findUnknownFields, formatUnknownFieldsError } from "./schedule-validation.js";
+import { findUnknownFields, formatUnknownFieldsError } from "./request-fields.js";
 import { runTransaction } from "./db-transaction.js";
 
 // ── Types ─────────────────────────────────────────────────────────

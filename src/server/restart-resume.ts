@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
 import type { DeferredPromptRunner } from "./deferred-prompt-runner.js";
 import type { DeferredPromptStore } from "./deferred-prompt-store.js";
-import { emitSessionDeferSummary } from "./defer-summary.js";
 import type { GlobalBus } from "./global-bus.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
 
@@ -129,7 +128,6 @@ export function queueBootRecoveryPrompts(
     deps.deferredPromptStore.create(sessionId, RESTART_RECOVERY_CONTINUE_PROMPT, resumeAt.toISOString());
     // The marker stays, stamped with the time of that resume: an exit soon after it finds the stamp.
     markerStore.markRetryScheduled(sessionId, resumeAt);
-    emitSessionDeferSummary(deps.globalBus, sessionId, deps);
     result.retryScheduled.push({ sessionId, resumeAt: resumeAt.toISOString() });
     announce(sessionId, resumeLaterMessage(resumeAt.getTime() - now.getTime()));
   }
@@ -158,7 +156,6 @@ export function cancelScheduledRestartResume(deps: RestartResumeDeps, sessionId:
       cancelled += 1;
     }
   }
-  if (cancelled > 0) emitSessionDeferSummary(deps.globalBus, sessionId, deps);
   return cancelled;
 }
 
@@ -179,7 +176,6 @@ export function queueRestartRecoveryPrompts(
     if (pendingRecoveryPrompts(deps.deferredPromptStore, sessionId).length === 0) {
       deps.deferredPromptStore.create(sessionId, RESTART_RECOVERY_CONTINUE_PROMPT, runAt);
     }
-    emitSessionDeferSummary(deps.globalBus, sessionId, deps);
   }
 
   deps.deferredPromptRunner?.poke();

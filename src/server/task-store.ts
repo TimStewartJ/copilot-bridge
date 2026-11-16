@@ -913,51 +913,48 @@ export function createTaskStore(
   /**
    * Delete the task's owned rows. Must run inside an open transaction.
    *
-   * `schedules.taskId` has no foreign key, so schedule rows do not cascade with
-   * the task. Neither do `entity_tags` rows. Both are deleted here — rather than
-   * through `ScheduleStore`/`TagStore` — so the parent and everything it owns
-   * commit or roll back together; SQLite has no nested transactions, so the
-   * cascade cannot be split across stores that each own a transaction.
+   * `triggers.taskId` has no foreign key, so the task's triggers do not cascade with the task.
+   * Neither do `entity_tags` rows. Both are deleted here, rather than through `TriggerStore` or
+   * `TagStore`, so the parent and everything it owns commit or roll back together; SQLite has no
+   * nested transactions, so the cascade cannot be split across stores that each own a transaction.
    */
   function cascadeWithinTransaction(id: string): string[] {
-    const deletedScheduleIds = (db
-      .prepare("SELECT id FROM schedules WHERE taskId = ?")
+    const deletedTriggerIds = (db
+      .prepare("SELECT id FROM triggers WHERE taskId = ?")
       .all(id) as Array<{ id: string }>).map((row) => row.id);
-    for (const scheduleId of deletedScheduleIds) {
-      db.prepare("DELETE FROM schedule_run_claims WHERE scheduleId = ?").run(scheduleId);
-      db.prepare("DELETE FROM schedule_runs WHERE scheduleId = ?").run(scheduleId);
-      // Sessions that survive the task keep `scheduleName` as provenance, but a
-      // `scheduleId` pointing at a deleted schedule is a dangling reference.
+    for (const triggerId of deletedTriggerIds) {
+      db.prepare("DELETE FROM trigger_runs WHERE triggerId = ?").run(triggerId);
+      // Chats that survive the task keep the trigger's name as provenance, but an id pointing at a
+      // deleted trigger is a dangling reference.
       db.prepare(`
         UPDATE bridge_session_state
         SET scheduleId = NULL, updatedAt = ?
         WHERE scheduleId = ?
-      `).run(new Date().toISOString(), scheduleId);
+      `).run(new Date().toISOString(), triggerId);
     }
-    db.prepare("DELETE FROM schedules WHERE taskId = ?").run(id);
+    db.prepare("DELETE FROM triggers WHERE taskId = ?").run(id);
     db.prepare("DELETE FROM entity_tags WHERE entityType = 'task' AND entityId = ?").run(id);
     db.prepare("DELETE FROM task_starters WHERE taskId = ?").run(id);
     db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
-    return deletedScheduleIds;
+    return deletedTriggerIds;
   }
 
   /**
-   * Delete a task and every child schedule (plus that schedule's run history and
-   * claims) in one transaction, returning the deleted schedule IDs so the caller
-   * can unregister their timers.
+   * Delete a task and every trigger it owns (plus their run history) in one
+   * transaction, returning the deleted trigger IDs so the caller can announce them.
    */
-  function deleteTaskCascade(id: string): { deletedScheduleIds: string[] } {
+  function deleteTaskCascade(id: string): { deletedTriggerIds: string[] } {
     db.exec("BEGIN");
-    let deletedScheduleIds: string[];
+    let deletedTriggerIds: string[];
     try {
-      deletedScheduleIds = cascadeWithinTransaction(id);
+      deletedTriggerIds = cascadeWithinTransaction(id);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
     }
     emitChange(id);
-    return { deletedScheduleIds };
+    return { deletedTriggerIds };
   }
 
   /**
@@ -967,14 +964,14 @@ export function createTaskStore(
    * Archiving is pure SQLite, so it can commit atomically with the cascade —
    * the task can never be left alive with its sessions unexpectedly archived,
    * and sessions can never be archived for a task that survived. Callers still
-   * own the non-transactional side effects (timer unregistration, events).
+   * own the non-transactional side effects (events).
    */
   function archiveSessionsAndDeleteTask(id: string): {
-    deletedScheduleIds: string[];
+    deletedTriggerIds: string[];
     archivedSessionIds: string[];
   } {
     db.exec("BEGIN");
-    let deletedScheduleIds: string[];
+    let deletedTriggerIds: string[];
     let archivedSessionIds: string[];
     try {
       archivedSessionIds = (db
@@ -990,14 +987,14 @@ export function createTaskStore(
           updatedAt = excluded.updatedAt
       `);
       for (const sessionId of archivedSessionIds) archive.run(sessionId, now, now, now);
-      deletedScheduleIds = cascadeWithinTransaction(id);
+      deletedTriggerIds = cascadeWithinTransaction(id);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
     }
     emitChange(id);
-    return { deletedScheduleIds, archivedSessionIds };
+    return { deletedTriggerIds, archivedSessionIds };
   }
 
   /**

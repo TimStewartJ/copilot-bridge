@@ -247,13 +247,13 @@ export function CopilotUsageSection() {
               </Details>
 
               {data.deferWorkers.capturedRuns > 0 && (
-                <Details label="Deferred workers" detail={`${formatNumber(data.deferWorkers.capturedRuns)} captured runs`}>
+                <Details label="Trigger workers" detail={`${formatNumber(data.deferWorkers.capturedRuns)} captured runs`}>
                   <p className={cx(DS.usage.prose, "mb-3")}>
                     Kept for {formatNumber(data.deferWorkers.retentionDays)} days. Included in the totals above.
                   </p>
                   <StatRow stats={[
                     { label: "Captured runs", value: formatNumber(data.deferWorkers.capturedRuns) },
-                    { label: "Parent sessions", value: formatNumber(data.deferWorkers.parentSessions) },
+                    { label: "Chats", value: formatNumber(data.deferWorkers.parentSessions) },
                     { label: "Metered cost", value: formatUsageUsd(meteredCostUsd(data.deferWorkers)) },
                     { label: "Metered credits", value: hasMeteredUsage(data.deferWorkers) ? formatUsageCredits(data.deferWorkers.meteredAiCredits) : "Not recorded" },
                     { label: "Total tokens", value: formatNumber(data.deferWorkers.totalTokens) },

@@ -1,75 +1,42 @@
-// Deferred prompt runner — one-shot defers and messages queued for a chat.
+// Outbox runner: delivers messages queued for a chat (trigger results and messages, management job
+// results, restart notices), one at a time per chat.
 
-import { randomUUID } from "node:crypto";
 import type { DeferredPrompt, DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { SessionManager } from "./session-manager.js";
 import type { GlobalBus } from "./global-bus.js";
 import { createDeferDeliveryGuard, type DeferDeliveryGuard } from "./defer-delivery-guard.js";
-import type { DeferSummarySources } from "./defer-summary.js";
 import {
-  computeDeferRetryBackoffMs,
-  createDeferRunnerCore,
+  computeRetryBackoffMs,
+  createChatWorkRunner,
   LEASE_MS,
   MAX_ATTEMPTS,
-  type DeferRunnerOptions,
-} from "./defer-runner-core.js";
-import {
-  createFailedDeferDelivery,
-  createReturnedDeferDelivery,
-  type DeferredResultDelivery,
-} from "./defer-result-message.js";
-import type { DeferWorkerInput } from "./defer-worker.js";
-import { isRestartRecoveryPrompt } from "./restart-resume.js";
+  type ChatWorkOptions,
+} from "./chat-work-runner.js";
 import { chatMessageDeliveryClientId, isChatMessageDeliveryId } from "./chat-message-outbox.js";
 
-// Re-export the shared timing/lease constants so existing importers keep working.
-export {
-  DEFER_WATCHDOG_INTERVAL_MS,
-  INITIAL_BACKOFF_MS,
-  LEASE_MS,
-  LEASE_RENEW_INTERVAL_MS,
-  MAX_ATTEMPTS,
-  MAX_BACKOFF_MS,
-  MAX_TIMER_DELAY_MS,
-} from "./defer-runner-core.js";
-
-export type DeferredPromptRunnerOptions = DeferRunnerOptions;
+export type DeferredPromptRunnerOptions = ChatWorkOptions;
 
 export function createDeferredPromptRunner(
   store: DeferredPromptStore,
   sessionManager: SessionManager,
   globalBus: GlobalBus,
   deliveryGuard: DeferDeliveryGuard = createDeferDeliveryGuard(),
-  summarySources: DeferSummarySources = { deferredPromptStore: store },
-  options: DeferRunnerOptions = {},
+  options: ChatWorkOptions = {},
 ) {
+  // Deliveries also reach archived chats; restart notices (the only other rows) do not.
   const isDelivery = (item: DeferredPrompt) => item.purpose === "delivery";
-  // A message is sent into the chat itself; anything else is a check that runs in a worker.
-  const isMessage = (item: DeferredPrompt) => isDelivery(item) || isRestartRecoveryPrompt(item.prompt);
 
-  return createDeferRunnerCore<DeferredPrompt>({
+  return createChatWorkRunner<DeferredPrompt>({
     sessionManager,
     globalBus,
     deliveryGuard,
-    summarySources,
-    labels: { tag: "deferred-runner", noun: "deferral", kind: "once" },
+    labels: { tag: "outbox-runner", noun: "message", kind: "outbox" },
     ...options,
     createWork: (ctx) => {
-      /** The attempt budget is used up: stop, and tell the chat unless the item is itself a message for it. */
+      /** The attempt budget is used up: stop. */
       function giveUp(item: DeferredPrompt, error: string, claimToken?: string): boolean {
-        const failed = store.fail(item.id, error, {
-          claimToken,
-          ...(isDelivery(item)
-            ? {}
-            : {
-                message: createFailedDeferDelivery({
-                  deferId: item.deferId,
-                  kind: "once",
-                  parentSessionId: item.sessionId,
-                }, item.attempts, error),
-              }),
-        });
-        console.error(`[deferred-runner] Deferral ${item.id} failed after ${item.attempts} attempt(s): ${error}`);
+        const failed = store.fail(item.id, error, { claimToken });
+        console.error(`[outbox-runner] Message ${item.id} failed after ${item.attempts} attempt(s): ${error}`);
         if (failed) ctx.recordSessionAttention(item.sessionId);
         return failed;
       }
@@ -89,12 +56,12 @@ export function createDeferredPromptRunner(
           const item = store.get(id);
           return item?.status === "pending" ? item : undefined;
         },
-        usesWorker: (item) => !isMessage(item),
+        usesWorker: () => false,
         reachesArchived: isDelivery,
         orphaned: (item) => {
           if (isDelivery(item)) return store.fail(item.id, "Parent session no longer exists.");
           const cancelled = store.cancelForSession(item.sessionId);
-          console.warn(`[deferred-runner] Session ${item.sessionId} no longer exists; cancelling ${cancelled} deferral(s)`);
+          console.warn(`[outbox-runner] Session ${item.sessionId} no longer exists; cancelling ${cancelled} message(s)`);
           return cancelled > 0;
         },
         preflight: async (item) => {
@@ -119,32 +86,15 @@ export function createDeferredPromptRunner(
         renew: (id, claimToken) => store.renewClaim(id, claimToken, LEASE_MS),
         release: (id, claimToken, reason) => store.release(id, claimToken, { error: reason }),
 
-        run: async (item, claimToken, lease) => {
-          const { id, sessionId, prompt } = item;
-          let message: DeferredResultDelivery | undefined;
-          if (lease) {
-            const input: DeferWorkerInput = { deferId: item.deferId, kind: "once", parentSessionId: sessionId, prompt };
-            const result = await lease.run(input);
-            if (result.action === "continue" || result.action === "notify") {
-              throw new Error(`One-shot defer worker cannot ${result.action}.`);
-            }
-            if (result.action === "return") {
-              message = createReturnedDeferDelivery(
-                input,
-                result.message ?? "Deferred work completed.",
-                { deliveryId: result.deliveryId ?? randomUUID() },
-              );
-            }
-          } else {
-            const clientMessageId = chatMessageDeliveryClientId(id);
-            await sessionManager.startWorkAndWaitForDelivery(sessionId, prompt, undefined, {
-              completionAttention: true,
-              origin: "defer",
-              ...(clientMessageId ? { clientMessageId } : {}),
-            });
-          }
-          // A false result means the deferral was cancelled or reactivated while this try ran; that state wins.
-          store.complete(id, { claimToken, message });
+        run: async (item, claimToken) => {
+          const clientMessageId = chatMessageDeliveryClientId(item.id);
+          await sessionManager.startWorkAndWaitForDelivery(item.sessionId, item.prompt, undefined, {
+            completionAttention: true,
+            origin: "defer",
+            ...(clientMessageId ? { clientMessageId } : {}),
+          });
+          // A false result means the message was cancelled or reactivated while this try ran; that state wins.
+          store.complete(item.id, { claimToken });
         },
         failed: (item, claimToken, error) => {
           if (item.attempts >= MAX_ATTEMPTS) {
@@ -152,12 +102,12 @@ export function createDeferredPromptRunner(
             return;
           }
           // The claim already counted this try.
-          const retryAt = new Date(Date.now() + computeDeferRetryBackoffMs(item.attempts)).toISOString();
+          const retryAt = new Date(Date.now() + computeRetryBackoffMs(item.attempts)).toISOString();
           console.warn(
-            `[deferred-runner] Retrying deferral ${item.id} after attempt ${item.attempts}/${MAX_ATTEMPTS}: ${error}`,
+            `[outbox-runner] Retrying message ${item.id} after attempt ${item.attempts}/${MAX_ATTEMPTS}: ${error}`,
           );
           if (!store.release(item.id, claimToken, { error, retryAt })) {
-            console.error(`[deferred-runner] Failed to re-queue deferral ${item.id}`);
+            console.error(`[outbox-runner] Failed to re-queue message ${item.id}`);
           }
         },
       };

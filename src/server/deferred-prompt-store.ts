@@ -1,11 +1,9 @@
-// Deferred prompt store — SQLite-backed persistence for same-session deferred prompts
+// Chat delivery outbox: messages queued for a chat. Rows with purpose "delivery" are messages from
+// triggers, management jobs and stopped commands; rows with purpose "defer" are restart notices.
 
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
-import { toOnceDeferId } from "./defer-ids.js";
-import { normalizeDeferSummary } from "./defer-summary.js";
-import type { DeferSummary, DeferSummaryRow } from "./defer-summary.js";
-import { parseReturnedDeferPrompt, type DeferredResultDelivery } from "./defer-result-message.js";
+import { parseTriggerResultPrompt, type TriggerDelivery } from "./triggers/messages.js";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -26,7 +24,6 @@ export const DEFAULT_TERMINAL_PRUNE_LIMIT = 500;
 
 export interface DeferredPrompt {
   id: string;
-  deferId: string;
   sessionId: string;
   prompt: string;
   purpose: DeferredPromptPurpose;
@@ -42,13 +39,13 @@ export interface DeferredPrompt {
   lastError?: string;
 }
 
-export function prepareDeferredResultDeliveryInsert(db: DatabaseSync) {
+export function prepareTriggerDeliveryInsert(db: DatabaseSync) {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO deferred_prompts
       (id, sessionId, prompt, purpose, sourceId, runAt, status, attempts, createdAt, updatedAt)
     VALUES (?, ?, ?, 'delivery', ?, ?, 'pending', 0, ?, ?)
   `);
-  return (message: DeferredResultDelivery, now = new Date().toISOString()): boolean =>
+  return (message: TriggerDelivery, now = new Date().toISOString()): boolean =>
     (insert.run(
       message.id,
       message.sessionId,
@@ -63,8 +60,6 @@ export function prepareDeferredResultDeliveryInsert(db: DatabaseSync) {
 export interface SettleOptions {
   /** Require the row to still be running under this claim. */
   claimToken?: string;
-  /** Parent message to queue in the same transaction. */
-  message?: DeferredResultDelivery;
   now?: string;
 }
 
@@ -78,7 +73,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
       (id, sessionId, prompt, runAt, status, attempts, createdAt, updatedAt)
     VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
   `);
-  const insertDelivery = prepareDeferredResultDeliveryInsert(db);
+  const insertDelivery = prepareTriggerDeliveryInsert(db);
 
   const selectById = db.prepare(
     "SELECT * FROM deferred_prompts WHERE id = ?",
@@ -113,26 +108,6 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   const selectExpiredRunningSessionIds = db.prepare(`
     SELECT DISTINCT sessionId FROM deferred_prompts
     WHERE status = 'running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?
-  `);
-
-  const selectSummaryForSession = db.prepare(`
-    SELECT COUNT(*) as count,
-           SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as runningCount,
-           MIN(CASE WHEN status = 'pending' THEN runAt END) as nextRunAt
-    FROM deferred_prompts
-    WHERE sessionId = ? AND status IN ('pending', 'running')
-      AND purpose = 'defer'
-  `);
-
-  const selectSummariesBySession = db.prepare(`
-    SELECT sessionId,
-           COUNT(*) as count,
-           SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as runningCount,
-           MIN(CASE WHEN status = 'pending' THEN runAt END) as nextRunAt
-    FROM deferred_prompts
-    WHERE status IN ('pending', 'running')
-      AND purpose = 'defer'
-    GROUP BY sessionId
   `);
 
   const selectPendingDeliveryCounts = db.prepare(`
@@ -261,7 +236,6 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   function toRow(raw: any): DeferredPrompt {
     return {
       id: raw.id,
-      deferId: toOnceDeferId(raw.id),
       sessionId: raw.sessionId,
       prompt: raw.prompt,
       purpose: raw.purpose as DeferredPromptPurpose,
@@ -304,7 +278,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   }
 
   function enqueueDelivery(
-    message: DeferredResultDelivery,
+    message: TriggerDelivery,
     now = new Date().toISOString(),
   ): DeferredPrompt {
     if (!insertDelivery(message, now)) {
@@ -319,16 +293,6 @@ export function createDeferredPromptStore(db: DatabaseSync) {
 
   function getNextWakeAt(now = new Date().toISOString()): string | undefined {
     return (selectNextWakeAt.get(now) as { wakeAt: string | null }).wakeAt ?? undefined;
-  }
-
-  function getSummaryForSession(sessionId: string): DeferSummary {
-    return normalizeDeferSummary(selectSummaryForSession.get(sessionId) as DeferSummaryRow | undefined);
-  }
-
-  /** One query for every session with pending work; sessions absent from the map have no pending prompts. */
-  function listSummariesBySession(): Map<string, DeferSummary> {
-    const rows = selectSummariesBySession.all() as unknown as Array<DeferSummaryRow & { sessionId: string }>;
-    return new Map(rows.map((row) => [row.sessionId, normalizeDeferSummary(row)]));
   }
 
   function listPendingDeliveryCountsBySession(): Map<string, number> {
@@ -363,26 +327,6 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return row ? { prompt: toRow(row), claimToken } : undefined;
   }
 
-  /** Runs `settle` and queues `message` for the chat in one transaction; nothing is queued when `settle` changes no row. */
-  function settleWithMessage(settle: () => unknown, message: DeferredResultDelivery | undefined, now: string): boolean {
-    if (!message) return (settle() as any).changes > 0;
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      if ((settle() as any).changes === 0) {
-        db.exec("ROLLBACK");
-        return false;
-      }
-      if (!insertDelivery(message, now)) {
-        throw new Error(`Deferred delivery ${message.id} already exists.`);
-      }
-      db.exec("COMMIT");
-      return true;
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
   function settle(
     id: string,
     status: "completed" | "failed",
@@ -390,21 +334,18 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     options: SettleOptions,
   ): boolean {
     const now = options.now ?? new Date().toISOString();
-    return settleWithMessage(
-      () => options.claimToken
-        ? settleByClaimStmt.run(status, lastError, now, id, options.claimToken)
-        : settleByIdStmt.run(status, lastError, now, id),
-      options.message,
-      now,
-    );
+    const result = options.claimToken
+      ? settleByClaimStmt.run(status, lastError, now, id, options.claimToken)
+      : settleByIdStmt.run(status, lastError, now, id);
+    return Number((result as { changes?: number }).changes ?? 0) > 0;
   }
 
-  /** Mark the work done, optionally queuing its result for the chat in the same transaction. */
+  /** Mark the message delivered. */
   function complete(id: string, options: SettleOptions = {}): boolean {
     return settle(id, "completed", null, options);
   }
 
-  /** Mark the work failed for good, optionally queuing a notice for the chat in the same transaction. */
+  /** Mark the message failed for good. */
   function fail(id: string, lastError: string, options: SettleOptions = {}): boolean {
     return settle(id, "failed", lastError, options);
   }
@@ -427,7 +368,9 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     const now = new Date().toISOString();
     let retired = 0;
     for (const row of selectUndeliveredForSource.all(sessionId, sourceDeferId) as Array<{ id: string; prompt: string }>) {
-      if (parseReturnedDeferPrompt(row.prompt)?.continues) continue;
+      // Only results that said the trigger stopped; a message trigger's own prompt is the fire itself.
+      const result = parseTriggerResultPrompt(row.prompt);
+      if (!result || result.continues) continue;
       retired += (retireDeliveryStmt.run(now, row.id) as any).changes as number;
     }
     return retired;
@@ -530,8 +473,6 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     enqueueDelivery,
     listDue,
     getNextWakeAt,
-    getSummaryForSession,
-    listSummariesBySession,
     listPendingDeliveryCountsBySession,
     hasActiveForSession,
     claimDue,

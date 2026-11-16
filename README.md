@@ -1,6 +1,6 @@
 # Copilot Bridge
 
-Copilot Bridge is a local, task-centric AI workspace built on the GitHub Copilot SDK. It combines persistent Copilot sessions, tasks, notes, docs, schedules, linked work, and tool-rich automation in one opinionated app.
+Copilot Bridge is a local, task-centric AI workspace built on the GitHub Copilot SDK. It combines persistent Copilot sessions, tasks, notes, docs, triggers, linked work, and tool-rich automation in one opinionated app.
 
 This repo is intentionally personal. The goal is not to build a generic SaaS product, but to shape an AI workspace around how one person actually works and then keep iterating on it.
 
@@ -18,16 +18,16 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
     </td>
   </tr>
   <tr>
-    <td><strong>Task workspace</strong> — notes, checklist items, schedules, and linked context stay attached to the work.</td>
+    <td><strong>Task workspace</strong> — notes, checklist items, triggers, and linked context stay attached to the work.</td>
     <td><strong>Docs collection</strong> — markdown pages and database-style collections live in the same workspace.</td>
   </tr>
 </table>
 
 ## Why It Is Interesting
 
-- **Task-centric instead of chat-centric** - sessions live next to notes, checklist items, schedules, docs, and linked work.
+- **Task-centric instead of chat-centric** - sessions live next to notes, checklist items, triggers, docs, and linked work.
 - **Persistent local workspace** - SQLite-backed app state plus a markdown knowledge base means work survives restarts and browser refreshes.
-- **Large tool surface** - the agent can manage tasks, tags, checklist items, docs, schedules, browser sessions, web search, and optional desktop automation from inside the same workspace.
+- **Large tool surface** - the agent can manage tasks, tags, checklist items, docs, triggers, browser sessions, web search, and optional desktop automation from inside the same workspace.
 - **Built to improve itself** - launcher-managed restart, update, staging preview, and rollback flows make local self-iteration practical.
 
 ## What It Does
@@ -51,13 +51,17 @@ This repo is intentionally personal. The goal is not to build a generic SaaS pro
 - **Sub-agents** - work handed to agents is counted apart from the main agent's ("Worked for 44m · 12 steps · 7 agents, 585 steps") and opens onto one row per agent for each stretch of work, however the agents' steps were interleaved. A stretch that only handed work out reads "Launched 3 agents", and one that only agents worked in reads "3 agents worked for 6m". The row where an agent was launched carries its brief, its answer and the totals for its whole run; a call about an agent names it ("Waited on moves-agent") instead of showing its id. While the main agent has stopped to wait, the live line says "Waiting on 4 agents" rather than following whichever agent stepped last. A bar above the transcript lists the background agents, working ones first, with what each is doing and how long it has worked; a row opens onto the agent's latest report and brief, and stops the agent after a confirmation. On a phone the list is a sheet. Every history read carries one record per agent the session has run, so a step is filed under its agent even when the launch is far above the part of the log that was read.
 - **Large-history reads** - latest-page statistics reuse a durable incremental fold. Every event-log reader (statistics, older pages, model-state fallback, event lookup) shares one byte-level record reader that joins each split record once instead of repeatedly copying its growing prefix. The latest page reads only the end of the log, and matches the same entries of a whole-history read exactly: the fold saves the transform's transcript cursor (turn and sub-agent tracking, undo boundary, pending completion) at each change, and the tail keeps every event's envelope for fork boundaries. If the needed cursor has been pruned, the read falls back to the whole log. Older pages and whole-history reads stream the log and keep only the envelope of events the transcript never reads, so large assets and permission payloads are not held in memory. Parsing still runs on the server thread and older pages still read the whole log.
 - **Knowledge base** - markdown pages, wikilinks, preview sheets, and database-style collections for structured notes. In chat, `[[page-path|title]]` and `[title](bridge://doc/page-path)` open a read-only doc preview without replacing the conversation or draft. Links inside the preview stay in the sheet, with a Previous preview action. Close, Escape, or browser Back returns to the chat; Open full opens the Docs reader with Back to chat and restores the chat's reading position. Modified clicks retain normal new-tab behavior under the deployment base path. Agents receive this link syntax on session creation and resume, with instructions to verify a page exists before linking it.
-- **Schedules** - cron or one-shot prompts that create fresh task-linked sessions. A schedule runs on a model tier (`modelTier`; agents name it `fast`, `standard` or `deep`) or, when it names none, on the *New chats* setting, or on an arm of the model A/B test while one runs; each run takes the model, effort and context the tier has then, and a tier with no usable model falls back to *New chats*. Schedules cannot pin a model of their own, so they never go out of date. A run is recorded only after the runtime accepts its prompt. Pre-delivery failures release the scheduled slot for retry instead of consuming it or reporting a successful trigger.
-- **Deferred work** - a chat can schedule a one-time or recurring check (`defer_create`); each check runs in a temporary worker session and reports back with a message to the chat only when it has something to say. A check, or a message for a chat, is counted as a try only when the work itself failed. While the Bridge cannot take it (no free Copilot context, the chat is busy, the backend is starting or restarting) it stays due, uncounted and without limit, and the Deferred work sheet shows the reason. A one-time check or a message gives up after five failed tries, and the chat is told. A recurring check keeps its schedule when a check fails: the failed check counts as a run, the chat is told once after three failures in a row, and the defer ends only when it is cancelled, finishes, or reaches its run limit or expiry. A check still running after 30 minutes is stopped and counts as failed. **Reactivate** restarts a stopped defer in one step; for a finished defer whose result never reached the chat it sends that result again.
+- **Triggers** - the one kind of automation (`src/server/triggers/`, tools `trigger_create`, `trigger_list`, `trigger_update`, `trigger_run`, `trigger_cancel`, `trigger_delete`). A trigger has timing (once, every N seconds, or cron in a timezone), an optional **check** command, and an action. The check runs on the trigger's schedule with no model and no shell: in `change` mode it fires when the exit code or output differs from the last check (the first result is the baseline); in `exit_code` mode the command decides (0 nothing to do, 10 fire, 11 fire and stop, anything else a failed check). Whatever fires gets the command's output as quoted data. Intervals can be as short as 30 seconds with a check and 5 minutes without, since then every run may use a model. Actions:
+  - **worker** - a temporary worker session runs the prompt as one bounded check and reports back to its chat only when it has something to say (continue, notify, finish or return). A recurring worker keeps a private checkpoint for its next run.
+  - **message** - the prompt and the check's output go straight into the chat, with no worker.
+  - **new_chat** - a fresh chat in the trigger's task, on a model tier (`modelTier`; agents name it `fast`, `standard` or `deep`) or the *New chats* setting, with an optional pinned playbook and `keepChats` retention. The chat is linked and recorded before its prompt is sent, so a run recovered after a crash is never started twice; a cron slot missed by more than an hour is skipped.
+  - **new_task** - creates a task in the owner task's group and starts its first chat. It needs a run limit (at most 20) or an end date, waits while the task it made last is still open, and a task a trigger made cannot create task-making triggers.
+  A run is counted as a try only when the work itself failed. While the Bridge cannot take it (no free Copilot context, the chat is busy, the backend is starting or restarting) it stays due, uncounted. A one-time trigger gives up after five failed tries and tells its chat; a recurring one keeps its schedule, counts the failed run and tells the chat once after three failures in a row. Recurring chat triggers stop after 7 days unless they set `maxRuns` or `expiresAt`. A worker still running after 30 minutes is stopped and counts as failed. Pausing, resuming, running now and restarting a stopped trigger are one step each in the chat's Triggers sheet and the task's Triggers section. Defers and schedules from before triggers were moved into triggers once, with their ids, when the database first opened.
   - Before deleting a worker's temporary transcript, its existing `defer.worker` telemetry span retains the last 32 tool calls: names and call IDs (each capped at 256 characters), start offsets, durations, reported success and failure categories. The span also records the total call count, number omitted, worker start/end times, parent session, defer and run identifiers, and model. The tool trace omits arguments, results and assistant text. This adds diagnostics without changing tool permissions or monitor behavior.
   - Regular sessions and deferred workers also persist a `tool.failure` span immediately for each failed call, independently of the bounded worker trace. Both use the same classifier and retain structured status/error codes, retry delays and request/correlation IDs when available, plus call timing and session/watch identifiers. Diagnostic fields are restricted and bounded; unfamiliar structured codes are retained without requiring a known-code mapping. Raw errors, arguments and result bodies are not copied into these spans. Missing diagnostics remain absent. Spans retain the existing seven-day lifetime. Failure classification and retry guidance do not automatically replay tools or change a worker's reported outcome.
 - **Provider enrichment** - optional Azure DevOps, GitHub, and Linear integrations for richer work item and pull request cards.
-- **Tool-rich automation** - built-in task/doc/schedule tools, web search, browser fetch/exec/session tools, and optional desktop computer use, turned on from Settings > Integrations > Computer use. On Windows the engine is [Cua Driver](https://github.com/trycua/cua): Settings installs the release pinned in `CUA_DRIVER_RELEASE` (`src/server/cua-driver.ts`) into the data directory after checking its digest, and each chat runs `cua-driver mcp --direct` as its own `cua` MCP server, whose tools load on demand. Chats are told when they may take the foreground (no keyboard or mouse input for the configured minutes, `DEFAULT_COMPUTER_USE_AWAY_MINUTES` unless changed), and a pre-tool hook refuses foreground calls while the user is active. Elsewhere, or with the engine set to the Copilot plugin, it is the Computer Use plugin that ships with the Copilot SDK, loaded per session. First-prompt tool initialization is shared by runtime handle and must finish before sending. Slow discovery at 30 seconds reports progress, not failure; the hard readiness budget covers both bounded backend RPCs. Failed initialization never counts as ready. Timing and outcome are recorded as `session.tools.initialization` telemetry spans.
-- **Tool loading** - every Copilot session is created and resumed with tool search on, including helpers, scheduled/defer work, and custom agents. MCP servers stay fully loaded unless a server's own settings say otherwise (`deferTools`; the Cua Driver server sets `"auto"`), and so do most Bridge tools. The Bridge tools chats rarely use (`DEFERRED_BRIDGE_TOOL_NAMES` in `src/server/bridge-native-tools.ts`) load on demand: the runtime lists their names and the model loads them with `tool_search_tool`. Helm's own sessions keep every tool loaded. Existing server selections, tool allowlists/exclusions, and permission policies still apply. `copilot-tool-loading.native.test.ts` checks the model request payloads on create, model and agent switch, subagents and cold resume.
+- **Tool-rich automation** - built-in task/doc/trigger tools, web search, browser fetch/exec/session tools, and optional desktop computer use, turned on from Settings > Integrations > Computer use. On Windows the engine is [Cua Driver](https://github.com/trycua/cua): Settings installs the release pinned in `CUA_DRIVER_RELEASE` (`src/server/cua-driver.ts`) into the data directory after checking its digest, and each chat runs `cua-driver mcp --direct` as its own `cua` MCP server, whose tools load on demand. Chats are told when they may take the foreground (no keyboard or mouse input for the configured minutes, `DEFAULT_COMPUTER_USE_AWAY_MINUTES` unless changed), and a pre-tool hook refuses foreground calls while the user is active. Elsewhere, or with the engine set to the Copilot plugin, it is the Computer Use plugin that ships with the Copilot SDK, loaded per session. First-prompt tool initialization is shared by runtime handle and must finish before sending. Slow discovery at 30 seconds reports progress, not failure; the hard readiness budget covers both bounded backend RPCs. Failed initialization never counts as ready. Timing and outcome are recorded as `session.tools.initialization` telemetry spans.
+- **Tool loading** - every Copilot session is created and resumed with tool search on, including helpers, trigger work, and custom agents. MCP servers stay fully loaded unless a server's own settings say otherwise (`deferTools`; the Cua Driver server sets `"auto"`), and so do most Bridge tools. The Bridge tools chats rarely use (`DEFERRED_BRIDGE_TOOL_NAMES` in `src/server/bridge-native-tools.ts`) load on demand: the runtime lists their names and the model loads them with `tool_search_tool`. Helm's own sessions keep every tool loaded. Existing server selections, tool allowlists/exclusions, and permission policies still apply. `copilot-tool-loading.native.test.ts` checks the model request payloads on create, model and agent switch, subagents and cold resume.
 - **Workspace customization** - model, reasoning effort, agent identity, custom instructions, theme, favicon, and MCP server registry from the UI.
 - **Repository configuration discovery** - ordinary chats discover supported Copilot configuration from their resolved workspace on creation and resume, including project skills and custom agents. Personal and Bridge-bundled skill directories remain available, and Bridge's explicit session configuration takes precedence. Repository file hooks are explicitly disabled; naming helpers, deferred workers, and Helm's looks keep configuration discovery off. Existing chats pick up the change when their runtime handle is next resumed. The Skills page lists personal, pack and Bridge-bundled skills, not the workspace-specific runtime catalog.
 - **Moving chats to another model** - "Move existing chats to another model", a closed line under Settings > Chat > New chats, switches every chat that is not archived from one model to another, for when a model is replaced. The same move is available to scripts; see [Moving chats to another model](#moving-chats-to-another-model).
@@ -101,7 +105,7 @@ Long-lived conversation, speech, usage and shutdown services are composed in `sr
 │ Express server (src/server/)                       │
 │ - REST API + SSE streams                           │
 │ - Copilot SDK session manager + custom tools       │
-│ - SQLite stores (tasks, schedules, settings, etc.) │
+│ - SQLite stores (tasks, triggers, settings, etc.) │
 │ - Docs KB, browser tools, staging tools            │
 ├────────────────────────────────────────────────────┤
 │ React client (src/client/)                         │
@@ -232,7 +236,7 @@ Default release state lives under `%LOCALAPPDATA%\CopilotBridge`:
 
 ```text
 %LOCALAPPDATA%\CopilotBridge\
-  data\       # tasks, sessions, docs, settings, schedules
+  data\       # tasks, sessions, docs, settings, triggers
   config\     # release .env
   logs\
   backups\
@@ -318,9 +322,9 @@ If you are opening the bridge for the first time, keep it simple:
 3. Skip Azure DevOps/GitHub/Linear setup for now if you want a clean local workspace.
 4. Create a task, add a checklist item and a note, then start a task session.
 5. Open **Docs** and create a page or collection entry to exercise the knowledge base.
-6. Ask the agent to do something bridge-native, like create a schedule, rename the session, or search the web.
+6. Ask the agent to do something bridge-native, like create a trigger, rename the session, or search the web.
 
-You can get a lot of value on first run without any external work-tracking provider setup: tasks, notes, tags, docs, schedules, and local Copilot sessions all work locally.
+You can get a lot of value on first run without any external work-tracking provider setup: tasks, notes, tags, docs, triggers, and local Copilot sessions all work locally.
 
 ### Response Style and Prompt Settings
 
@@ -338,7 +342,7 @@ A playbook ends with `verify_complete`, which refuses completion while evidence 
 
 Playbooks name roles (`code-host`, `ci`, `issue-tracker`, `messaging`, `writing-style`, `verify`, `deploy`) instead of services. A machine's own skills declare `bridge-roles` and `bridge-extends` in their metadata; the system prompt's `<skill_roles>` block lists which installed skill fills each role and which skills add steps to which playbook, and `<model_roles>` names the helper, reviewer and panel models from **Settings → Models**. **Settings → Skills** shows each skill's source, kind, roles and use count, edits home skills, copies a bundled or pack skill home to customize it (the home copy wins), and shows a home skill's git history. **Skill packs** add skills from a git repository (kept checked out under the data folder, refreshed on start when older than 12 hours) or a folder, optionally only for tasks with given tags.
 
-Home's **Ran while you were away** card lists chats where defers or schedules ran turns since you last wrote there; **Review** runs `/review-unattended`, which has a reviewer on a different model family flag weak evidence and risky calls.
+Home's **Ran while you were away** card lists chats where triggers ran turns since you last wrote there; **Review** runs `/review-unattended`, which has a reviewer on a different model family flag weak evidence and risky calls.
 
 Changing task state travels with user messages, outside the stable system-prompt prefix. It includes completion criteria, open checklist items in their saved order, a completed count, and task and group notes: whole up to `TASK_NOTES_BRIEF_LENGTH` characters (`src/server/task-note-pages.ts`), and past that only their start, with `task_get_info` reading the rest in pages. Edits beyond the start still refresh its revision. `task_update` can change one passage with `notesEdit`, without reading or resending the rest. To replace notes that long whole, `task_update` and `task_group_update` need the `notesWriteToken` an agent gets by reading them to the end, so it can't overwrite text it hasn't read by mistake, or text someone changed after it read. Editing notes in the UI is unchanged. Related docs appear as a few links; `docs_search`, `docs_list` and `docs_db_schema` retrieve the rest instead of sending the whole library and its schemas with a chat. Completed item text stays available through `action_list` and the task UI. The older `checklist_*` tools operate on the same items and keep their original arguments and results. No stored checklist data is removed. An empty open checklist does not imply that the task is complete. Existing context refresh after compaction, truncation or undo is unchanged.
 
@@ -379,7 +383,7 @@ before a session exists and do not enforce runtime limits.
 
 A move switches every chat that is not archived from one model to another. It covers the chats the
 session list shows, so archived chats, Helm conversations and temporary worker sessions are left alone.
-The model for new chats, schedules, deferred workers and sub-agents is a setting of its own and does not
+The model for new chats, trigger-started chats, trigger workers and sub-agents is a setting of its own and does not
 change.
 
 The server takes the chats one at a time, most recent first, through the same switch the model picker in
@@ -426,7 +430,7 @@ $job.results | Where-Object outcome -ne "moved" | Format-Table title, outcome, d
 
 ### Pagination query parameters
 
-The GET endpoints `/api/schedules/:id/sessions`, `/api/docs/search`, and
+The GET endpoints `/api/triggers/:id/chats`, `/api/docs/search`, and
 `/api/docs/db/*folder` validate `limit` as a positive integer and `offset` as a
 non-negative integer. Negative, fractional, non-numeric, and unsafe integer values
 return HTTP 400 with an `{ "error": "..." }` body; `limit=0` is invalid, while
@@ -434,7 +438,7 @@ return HTTP 400 with an `{ "error": "..." }` body; `limit=0` is invalid, while
 
 | Endpoint | Default limit | Maximum limit | Default offset |
 | --- | --- | --- | --- |
-| Schedule sessions | 20 | 100 | 0 |
+| Trigger chats | 20 | 100 | 0 |
 | Docs search | 50 | 200 | 0 |
 | Docs database entries | 10000 | 10000 | 0 |
 
@@ -499,8 +503,8 @@ call IDs are available on usage events, not cache-break events.
   `SessionManager.listPendingSessionCreationIds()` as a bare row, so it is listed as soon as it
   is linked or running, and the creation's own announcement replaces or removes the row.
 - **Everything else is read per response**, by session id, for the rows in hand: run state,
-  questions, archived flag and time, activity and read times, task links, schedule name and
-  switch, deferred work, intent. Archiving, reading, linking or scheduling therefore needs no
+  questions, archived flag and time, activity and read times, task links, the trigger that
+  started the chat and whether it is still active, the chat's triggers, intent. Archiving, reading, linking or adding a trigger therefore needs no
   build and shows in the very next response. A session that only now became worth listing is
   shown at once without its file-backed details, and that response starts one background build
   that adds them; a session builds leave without details does not ask again.
@@ -517,10 +521,10 @@ No response and no build of the active list reads a whole table (`bridge_session
 synchronous part of a list read blocks the server's main thread, and stretches many times over
 when the machine is busy. Only a list of more than 8,000 sessions, in practice the one that
 includes archived sessions, scans the tables, because that is then cheaper than a lookup per id. `GET /api/tasks/:id/archived-sessions` pages the task's archived links in SQLite and
-reads only the page's sessions. Anything else that asks about particular sessions (the defer
-runners, schedule retention, a schedule's run list) reads those sessions' folders with
-`SessionManager.readSessionsFromDisk` instead of listing all of them. The defer runners and
-schedule retention, which end or prune work for a session that is gone, pass `failOnReadError`:
+reads only the page's sessions. Anything else that asks about particular sessions (the trigger
+and outbox runners, trigger chat retention, a trigger's chat list) reads those sessions' folders with
+`SessionManager.readSessionsFromDisk` instead of listing all of them. The runners and
+trigger chat retention, which end or prune work for a session that is gone, pass `failOnReadError`:
 only a missing folder or file counts as gone, and any other read error leaves the work as it is.
 
 Spans: `session.enrichedList.cache` (one per list read: `hit`, `stale-served`, `coalesced`,
@@ -986,7 +990,7 @@ src/
 │   ├── db.ts                      # SQLite schema/bootstrap
 │   ├── task-store.ts              # Tasks, links, ordering
 │   ├── checklist-store.ts         # Task/global checklist items
-│   ├── schedule-store.ts          # Scheduled sessions
+│   ├── triggers/                  # Triggers: store, runners, tools, API
 │   ├── docs-store.ts              # Markdown knowledge base
 │   ├── settings-store.ts          # App settings + MCP registry
 │   ├── staging-tools.ts           # staging_init / preview / deploy
@@ -1002,7 +1006,7 @@ src/
     ├── components/
     │   ├── Dashboard.tsx          # Home dashboard
     │   ├── TaskRail.tsx           # Task list and grouping UI
-    │   ├── TaskPanel.tsx          # Task details, notes, docs, schedules
+    │   ├── TaskPanel.tsx          # Task details, notes, docs, triggers
     │   ├── ChatView.tsx           # Session history + streaming chat
     │   ├── chat/                  # Activity timeline: thinking, tool calls, live status line
     │   ├── docs/                  # Knowledge base UI: reader, editor, collections, search
@@ -1036,7 +1040,7 @@ The bridge includes a few different maintenance paths:
 
 **Deploy guards** (Settings › System) stop a deploy before anything is merged or pushed. Blocked commit emails are patterns (`*` matches any text) checked against the author and committer of every commit being deployed. The denylist file is an absolute path to a local file outside the repository with one term per line (`#` comments and blank lines are ignored); its terms are matched case-insensitively against the deploy message, every commit message, and every line and new file path those commits add. A configured denylist that cannot be read refuses the deploy. The guards run before production is stashed and again after the rebase, so a retry after resolving conflicts is checked too. A refusal names the commit, file and line, and the denylist line number rather than the term.
 
-A restart is a background request, not a maintenance lock. Chats, schedules, deferred work, staging instances, previews, updates and deploys continue normally while it waits. The launcher waits indefinitely for sessions, running agents, voice processing and queued/running management jobs to settle: neither elapsed time nor a lack of recent events forces a restart. It also waits for a command an agent left running in its session's shell, for up to 45 minutes from the command's start (see [Background commands](#background-commands)). Repeated requests join the pending restart rather than failing. A compact, neutral status line shows what it is waiting for, and its tooltip names the sessions; **Restart when idle** is the default control, while **Restart now** requires confirmation and resumes interrupted interactive runs afterwards.
+A restart is a background request, not a maintenance lock. Chats, triggers, staging instances, previews, updates and deploys continue normally while it waits. The launcher waits indefinitely for sessions, running agents, voice processing and queued/running management jobs to settle: neither elapsed time nor a lack of recent events forces a restart. It also waits for a command an agent left running in its session's shell, for up to 45 minutes from the command's start (see [Background commands](#background-commands)). Repeated requests join the pending restart rather than failing. A compact, neutral status line shows what it is waiting for, and its tooltip names the sessions; **Restart when idle** is the default control, while **Restart now** requires confirmation and resumes interrupted interactive runs afterwards.
 
 Immediately before the actual swap, the server checks for idle again, including cached runtime activity, then starts shutdown in the same tick as its final work check. Work arriving during preparation postpones the swap. The brief process swap still disconnects clients; their automatic reload waits for recordings, uploads and undelivered messages to be safe. Management jobs use a separate runner, which refreshes its code between jobs after activation rather than being killed during a job. Checkout-mutation and duplicate-worktree safety checks remain independent of restart waiting.
 

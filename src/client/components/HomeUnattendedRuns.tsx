@@ -16,7 +16,8 @@ export function unattendedRunTitle(run: UnattendedRun, sessions?: readonly Sessi
 }
 
 function metaLine(run: UnattendedRun): string {
-  return [`${run.turnCount} turn${run.turnCount === 1 ? "" : "s"}`, run.origins.join(", "), timeAgo(run.lastAt)]
+  // Both origins are triggers now: "defer" for chat triggers, "schedule" for task triggers.
+  return [`${run.turnCount} turn${run.turnCount === 1 ? "" : "s"}`, run.origins.length > 0 ? "trigger" : "", timeAgo(run.lastAt)]
     .filter(Boolean).join(" · ");
 }
 
@@ -24,7 +25,7 @@ interface Props {
   onSelectSession: (id: string, taskId?: string) => void;
 }
 
-/** Chats where defers or schedules ran turns while the user was away, until the user writes there again. */
+/** Chats where triggers ran turns while the user was away, until the user writes there again. */
 export default function HomeUnattendedRuns({ onSelectSession }: Props) {
   const client = useQueryClient();
   const runs = useUnattendedRunsQuery().data ?? [];

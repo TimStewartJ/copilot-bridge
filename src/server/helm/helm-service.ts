@@ -25,7 +25,7 @@ import type { SessionConfigProfile } from "../session-manager.js";
 import { parseWorkspaceYamlSessionName } from "../session-workspace-yaml.js";
 import { ensureNeutralWorkspaceDir } from "../neutral-workspace.js";
 import { pathsEqual } from "../path-utils.js";
-import { hasActiveDeferredWork } from "../schedule-session-retention.js";
+import { hasPendingChatAutomation } from "../triggers/retention.js";
 import { buildHelmChatGuidance, HELM_CHAT_ROLE } from "./helm-prompt.js";
 import { buildHelmTaskIndex } from "./helm-task-index.js";
 import { liveLocalAttention, localThreads, threadOutOfDate } from "./attention-live.js";
@@ -227,7 +227,7 @@ export class HelmService implements HelmToolRuntime {
 
   // ── Session profile ────────────────────────────────────────────
 
-  /** Helm's own tools. The chat already has the Bridge's task, docs and schedule tools as an ordinary chat. */
+  /** Helm's own tools. The chat already has the Bridge's task, docs and trigger tools as an ordinary chat. */
   private getTools(): BridgeToolDefinition[] {
     const own = new Set<string>(HELM_TOOL_NAMES);
     this.tools ??= createHelmToolDefinitions(this.ctx, this.facade, this).filter((tool) => own.has(tool.name));
@@ -368,11 +368,11 @@ export class HelmService implements HelmToolRuntime {
     return this.handsFree.has(sessionId) || this.ctx.sessionManager.isSessionBusy(sessionId);
   }
 
-  /** Deferred work or a result still on its way: deleting the conversation would cancel or lose it. */
+  /** A trigger or a result still on its way: deleting the conversation would cancel or lose it. */
   private hasPendingWork(sessionId: string): boolean {
-    const { deferredPromptStore, deferLoopStore } = this.ctx;
-    if (!deferredPromptStore && !deferLoopStore) return false;
-    return hasActiveDeferredWork(sessionId, { deferredPromptStore, deferLoopStore })
+    const { deferredPromptStore, triggerStore } = this.ctx;
+    if (!deferredPromptStore && !triggerStore) return false;
+    return hasPendingChatAutomation(sessionId, { deferredPromptStore, triggerStore })
       || (deferredPromptStore?.listDeliveriesForSession(sessionId)
         .some((delivery) => delivery.status === "pending" || delivery.status === "running") ?? false);
   }

@@ -321,17 +321,17 @@ describe("HelmService retention", () => {
     const working = await helm.createConversation();
     helm.recordTurn(working.sessionId);
     busy.add(working.sessionId);
-    // Deleting a conversation cancels its deferred work and drops a result still on its way.
+    // Deleting a conversation cancels its triggers and drops a result still on its way.
     const deferring = await helm.createConversation();
     helm.recordTurn(deferring.sessionId);
     const awaitingResult = await helm.createConversation();
     helm.recordTurn(awaitingResult.sessionId);
     Object.assign(ctx, {
       deferredPromptStore: {
-        listForSession: (sessionId: string) => (sessionId === deferring.sessionId ? [{ status: "pending" }] : []),
+        listForSession: () => [],
         listDeliveriesForSession: (sessionId: string) => (sessionId === awaitingResult.sessionId ? [{ status: "pending" }] : []),
       },
-      deferLoopStore: { listForSession: () => [] },
+      triggerStore: { hasActiveForSession: (sessionId: string) => sessionId === deferring.sessionId },
     });
     const current = await helm.createConversation();
     helm.recordTurn(current.sessionId);
@@ -420,7 +420,6 @@ describe("Helm session profiles", () => {
       },
       sessionManager: Object.assign(ctx.sessionManager, { getSessionRunState: () => "idle" }),
       taskGroupStore: { listGroups: () => [] },
-      scheduleStore: { listSchedules: () => [] },
       sessionMetaStore: { listMeta: () => ({ "s-bridge": { lastVisibleActivityAt: "2026-09-17T00:00:00.000Z" } }), listArchivedSessionIds: () => [] },
       helmThinker: {
         listMemory: () => [

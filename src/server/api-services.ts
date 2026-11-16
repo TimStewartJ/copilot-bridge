@@ -118,9 +118,8 @@ export function createApiServices(ctx: AppContext, options: ApiServiceOptions = 
     ctx.readStateStore.markUnread(sessionId);
     ctx.sessionContextStore?.deleteSessionContext(sessionId);
     ctx.deferredPromptStore?.cancelForSession(sessionId);
-    ctx.deferLoopStore?.cancelForSession(sessionId);
     ctx.deferredPromptStore?.deleteForSession(sessionId);
-    ctx.deferLoopStore?.deleteForSession(sessionId);
+    ctx.triggerStore?.deleteForSession(sessionId);
     ctx.taskStore.unlinkSessionFromAllTasks(sessionId);
     voiceJobManager.forgetHeldForChat(sessionId);
     if (backendDeleteError) throw backendDeleteError;

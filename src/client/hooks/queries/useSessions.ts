@@ -112,12 +112,12 @@ export function addOptimisticSessionToCache(
     if (!previous || previous.some((session) => session.sessionId === sessionId)) return previous;
     const base: Session = {
       sessionId, summary: "New session", modifiedTime: timestamp, lastVisibleActivityAt: timestamp,
-      runState: "idle", eventLogSizeBytes: 0, deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+      runState: "idle", eventLogSizeBytes: 0, triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
       isOptimistic: true, optimisticUntil: now.getTime() + OPTIMISTIC_SESSION_TTL_MS,
     };
     return [{
       ...base, ...overrides, sessionId,
-      deferSummary: overrides.deferSummary ?? base.deferSummary,
+      triggerSummary: overrides.triggerSummary ?? base.triggerSummary,
       isOptimistic: true,
       optimisticUntil: overrides.optimisticUntil ?? base.optimisticUntil,
     }, ...previous];

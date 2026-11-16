@@ -15,12 +15,13 @@ import {
   findDialogElements,
   resolveAccessibleName,
 } from "../test-modal-dialog-dom";
-import type { Schedule, Task, VisualArtifact } from "../api";
+import type { Task, TriggerView, VisualArtifact } from "../api";
 import PlanSheet from "./PlanSheet";
-import ScheduleDetailSheet from "./ScheduleDetailSheet";
 import SessionList from "./SessionList";
 import TaskPickerDialog from "./TaskPickerDialog";
 import ToolResultModal from "./ToolResultModal";
+import TriggerDetailSheet from "./TriggerDetailSheet";
+import TriggerSheet from "./TriggerSheet";
 import VisualArtifactModal from "./VisualArtifactModal";
 import WorkspaceDetailsSheet from "./WorkspaceDetailsSheet";
 
@@ -45,18 +46,27 @@ function makeTask(): Task {
   };
 }
 
-function makeSchedule(): Schedule {
+function makeTrigger(): TriggerView {
   return {
-    id: "sched-1",
-    taskId: "task-1",
+    id: "trigger-1",
     name: "Daily sync",
     prompt: "Sync the task",
-    type: "cron",
-    cron: "0 8 * * *",
-    enabled: true,
+    then: "new_chat",
+    taskId: "task-1",
+    when: { kind: "cron", cron: "0 8 * * *", timezone: "UTC" },
+    whenLabel: "cron 0 8 * * * (UTC)",
+    status: "active",
+    runNow: false,
+    runCount: 3,
+    fireCount: 3,
+    attempts: 0,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
-    runCount: 3,
+    canRun: true,
+    canPause: true,
+    canResume: false,
+    canCancel: true,
+    canReactivate: false,
   };
 }
 
@@ -112,6 +122,11 @@ const overlayCases: OverlayCase[] = [
       onSelect: vi.fn(),
       onClose,
     }),
+  },
+  {
+    name: "TriggerSheet",
+    accessibleName: "Triggers",
+    element: (onClose) => createElement(TriggerSheet, { session: { sessionId: "session-1", summary: "Chat" }, onClose }),
   },
   {
     name: "VisualArtifactModal",
@@ -181,61 +196,18 @@ it.each(overlayCases)("$name exposes a named modal dialog", async ({ accessibleN
   }
 });
 
-describe("ScheduleDetailSheet stacked dialogs", () => {
-  it("gives the delete confirmation its own dialog and lets Escape close only the topmost overlay", async () => {
-    const onClose = vi.fn();
-    const onDelete = vi.fn();
-    const { harness, pressEscape } = await renderOverlay(createElement(ScheduleDetailSheet, {
-      schedule: makeSchedule(),
-      taskId: "task-1",
-      mode: "view",
-      onClose,
-      onSwitchToEdit: vi.fn(),
-      onSwitchToView: vi.fn(),
-      onTrigger: vi.fn(),
-      onToggle: vi.fn(),
-      onDelete,
-      onSaved: vi.fn(),
-    }));
-    try {
-      const [scheduleDialog] = findDialogElements(harness.dom.container);
-      expect(scheduleDialog.getAttribute("aria-modal")).toBe("true");
-      expect(resolveAccessibleName(harness.dom.container, scheduleDialog)).toBe("Daily sync");
-      await clickButton(harness, (props) => props["aria-label"] === "More actions");
-      await clickButton(harness, (_props, node) => node.textContent?.trim() === "Delete");
-
-      const dialogs = findDialogElements(harness.dom.container);
-      expect(dialogs).toHaveLength(2);
-      expect(resolveAccessibleName(harness.dom.container, dialogs[1])).toBe("Delete schedule?");
-      expect(dialogs[1].getAttribute("aria-modal")).toBe("true");
-
-      await pressEscape();
-      expect(onClose).not.toHaveBeenCalled();
-      expect(onDelete).not.toHaveBeenCalled();
-      expect(findDialogElements(harness.dom.container)).toHaveLength(1);
-
-      await pressEscape();
-      expect(onClose).toHaveBeenCalledTimes(1);
-    } finally {
-      await harness.cleanup();
-    }
-  });
-});
-
-describe("ScheduleDetailSheet dismiss target", () => {
-  it("returns an existing schedule to view mode but closes outright while creating", async () => {
+describe("TriggerDetailSheet dismiss target", () => {
+  it("returns an existing trigger to view mode but closes outright while creating", async () => {
     const onClose = vi.fn();
     const onSwitchToView = vi.fn();
-    const sheet = (mode: "edit" | "create") => createElement(ScheduleDetailSheet, {
-      schedule: mode === "edit" ? makeSchedule() : null,
+    const sheet = (mode: "edit" | "create") => createElement(TriggerDetailSheet, {
+      trigger: mode === "edit" ? makeTrigger() : null,
       taskId: "task-1",
       mode,
       onClose,
       onSwitchToEdit: vi.fn(),
       onSwitchToView,
-      onTrigger: vi.fn(),
-      onToggle: vi.fn(),
-      onDelete: vi.fn(),
+      onAction: vi.fn(),
       onSaved: vi.fn(),
     });
 
@@ -244,7 +216,7 @@ describe("ScheduleDetailSheet dismiss target", () => {
       expect(resolveAccessibleName(
         harness.dom.container,
         findDialogElements(harness.dom.container)[0],
-      )).toBe("Edit Schedule");
+      )).toBe("Edit trigger");
       await pressEscape();
       expect(onSwitchToView).toHaveBeenCalledTimes(1);
       expect(onClose).not.toHaveBeenCalled();
@@ -269,7 +241,7 @@ describe("SessionList change-model dialog", () => {
         sessions: [{
           sessionId: "session-1",
           summary: "Active session",
-          deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+          triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
         }],
         activeSessionId: null,
         onSelectSession: vi.fn(),

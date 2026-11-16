@@ -281,7 +281,7 @@ function AppShell() {
   const [backendStatusBanner, setBackendStatusBanner] = useState(createBackendStatusBannerState);
   const [sessionReloadSignals, setSessionReloadSignals] = useState<Record<string, number>>({});
   const [taskCompletionFeedback, setTaskCompletionFeedback] = useState<TaskCompletionFeedback | null>(null);
-  // Incremented per-session when an external source (e.g. schedule) starts work
+  // Incremented per-session when an external source (e.g. a trigger) starts work
   const [sessionBusySignals, setSessionBusySignals] = useState<Record<string, number>>({});
   const [sessionHistorySignals, setSessionHistorySignals] = useState<Record<string, number>>({});
 
@@ -581,9 +581,9 @@ function AppShell() {
           agentBackend: event.agentBackend,
         }));
         break;
-      case "schedule:changed":
-        // Enabled schedules keep a task out of Gone quiet.
-        refetch(["task"], TASK_OVERVIEW_KEY, calendarRootKey);
+      case "trigger:changed":
+        // Active triggers keep a task out of Gone quiet, and their runs are calendar items.
+        refetch(queryKeys.triggersRoot, ["task"], TASK_OVERVIEW_KEY, calendarRootKey);
         break;
       case "task:changed":
         if (event.reason === "starters") {

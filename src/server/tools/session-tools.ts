@@ -8,7 +8,7 @@ import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { isCanonicalSessionId } from "../outbound-attachments.js";
-import { hasActiveDeferredWork } from "../schedule-session-retention.js";
+import { hasPendingChatAutomation } from "../triggers/retention.js";
 import { setSessionsArchived } from "../session-archive.js";
 import { resolveSessionCreationOptions } from "../session-creation-options.js";
 import { sendChatMessage } from "../chat-message-delivery.js";
@@ -322,9 +322,9 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
           skipped.push({ sessionId, reason: "running" });
         } else if (archived && ctx.sessionManager.getPendingUserInputCount(sessionId) > 0) {
           skipped.push({ sessionId, reason: "waiting on the user" });
-        } else if (archived && hasActiveDeferredWork(sessionId, ctx)) {
-          // Archiving cancels a chat's deferred work.
-          skipped.push({ sessionId, reason: "deferred work pending" });
+        } else if (archived && hasPendingChatAutomation(sessionId, ctx)) {
+          // Archiving cancels a chat's triggers.
+          skipped.push({ sessionId, reason: "triggers pending" });
         } else if (archived && hasQueuedResult(sessionId)) {
           // And withdraws a deploy or update result that has not reached the chat yet.
           skipped.push({ sessionId, reason: "a result is waiting to be delivered" });

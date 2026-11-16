@@ -30,7 +30,7 @@ describe("native Home API and retained Bridge routes", () => {
     expect(retiredPolicy.status).toBe(400);
     expect(retiredPolicy.body.error).toContain("retired");
     const names = getBridgeToolDefinitions(ctx).map(tool => tool.name);
-    for (const name of ["task_update_momentum", "action_add", "docs_write", "send_attachment", "schedule_create", "staging_preview"]) expect(names).toContain(name);
+    for (const name of ["task_update_momentum", "action_add", "docs_write", "send_attachment", "trigger_create", "staging_preview"]) expect(names).toContain(name);
     expect(names.some(name => /^(focus_|decision_|alert_|event_|feed_)/.test(name))).toBe(false);
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name);
     expect(tables).not.toContain("decisions");

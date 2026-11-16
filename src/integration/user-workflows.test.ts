@@ -1,5 +1,4 @@
 import { afterEach, describe, it, vi } from "vitest";
-import * as scheduler from "../server/scheduler.js";
 import { attentionScenarios } from "./scenarios-attention.js";
 import { knowledgeScenarios } from "./scenarios-knowledge.js";
 import { operationScenarios } from "./scenarios-operations.js";
@@ -18,7 +17,6 @@ if (new Set(ids).size !== ids.length) {
   throw new Error("Integration scenario catalog contains duplicate IDs");
 }
 afterEach(() => {
-  if (scheduler.isInitialized()) scheduler.shutdown();
   vi.restoreAllMocks();
 });
 

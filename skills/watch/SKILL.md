@@ -28,9 +28,9 @@ You own one source, its saved state, and the report of what changed since the la
 8. Write the verify_complete summary as the run's record: changed or not, the change if any, and a pointer to the evidence. verify_complete adds it to task history, so do not add a separate history entry for the run.
 9. Notify only for changes the user must act on. Routine runs with no change stay quiet in the chat.
 10. Make sure the next run is scheduled, choosing the cheapest mechanism that fits:
-    - A machine-checkable source: a recurring defer (intervalSeconds of at least 300, with maxRuns or expiresAt) whose `check` runs a command that prints only the compared fields. The worker wakes only when the exit code or output changes; set `wakeOnFirstRun: true` when the first output should be checked against the baseline.
+    - A machine-checkable source: a recurring trigger (trigger_create with intervalSeconds, and maxRuns or expiresAt) whose `check` runs a command that prints only the compared fields. The worker wakes only when the exit code or output changes; set `fireOnFirstRun: true` when the first output should be checked against the baseline. When the command can decide by itself, use `fireOn: "exit_code"` (exit 10 fires, 11 fires and stops) and `then: "message"` to skip the worker.
     - Example: `check: { command: ["gh", "release", "view", "--repo", "example-org/example-app", "--json", "tagName"] }`. The command is an argument array with the executable first and no shell; for anything that needs normalizing, point it at a script, such as `["node", "<absolute path>/check-price.mjs"]`.
-    - A source that needs judgment or a fresh session each time: schedule_create with this playbook pinned.
+    - A source that needs judgment or a fresh session each time: trigger_create with then: "new_chat" and this playbook pinned.
 11. Scheduled runs have no one waiting: do not ask questions; work around blockers and report what you could not check.
 
 ## Gates

@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
-/** Prompts Bridge itself writes into a conversation: defer check-ins, returned results, restart notices. */
-const AUTOMATED_PROMPT_PREFIXES = ["<defer>", "<deferred-work-result>", "<bridge_notice>"];
+/** Prompts Bridge itself writes into a conversation: trigger messages and results, restart notices. */
+const AUTOMATED_PROMPT_PREFIXES = ["<defer>", "<deferred-work-result>", "<trigger-result>", "<trigger>", "<bridge_notice>"];
 /** A stored defer prompt explains an identical message only if it was sent while that defer was live. */
 const DEFER_DELIVERY_SLACK_MS = 10 * 60_000;
 const BACKFILL_KEY = "backfilledFromSearchIndex";

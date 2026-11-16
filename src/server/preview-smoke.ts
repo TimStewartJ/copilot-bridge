@@ -71,7 +71,7 @@ const PREVIEW_SMOKE_CLEANUP_RETRY_DELAY_MS = 50;
 const REQUIRED_FIXTURE_TABLES = [
   "settings",
   "tasks",
-  "schedules",
+  "triggers",
   "push_subscriptions",
 ] as const;
 
@@ -229,10 +229,14 @@ function createPreviewSmokeSource(stagingDir: string): PreviewSmokeSource {
       db.prepare("INSERT INTO deferred_prompts(id,sessionId,prompt,runAt,status,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)")
         .run(`copied-prompt-${status}`, "copied-session", "Isolation fixture. Must not run.", "9999-01-01T00:00:00Z", status, at, at);
     }
+    const insertTrigger = db.prepare(`INSERT INTO triggers(id,prompt,sessionId,taskId,lane,whenJson,actionJson,status,nextRunAt,createdAt,updatedAt)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`);
     for (const status of ["active", "running"]) {
-      db.prepare("INSERT INTO defer_loops(id,sessionId,prompt,intervalSeconds,nextRunAt,status,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?,?)")
-        .run(`copied-loop-${status}`, "copied-session", "Isolation fixture. Must not run.", 300, "9999-01-01T00:00:00Z", status, at, at);
+      insertTrigger.run(`copied-chat-trigger-${status}`, "Isolation fixture. Must not run.", "copied-session", null, "chat",
+        JSON.stringify({ kind: "every", seconds: 300 }), JSON.stringify({ kind: "chat", via: "worker" }), status, "9999-01-01T00:00:00Z", at, at);
     }
+    insertTrigger.run("copied-task-trigger", "Isolation fixture. Must not run.", null, taskId, "task",
+      JSON.stringify({ kind: "cron", cron: "0 8 * * *", timezone: "UTC" }), JSON.stringify({ kind: "new_chat" }), "active", "9999-01-01T00:00:00Z", at, at);
     db.prepare("INSERT INTO interrupted_run_markers(sessionId,attentionMode,acceptedAt) VALUES(?,?,?)").run("copied-session", "interactive", at);
     db.prepare("INSERT INTO background_command_markers(sessionId,shellId,startedAt) VALUES(?,?,?)").run("copied-session", "1", at);
     db.prepare("INSERT INTO voice_jobs(id,composerKey,status,audioPath,createdAt,updatedAt) VALUES(?,?,?,?,?,?)")
@@ -324,7 +328,8 @@ async function main(): Promise<void> {
     const isolated = new DatabaseSync(join(target.dataDir, "bridge.db"), { readOnly: true });
     try {
       assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM deferred_prompts WHERE status='cancelled' AND id LIKE 'copied-prompt-%'").get()?.n, 2);
-      assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM defer_loops WHERE status='cancelled' AND id LIKE 'copied-loop-%'").get()?.n, 2);
+      assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM triggers WHERE status='cancelled' AND id LIKE 'copied-chat-trigger-%'").get()?.n, 2);
+      assert.equal(isolated.prepare("SELECT status FROM triggers WHERE id='copied-task-trigger'").get()?.status, "paused");
       assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM interrupted_run_markers").get()?.n, 0);
       assert.equal(isolated.prepare("SELECT COUNT(*) AS n FROM background_command_markers").get()?.n, 0);
       assert.equal(isolated.prepare("SELECT status FROM voice_jobs WHERE id='copied-voice'").get()?.status, "error");
@@ -364,9 +369,9 @@ async function main(): Promise<void> {
     const settingsRes = await requestWithBackendRetry(app, `${result.previewPath}api/settings`);
     assert.equal(settingsRes.status, 200, "settings API did not return 200");
 
-    const schedulesRes = await requestWithBackendRetry(app, `${result.previewPath}api/schedules?taskId=${encodeURIComponent(source.taskId)}`);
-    assert.equal(schedulesRes.status, 200, "schedules API did not return 200");
-    assert(Array.isArray(schedulesRes.body), "schedules response was not an array");
+    const triggersRes = await requestWithBackendRetry(app, `${result.previewPath}api/triggers?taskId=${encodeURIComponent(source.taskId)}`);
+    assert.equal(triggersRes.status, 200, "triggers API did not return 200");
+    assert(Array.isArray(triggersRes.body.triggers), "triggers response did not include an array");
 
     const docsTreeRes = await requestWithBackendRetry(app, `${result.previewPath}api/docs/tree`);
     assert.equal(docsTreeRes.status, 200, "docs tree API did not return 200");
@@ -387,7 +392,7 @@ async function main(): Promise<void> {
         favicon: settingsRes.body.favicon,
         reasoningEffort: settingsRes.body.reasoningEffort,
       },
-      scheduleNames: schedulesRes.body.map((schedule: any) => schedule.name),
+      triggerStatuses: triggersRes.body.triggers.map((trigger: any) => trigger.status),
       docsNodeCount: docsTreeRes.body.tree.length,
       inheritedAutomaticWorkCancelled: true,
       nativeHomeTaskId: source.taskId,

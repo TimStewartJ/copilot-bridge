@@ -94,8 +94,8 @@ export default function ConfirmTaskDeleteDialog({
           ) : sessionCount === 0 ? (
             <p className="text-text-faint text-xs">
               No sessions are linked to this task.
-              {preview.scheduleCount > 0
-                && ` ${plural(preview.scheduleCount, "schedule")} will also be deleted.`}
+              {preview.triggerCount > 0
+                && ` ${plural(preview.triggerCount, "trigger")} will also be deleted.`}
             </p>
           ) : (
             <div className="space-y-2">
@@ -109,9 +109,9 @@ export default function ConfirmTaskDeleteDialog({
                 )}
                 . Choose what happens to them.
               </p>
-              {preview.scheduleCount > 0 && (
+              {preview.triggerCount > 0 && (
                 <p className="text-text-faint text-xs">
-                  {plural(preview.scheduleCount, "schedule")} will also be deleted.
+                  {plural(preview.triggerCount, "trigger")} will also be deleted.
                 </p>
               )}
               {preview.sharedSessionCount > 0 && (

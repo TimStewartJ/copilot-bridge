@@ -4,9 +4,9 @@ import type { Router } from "express";
 import type { AppContext } from "./app-context.js";
 import { CalendarNotFoundError, CalendarValidationError, type CalendarStore } from "./calendar-store.js";
 import { buildCalendar, CalendarRangeError, type CalendarQuery, type CalendarSources } from "./calendar-view.js";
-import { getServerTimezone } from "./schedule-store.js";
+import { getServerTimezone } from "./triggers/timing.js";
 
-type CalendarContext = Pick<AppContext, "checklistStore" | "taskStore" | "scheduleStore" | "helmThinkerStore"> & { calendarStore: CalendarStore };
+type CalendarContext = Pick<AppContext, "checklistStore" | "taskStore" | "triggerStore" | "helmThinkerStore"> & { calendarStore: CalendarStore };
 
 /** What the calendar reads, gathered once per request. */
 export function createCalendarSources(ctx: CalendarContext): CalendarSources {
@@ -19,7 +19,7 @@ export function createCalendarSources(ctx: CalendarContext): CalendarSources {
     listRevisits: () => tasks
       .filter((task) => task.status === "active" && task.nextTouchAt && Number.isFinite(Date.parse(task.nextTouchAt)))
       .map((task) => ({ id: task.id, title: task.title, nextTouchAt: task.nextTouchAt!, deferred: !!task.deferred })),
-    listEnabledSchedules: () => ctx.scheduleStore.getEnabledSchedules(),
+    listActiveTriggers: () => (ctx.triggerStore?.list() ?? []).filter((trigger) => trigger.status === "active" || trigger.status === "running"),
     taskTitle: (taskId) => titles.get(taskId),
     helmLookTimes: () => {
       const settings = ctx.helmThinkerStore?.getSettings();

@@ -6,8 +6,8 @@ import { isRecord } from "../shared/is-record.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 import type { TaskActivity } from "../shared/task-attention.js";
 
-export type TaskOverviewContext = Pick<AppContext, "taskStore" | "taskGroupStore" | "scheduleStore"> &
-  Partial<Pick<AppContext, "deferredPromptStore" | "deferLoopStore" | "sessionMetaStore" | "managementJobStore" | "isStaging">> & {
+export type TaskOverviewContext = Pick<AppContext, "taskStore" | "taskGroupStore"> &
+  Partial<Pick<AppContext, "triggerStore" | "deferredPromptStore" | "sessionMetaStore" | "managementJobStore" | "isStaging">> & {
   sessionManager: Pick<AppContext["sessionManager"], "getSessionRunState" | "getPendingUserInputCount">
     & Partial<Pick<AppContext["sessionManager"], "getSessionContinuationState">>;
 };
@@ -30,23 +30,17 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
   const active = (tasks ?? ctx.taskStore.listTasks()).filter(task => task.status === "active");
   const groups = new Map(ctx.taskGroupStore.listGroups().map(group => [group.id, group]));
   const momentum = ctx.taskStore.listMomentumSignals();
-  const schedulesByTask = new Map<string, number>();
-  const continuationSchedules = new Map<string, number>();
-  const unknownScheduleTasks = new Set<string>();
-  for (const schedule of ctx.scheduleStore.listSchedules()) {
-    if (schedule.enabled) schedulesByTask.set(schedule.taskId, (schedulesByTask.get(schedule.taskId) ?? 0) + 1);
-    if (!schedule.enabled) continue;
-    if (schedule.expiresAt && !Number.isFinite(Date.parse(schedule.expiresAt))) {
-      unknownScheduleTasks.add(schedule.taskId);
-      continue;
-    }
-    if ((!schedule.expiresAt || Date.parse(schedule.expiresAt) > now)
-      && (schedule.maxRuns === undefined || schedule.runCount < schedule.maxRuns)) {
-      continuationSchedules.set(schedule.taskId, (continuationSchedules.get(schedule.taskId) ?? 0) + 1);
+  // Task triggers that will run again; a paused one still counts as automation the task has.
+  const taskTriggersByTask = new Map<string, number>();
+  const continuingTaskTriggers = new Map<string, number>();
+  for (const trigger of ctx.triggerStore?.list() ?? []) {
+    if (!trigger.taskId) continue;
+    taskTriggersByTask.set(trigger.taskId, (taskTriggersByTask.get(trigger.taskId) ?? 0) + 1);
+    if (trigger.status === "active" || trigger.status === "running") {
+      continuingTaskTriggers.set(trigger.taskId, (continuingTaskTriggers.get(trigger.taskId) ?? 0) + 1);
     }
   }
-  const prompts = ctx.deferredPromptStore?.listSummariesBySession() ?? new Map();
-  const loops = ctx.deferLoopStore?.listSummariesBySession() ?? new Map();
+  const chatTriggers = ctx.triggerStore?.listSummariesBySession() ?? new Map();
   const pendingDeliveries = ctx.deferredPromptStore?.listPendingDeliveryCountsBySession() ?? new Map<string, number>();
   const archivedIds = new Set(ctx.sessionMetaStore?.listArchivedSessionIds() ?? []);
   const jobsBySession = new Map<string, number>();
@@ -70,13 +64,13 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
     const stalledCount = linked.filter(session => runState(session.sessionId) === "stalled").length;
     const inputCount = task.sessionIds.filter(id => !archivedIds.has(id))
       .reduce((total, id) => total + ctx.sessionManager.getPendingUserInputCount(id), 0);
-    const automationCount = (schedulesByTask.get(task.id) ?? 0)
-      + task.sessionIds.filter(id => prompts.has(id) || loops.has(id)).length;
+    const automationCount = (taskTriggersByTask.get(task.id) ?? 0)
+      + task.sessionIds.filter(id => chatTriggers.has(id)).length;
     const activity: TaskActivity = {
       known: true,
       sessionIndexKnown: true,
       runCount: 0, runningAgentCount: 0, runningCommandCount: 0, heldCount: 0, externalCount: 0,
-      deferredCount: 0, scheduledCount: continuationSchedules.get(task.id) ?? 0,
+      chatTriggerCount: 0, taskTriggerCount: continuingTaskTriggers.get(task.id) ?? 0,
       pendingDeliveryCount: 0, managementJobCount: 0,
     };
     const unavailable = (scope: "source" | "task", reason: string, expectedInPreview = false) => {
@@ -86,8 +80,7 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
         activity.unavailable = { scope, reason, ...(expectedInPreview ? { expectedInPreview: true } : {}) };
       }
     };
-    if (unknownScheduleTasks.has(task.id)) unavailable("task", "An enabled schedule has an invalid expiry date.");
-    if (task.sessionIds.length > 0 && !(ctx.deferredPromptStore && ctx.deferLoopStore && ctx.managementJobStore)) {
+    if (task.sessionIds.length > 0 && !(ctx.deferredPromptStore && ctx.triggerStore && ctx.managementJobStore)) {
       unavailable("source", "Continuation status is unavailable.");
     }
     for (const id of task.sessionIds) {
@@ -110,7 +103,7 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
         activity.heldCount += Number(runtime.held);
       }
       activity.externalCount += Number(session?.externallyInUse === true);
-      activity.deferredCount += (prompts.get(id)?.count ?? 0) + (loops.get(id)?.count ?? 0);
+      activity.chatTriggerCount += chatTriggers.get(id)?.count ?? 0;
       activity.pendingDeliveryCount += pendingDeliveries.get(id) ?? 0;
       activity.managementJobCount += jobsBySession.get(id) ?? 0;
     }

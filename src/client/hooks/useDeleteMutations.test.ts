@@ -1,18 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createElement } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createReactDomHarness } from "../test-react-harness";
-import { useDeleteScheduleMutation } from "./queries/useSchedules";
 import {
   ApiError,
   deleteChecklistItem,
-  deleteSchedule,
   deleteTag,
   deleteTask,
   deleteTaskGroup,
+  deleteTrigger,
   markSessionUnread,
 } from "../api";
-import { queryKeys } from "../queryClient";
 
 const originalFetch = globalThis.fetch;
 
@@ -40,7 +35,7 @@ const DELETE_HELPERS: Array<[string, () => Promise<void>]> = [
   ["deleteTaskGroup", () => deleteTaskGroup("group-1")],
   ["deleteTag", () => deleteTag("tag-1")],
   ["markSessionUnread (read-state DELETE)", () => markSessionUnread("session-1")],
-  ["deleteSchedule", () => deleteSchedule("schedule-1")],
+  ["deleteTrigger", () => deleteTrigger("trigger-1")],
   ["deleteChecklistItem", () => deleteChecklistItem("item-1")],
 ];
 
@@ -79,40 +74,5 @@ describe("client delete helpers reject on non-OK responses", () => {
       status: 503,
       message: "Service Unavailable",
     });
-  });
-});
-
-describe("delete mutations do not evict cache entries on failure", () => {
-  function createClient(): QueryClient {
-    return new QueryClient({
-      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-    });
-  }
-
-  const schedules = [
-    { id: "schedule-1", taskId: "task-1", name: "Nightly" },
-    { id: "schedule-2", taskId: "task-1", name: "Weekly" },
-  ];
-
-  it("keeps a refused schedule until a successful retry removes it", async () => {
-    const harness = await createReactDomHarness();
-    const queryClient = createClient();
-    const key = queryKeys.taskSchedules("task-1");
-    queryClient.setQueryData(key, schedules);
-    let remove!: ReturnType<typeof useDeleteScheduleMutation>["mutateAsync"];
-    function Probe() { remove = useDeleteScheduleMutation("task-1").mutateAsync; return null; }
-    try {
-      await harness.render(createElement(QueryClientProvider, { client: queryClient }, createElement(Probe)));
-      mockFetchStatus(400, { error: "Cannot delete" });
-      await harness.act(async () => { await expect(remove("schedule-1")).rejects.toBeInstanceOf(ApiError); });
-      expect(queryClient.getQueryData(key)).toEqual(schedules);
-
-      mockFetchStatus(200, { ok: true });
-      await harness.act(async () => { await remove("schedule-1"); });
-      expect(queryClient.getQueryData(key)).toEqual([schedules[1]]);
-    } finally {
-      await harness.cleanup();
-      queryClient.clear();
-    }
   });
 });

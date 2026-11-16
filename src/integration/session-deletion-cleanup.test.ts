@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { installApiRouteTestHooks, makeTestDir, request } from "../test-support/api-routes.js";
 import { normalizeLiveSessionContextEvent } from "../server/session-context-normalizer.js";
 import { SessionBackendDeleteError } from "../server/session-manager.js";
-import { createReturnedDeferDelivery } from "../server/defer-result-message.js";
-import { endDeferLoop } from "../server/__tests__/helpers.js";
+import { createTriggerResultDelivery } from "../server/triggers/messages.js";
+import { createChatTrigger, endTrigger } from "../server/__tests__/helpers.js";
 
 let app: ApiRouteTestState["app"];
 let ctx: ApiRouteTestState["ctx"];
@@ -61,7 +61,7 @@ function seedSessionContext(sessionId: string): void {
 }
 
 describe("session deletion cleans up every owned subsystem", () => {
-  it("removes context rows, defers, and task links for the deleted session only", async () => {
+  it("removes context rows, queued messages, triggers, and task links for the deleted session only", async () => {
     seedSessionContext(SESSION_ID);
     seedSessionContext(OTHER_SESSION_ID);
 
@@ -69,43 +69,27 @@ describe("session deletion cleans up every owned subsystem", () => {
     ctx.readStateStore.markRead(OTHER_SESSION_ID, "2026-05-21T12:05:00.000Z");
 
     const deferStore = ctx.deferredPromptStore!;
-    const loopStore = ctx.deferLoopStore!;
+    const triggerStore = ctx.triggerStore!;
 
     const activeOnce = deferStore.create(SESSION_ID, "future prompt", "2099-01-01T00:00:00.000Z");
     const terminalOnce = deferStore.create(SESSION_ID, "already ran", "2020-01-01T00:00:00.000Z");
     deferStore.complete(terminalOnce.id);
     const survivingOnce = deferStore.create(OTHER_SESSION_ID, "other session", "2099-01-01T00:00:00.000Z");
 
-    const activeLoop = loopStore.create({
-      sessionId: SESSION_ID,
-      prompt: "loop",
-      intervalSeconds: 600,
-      nextRunAt: "2099-01-01T00:00:00.000Z",
-    });
-    const terminalLoop = loopStore.create({
-      sessionId: SESSION_ID,
-      prompt: "finished loop",
-      intervalSeconds: 600,
-      nextRunAt: "2099-01-01T00:00:00.000Z",
-    });
-    endDeferLoop(db, terminalLoop.id, "completed");
-    const survivingLoop = loopStore.create({
-      sessionId: OTHER_SESSION_ID,
-      prompt: "other loop",
-      intervalSeconds: 600,
-      nextRunAt: "2099-01-01T00:00:00.000Z",
-    });
-    const deletedMessage = deferStore.enqueueDelivery(createReturnedDeferDelivery(
-      { deferId: activeLoop.deferId, kind: "interval", parentSessionId: SESSION_ID },
+    const activeTrigger = createChatTrigger(triggerStore, SESSION_ID);
+    const stoppedTrigger = createChatTrigger(triggerStore, SESSION_ID);
+    endTrigger(db, stoppedTrigger.id, "completed");
+    const survivingTrigger = createChatTrigger(triggerStore, OTHER_SESSION_ID);
+    const deletedMessage = deferStore.enqueueDelivery(createTriggerResultDelivery(
+      { triggerId: activeTrigger.id, parentSessionId: SESSION_ID },
       "Result",
       { deliveryId: "deleted-message" },
     ));
-    const survivingMessage = deferStore.enqueueDelivery(createReturnedDeferDelivery(
-      { deferId: survivingLoop.deferId, kind: "interval", parentSessionId: OTHER_SESSION_ID },
+    const survivingMessage = deferStore.enqueueDelivery(createTriggerResultDelivery(
+      { triggerId: survivingTrigger.id, parentSessionId: OTHER_SESSION_ID },
       "Other result",
       { deliveryId: "surviving-message" },
     ));
-
     const linkedA = ctx.taskStore.createTask("Linked A");
     const linkedB = ctx.taskStore.createTask("Linked B");
     const unlinked = ctx.taskStore.createTask("Unlinked");
@@ -138,16 +122,16 @@ describe("session deletion cleans up every owned subsystem", () => {
       expect(countRows(table, OTHER_SESSION_ID)).toBeGreaterThan(0);
     }
 
-    // Defers — active and terminal — are gone; the other session keeps its own.
+    // Queued messages and triggers, active and stopped, are gone; the other session keeps its own.
     expect(deferStore.get(activeOnce.id)).toBeUndefined();
     expect(deferStore.get(terminalOnce.id)).toBeUndefined();
     expect(deferStore.listForSession(SESSION_ID)).toEqual([]);
     expect(deferStore.get(survivingOnce.id)).toMatchObject({ status: "pending" });
 
-    expect(loopStore.get(activeLoop.id)).toBeUndefined();
-    expect(loopStore.get(terminalLoop.id)).toBeUndefined();
-    expect(loopStore.listForSession(SESSION_ID)).toEqual([]);
-    expect(loopStore.get(survivingLoop.id)).toMatchObject({ status: "active" });
+    expect(triggerStore.get(activeTrigger.id)).toBeUndefined();
+    expect(triggerStore.get(stoppedTrigger.id)).toBeUndefined();
+    expect(triggerStore.list({ sessionId: SESSION_ID })).toEqual([]);
+    expect(triggerStore.get(survivingTrigger.id)).toMatchObject({ status: "active" });
     expect(deferStore.get(deletedMessage.id)).toBeUndefined();
     expect(deferStore.get(survivingMessage.id)).toMatchObject({ status: "pending" });
 

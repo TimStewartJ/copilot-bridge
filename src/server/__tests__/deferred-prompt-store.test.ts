@@ -4,12 +4,28 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { makeTestDir, setupTestDb } from "./helpers.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
 import type { DeferredPromptStore } from "../deferred-prompt-store.js";
-import { parseDeferId, toOnceDeferId } from "../defer-ids.js";
 import { openDatabase, type DatabaseSync } from "../db.js";
-import {
-  createReturnedDeferDelivery,
-  parseReturnedDeferPrompt,
-} from "../defer-result-message.js";
+import { createTriggerResultDelivery, parseTriggerResultPrompt, type TriggerDelivery } from "../triggers/messages.js";
+
+/** A result message in the format defers queued before triggers; such rows are still in outboxes. */
+function legacyDeferResult(deferId: string, sessionId: string, deliveryId: string, message: string): TriggerDelivery {
+  return {
+    id: deliveryId,
+    sessionId,
+    sourceId: deferId,
+    prompt: [
+      "<deferred-work-result>",
+      `deferId: ${deferId}`,
+      "kind: interval",
+      `deliveryId: ${deliveryId}`,
+      "</deferred-work-result>",
+      "",
+      "A temporary deferred-work session returned this result. Continue from it:",
+      "",
+      message,
+    ].join("\n"),
+  };
+}
 
 let db: DatabaseSync;
 let store: DeferredPromptStore;
@@ -31,45 +47,31 @@ describe("deferred-prompt-store", () => {
       expect(store.listForSession("session-A")).toEqual([first, resultLikeText]);
       expect(first).toMatchObject({ prompt: "First", sessionId: "session-A", runAt: t1, status: "pending", attempts: 0 });
       expect(first.claimToken).toBeUndefined();
-      expect(first.deferId).toBe(toOnceDeferId(first.id));
-      expect(parseDeferId(first.deferId)).toEqual({ kind: "once", id: first.id });
+
       expect(store.listDeliveriesForSession("session-A")).toEqual([]);
     });
 
-    it("continues to recognize legacy returned defer guidance", () => {
-      const delivery = createReturnedDeferDelivery(
-        { deferId: "interval_1", kind: "interval", parentSessionId: "session-A" },
-        "Still waiting.",
-        { deliveryId: "delivery-1" },
-      );
-      expect(parseReturnedDeferPrompt(delivery.prompt)?.deliveryId).toBe("delivery-1");
-      const legacyPrompt = delivery.prompt.replace(
-        "Continue from it:",
-        "Continue from it without repeating the completed check:",
-      );
-
-      expect(parseReturnedDeferPrompt(legacyPrompt)).toMatchObject({
-        deferId: "interval_1",
-        deliveryId: "delivery-1",
-      });
+    it("recognizes results queued by defers before triggers", () => {
+      const legacy = legacyDeferResult("interval_1", "session-A", "delivery-1", "Still waiting.");
+      expect(parseTriggerResultPrompt(legacy.prompt)).toEqual({ triggerId: "1", deliveryId: "delivery-1", continues: false });
+      const current = createTriggerResultDelivery({ triggerId: "1", parentSessionId: "session-A" }, "Still waiting.", { deliveryId: "delivery-2", continues: true });
+      expect(parseTriggerResultPrompt(current.prompt)).toEqual({ triggerId: "1", deliveryId: "delivery-2", continues: true });
     });
-
-    it("keeps parent deliveries out of defer summaries and cancellation", () => {
-      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "interval_1", kind: "interval", parentSessionId: "session-A" },
+    it("keeps parent deliveries out of restart notices and their cancellation", () => {
+      const delivery = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "1", parentSessionId: "session-A" },
         "Build completed.",
         { deliveryId: "delivery-1" },
       ));
 
       expect(store.listForSession("session-A")).toEqual([]);
       expect(store.listDeliveriesForSession("session-A")).toEqual([delivery]);
-      expect(store.getSummaryForSession("session-A")).toEqual({ count: 0, runningCount: 0, nextRunAt: null });
       expect(store.cancelForSession("session-A")).toBe(0);
       expect(store.get(delivery.id)?.status).toBe("pending");
 
       const claimed = store.claimDue(delivery.id, 60_000)!;
       expect(store.fail(delivery.id, "Parent unavailable", { claimToken: claimed.claimToken })).toBe(true);
-      expect(store.reactivateFailedDeliveryForSource("session-A", "interval_1")).toBe(1);
+      expect(store.reactivateFailedDeliveryForSource("session-A", "trigger:1")).toBe(1);
       expect(store.get(delivery.id)).toMatchObject({
         status: "pending",
         attempts: 0,
@@ -121,16 +123,8 @@ describe("deferred-prompt-store", () => {
                   '2026-09-03T00:00:00.000Z', 'pending',
                   '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z')
         `).run();
-        const delivery = createReturnedDeferDelivery(
-          { deferId: "interval_1", kind: "interval", parentSessionId: "session-1" },
-          "Done.",
-          { deliveryId: "delivery-1" },
-        );
-        const overlappingDelivery = createReturnedDeferDelivery(
-          { deferId: "interval_2", kind: "interval", parentSessionId: "session-2" },
-          "Still pending.",
-          { deliveryId: "overlapping-delivery" },
-        );
+        const delivery = legacyDeferResult("interval_1", "session-1", "delivery-1", "Done.");
+        const overlappingDelivery = legacyDeferResult("interval_2", "session-2", "overlapping-delivery", "Still pending.");
         legacy.prepare(`
           INSERT INTO deferred_prompts
             (id, sessionId, prompt, runAt, status, createdAt, updatedAt)
@@ -179,7 +173,7 @@ describe("deferred-prompt-store", () => {
         ]);
         const migratedDelivery = migratedStore.listDeliveriesForSession("session-1")[0]!;
         expect(migratedDelivery.id).not.toBe("delivery-1");
-        expect(parseReturnedDeferPrompt(migratedDelivery.prompt)?.deliveryId)
+        expect(parseTriggerResultPrompt(migratedDelivery.prompt)?.deliveryId)
           .toBe(migratedDelivery.id);
         expect(migratedStore.get("delivery-1")).toMatchObject({
           sessionId: "session-source",
@@ -222,28 +216,6 @@ describe("deferred-prompt-store", () => {
       store.claimDue(first.id, 60_000);
 
       expect(store.getNextWakeAt()).toBe(store.get(first.id)!.leaseExpiresAt);
-    });
-  });
-
-  describe("listSummariesBySession", () => {
-    it("matches the per-session summary for every session with pending work in one query", () => {
-      const earliest = "2030-01-01T00:01:00.000Z";
-      const later = "2030-01-01T00:02:00.000Z";
-      store.create("session-1", "Later", later);
-      store.create("session-1", "Earliest", earliest);
-      const running = store.create("session-1", "Running", "2030-01-01T00:00:30.000Z");
-      store.claimDue(running.id, 60_000);
-      store.create("session-2", "Other", "2030-01-01T00:00:00.000Z");
-      const completed = store.create("session-3", "Done", "2030-01-01T00:00:00.000Z");
-      const claimed = store.claimDue(completed.id, 60_000);
-      store.complete(completed.id, { claimToken: claimed!.claimToken });
-
-      const summaries = store.listSummariesBySession();
-      expect(summaries.get("session-1")).toEqual(store.getSummaryForSession("session-1"));
-      expect(summaries.get("session-1")).toEqual({ count: 3, runningCount: 1, nextRunAt: earliest });
-      expect(summaries.get("session-2")).toEqual({ count: 1, runningCount: 0, nextRunAt: "2030-01-01T00:00:00.000Z" });
-      expect(summaries.has("session-3")).toBe(false);
-      expect(summaries.has("missing-session")).toBe(false);
     });
   });
 
@@ -290,50 +262,6 @@ describe("deferred-prompt-store", () => {
       expect(store.complete(dp.id)).toBe(true);
       expect(store.get(dp.id)!.status).toBe("completed");
     });
-
-    it("completes a claimed deferral and queues its result for the chat atomically", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      const claimed = store.claimDue(dp.id, 60_000)!;
-      const message = createReturnedDeferDelivery(
-        { deferId: dp.deferId, kind: "once", parentSessionId: dp.sessionId },
-        "Done.",
-        { deliveryId: "result-delivery" },
-      );
-
-      expect(store.complete(dp.id, { claimToken: "wrong-token", message })).toBe(false);
-      expect(store.listDeliveriesForSession(dp.sessionId)).toEqual([]);
-
-      expect(store.complete(dp.id, { claimToken: claimed.claimToken, message })).toBe(true);
-      expect(store.get(dp.id)!.status).toBe("completed");
-      expect(store.listDeliveriesForSession(dp.sessionId)).toEqual([
-        expect.objectContaining({ id: message.id, sourceId: dp.deferId }),
-      ]);
-    });
-  });
-
-  describe("fail", () => {
-    it("marks a claimed deferral failed and queues its parent message atomically", () => {
-      const dp = store.create("s1", "Prompt", new Date().toISOString());
-      const claimed = store.claimDue(dp.id, 60_000)!;
-      const message = createReturnedDeferDelivery(
-        { deferId: dp.deferId, kind: "once", parentSessionId: dp.sessionId },
-        "The one-shot defer stopped.",
-        { deliveryId: "failure-delivery" },
-      );
-
-      expect(store.fail(dp.id, "wrong", { claimToken: "wrong-token", message })).toBe(false);
-      expect(store.listDeliveriesForSession(dp.sessionId)).toEqual([]);
-
-      expect(store.fail(dp.id, "worker failed", { claimToken: claimed.claimToken, message })).toBe(true);
-      expect(store.get(dp.id)).toMatchObject({
-        status: "failed",
-        attempts: 1,
-        lastError: "worker failed",
-      });
-      expect(store.listDeliveriesForSession(dp.sessionId)).toEqual([
-        expect.objectContaining({ id: message.id, sourceId: dp.deferId }),
-      ]);
-    });
   });
 
   describe("release", () => {
@@ -367,36 +295,36 @@ describe("deferred-prompt-store", () => {
   });
 
   describe("retireUndeliveredFinalMessagesForSource", () => {
-    it("withdraws a restarted defer's final messages, waiting or failed, and keeps its updates", () => {
-      const source = { deferId: "interval_loop", kind: "interval" as const, parentSessionId: "s1" };
-      const waitingFinal = store.enqueueDelivery(createReturnedDeferDelivery(
-        source, "FINAL DEFER RESULT: Monitoring expired.", { deliveryId: "waiting-final" },
+    it("withdraws a restarted trigger's final messages, waiting or failed, and keeps its updates", () => {
+      const source = { triggerId: "loop", parentSessionId: "s1" };
+      const waitingFinal = store.enqueueDelivery(createTriggerResultDelivery(
+        source, "FINAL TRIGGER RESULT: Monitoring expired.", { deliveryId: "waiting-final" },
       ));
-      const failedFinal = store.enqueueDelivery(createReturnedDeferDelivery(
-        source, "FINAL DEFER RESULT: Monitoring expired.", { deliveryId: "failed-final" },
+      const failedFinal = store.enqueueDelivery(createTriggerResultDelivery(
+        source, "FINAL TRIGGER RESULT: Monitoring expired.", { deliveryId: "failed-final" },
       ));
       store.fail(failedFinal.id, "Parent chat could not be resumed");
-      const failedUpdate = store.enqueueDelivery(createReturnedDeferDelivery(
+      const failedUpdate = store.enqueueDelivery(createTriggerResultDelivery(
         source, "Build 123 turned red.", { deliveryId: "failed-update", continues: true },
       ));
       store.fail(failedUpdate.id, "Parent chat could not be resumed");
-      const delivered = store.enqueueDelivery(createReturnedDeferDelivery(
-        source, "FINAL DEFER RESULT: an earlier round.", { deliveryId: "delivered-final" },
+      const delivered = store.enqueueDelivery(createTriggerResultDelivery(
+        source, "FINAL TRIGGER RESULT: an earlier round.", { deliveryId: "delivered-final" },
       ));
       store.complete(delivered.id);
-      const otherDefer = store.enqueueDelivery(createReturnedDeferDelivery(
-        { ...source, deferId: "interval_other" }, "FINAL DEFER RESULT: other.", { deliveryId: "other-final" },
+      const otherTrigger = store.enqueueDelivery(createTriggerResultDelivery(
+        { ...source, triggerId: "other" }, "FINAL TRIGGER RESULT: other.", { deliveryId: "other-final" },
       ));
 
-      expect(store.retireUndeliveredFinalMessagesForSource("s1", "interval_loop")).toBe(2);
+      expect(store.retireUndeliveredFinalMessagesForSource("s1", "trigger:loop")).toBe(2);
 
       expect(store.get(waitingFinal.id)?.status).toBe("cancelled");
       expect(store.get(failedFinal.id)?.status).toBe("cancelled");
       expect(store.get(failedUpdate.id)?.status).toBe("failed");
       expect(store.get(delivered.id)?.status).toBe("completed");
-      expect(store.get(otherDefer.id)?.status).toBe("pending");
+      expect(store.get(otherTrigger.id)?.status).toBe("pending");
       // The update can still be sent again.
-      expect(store.reactivateFailedDeliveryForSource("s1", "interval_loop")).toBe(1);
+      expect(store.reactivateFailedDeliveryForSource("s1", "trigger:loop")).toBe(1);
     });
   });
 

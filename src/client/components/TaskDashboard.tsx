@@ -259,7 +259,7 @@ export default function TaskDashboard({
   const {
     enrichedWIs,
     enrichedPRs,
-    sched,
+    triggers,
     taskGitStatus,
     checklistItems,
     checklistLoaded,
@@ -304,8 +304,8 @@ export default function TaskDashboard({
     task.completedAt,
     ...linkedSessions.map(getSessionActivityTime),
     ...checklistItems.flatMap((item) => [item.completedAt, item.createdAt]),
-    ...sched.schedules.flatMap((schedule) => [schedule.lastRunAt, schedule.updatedAt, schedule.createdAt]),
-  ]), [checklistItems, linkedSessions, sched.schedules, task.completedAt, task.updatedAt]);
+    ...triggers.triggers.flatMap((trigger) => [trigger.lastRunAt, trigger.updatedAt, trigger.createdAt]),
+  ]), [checklistItems, linkedSessions, triggers.triggers, task.completedAt, task.updatedAt]);
 
   const readiness = useMemo(() => buildReadinessInsight({
     task,
@@ -336,7 +336,7 @@ export default function TaskDashboard({
     { label: "Checklist", value: checklistItems.length > 0 ? `${completionCounts.completedChecklistItems}/${checklistItems.length}` : "0" },
     { label: "PRs", value: task.pullRequests.length },
     { label: "Work items", value: task.workItems.length },
-    { label: "Schedules", value: sched.schedules.length },
+    { label: "Triggers", value: triggers.triggers.length },
     { label: "Docs", value: relatedDocs.length },
   ];
 

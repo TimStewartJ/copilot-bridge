@@ -472,13 +472,13 @@ async function verify(options: VerifyPreviewOptions, outDir: string): Promise<{ 
     });
 
     if (existingSessionId) {
-      await checks.run("defers list", async () => {
-        const defers = record(await client.json("GET", `/sessions/${existingSessionId}/defers`), "GET defers").defers;
-        if (!Array.isArray(defers)) throw new Error("GET /sessions/:id/defers: expected a defers array");
-        return { detail: `${defers.length} defers on one existing session` };
+      await checks.run("chat triggers list", async () => {
+        const triggers = record(await client.json("GET", `/triggers?sessionId=${encodeURIComponent(existingSessionId)}`), "GET chat triggers").triggers;
+        if (!Array.isArray(triggers)) throw new Error("GET /triggers?sessionId: expected a triggers array");
+        return { detail: `${triggers.length} triggers on one existing session` };
       });
     } else {
-      checks.skip("defers list", "the preview has no sessions to list defers for");
+      checks.skip("chat triggers list", "the preview has no sessions to list triggers for");
     }
 
     let taskId: string | undefined;
@@ -503,14 +503,14 @@ async function verify(options: VerifyPreviewOptions, outDir: string): Promise<{ 
     }
 
     if (taskId) {
-      const scheduleTaskId = taskId;
-      await checks.run("schedules list", async () => {
-        const schedules = await client.json("GET", `/schedules?taskId=${encodeURIComponent(scheduleTaskId)}`);
-        if (!Array.isArray(schedules)) throw new Error("GET /schedules: expected an array");
-        return { detail: `${schedules.length} schedules on the task` };
+      const triggerTaskId = taskId;
+      await checks.run("task triggers list", async () => {
+        const triggers = record(await client.json("GET", `/triggers?taskId=${encodeURIComponent(triggerTaskId)}`), "GET task triggers").triggers;
+        if (!Array.isArray(triggers)) throw new Error("GET /triggers?taskId: expected a triggers array");
+        return { detail: `${triggers.length} triggers on the task` };
       });
     } else {
-      checks.skip("schedules list", "no task to list schedules for");
+      checks.skip("task triggers list", "no task to list triggers for");
     }
 
     if (writable && owned.taskId) {

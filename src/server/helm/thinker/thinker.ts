@@ -68,7 +68,7 @@ const DEFAULT_LOOK_EFFORT = "high";
 /** Read-only Bridge tools the thinker may use besides its own. */
 const THINKER_TOOL_NAMES = new Set([
   "bridge_overview", "find", "list_sessions", "read_session",
-  "task_list", "task_get_info", "task_history_list", "action_list", "schedule_list", "tag_list",
+  "task_list", "task_get_info", "task_history_list", "action_list", "trigger_list", "tag_list",
   "docs_search", "docs_read", "docs_list",
 ]);
 /** How long shutdown waits for a run's sources to close. */

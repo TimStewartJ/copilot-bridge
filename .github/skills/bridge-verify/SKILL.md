@@ -41,7 +41,7 @@ is missing for something you keep proving by hand, add it there.
 | `--read-only` | No fixtures and no theme changes; the only mode a non-preview Bridge allows |
 
 API checks: health, runtime status, settings, skills, playbooks catalog (skipped when not served),
-sessions, defers of one session, task create and update, schedules of the task, checklist add and
+sessions, triggers of one session, task create and update, triggers of the task, checklist add and
 remove, docs page write and read. Fixtures are named `verify-preview <nonce>`, live under the docs
 path `verify-preview/`, and are deleted at the end even after a failure; each deletion is a check.
 The lane writes only when `/api/server/runtime-status` reports `isStaging`.
@@ -66,7 +66,7 @@ Screenshots show the preview's copy of real data. Keep them out of the repositor
 | Tasks, checklists, history | Lane covers create, update and checklist. For history, add an entry and read `GET /api/tasks/<id>/history`; screenshot the task panel `/tasks/<id>` | `check:integration` |
 | Home and attention marks | Create the state that should raise the mark on the preview (overdue checklist item, unread reply, waiting question), screenshot `/dashboard/home` and the sidebar, then remove it and screenshot again | `check:client` |
 | Docs | Lane writes and screenshots `verify-preview/<nonce>`. For editor or reader changes, edit the page in the browser and reload | `check:integration` |
-| Schedules, defers, check-gated defers | Create the schedule or defer on a fixture task or preview chat; trigger with `POST /api/schedules/<id>/trigger` instead of waiting; read `GET /api/sessions/<id>/defers` and `.../defers/<deferId>/runs`. For a check-gated defer, show one run where the check held it back and one where it ran | `check:server` |
+| Triggers (chat and task), check-gated triggers | Create the trigger on a fixture task or preview chat (`POST /api/triggers`); run it with `POST /api/triggers/<id>/run` instead of waiting; read `GET /api/triggers?sessionId=<id>` or `?taskId=<id>`, `.../triggers/<id>/runs` and `.../triggers/<id>/chats`. For a check-gated trigger, show one run where the check held it back and one where it fired | `check:server` |
 | Settings sections | `/settings?group=<id>` (chat, responses, helm, appearance, device, integrations, tags, voice, system, usage). Change the value, reload, confirm it in `GET /api/settings`, put it back | `check:client` |
 | Playbook chip and catalog | `GET /api/playbooks` (the lane checks it when served). In a preview chat, have the agent call `playbook_select`, then screenshot the header chip at both widths | `check:server`, `check:client` |
 | Verified completion card | In a preview chat on a fixture task, have the agent call `verify_complete`; screenshot the card and read the task history entry it adds | `check:server`, `check:client` |

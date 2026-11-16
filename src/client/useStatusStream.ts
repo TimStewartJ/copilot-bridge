@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { API_BASE } from "./api";
-import type { BackgroundAgentsSummary, DeferSummary } from "./api";
+import type { BackgroundAgentsSummary, TriggerSummary } from "./api";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
 import type { SendMode } from "../shared/send-mode.js";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-api";
@@ -23,13 +23,13 @@ export type StatusEvent =
       pendingUserInputCount?: number;
       needsUserInput?: boolean;
     }
-  | { type: "session:defer-summary"; sessionId: string; deferSummary: DeferSummary }
+  | { type: "session:trigger-summary"; sessionId: string; triggerSummary: TriggerSummary }
   | { type: "session:history-truncated"; sessionId?: string }
   | { type: "server:restart-changed" }
   | { type: "backend:status"; agentBackend: AgentBackendStatus }
   | { type: "status:connected" }
-  | { type: "schedule:triggered"; sessionId?: string; scheduleId?: string; taskId?: string }
-  | { type: "schedule:changed"; scheduleId?: string }
+  | { type: "trigger:fired"; sessionId?: string; triggerId?: string; triggerName?: string; taskId?: string }
+  | { type: "trigger:changed"; triggerId?: string; taskId?: string; sessionId?: string }
   /** reason "starters": only the task's suggested chats changed. */
   | { type: "task:changed"; taskId?: string; reason?: string }
   | { type: "management-job:changed"; jobId?: string; jobType?: ManagementJobType; status?: ManagementJobStatus }

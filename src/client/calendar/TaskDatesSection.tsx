@@ -26,13 +26,13 @@ export default function TaskDatesSection({ taskId }: { taskId: string }) {
   const { today, data } = useTaskDatesQuery(taskId);
   const rows = useMemo(() => {
     if (!data) return [];
-    // One line per schedule: its next run says enough.
-    const seenSchedules = new Set<string>();
+    // One line per trigger: its next run says enough.
+    const seenTriggers = new Set<string>();
     const upcoming = data.items.filter((item) => {
       if (item.done || item.kind === "revisit") return false;
       if (item.kind !== "run") return true;
-      if (seenSchedules.has(item.scheduleId ?? item.id)) return false;
-      seenSchedules.add(item.scheduleId ?? item.id);
+      if (seenTriggers.has(item.triggerId ?? item.id)) return false;
+      seenTriggers.add(item.triggerId ?? item.id);
       return true;
     });
     const overdueIds = new Set(data.overdue.map((item) => item.id));

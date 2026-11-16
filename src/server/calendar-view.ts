@@ -21,7 +21,7 @@ import {
 import type { ChecklistItem } from "./checklist-store.js";
 import { dateKeyOf } from "./calendar-store.js";
 import { cronRunsOnLocalDay, wallTimeIn, wallTimeToInstant, type WallDate } from "./cron-next-run.js";
-import type { Schedule } from "./schedule-store.js";
+import type { Trigger } from "./triggers/types.js";
 
 export class CalendarRangeError extends Error {
   constructor(message: string) {
@@ -37,7 +37,8 @@ export interface CalendarSources {
     overdue: Array<ChecklistItem & { taskTitle?: string }>; overdueTotal: number; undated: number;
   };
   listRevisits(): Array<{ id: string; title: string; nextTouchAt: string; deferred: boolean }>;
-  listEnabledSchedules(): Schedule[];
+  /** Active triggers; the calendar shows the one-time and cron ones. */
+  listActiveTriggers(): Trigger[];
   taskTitle(taskId: string): string | undefined;
   /** Helm's look times ("HH:MM", server-local) when its looks are on. */
   helmLookTimes(): string[];
@@ -161,7 +162,7 @@ function parseClock(value: string): { hour: number; minute: number } | null {
   return match ? { hour: Number(match[1]), minute: Number(match[2]) } : null;
 }
 
-interface RunPlan { id: string; title: string; taskId?: string; scheduleId?: string; cron?: string; runAt?: string; timezone?: string; remaining?: number; expiresAtMs?: number }
+interface RunPlan { id: string; title: string; taskId?: string; triggerId?: string; cron?: string; runAt?: string; timezone?: string; remaining?: number; expiresAtMs?: number }
 
 /**
  * Upcoming runs: forecasts from now, never history. A schedule with a run limit stops once the
@@ -172,7 +173,7 @@ function forecastRuns(plans: RunPlan[], window: Window, viewerZone: string, nowM
   const counts: Record<string, number> = {};
   const fromMs = Math.max(nowMs, window.startMs);
   for (const plan of plans) {
-    const base = { kind: "run" as const, title: plan.title, allDay: false, ...(plan.taskId ? { taskId: plan.taskId } : {}), ...(plan.scheduleId ? { scheduleId: plan.scheduleId } : {}) };
+    const base = { kind: "run" as const, title: plan.title, allDay: false, ...(plan.taskId ? { taskId: plan.taskId } : {}), ...(plan.triggerId ? { triggerId: plan.triggerId } : {}) };
     const beforeExpiry = (at: number) => plan.expiresAtMs === undefined || at < plan.expiresAtMs;
     if (plan.runAt) {
       const at = Date.parse(plan.runAt);
@@ -277,16 +278,16 @@ export function buildCalendar(sources: CalendarSources, query: CalendarQuery): C
     .filter((task) => { const at = Date.parse(task.nextTouchAt); return at >= window.startMs && at < window.endMs; })
     .map(revisitItem);
 
-  const plans: RunPlan[] = sources.listEnabledSchedules()
-    .filter((schedule) => !taskId || schedule.taskId === taskId)
-    .map((schedule) => ({
-      id: schedule.id,
-      title: schedule.name,
-      taskId: schedule.taskId,
-      scheduleId: schedule.id,
-      ...(schedule.type === "once" ? { runAt: schedule.runAt } : { cron: schedule.cron, timezone: schedule.timezone }),
-      ...(schedule.maxRuns ? { remaining: Math.max(0, schedule.maxRuns - schedule.runCount) } : {}),
-      ...(schedule.expiresAt && Number.isFinite(Date.parse(schedule.expiresAt)) ? { expiresAtMs: Date.parse(schedule.expiresAt) } : {}),
+  const plans: RunPlan[] = sources.listActiveTriggers()
+    .filter((trigger) => trigger.when.kind !== "every" && (!taskId || trigger.taskId === taskId))
+    .map((trigger) => ({
+      id: trigger.id,
+      title: trigger.name ?? (trigger.action.kind === "new_task" ? trigger.action.title : "Trigger"),
+      ...(trigger.taskId ? { taskId: trigger.taskId } : {}),
+      triggerId: trigger.id,
+      ...(trigger.when.kind === "at" ? { runAt: trigger.when.at } : trigger.when.kind === "cron" ? { cron: trigger.when.cron, timezone: trigger.when.timezone } : {}),
+      ...(trigger.maxRuns ? { remaining: Math.max(0, trigger.maxRuns - trigger.runCount) } : {}),
+      ...(trigger.expiresAt && Number.isFinite(Date.parse(trigger.expiresAt)) ? { expiresAtMs: Date.parse(trigger.expiresAt) } : {}),
     }));
   if (!taskId) {
     for (const time of sources.helmLookTimes()) {

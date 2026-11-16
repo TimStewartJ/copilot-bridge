@@ -19,7 +19,7 @@ export interface HelmSessionSummary {
   lastActivityAt?: string;
   linkedTaskIds: string[];
   intentText?: string | null;
-  /** "schedule" for sessions a schedule started; absent for the user's own and other agents'. */
+  /** "schedule" for sessions a trigger started; absent for the user's own and other agents'. */
   triggeredBy?: string;
   scheduleName?: string;
 }
@@ -59,14 +59,14 @@ export const HELM_TOOL_NAMES = [
 
 /**
  * Bridge tools Helm may use besides its own: everything for day-to-day management of tasks,
- * schedules, docs and checklist items. Helm never edits code, browses, or deploys, so tools that
+ * triggers, docs and checklist items. Helm never edits code, browses, or deploys, so tools that
  * do real work stay with worker sessions.
  *
  * Every tool's schema rides along on every turn, and Helm is meant to answer quickly (out loud,
  * in hands-free), so the surface stops at orchestration. Left out on purpose:
  * - Docs backup administration and collection schema changes.
  */
-const HELM_BRIDGE_TOOL_PREFIXES = ["task_", "tag_", "action_", "schedule_", "docs_"];
+const HELM_BRIDGE_TOOL_PREFIXES = ["task_", "tag_", "action_", "trigger_", "docs_"];
 const HELM_BRIDGE_TOOL_NAMES = new Set(["session_rename", "publish_visual"]);
 const HELM_BRIDGE_TOOL_EXCLUDED_PREFIXES = ["docs_snapshot_"];
 const HELM_BRIDGE_TOOL_EXCLUSIONS = new Set([
@@ -190,7 +190,7 @@ function describeSession(ctx: AppContext, session: HelmSessionSummary, now = Dat
     ...(task ? { task: task.title, taskLink: formatBridgeLink({ kind: "task", taskId: task.id }) } : {}),
     ...(session.intentText && session.runState !== "idle" ? { doing: session.intentText } : {}),
     ...(session.triggeredBy === "schedule"
-      ? { startedBy: session.scheduleName ? `schedule "${session.scheduleName}"` : "a schedule" }
+      ? { startedBy: session.scheduleName ? `trigger "${session.scheduleName}"` : "a trigger" }
       : {}),
     ...(formatAgo(session.lastActivityAt, now) ? { lastActivity: formatAgo(session.lastActivityAt, now) } : {}),
   };

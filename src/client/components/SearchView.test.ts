@@ -64,7 +64,7 @@ function chat(sessionId: string, overrides: Partial<Session> = {}): Session {
     summary: `Chat ${sessionId}`,
     runState: "idle",
     lastActivityAt: ACTIVITY_AT,
-    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
 }

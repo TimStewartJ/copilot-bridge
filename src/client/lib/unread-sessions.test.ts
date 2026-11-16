@@ -14,7 +14,7 @@ function createSession(sessionId: string, overrides: Partial<Session> = {}): Ses
     summary: `Chat ${sessionId}`,
     runState: "idle",
     lastActivityAt: AFTER_READ,
-    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
 }

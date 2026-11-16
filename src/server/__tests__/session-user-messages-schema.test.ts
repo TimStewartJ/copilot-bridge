@@ -24,6 +24,7 @@ describe("session user message history", () => {
     add(db, "chat", "2026-09-01T10:00:00Z", "Please plan the trip");
     add(db, "chat", "2026-09-05T10:00:00Z", "<deferred-work-result>\ndeferId: x");
     add(db, "chat", "2026-09-06T10:00:00Z", "<bridge_notice>\nThe Bridge restarted");
+    add(db, "chat", "2026-09-09T10:00:00Z", "<trigger>\ntriggerId: t1\n</trigger>\n\nCheck the build");
     add(db, "chat", "2026-09-07T10:00:00Z", "Check the job status and report back");
     add(db, "chat", "2026-09-08T10:00:00Z", "Here is my answer", "assistant");
     db.prepare("INSERT INTO deferred_prompts VALUES (?, ?, ?, ?)").run("chat", "Check the job status and report back", "2026-09-07T09:00:00Z", "2026-09-07T10:00:00Z");

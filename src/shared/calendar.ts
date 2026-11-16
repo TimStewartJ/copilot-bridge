@@ -59,7 +59,7 @@ export interface CalendarItem {
   /** The calendar an imported event comes from. */
   source?: string;
   checklistItemId?: string;
-  scheduleId?: string;
+  triggerId?: string;
   location?: string;
   repeating?: boolean;
   /** A checklist item already ticked off. */

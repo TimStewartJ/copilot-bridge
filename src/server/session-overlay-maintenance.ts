@@ -3,7 +3,7 @@
 //
 // `runSessionOverlayReaper` used to be reachable only from a maintenance REST
 // route that nothing called, so overlay rows, run history for deleted
-// schedules, and terminal defer rows accumulated for the lifetime of an
+// triggers, and stopped trigger rows accumulated for the lifetime of an
 // install. This module gives that cleanup a real owner: one startup pass plus a
 // low-frequency interval, with an unref'd timer and explicit shutdown disposal.
 
@@ -25,9 +25,9 @@ export interface SessionOverlayMaintenanceResult {
   /** Task links to conversations that no longer exist, removed. */
   removedDanglingLinks: number;
   reaped: number;
-  deletedScheduleRuns: number;
+  deletedTriggerRuns: number;
   prunedDeferredPrompts: number;
-  prunedDeferLoops: number;
+  prunedTriggers: number;
 }
 
 export interface SessionOverlayMaintenanceOptions {
@@ -71,7 +71,7 @@ export function createSessionOverlayMaintenance(
           || ctx.sessionManager.isSessionBusy(sessionId)
           || ctx.sessionManager.getPendingUserInputCount(sessionId) > 0
           || Boolean(ctx.deferredPromptStore?.hasActiveForSession(sessionId))
-          || Boolean(ctx.deferLoopStore?.hasActiveForSession(sessionId)),
+          || Boolean(ctx.triggerStore?.hasActiveForSession(sessionId)),
         deleteSession,
         now,
         logger,
@@ -103,24 +103,24 @@ export function createSessionOverlayMaintenance(
 
     const report = await runSessionOverlayReaper(ctx, {
       dryRun: false,
-      cleanupDeletedScheduleRuns: true,
+      cleanupDeletedTriggerRuns: true,
       minimumAgeMs,
     });
 
     const deferCutoff = new Date(now() - deferRetentionMs).toISOString();
     const prunedDeferredPrompts = ctx.deferredPromptStore?.pruneTerminalRows(deferCutoff) ?? 0;
-    const prunedDeferLoops = ctx.deferLoopStore?.pruneTerminalRows(deferCutoff) ?? 0;
+    const prunedTriggers = ctx.triggerStore?.pruneTerminal(deferCutoff) ?? 0;
 
     const result: SessionOverlayMaintenanceResult = {
       deletedScratchSessions,
       removedDanglingLinks,
       reaped: report.reaped,
-      deletedScheduleRuns: report.deletedScheduleRuns.deleted,
+      deletedTriggerRuns: report.deletedTriggerRuns.deleted,
       prunedDeferredPrompts,
-      prunedDeferLoops,
+      prunedTriggers,
     };
 
-    if (result.reaped > 0 || result.deletedScheduleRuns > 0) {
+    if (result.reaped > 0 || result.deletedTriggerRuns > 0) {
       // Mirrors what the old maintenance route did: the enriched session cache
       // is rebuilt from this bus event.
       ctx.globalBus.emit({ type: "sessions:changed" });
@@ -144,16 +144,16 @@ export function createSessionOverlayMaintenance(
   function logMaintenance(result: SessionOverlayMaintenanceResult): void {
     const total = result.deletedScratchSessions
       + result.reaped
-      + result.deletedScheduleRuns
+      + result.deletedTriggerRuns
       + result.prunedDeferredPrompts
-      + result.prunedDeferLoops;
+      + result.prunedTriggers;
     if (total === 0) return;
     logger.log(
       `[session-overlay] Deleted ${result.deletedScratchSessions} idle scratch chat(s), `
       + `reaped ${result.reaped} overlay row(s), `
-      + `${result.deletedScheduleRuns} deleted-schedule run(s), `
-      + `${result.prunedDeferredPrompts} terminal deferred prompt(s), `
-      + `${result.prunedDeferLoops} terminal defer loop(s)`,
+      + `${result.deletedTriggerRuns} deleted-trigger run(s), `
+      + `${result.prunedDeferredPrompts} delivered outbox message(s), `
+      + `${result.prunedTriggers} stopped chat trigger(s)`,
     );
   }
 

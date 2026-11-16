@@ -28,12 +28,12 @@ export function shutdownAppContextServices(
   const operation = (async () => {
     // Before the first await: POST /api/shutdown checked that the server is idle in this same tick.
     ctx.sessionManager.stopAdmittingWork();
-    ctx.scheduler?.setGlobalPause(true);
+    ctx.triggerTaskRunner?.shutdown();
     ctx.sessionOverlayMaintenance?.stop();
     ctx.stagingPreviewDiscovery?.stop();
     const stagingShutdown = stopAllStagingBackends(deadline);
     ctx.deferredPromptRunner?.shutdown();
-    ctx.deferLoopRunner?.shutdown();
+    ctx.triggerChatRunner?.shutdown();
     ctx.helm?.dispose();
     ctx.taskStarters?.dispose();
     // A running look's outside sources are child processes: they end with it.
@@ -91,7 +91,6 @@ export function shutdownAppContextServices(
       console.error(`[web] Speech engine shutdown ${speechEngineOutcome.status}`);
     }
 
-    ctx.scheduler?.shutdown();
     await stagingShutdown;
   })();
   appContextShutdownOperations.set(ctx, operation);

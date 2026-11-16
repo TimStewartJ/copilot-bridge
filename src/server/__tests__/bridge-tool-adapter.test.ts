@@ -170,11 +170,11 @@ describe("native tool catalog", () => {
     const publishContent = (tools.get("publish_visual")!.inputSchema as any).properties.content;
     expect(publishContent.anyOf).toEqual(expect.any(Array));
     for (const retired of ["feed_save", "decision_save", "alert_save", "event_save", "focus_protection_current"]) expect(tools.has(retired)).toBe(false);
-    for (const native of ["task_update_momentum", "action_add", "schedule_create", "docs_read"]) expect(tools.has(native)).toBe(true);
+    for (const native of ["task_update_momentum", "action_add", "trigger_create", "docs_read"]) expect(tools.has(native)).toBe(true);
 
     const global = new Set(server.getToolNames("global"));
     expect(server.getToolNames("session").filter((name) => !global.has(name))).toEqual(expect.arrayContaining([
-      "session_start", "session_send", "agent_stop", "defer_create", "send_attachment", "publish_visual",
+      "session_start", "session_send", "agent_stop", "send_attachment", "publish_visual",
     ]));
   });
 });

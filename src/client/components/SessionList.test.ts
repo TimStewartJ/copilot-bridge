@@ -21,15 +21,15 @@ const apiMocks = vi.hoisted(() => ({
   fetchSettings: vi.fn(),
   patchSettings: vi.fn(),
 }));
-const deferredWorkSheetMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
+const triggerSheetMock = vi.hoisted(() => vi.fn((_props: unknown) => null));
 
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return { ...actual, ...apiMocks };
 });
 
-vi.mock("./DeferredWorkSheet", () => ({
-  default: (props: unknown) => deferredWorkSheetMock(props),
+vi.mock("./TriggerSheet", () => ({
+  default: (props: unknown) => triggerSheetMock(props),
 }));
 
 async function renderSessionList(sessions: Session[]) {
@@ -51,7 +51,7 @@ async function renderSessionList(sessions: Session[]) {
 function createSession(overrides: Partial<Session> & { sessionId: string }): Session {
   return {
     summary: "Test session",
-    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
 }
@@ -287,13 +287,13 @@ describe("SessionList active limit", () => {
   });
 });
 
-describe("SessionList defer summary indicator", () => {
-  it("shows scheduled, running and cleared defers on their own session rows", async () => {
+describe("SessionList trigger summary indicator", () => {
+  it("shows waiting, running and cleared triggers on their own session rows", async () => {
     const nextRunAt = minutesFromNow(5);
     const { dom, cleanup } = await renderSessionList([
-      createSession({ sessionId: "scheduled", summary: "Later", deferSummary: { count: 2, runningCount: 0, nextRunAt } }),
-      createSession({ sessionId: "running", summary: "In flight", deferSummary: { count: 2, runningCount: 1, nextRunAt } }),
-      createSession({ sessionId: "cleared", summary: "Finished", deferSummary: { count: 0, runningCount: 0, nextRunAt } }),
+      createSession({ sessionId: "scheduled", summary: "Later", triggerSummary: { count: 2, runningCount: 0, nextRunAt } }),
+      createSession({ sessionId: "running", summary: "In flight", triggerSummary: { count: 2, runningCount: 1, nextRunAt } }),
+      createSession({ sessionId: "cleared", summary: "Finished", triggerSummary: { count: 0, runningCount: 0, nextRunAt } }),
     ]);
 
     try {
@@ -303,36 +303,36 @@ describe("SessionList defer summary indicator", () => {
         findAllByTag(button.parentNode, "BUTTON").filter((other) => other !== button)
           .map((badge) => [badge.textContent, badge.getAttribute("title")]),
       ])).toEqual([
-        ["Later", [["2 defers · next in 5m", "2 defers · next in 5m. Open deferred work."]]],
-        ["In flight", [["1 running · 1 queued", "1 running · 1 queued. Open deferred work."]]],
+        ["Later", [["2 triggers · next in 5m", "2 triggers · next in 5m. Open triggers."]]],
+        ["In flight", [["1 running · 1 waiting", "1 running · 1 waiting. Open triggers."]]],
         ["Finished", []],
       ]);
-      expect(rows[2].parentNode.textContent).not.toMatch(/Deferred in|defers|running|queued/);
+      expect(rows[2].parentNode.textContent).not.toMatch(/Trigger in|triggers|running|waiting/);
     } finally {
       await cleanup();
     }
   });
 
-  it("opens deferred work from its badge without losing the session’s needs-answer mark", async () => {
+  it("opens the chat's triggers from its badge without losing the session’s needs-answer mark", async () => {
     const session = createSession({
       sessionId: "session-1",
-      summary: "Waiting deferred session",
+      summary: "Waiting session",
       needsUserInput: true, pendingUserInputCount: 1,
-      deferSummary: { count: 1, runningCount: 0, nextRunAt: minutesFromNow(5) },
+      triggerSummary: { count: 1, runningCount: 0, nextRunAt: minutesFromNow(5) },
     });
     const { dom, act, cleanup } = await renderSessionList([session]);
 
     try {
       expect(dom.container.textContent).toContain("Needs answer");
-      expect(dom.container.textContent).toContain("Deferred in 5m");
+      expect(dom.container.textContent).toContain("Trigger in 5m");
       const badge = findAllByTag(dom.container, "BUTTON").find(
-        (button) => getReactProps(button)?.title?.includes("Open deferred work"),
+        (button) => getReactProps(button)?.title?.includes("Open triggers"),
       );
       expect(badge).toBeDefined();
       await act(async () => {
         getReactProps(badge)?.onClick?.({ stopPropagation: vi.fn() });
       });
-      expect(deferredWorkSheetMock).toHaveBeenCalledWith(expect.objectContaining({
+      expect(triggerSheetMock).toHaveBeenCalledWith(expect.objectContaining({
         session,
         onClose: expect.any(Function),
       }));

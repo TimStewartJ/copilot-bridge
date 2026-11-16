@@ -47,95 +47,71 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-08", title: "disables and re-enables a schedule without replacing it",
+    id: "OPS-08", title: "pauses and resumes a task trigger without replacing it",
     async run(world) {
       const task = await world.createTask("Pause automation");
-      world.initializeScheduler();
-      const schedule = await world.createSchedule(task.id, "Pauseable");
-      expect((await request(world.app).patch(`/api/schedules/${schedule.id}`).send({ enabled: false })).body.enabled).toBe(false);
-      const changes = { name: "New schedule", cron: "0 10 * * 1-5", timezone: "UTC", enabled: true };
-      const resumed = await request(world.app).patch(`/api/schedules/${schedule.id}`).send(changes).expect(200);
-      expect(resumed.body).toMatchObject({ id: schedule.id, ...changes });
-      expect(world.ctx.scheduleStore.getSchedule(schedule.id)).toMatchObject({ id: schedule.id, ...changes });
+      const trigger = await world.createTaskTrigger(task.id, "Pauseable");
+      expect((await request(world.app).patch(`/api/triggers/${trigger.id}`).send({ active: false }).expect(200)).body.status).toBe("paused");
+      const resumed = await request(world.app).patch(`/api/triggers/${trigger.id}`)
+        .send({ name: "New trigger", cron: "0 10 * * 1-5", timezone: "UTC", active: true }).expect(200);
+      const expected = { id: trigger.id, name: "New trigger", when: { kind: "cron", cron: "0 10 * * 1-5", timezone: "UTC" }, status: "active" };
+      expect(resumed.body).toMatchObject(expected);
+      expect(world.ctx.triggerStore!.get(trigger.id)).toMatchObject(expected);
     },
   },
   {
-    id: "OPS-09", title: "creates a one-shot schedule and keeps its UTC run time",
+    id: "OPS-09", title: "creates a one-time task trigger and keeps its run time in UTC",
     async run(world) {
       const task = await world.createTask("One shot task");
-      world.initializeScheduler();
-      const response = await request(world.app).post("/api/schedules").send({ taskId: task.id, name: "One shot", prompt: "Run once", type: "once", runAt: "2030-01-01T12:00:00.000Z" });
-      expect(response.status).toBe(201);
-      expect(response.body).toMatchObject({ type: "once", runAt: "2030-01-01T12:00:00.000Z", taskId: task.id });
-      expect(world.ctx.scheduleStore.getSchedule(response.body.id)?.runAt).toBe("2030-01-01T12:00:00.000Z");
+      const utc = new Date(Math.ceil(Date.now() / 60_000) * 60_000 + 86_400_000);
+      const plusTwo = `${new Date(utc.getTime() + 2 * 3_600_000).toISOString().slice(0, 19)}+02:00`;
+      const response = await request(world.app).post("/api/triggers")
+        .send({ taskId: task.id, name: "One shot", prompt: "Run once", then: "new_chat", runAt: plusTwo }).expect(201);
+      expect(response.body).toMatchObject({ when: { kind: "at", at: utc.toISOString() }, nextRunAt: utc.toISOString(), taskId: task.id });
+      expect(world.ctx.triggerStore!.get(response.body.id)?.nextRunAt).toBe(utc.toISOString());
     },
   },
   {
-    id: "OPS-10", title: "deletes one schedule while retaining another for the same task",
+    id: "OPS-10", title: "deletes one task trigger with its run history while keeping another",
     async run(world) {
-      const task = await world.createTask("Multiple schedules");
-      world.initializeScheduler();
-      const removed = await world.createSchedule(task.id, "Remove");
-      const kept = await world.createSchedule(task.id, "Keep", { cron: "0 11 * * *" });
-      world.ctx.sessionMetaStore.recordScheduleRun(removed.id, "run-1", "2030-01-01T00:00:00.000Z");
-      expect(world.ctx.scheduleStore.claimScheduleRun(removed.id, "manual").acquired).toBe(true);
-      const deletion = await request(world.app).delete(`/api/schedules/${removed.id}`);
-      expect(deletion.status).toBe(200);
-      const listed = await request(world.app).get(`/api/schedules?taskId=${task.id}`);
-      expect(listed.body.map((item: any) => item.id)).toEqual([kept.id]);
-      expect(world.ctx.scheduleStore.getSchedule(removed.id)).toBeUndefined();
-      expect(world.ctx.sessionMetaStore.listScheduleRuns(removed.id)).toEqual([]);
-      expect(world.db.prepare("SELECT runKey FROM schedule_run_claims WHERE scheduleId = ?").all(removed.id)).toEqual([]);
+      const task = await world.createTask("Multiple triggers");
+      const removed = await world.createTaskTrigger(task.id, "Remove");
+      const kept = await world.createTaskTrigger(task.id, "Keep", { cron: "0 11 * * *" });
+      world.ctx.triggerStore!.recordRun({ triggerId: removed.id, sessionId: "run-1" }, "2030-01-01T00:00:00.000Z");
+      await request(world.app).delete(`/api/triggers/${removed.id}`).expect(200);
+      const listed = await request(world.app).get(`/api/triggers?taskId=${task.id}`).expect(200);
+      expect(listed.body.triggers.map((item: any) => item.id)).toEqual([kept.id]);
+      expect(world.ctx.triggerStore!.get(removed.id)).toBeUndefined();
+      expect(world.ctx.triggerStore!.listRuns(removed.id).total).toBe(0);
     },
   },
   {
-    id: "OPS-11", title: "isolates schedule listings between tasks",
+    id: "OPS-11", title: "isolates trigger listings between tasks",
     async run(world) {
       const first = await world.createTask("First automation host");
       const second = await world.createTask("Second automation host");
-      world.initializeScheduler();
-      const cron = "0 */5 * * * *";
-      const firstSchedule = await world.createSchedule(first.id, "First automation", { cron });
-      expect(firstSchedule.cron).toBe(cron);
-      const secondSchedule = await world.createSchedule(second.id, "Second automation");
-      expect((await request(world.app).get(`/api/schedules?taskId=${first.id}`)).body.map((item: any) => item.id)).toEqual([firstSchedule.id]);
-      expect((await request(world.app).get(`/api/schedules?taskId=${second.id}`)).body.map((item: any) => item.id)).toEqual([secondSchedule.id]);
+      const firstTrigger = await world.createTaskTrigger(first.id, "First automation");
+      const secondTrigger = await world.createTaskTrigger(second.id, "Second automation");
+      expect((await request(world.app).get(`/api/triggers?taskId=${first.id}`)).body.triggers.map((item: any) => item.id)).toEqual([firstTrigger.id]);
+      expect((await request(world.app).get(`/api/triggers?taskId=${second.id}`)).body.triggers.map((item: any) => item.id)).toEqual([secondTrigger.id]);
     },
   },
   {
-    id: "OPS-13", title: "paginates schedule run history without changing its total",
+    id: "OPS-13", title: "paginates the chats a trigger started without changing their total",
     async run(world) {
       const task = await world.createTask("Paged history");
-      world.initializeScheduler();
-      const schedule = await world.createSchedule(task.id, "Paged schedule");
-      const runs = world.ctx.sessionMetaStore;
-      runs.recordScheduleRun(schedule.id, "run-one", "2026-01-01T00:00:00.000Z");
-      runs.recordScheduleRun(schedule.id, "run-two", "2026-01-02T00:00:00.000Z");
-      runs.recordScheduleRun(schedule.id, "run-three", "2026-01-03T00:00:00.000Z");
-      const history = `/api/schedules/${schedule.id}/sessions`;
+      const trigger = await world.createTaskTrigger(task.id, "Paged trigger");
+      const store = world.ctx.triggerStore!;
+      store.recordRun({ triggerId: trigger.id, sessionId: "run-one" }, "2026-01-01T00:00:00.000Z");
+      store.recordRun({ triggerId: trigger.id, sessionId: "run-two" }, "2026-01-02T00:00:00.000Z");
+      store.recordRun({ triggerId: trigger.id, sessionId: "run-three" }, "2026-01-03T00:00:00.000Z");
+      const history = `/api/triggers/${trigger.id}/chats`;
       const page = await request(world.app).get(history).query({ limit: 2, offset: 1 }).expect(200);
       expect(page.body).toMatchObject({ total: 3, limit: 2, offset: 1, sessions: [{ sessionId: "run-two" }, { sessionId: "run-one" }] });
       const single = await request(world.app).get(history).query({ limit: 1, offset: 1 }).expect(200);
       expect(single.body).toMatchObject({ total: 3, limit: 1, offset: 1, sessions: [{ sessionId: "run-two" }] });
     },
-  },
-  {
-    id: "OPS-14", title: "applies schedule session retention immediately",
-    async run(world) {
-      const task = await world.createTask("Retention host");
-      world.initializeScheduler();
-      const schedule = await world.createSchedule(task.id, "Retained schedule");
-      world.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "new-run", "2026-09-02T00:00:00.000Z");
-      world.ctx.sessionMetaStore.recordScheduleRun(schedule.id, "old-run", "2026-09-01T00:00:00.000Z");
-      world.ctx.sessionManager.listSessionsFromDisk = async () => [{ sessionId: "new-run", summary: "New" }, { sessionId: "old-run", summary: "Old" }] as any;
-      const updated = await request(world.app).patch(`/api/schedules/${schedule.id}`).send({ autoArchiveKeep: 1 });
-      expect(updated.status).toBe(200);
-      expect(updated.body.autoArchiveKeep).toBe(1);
-      expect(world.ctx.sessionMetaStore.isArchived("new-run")).toBe(false);
-      expect(world.ctx.sessionMetaStore.isArchived("old-run")).toBe(true);
-    },
-  },
-  {
+  },  {
     id: "OPS-20", title: "creates a global session with validated model launch options",
     async run(world) {
       const selection = { model: "gpt-test", reasoningEffort: "high", contextTier: "long_context" };
@@ -163,16 +139,16 @@ export const operationScenarios: IntegrationScenario[] = [
     },
   },
   {
-    id: "OPS-25", title: "coordinates a task, schedule, knowledge page, and native Home",
+    id: "OPS-25", title: "coordinates a task, trigger, knowledge page, and native Home",
     async run(world) {
       const task = await world.createTask("Cross-boundary launch", { notes: "Coordinate all systems" });
-      world.initializeScheduler();
-      const schedule = await world.createSchedule(task.id, "Daily launch review");
+      const trigger = await world.createTaskTrigger(task.id, "Daily launch review");
+
       await world.writePage("launch/readiness", "# Launch Readiness\n\nReview daily.");
       await world.updateTask(task.id, { nextAction: "Run the launch review" });
-      const schedules = await request(world.app).get(`/api/schedules?taskId=${task.id}`);
+      const triggers = await request(world.app).get(`/api/triggers?taskId=${task.id}`);
       const search = await request(world.app).get("/api/docs/search?q=readiness");
-      expect(schedules.body[0].id).toBe(schedule.id);
+      expect(triggers.body.triggers[0].id).toBe(trigger.id);
       expect(search.body.results[0].path).toBe("launch/readiness");
       expect((await request(world.app).get("/api/home")).body.resume[0]).toMatchObject({ id: task.id, nextAction: "Run the launch review" });
     },

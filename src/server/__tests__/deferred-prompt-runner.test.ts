@@ -5,19 +5,18 @@ import { makeMockDeferSessionManager } from "./defer-test-helpers.js";
 import { createManagementJobStore } from "../management-job-store.js";
 import { managementJobDeliveryId } from "../management-job-delivery.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
+import { createDeferredPromptRunner } from "../deferred-prompt-runner.js";
 import {
-  createDeferredPromptRunner,
-  DEFER_WATCHDOG_INTERVAL_MS,
+  CHAT_WORK_WATCHDOG_INTERVAL_MS as DEFER_WATCHDOG_INTERVAL_MS,
   INITIAL_BACKOFF_MS,
   LEASE_MS,
   LEASE_RENEW_INTERVAL_MS,
   MAX_ATTEMPTS,
   MAX_TIMER_DELAY_MS,
-} from "../deferred-prompt-runner.js";
+} from "../chat-work-runner.js";
 import { createGlobalBus } from "../global-bus.js";
 import { createTelemetryStore } from "../telemetry-store.js";
-import { createDeferDeliveryGuard } from "../defer-delivery-guard.js";
-import { createReturnedDeferDelivery } from "../defer-result-message.js";
+import { createTriggerResultDelivery } from "../triggers/messages.js";
 import { queueChatMessageDelivery } from "../chat-message-outbox.js";
 import { createBackgroundCommandStore } from "../background-command-store.js";
 import { queueStoppedCommandWake } from "../background-commands.js";
@@ -28,29 +27,10 @@ import {
 import {
   PROMPT_DELIVERY_ABORTED_MESSAGE,
   PROMPT_DELIVERY_SHUTDOWN_MESSAGE,
-  SessionCapacityError,
 } from "../session-manager.js";
 import type { DatabaseSync } from "../db.js";
 
 // ── Helpers ────────────────────────────────────────────────────────
-
-/**
- * Lets a hand-built session manager run one-shot checks: its worker does what the manager's own
- * delivery does and then finishes silently. A check ends when that delivery resolves and fails when it throws.
- */
-function withWorker<T extends { startWorkAndWaitForDelivery: (sessionId: string, prompt: string) => Promise<unknown> }>(
-  sm: T,
-) {
-  return Object.assign(sm, {
-    tryAcquireDeferWorker: () => ({
-      run: async (input: { parentSessionId: string; prompt: string }) => {
-        await sm.startWorkAndWaitForDelivery(input.parentSessionId, input.prompt);
-        return { action: "finish" };
-      },
-      release: () => {},
-    }),
-  });
-}
 
 let db: DatabaseSync;
 
@@ -66,13 +46,9 @@ afterEach(() => {
 
 describe("deferred-prompt-runner", () => {
   describe("startup", () => {
-    it("processes due prompts on start", async () => {
+    it("sends due restart notices into their chat on start", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
-      const summaryEvents: any[] = [];
-      bus.subscribe((event) => {
-        if (event.type === "session:defer-summary") summaryEvents.push(event);
-      });
 
       const past = new Date(Date.now() - 1000).toISOString();
       store.create("session-1", "Do something", past);
@@ -86,85 +62,18 @@ describe("deferred-prompt-runner", () => {
 
       expect(sm._started).toHaveLength(1);
       expect(sm._started[0]).toEqual({ sessionId: "session-1", prompt: "Do something" });
-      // A check runs in a worker, never as a turn in the chat itself.
-      expect(sm._deliveryOptions).toEqual([]);
+      expect(sm._deliveryOptions).toEqual([{ completionAttention: true, origin: "defer" }]);
       const dp = store.listForSession("session-1")[0];
       expect(dp.status).toBe("completed");
-      expect(summaryEvents).toEqual([
-        { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 1, runningCount: 1, nextRunAt: null } },
-        { type: "session:defer-summary", sessionId: "session-1", deferSummary: { count: 0, runningCount: 0, nextRunAt: null } },
-      ]);
 
-      runner.shutdown();
-    });
-
-    it("can finish a one-shot worker silently without waking the parent", async () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const prompt = store.create(
-        "session-1",
-        "Check status",
-        new Date(Date.now() - 1_000).toISOString(),
-      );
-      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
-      sm.runDeferWorker = vi.fn(async () => ({ action: "finish" }));
-      const runner = createDeferredPromptRunner(store, sm, bus);
-
-      runner.start();
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(sm.runDeferWorker).toHaveBeenCalledWith(expect.objectContaining({
-        deferId: prompt.deferId,
-        kind: "once",
-        parentSessionId: "session-1",
-      }));
-      expect(sm._started).toEqual([]);
-      expect(store.get(prompt.id)?.status).toBe("completed");
-      runner.shutdown();
-    });
-
-    it("releases the shared guard before waking parent-message delivery", async () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const guard = createDeferDeliveryGuard();
-      const prompt = store.create(
-        "session-1",
-        "Check status",
-        new Date(Date.now() - 1_000).toISOString(),
-      );
-      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
-      sm.hasPersistedUserMessage = vi.fn(async () => false);
-      sm.runDeferWorker = vi.fn(async () => ({
-        action: "return",
-        message: "Build failed.",
-        deliveryId: "delivery-1",
-      }));
-      const runner = createDeferredPromptRunner(
-        store,
-        sm,
-        bus,
-        guard,
-      );
-
-      runner.start();
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(sm._started).toEqual([
-        expect.objectContaining({
-          sessionId: "session-1",
-          prompt: expect.stringContaining("Build failed."),
-        }),
-      ]);
-      expect(store.get(prompt.id)?.status).toBe("completed");
-      expect(store.get("delivery-1")?.status).toBe("completed");
       runner.shutdown();
     });
 
     it("keeps and delivers a queued result when its parent is archived", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
-      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "interval_1", kind: "interval", parentSessionId: "session-1" },
+      const delivery = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "1", parentSessionId: "session-1" },
         "Build completed.",
         { deliveryId: "delivery-1" },
       ), new Date(Date.now() + 1_000).toISOString());
@@ -216,8 +125,8 @@ describe("deferred-prompt-runner", () => {
 
     it("suppresses restart redelivery when the exact result is already persisted", async () => {
       const store = createDeferredPromptStore(db);
-      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "once_1", kind: "once", parentSessionId: "session-1" },
+      const delivery = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "1", parentSessionId: "session-1" },
         "Already delivered.",
         { deliveryId: "delivery-1" },
       ));
@@ -238,8 +147,8 @@ describe("deferred-prompt-runner", () => {
 
     it("deduplicates a persisted result even after its final attempt", async () => {
       const store = createDeferredPromptStore(db);
-      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "once_1", kind: "once", parentSessionId: "session-1" },
+      const delivery = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "1", parentSessionId: "session-1" },
         "Already delivered.",
         { deliveryId: "delivery-1" },
       ));
@@ -262,7 +171,7 @@ describe("deferred-prompt-runner", () => {
       runner.shutdown();
     });
 
-    it("does not let a stale worker complete a reactivated one-shot defer", async () => {
+    it("does not let a stale delivery complete a message that was reactivated while it ran", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
       const prompt = store.create(
@@ -270,12 +179,11 @@ describe("deferred-prompt-runner", () => {
         "Check status",
         new Date(Date.now() - 1_000).toISOString(),
       );
-      let resolveWorker!: (result: { action: "finish" }) => void;
-      const workerResult = new Promise<{ action: "finish" }>((resolve) => {
-        resolveWorker = resolve;
-      });
+      let resolveDelivery!: () => void;
       const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
-      sm.runDeferWorker = vi.fn(() => workerResult);
+      sm.startWorkAndWaitForDelivery = vi.fn(() => new Promise<void>((resolve) => {
+        resolveDelivery = resolve;
+      }));
       const runner = createDeferredPromptRunner(store, sm, bus);
 
       runner.start();
@@ -284,7 +192,7 @@ describe("deferred-prompt-runner", () => {
       expect(store.cancelById(prompt.id)).toBe(true);
       expect(store.reactivate(prompt.id, new Date(Date.now() + 60_000).toISOString())).toBe(true);
 
-      resolveWorker({ action: "finish" });
+      resolveDelivery();
       await vi.advanceTimersByTimeAsync(0);
 
       expect(store.get(prompt.id)?.status).toBe("pending");
@@ -312,7 +220,6 @@ describe("deferred-prompt-runner", () => {
         sm,
         bus,
         undefined,
-        { deferredPromptStore: store },
         { telemetryStore },
       );
 
@@ -333,14 +240,14 @@ describe("deferred-prompt-runner", () => {
       expect(telemetryStore.querySpans({ name: "defer.runner.hold" })).toEqual([
         expect.objectContaining({
           metadata: expect.objectContaining({
-            deferKind: "once",
+            deferKind: "outbox",
             dueCount: 1,
             reason: "agent backend startup hold",
           }),
         }),
         expect.objectContaining({
           metadata: expect.objectContaining({
-            deferKind: "once",
+            deferKind: "outbox",
             dueCount: 1,
             reason: "agent backend startup hold",
           }),
@@ -464,7 +371,7 @@ describe("deferred-prompt-runner", () => {
           return Promise.resolve();
         },
       };
-      const runner = createDeferredPromptRunner(store, withWorker(sm) as any, bus);
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
 
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
@@ -500,7 +407,7 @@ describe("deferred-prompt-runner", () => {
           });
         },
       };
-      const runner = createDeferredPromptRunner(store, withWorker(sm) as any, bus);
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
 
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
@@ -548,7 +455,7 @@ describe("deferred-prompt-runner", () => {
           return Promise.resolve();
         },
       };
-      const runner = createDeferredPromptRunner(store, withWorker(sm) as any, bus);
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
 
       await vi.advanceTimersByTimeAsync(0);
@@ -634,7 +541,7 @@ describe("deferred-prompt-runner", () => {
   describe("waiting for the Bridge", () => {
     const FULL = "All 32 live Copilot contexts are currently in use.";
 
-    it("keeps a one-shot check pending, uncounted, while no Copilot context is free", async () => {
+    it("keeps a restart notice pending, uncounted, while no Copilot context is free", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
       const dueAt = new Date(Date.now() - 1_000).toISOString();
@@ -664,13 +571,13 @@ describe("deferred-prompt-runner", () => {
     it("sends a message to a loaded chat when no context is free, and holds one for a chat that needs loading", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
-      const loaded = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "interval_a", kind: "interval", parentSessionId: "loaded-chat" },
+      const loaded = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "a", parentSessionId: "loaded-chat" },
         "Build finished.",
         { deliveryId: "to-loaded" },
       ));
-      const unloaded = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "interval_b", kind: "interval", parentSessionId: "unloaded-chat" },
+      const unloaded = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "b", parentSessionId: "unloaded-chat" },
         "Build finished.",
         { deliveryId: "to-unloaded" },
       ));
@@ -697,49 +604,12 @@ describe("deferred-prompt-runner", () => {
       runner.shutdown();
     });
 
-    it("does not count tries the worker gave up for lack of capacity, however many", async () => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      const dueAt = new Date(Date.now() - 1_000).toISOString();
-      const check = store.create("session-1", "Check status", dueAt);
-      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
-      let full = true;
-      sm.runDeferWorker = vi.fn(async () => {
-        if (full) {
-          throw new SessionCapacityError("weighted-capacity", {
-            contexts: 30,
-            contextLimit: 32,
-            localMcpInstances: 140,
-            capacityUnits: 65,
-            capacityLimit: 64,
-          });
-        }
-        return { action: "finish" };
-      });
-      const runner = createDeferredPromptRunner(store, sm as any, bus);
-
-      runner.start();
-      for (let sweep = 0; sweep <= MAX_ATTEMPTS + 2; sweep++) {
-        await vi.advanceTimersByTimeAsync(sweep === 0 ? 0 : DEFER_WATCHDOG_INTERVAL_MS);
-        const row = store.get(check.id)!;
-        expect(row).toMatchObject({ status: "pending", attempts: 0, runAt: dueAt });
-        expect(row.lastError).toContain("Live Copilot capacity is full");
-      }
-      expect(sm.runDeferWorker).toHaveBeenCalledTimes(MAX_ATTEMPTS + 3);
-      expect(store.listDeliveriesForSession("session-1")).toEqual([]);
-
-      full = false;
-      await vi.advanceTimersByTimeAsync(DEFER_WATCHDOG_INTERVAL_MS);
-      expect(store.get(check.id)?.status).toBe("completed");
-      runner.shutdown();
-    });
-
     it("does not count a message whose chat could not be loaded for lack of capacity", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
-      const notice = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "once_source", kind: "once", parentSessionId: "session-1" },
-        "FINAL DEFER RESULT: The one-shot defer once_source failed after 5 attempts.",
+      const notice = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "source", parentSessionId: "session-1" },
+        "FINAL TRIGGER RESULT: The trigger source failed after 5 attempts.",
         { deliveryId: "failure-notice" },
       ));
       let full = false;
@@ -778,52 +648,16 @@ describe("deferred-prompt-runner", () => {
       runner.shutdown();
     });
 
-    it.each([
-      {
-        name: "no context is free for a check",
-        setup: (sm: any) => {
-          sm.getSessionCapacityWait = vi.fn((sessionId?: string) => (sessionId === undefined ? FULL : undefined));
-        },
-      },
-      {
-        name: "every worker is taken",
-        setup: (sm: any) => {
-          sm.tryAcquireDeferWorker = vi.fn(() => undefined);
-        },
-      },
-    ])("still sends a chat its messages while its overdue check waits because $name", async ({ setup }) => {
-      const store = createDeferredPromptStore(db);
-      const bus = createGlobalBus();
-      // The check is due first, so it is the first thing the runner looks at for this chat.
-      const check = store.create("session-1", "Check status", new Date(Date.now() - 60_000).toISOString());
-      const message = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "interval_a", kind: "interval", parentSessionId: "session-1" },
-        "Build finished.",
-        { deliveryId: "result" },
-      ));
-      const sm = makeMockDeferSessionManager({ sessions: ["session-1"] }) as any;
-      setup(sm);
-      const runner = createDeferredPromptRunner(store, sm, bus);
-
-      runner.start();
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(sm._started).toEqual([{ sessionId: "session-1", prompt: message.prompt }]);
-      expect(store.get(message.id)?.status).toBe("completed");
-      expect(store.get(check.id)).toMatchObject({ status: "pending", attempts: 0 });
-      runner.shutdown();
-    });
-
     it("keeps a chat's messages in order while the first waits for the chat to be loaded", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
-      const first = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "interval_a", kind: "interval", parentSessionId: "session-1" },
+      const first = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "a", parentSessionId: "session-1" },
         "Build started.",
         { deliveryId: "first" },
       ), new Date(Date.now() - 2_000).toISOString());
-      const second = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "interval_a", kind: "interval", parentSessionId: "session-1" },
+      const second = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "a", parentSessionId: "session-1" },
         "Build finished.",
         { deliveryId: "second" },
       ), new Date(Date.now() - 1_000).toISOString());
@@ -849,10 +683,6 @@ describe("deferred-prompt-runner", () => {
     it("retries on busy error with backoff", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
-      const summaryEvents: any[] = [];
-      bus.subscribe((event) => {
-        if (event.type === "session:defer-summary") summaryEvents.push(event);
-      });
       const past = new Date(Date.now() - 1000).toISOString();
       store.create("session-1", "Prompt", past);
 
@@ -869,13 +699,7 @@ describe("deferred-prompt-runner", () => {
       // After one attempt the prompt should be re-queued pending with backoff
       expect(dp.status).toBe("pending");
       expect(dp.attempts).toBe(1);
-      expect(summaryEvents.map((event) => event.deferSummary.count)).toEqual([1, 1]);
-      expect(summaryEvents.map((event) => event.deferSummary.runningCount)).toEqual([1, 0]);
-      expect(summaryEvents.at(-1)).toMatchObject({
-        type: "session:defer-summary",
-        sessionId: "session-1",
-        deferSummary: { count: 1, runningCount: 0, nextRunAt: dp.runAt },
-      });
+      expect(Date.parse(dp.runAt)).toBeGreaterThan(Date.now());
       runner.shutdown();
     });
 
@@ -895,7 +719,7 @@ describe("deferred-prompt-runner", () => {
           started.push({ sessionId, prompt });
         },
       };
-      const runner = createDeferredPromptRunner(store, withWorker(sm) as any, bus);
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
 
@@ -1000,23 +824,7 @@ describe("deferred-prompt-runner", () => {
         attempts: MAX_ATTEMPTS,
         lastError: message,
       });
-      expect(warnSpy.mock.calls.filter(([text]) =>
-        String(text).includes(`Retrying deferral ${dp.id} after attempt`)
-      )).toHaveLength(MAX_ATTEMPTS - 1);
-      expect(errorSpy).toHaveBeenCalledWith(
-        expect.stringContaining(`Deferral ${dp.id} failed after ${MAX_ATTEMPTS} attempt(s)`),
-      );
-      expect(store.listDeliveriesForSession("session-1")).toEqual([
-        expect.objectContaining({
-          sourceId: dp.deferId,
-          prompt: expect.stringContaining(
-            `FINAL DEFER RESULT: The one-shot defer ${dp.deferId} failed after ${MAX_ATTEMPTS} attempts.`,
-          ),
-        }),
-      ]);
-      expect(store.listDeliveriesForSession("session-1")[0]?.prompt).toContain(
-        `Last error: ${message}`,
-      );
+      expect(store.listDeliveriesForSession("session-1")).toEqual([]);
       runner.shutdown();
       warnSpy.mockRestore();
       errorSpy.mockRestore();
@@ -1043,21 +851,16 @@ describe("deferred-prompt-runner", () => {
       expect(updated.status).toBe("failed");
       expect(updated.lastError).toContain("Fatal error");
       expect(sm._attention).toEqual([{ sessionId: "session-1", at: expect.any(String) }]);
-      expect(store.listDeliveriesForSession("session-1")).toEqual([
-        expect.objectContaining({
-          sourceId: dp.deferId,
-          prompt: expect.stringContaining("Deferred work is no longer active."),
-        }),
-      ]);
+      expect(store.listDeliveriesForSession("session-1")).toEqual([]);
       runner.shutdown();
     });
 
     it("does not recursively notify when a parent delivery exhausts retries", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
-      const delivery = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "interval_source", kind: "interval", parentSessionId: "session-1" },
-        "Source defer failed.",
+      const delivery = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "source", parentSessionId: "session-1" },
+        "Source trigger failed.",
         { deliveryId: "failed-delivery" },
       ));
       db.prepare("UPDATE deferred_prompts SET attempts = ? WHERE id = ?")
@@ -1082,7 +885,7 @@ describe("deferred-prompt-runner", () => {
       errorSpy.mockRestore();
     });
 
-    it("returns a failure queued before restart to the parent", async () => {
+    it("fails a message that used its last try before a restart without sending it again", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
       const dp = store.create("session-1", "Prompt", new Date(Date.now() - 1_000).toISOString());
@@ -1104,10 +907,7 @@ describe("deferred-prompt-runner", () => {
         attempts: MAX_ATTEMPTS,
         lastError: "Deferred execution lease expired before completion.",
       });
-      expect(sm._started).toHaveLength(1);
-      expect(sm._started[0]?.prompt).toContain(
-        "Last error: Deferred execution lease expired before completion.",
-      );
+      expect(sm._started).toEqual([]);
       runner.shutdown();
       errorSpy.mockRestore();
     });
@@ -1215,7 +1015,6 @@ describe("deferred-prompt-runner", () => {
           sm as any,
           bus,
           undefined,
-          undefined,
           { telemetryStore },
         );
 
@@ -1236,7 +1035,7 @@ describe("deferred-prompt-runner", () => {
         expect(store.get(deferred.id)?.status).toBe("completed");
         expect(telemetryStore.querySpans({ name: "defer.runner.watchdog_sweep" })[0]).toMatchObject({
           metadata: {
-            deferKind: "once",
+            deferKind: "outbox",
             overdueCount: 1,
             oldestOverdueAgeMs: expect.any(Number),
           },
@@ -1275,7 +1074,7 @@ describe("deferred-prompt-runner", () => {
             return Promise.resolve();
           },
         };
-        const runner = createDeferredPromptRunner(store, withWorker(sm) as any, bus);
+        const runner = createDeferredPromptRunner(store, sm as any, bus);
 
         runner.start();
         await vi.advanceTimersByTimeAsync(0);
@@ -1302,14 +1101,15 @@ describe("deferred-prompt-runner", () => {
         const store = createDeferredPromptStore(db);
         const bus = createGlobalBus();
         const deferred = store.create("session-1", "Retry setup", new Date(Date.now() - 1_000).toISOString());
-        vi.spyOn(bus, "emit").mockImplementationOnce(() => {
-          throw new Error("simulated summary failure");
-        });
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
         const sm = makeMockDeferSessionManager({ sessions: ["session-1"] });
         const runner = createDeferredPromptRunner(store, sm as any, bus);
 
         runner.start();
+        // start() armed its watchdog; the next interval is the lease renewal armed right after the claim.
+        vi.spyOn(globalThis, "setInterval").mockImplementationOnce(() => {
+          throw new Error("simulated renewal setup failure");
+        });
         await vi.advanceTimersByTimeAsync(0);
 
         expect(sm._started).toHaveLength(0);
@@ -1357,7 +1157,6 @@ describe("deferred-prompt-runner", () => {
           sm as any,
           bus,
           undefined,
-          undefined,
           { telemetryStore },
         );
 
@@ -1371,7 +1170,7 @@ describe("deferred-prompt-runner", () => {
         expect(sm._started).toEqual([{ sessionId: "session-1", prompt: "Exact wake" }]);
         expect(telemetryStore.querySpans({ name: "defer.runner.timer_wake" })[0]).toMatchObject({
           metadata: {
-            deferKind: "once",
+            deferKind: "outbox",
             scheduledFor: deferred.runAt,
             wakeDriftMs: expect.any(Number),
           },
@@ -1389,7 +1188,6 @@ describe("deferred-prompt-runner", () => {
           sm as any,
           bus,
           undefined,
-          undefined,
           { telemetryStore },
         );
 
@@ -1404,7 +1202,7 @@ describe("deferred-prompt-runner", () => {
 
         expect(telemetryStore.querySpans({ name: "defer.runner.watchdog_sweep_failure" })[0]).toMatchObject({
           metadata: {
-            deferKind: "once",
+            deferKind: "outbox",
             error: "simulated sweep failure",
           },
         });
@@ -1458,7 +1256,7 @@ describe("deferred-prompt-runner", () => {
           return Promise.resolve();
         },
       };
-      const runner = createDeferredPromptRunner(store, withWorker(sm) as any, bus);
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
       // Flush only the initial async processDue pass (no timer advance into future items)
       await vi.advanceTimersByTimeAsync(0);
@@ -1494,17 +1292,14 @@ describe("deferred-prompt-runner", () => {
       };
 
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      const runner = createDeferredPromptRunner(store, withWorker(sm) as any, bus);
+      const runner = createDeferredPromptRunner(store, sm as any, bus);
       runner.start();
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(started.slice(0, 2)).toEqual([
+      expect(started).toEqual([
         { sessionId: "session-1", prompt: "First" },
         { sessionId: "session-1", prompt: "Second" },
       ]);
-      expect(started[2]?.prompt).toContain(
-        `FINAL DEFER RESULT: The one-shot defer ${first.deferId} failed after ${MAX_ATTEMPTS} attempts.`,
-      );
       expect(store.get(first.id)?.status).toBe("failed");
       expect(store.get(second.id)?.status).toBe("completed");
       errorSpy.mockRestore();
@@ -1560,15 +1355,15 @@ describe("deferred-prompt-runner", () => {
       runner.shutdown();
     });
 
-    it("withdraws an unsent job result when its session is archived, but keeps defer results", async () => {
+    it("withdraws an unsent job result when its session is archived, but keeps trigger results", async () => {
       const store = createDeferredPromptStore(db);
       const bus = createGlobalBus();
       const busySessions = new Set(["session-1"]);
       const jobDeliveryId = failJobFor("session-1");
-      const deferDelivery = store.enqueueDelivery(createReturnedDeferDelivery(
-        { deferId: "once_1", kind: "once", parentSessionId: "session-1" },
-        "Defer result.",
-        { deliveryId: "defer-delivery-1" },
+      const triggerDelivery = store.enqueueDelivery(createTriggerResultDelivery(
+        { triggerId: "1", parentSessionId: "session-1" },
+        "Trigger result.",
+        { deliveryId: "trigger-delivery-1" },
       ));
       const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions });
       const runner = createDeferredPromptRunner(store, sm as any, bus);
@@ -1579,7 +1374,7 @@ describe("deferred-prompt-runner", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(store.get(jobDeliveryId)?.status).toBe("cancelled");
-      expect(store.get(deferDelivery.id)?.status).toBe("pending");
+      expect(store.get(triggerDelivery.id)?.status).toBe("pending");
       runner.shutdown();
     });
   });
@@ -1594,7 +1389,6 @@ describe("deferred-prompt-runner", () => {
       commands.markSessionStopped("session-1", "unloaded");
       const busySessions = new Set(["session-1"]);
       const sm = makeMockDeferSessionManager({ sessions: ["session-1"], busySessions }) as any;
-      sm.runDeferWorker = vi.fn();
       sm.tryAcquireDeferWorker = vi.fn();
       const runner = createDeferredPromptRunner(store, sm, bus);
       runner.start();
@@ -1615,7 +1409,6 @@ describe("deferred-prompt-runner", () => {
       expect(sm._started).toHaveLength(1);
       expect(sm._started[0].prompt.startsWith("<bridge_notice>")).toBe(true);
       expect(sm._started[0].prompt).toContain('shellId 3 "Test refresh"');
-      expect(sm.runDeferWorker).not.toHaveBeenCalled();
       expect(sm.tryAcquireDeferWorker).not.toHaveBeenCalled();
       expect(store.listDeliveriesForSession("session-1")[0]?.status).toBe("completed");
       runner.shutdown();

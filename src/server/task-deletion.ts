@@ -1,11 +1,10 @@
 // Task deletion — the single owner of "delete a task and everything it owns".
 //
 // Task deletion has to reach past the `tasks` row: entity tags live in a
-// separate table with no foreign key, and `schedules.taskId` has no foreign key
-// either, so child schedules would otherwise survive their parent and keep
-// waking the scheduler forever. `TaskStore` removes all of that in one
-// transaction; this helper owns the side effects that cannot be transactional
-// (timer unregistration and events). Routing every deletion entry point through
+// separate table with no foreign key, and `triggers.taskId` has no foreign key
+// either, so the task's triggers would otherwise survive it and keep running.
+// `TaskStore` removes all of that in one transaction; this helper owns the side
+// effects that cannot be transactional (events). Routing every deletion entry point through
 // here keeps that cleanup identical no matter who triggers it.
 //
 // Linked sessions are NOT owned by the task, so the caller must say what should
@@ -31,7 +30,7 @@ export function isTaskUntouched(ctx: AppContext, task: Task): boolean {
     && task.sessionIds.length === 0
     && task.workItems.length === 0
     && task.pullRequests.length === 0
-    && ctx.scheduleStore.listSchedules(task.id).length === 0
+    && (ctx.triggerStore?.list({ taskId: task.id, includeInactive: true }).length ?? 0) === 0
     && ctx.checklistStore.listChecklistItems(task.id).length === 0
     && (ctx.taskHistoryStore?.countEntries(task.id) ?? 0) === 0
     && (ctx.tagStore?.getEntityTags("task", task.id).length ?? 0) === 0;
@@ -55,8 +54,8 @@ export interface TaskDeletionOptions {
 }
 
 export interface TaskDeletionResult {
-  /** Schedules removed alongside the task. Their timers are already unregistered. */
-  deletedScheduleIds: string[];
+  /** Triggers removed alongside the task. */
+  deletedTriggerIds: string[];
   archivedSessionIds: string[];
   deletedSessionIds: string[];
   /**
@@ -72,11 +71,10 @@ export interface TaskDeletionResult {
 function finishTaskDeletion(
   ctx: AppContext,
   taskId: string,
-  deletedScheduleIds: string[],
+  deletedTriggerIds: string[],
 ): void {
-  for (const scheduleId of deletedScheduleIds) {
-    ctx.scheduler?.unregisterSchedule(scheduleId);
-    ctx.globalBus.emit({ type: "schedule:changed", taskId, scheduleId });
+  for (const triggerId of deletedTriggerIds) {
+    ctx.globalBus.emit({ type: "trigger:changed", taskId, triggerId });
   }
 }
 
@@ -88,27 +86,27 @@ export async function deleteTaskWithOwnedState(
   const { sessionDisposition, deleteSession, onSessionsChanged } = options;
 
   if (sessionDisposition === "archive") {
-    const { deletedScheduleIds, archivedSessionIds } =
+    const { deletedTriggerIds, archivedSessionIds } =
       ctx.taskStore.archiveSessionsAndDeleteTask(taskId);
     if (archivedSessionIds.length > 0) {
-      // Archiving normally cancels a session's deferred work through the
-      // per-session `session:archived` event that the defer runners subscribe
-      // to. The bulk path deliberately does not emit thousands of those, so the
-      // cancellation has to happen explicitly or an archived session could
-      // still wake up and run a deferred prompt.
+      // Archiving normally cancels a chat's triggers and queued messages through
+      // the per-session `session:archived` event the runners subscribe to. The
+      // bulk path deliberately does not emit thousands of those, so the
+      // cancellation has to happen explicitly or an archived chat could still
+      // be woken by a trigger.
       for (const sessionId of archivedSessionIds) {
         ctx.deferredPromptStore?.cancelForSession(sessionId);
         ctx.deferredPromptStore?.cancelManagementJobDeliveriesForSession(sessionId);
-        ctx.deferLoopStore?.cancelForSession(sessionId);
+        ctx.triggerStore?.cancelForSession(sessionId);
       }
       onSessionsChanged?.("task-deletion:sessions-archived");
       ctx.globalBus.emit({ type: "sessions:changed" });
     }
     // Kept chats lose the task their system prompt names.
     for (const sessionId of archivedSessionIds) ctx.sessionManager.invalidateSessionConfig(sessionId, "task deleted");
-    finishTaskDeletion(ctx, taskId, deletedScheduleIds);
+    finishTaskDeletion(ctx, taskId, deletedTriggerIds);
     return {
-      deletedScheduleIds,
+      deletedTriggerIds,
       archivedSessionIds,
       deletedSessionIds: [],
       unlinkedSharedSessionIds: [],
@@ -152,7 +150,7 @@ export async function deleteTaskWithOwnedState(
   // link rows and strand whatever sessions had not been reached yet.
   if (Object.keys(sessionErrors).length > 0) {
     return {
-      deletedScheduleIds: [],
+      deletedTriggerIds: [],
       archivedSessionIds: [],
       deletedSessionIds,
       unlinkedSharedSessionIds,
@@ -171,7 +169,7 @@ export async function deleteTaskWithOwnedState(
     .filter((id) => !expectedRemaining.has(id));
   if (newlyLinked.length > 0) {
     return {
-      deletedScheduleIds: [],
+      deletedTriggerIds: [],
       archivedSessionIds: [],
       deletedSessionIds,
       unlinkedSharedSessionIds,
@@ -183,12 +181,12 @@ export async function deleteTaskWithOwnedState(
     };
   }
 
-  const { deletedScheduleIds } = ctx.taskStore.deleteTaskCascade(taskId);
+  const { deletedTriggerIds } = ctx.taskStore.deleteTaskCascade(taskId);
   for (const sessionId of unlinkedSharedSessionIds) ctx.sessionManager.invalidateSessionConfig(sessionId, "task deleted");
-  finishTaskDeletion(ctx, taskId, deletedScheduleIds);
+  finishTaskDeletion(ctx, taskId, deletedTriggerIds);
 
   return {
-    deletedScheduleIds,
+    deletedTriggerIds,
     archivedSessionIds: [],
     deletedSessionIds,
     unlinkedSharedSessionIds,

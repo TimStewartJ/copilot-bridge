@@ -1097,7 +1097,7 @@ describe("session-config-builder", () => {
     expect(content).toContain("<bridge_context>");
     expect(content).not.toContain("use task_update to give it");
     expect(content).toContain("<task_instructions>\nStanding rules for this task. Follow them in every session.\nNever email the landlord.\n</task_instructions>");
-    expect(content).toContain('triggered by schedule "Daily check" (recurring, run #3)');
+    expect(content).toContain('started by trigger "Daily check" (recurring, run #3)');
     expect(content).not.toContain("call `session_rename`");
     // Changing state travels with user messages instead, so editing it never rewrites the prompt.
     expect(content).not.toContain("Config task");

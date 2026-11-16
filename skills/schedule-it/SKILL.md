@@ -22,7 +22,7 @@ You own finding the time and creating the entry. Invitations that go out in the 
 6. When other people are invited, propose the slots with ask_user, showing the exact attendees, time in each attendee's time zone, title and body.
 7. Create the event or send the invitation exactly as approved, with the connected calendar tool that sends invitations. If none exists, say so and give the details for the user to send.
 8. Read the event back from the calendar to confirm the time, time zone and attendees are right.
-9. If replies matter, create a one-shot defer to check responses before the event.
+9. If replies matter, create a one-time trigger (trigger_create with runAt) to check responses before the event.
 
 ## Gates
 

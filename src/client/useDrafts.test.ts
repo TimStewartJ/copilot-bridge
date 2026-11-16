@@ -195,7 +195,7 @@ describe("useDrafts launch persistence", () => {
   it("keeps the active draft while session inventory settles and prunes only unowned conversations", async () => {
     const otherSession: Session = {
       sessionId: "other-session",
-      deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+      triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
     };
     const taskDraft = {
       text: "", launch: { model: "gpt-5.6", contextTier: { modelId: "gpt-5.6", value: "default" } },

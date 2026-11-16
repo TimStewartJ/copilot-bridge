@@ -13,7 +13,7 @@ export interface TaskIndicator {
   busyCount: number;
   unreadCount: number;
   needsUserInputCount?: number;
-  deferCount?: number;
+  triggerCount?: number;
   backgroundRunningCount?: number;
   externalCount?: number;
   sessionStateKnown?: boolean;
@@ -149,7 +149,7 @@ export function getTaskIndicator(
   let stalledCount = 0;
   let unreadCount = 0;
   let needsUserInputCount = 0;
-  let deferCount = 0;
+  let triggerCount = 0;
   let backgroundRunningCount = 0;
   let externalCount = 0;
   let sessionStateKnown = true;
@@ -161,7 +161,7 @@ export function getTaskIndicator(
     if (session.runState === undefined) sessionStateKnown = false;
 
     if (sessionNeedsUserInput(session)) needsUserInputCount++;
-    deferCount += session.deferSummary?.count ?? 0;
+    triggerCount += session.triggerSummary?.count ?? 0;
     if (session.backgroundAgents?.source === "live") backgroundRunningCount += session.backgroundAgents.running;
     if (session.externallyInUse) externalCount++;
 
@@ -183,7 +183,7 @@ export function getTaskIndicator(
     busyCount,
     unreadCount,
     needsUserInputCount,
-    deferCount, backgroundRunningCount, externalCount, sessionStateKnown, readStateKnown,
+    triggerCount, backgroundRunningCount, externalCount, sessionStateKnown, readStateKnown,
     ...(task.activeSessionIds.length > 0 && readStateError ? { readStateError } : {}),
     ...(task.activeSessionIds.length > 0 && sessionSource ? { sessionSource } : {}),
     lastActivity,

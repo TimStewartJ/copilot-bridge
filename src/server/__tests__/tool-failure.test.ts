@@ -184,13 +184,13 @@ describe("tool failure telemetry", () => {
       { error: { status: 429, message: "private-tool-payload" } },
       {
         sessionId: "parent", toolName: "t".repeat(300), toolCallId: "c".repeat(300),
-        durationMs: 25, deferId: "interval_1", runCount: 2, workerSessionId: "worker",
+        durationMs: 25, triggerId: "interval_1", runCount: 2, workerSessionId: "worker",
       },
       recordSpan,
     );
     expect(recordSpan).toHaveBeenCalledExactlyOnceWith("tool.failure", 25, "parent", {
       toolName: "t".repeat(256), toolCallId: "c".repeat(256),
-      deferId: "interval_1", runCount: 2, workerSessionId: "worker",
+      triggerId: "interval_1", runCount: 2, workerSessionId: "worker",
       ...failure,
     });
     expect(JSON.stringify(recordSpan.mock.calls)).not.toContain("private-tool-payload");

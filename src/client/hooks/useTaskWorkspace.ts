@@ -5,8 +5,8 @@ import { fetchRelatedDocs } from "../api";
 import { queryKeys } from "../queryClient";
 import { isChecklistItemsReadyForFocus } from "../task-detail-focus";
 import { useTaskEnrichment } from "./useTaskEnrichment";
-import { useTaskSchedules } from "./useTaskSchedules";
-import { useScheduleDetail } from "./useScheduleDetail";
+import { useTaskTriggers } from "./useTaskTriggers";
+import { useTriggerDetail } from "./useTriggerDetail";
 import { useNotesSheet } from "./useNotesSheet";
 import {
   useTaskChecklistItemsQuery,
@@ -18,7 +18,7 @@ import { isSessionLinkedToTask } from "../lib/task-session-links";
 
 /**
  * Consolidates shared setup for TaskPanel and TaskDashboard:
- * enrichment, schedules, schedule detail sheet, notes sheet,
+ * enrichment, triggers, trigger detail sheet, notes sheet,
  * checklist items, linked sessions, effective tags, and related docs.
  */
 export function useTaskWorkspace(
@@ -31,9 +31,9 @@ export function useTaskWorkspace(
     task?.id, task?.workItems.length ?? 0, task?.pullRequests.length ?? 0,
   );
 
-  // ── Schedules ───────────────────────────────────────────────
-  const sched = useTaskSchedules(task?.id);
-  const schedDetail = useScheduleDetail();
+  // ── Triggers ────────────────────────────────────────────────
+  const triggers = useTaskTriggers(task?.id);
+  const triggerDetail = useTriggerDetail();
 
   // ── Notes ───────────────────────────────────────────────────
   const notes = useNotesSheet(task?.id);
@@ -98,21 +98,21 @@ export function useTaskWorkspace(
     const work: Array<Promise<unknown> | void> = [
       reloadEnriched(),
       refetchChecklistItems(),
-      sched.reload(),
+      triggers.reload(),
     ];
     if (effectiveTagIds.length > 0) work.push(relatedDocsQuery.refetch());
     if (task?.cwd) work.push(refetchTaskGitStatus());
     await Promise.all(work);
-  }, [reloadEnriched, refetchChecklistItems, refetchTaskGitStatus, sched.reload, relatedDocsQuery.refetch, effectiveTagIds.length, task?.cwd]);
+  }, [reloadEnriched, refetchChecklistItems, refetchTaskGitStatus, triggers.reload, relatedDocsQuery.refetch, effectiveTagIds.length, task?.cwd]);
 
   return {
     // Enrichment
     enrichedWIs,
     enrichedPRs,
     reloadEnriched,
-    // Schedules
-    sched,
-    schedDetail,
+    // Triggers
+    triggers,
+    triggerDetail,
     // Notes
     notes,
     instructionsSheet,

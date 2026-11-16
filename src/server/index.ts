@@ -38,7 +38,7 @@ import {
 } from "./api-request-telemetry.js";
 import {
   createAppContext,
-  initializeSchedulerAndDeferredRunners,
+  initializeTriggerAndDeliveryRunners,
 } from "./app-context-factory.js";
 import { createServerShutdownCoordinator } from "./shutdown-coordinator.js";
 import {
@@ -321,8 +321,8 @@ async function main(): Promise<void> {
     console.error("[restart-resume] Background command recovery failed:", error);
   }
 
-  // Initialize scheduler after session manager is ready
-  initializeSchedulerAndDeferredRunners(defaultContext);
+  // Start triggers and the chat outbox after the session manager is ready
+  initializeTriggerAndDeliveryRunners(defaultContext);
 
   // A hibernation the user asked for before the last server stopped: for a deploy, or because it died.
   try {

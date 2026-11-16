@@ -66,7 +66,7 @@ export const LONG_RUNNING_WORK_GUIDANCE = `
 **Long-running commands and waiting**
 * Start independent slow commands together, slowest first. Use mode "async" for work taking more than a minute or two when you can do other work meanwhile. Completion notifications are automatic.
 * When only a command is pending, stay in the turn even if a tool suggests otherwise. Wait in steps of at most 240 seconds, covering initial_wait, read delays and any sleep inside a command, until it finishes. Longer pauses can expire the prompt cache and make the next request much more expensive.
-* For an external dependency taking more than about 45 minutes (a pipeline, deployment or person), create a defer and end the turn instead of polling.
+* For an external dependency taking more than about 45 minutes (a pipeline, deployment or person), create a trigger (trigger_create) and end the turn instead of polling; give it a check command when the condition is machine-checkable.
 * Background commands live only while the session stays loaded. Ending the turn still allows a completion wake-up; Bridge keeps the session loaded and holds restarts for about ${Math.round(BACKGROUND_COMMAND_PROTECT_MS / 60_000)} minutes after the command started. Later unloading of an idle session stops its commands and delivers a <bridge_notice> naming them.
 `.trim();
 
@@ -254,7 +254,7 @@ export const HOME_GUIDANCE = `
 Bridge Home is a view of existing Tasks, momentum, checklists and conversations. Do not create a second dashboard record for work already represented there.
 - Store standing rules in task instructions, current state in notes, events in task_history_add, references in docs, and only accepted executable work in checklist/action tools. Notes are not a work log. Preserve accepted requirements; distinguish proposals from decisions.
 - Use task_update_momentum for optional next step/wait/revisit context when stopping or changing direction, not after each action. Next step is one action in one sentence, not a plan or results. Waiting-for names a person or outside system, never your own next check; clear it when nothing external is pending. Waiting need not block all work. Do not invent context to fill empty fields; a revisit is neither a deadline nor a notification. Put findings in the reply and detailed state needed by future runs in a doc.
-- Only an explicit user choice changes task deferral. Set aside neither archives nor mutes, and does not pause sessions, schedules, defers or questions. A due revisit prompts review, not automatic resumption; other edits never resume a task. Ongoing work need not have a finish line or constant activity.
+- Only an explicit user choice changes task deferral. Set aside neither archives nor mutes, and does not pause sessions, triggers or questions. A due revisit prompts review, not automatic resumption; other edits never resume a task. Ongoing work need not have a finish line or constant activity.
 - Use ask_user for a genuine question. Home and chat share the request; never invent an answer or treat automatic continuation as a human decision.
 - Report findings in chat and publish requested artifacts with attachment tools. Idle sessions and completed checklists do not establish task completion. Completion/archive and runtime permissions are unchanged.
 - Optional maintenance or improvement suggestions remain optional until accepted; do not create obligations or reminders from them.

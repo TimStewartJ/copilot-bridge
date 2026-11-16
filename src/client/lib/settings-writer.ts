@@ -87,7 +87,7 @@ const MESSAGE_LABELS: Partial<Record<SettingsKey, string>> = {
   providers: "providers",
   computerUse: "computer use",
   imageGeneration: "image generation",
-  deferWorker: "deferred workers",
+  deferWorker: "trigger workers",
   browser: "browser settings",
   deployGuards: "deploy guards",
   helm: "Helm settings",

@@ -7,14 +7,14 @@ export interface MockDeferSessionManagerOptions {
   busySessions?: Set<string>;
   startWorkError?: Error;
   persistedUserMessage?: boolean;
-  /** What a check reports when the test supplies no worker: one-shot defers finish, recurring loops continue. */
+  /** What a worker reports when the test supplies none: one-time triggers finish, recurring ones continue. */
   defaultAction?: "finish" | "continue";
 }
 
 /**
- * A hand-built session manager for the defer runners. Each check runs in a worker; unless a test sets
- * `runDeferWorker`, the check records itself in `_started` and returns `defaultAction`, so scheduling tests
- * can assert on what ran without caring how.
+ * A hand-built session manager for the trigger and outbox runners. A trigger worker run, unless a test
+ * sets `runDeferWorker`, records itself in `_started` and returns `defaultAction`; a message delivered
+ * into a chat records itself there too, so scheduling tests can assert on what ran without caring how.
  */
 export function makeMockDeferSessionManager(options: MockDeferSessionManagerOptions = {}) {
   const {

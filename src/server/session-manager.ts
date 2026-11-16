@@ -31,7 +31,6 @@ import type { WorkItemRef } from "./task-store.js";
 import type { Task } from "./task-store.js";
 import type { TaskGroupStore } from "./task-group-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
-import { createScheduleStore } from "./schedule-store.js";
 import {
   type PendingInteractionSnapshot,
   type SessionEventBus,
@@ -267,12 +266,12 @@ import {
   type SessionNameAutogenerator,
 } from "./session-name-autogen.js";
 import {
-  createDisposableDeferWorker,
+  createDisposableTriggerWorker,
   DISPOSABLE_DEFER_WORKER_SESSION_ID_PREFIX,
   isDisposableDeferWorkerSessionId,
-  type DeferWorkerLease,
-  type DisposableDeferWorker,
-} from "./defer-worker.js";
+  type TriggerWorkerLease,
+  type DisposableTriggerWorker,
+} from "./triggers/worker.js";
 import { cancelScheduledRestartResume, type InterruptedRun } from "./restart-resume.js";
 import {
   COPILOT_USAGE_PARSER_VERSION,
@@ -950,7 +949,7 @@ export class SessionManager {
   private readonly agentRegistry: SessionAgentRegistry;
   private readonly sessionNameRpc: SessionNameRpc;
   private readonly sessionNameAutogenerator: SessionNameAutogenerator;
-  private readonly deferWorker: DisposableDeferWorker;
+  private readonly triggerWorker: DisposableTriggerWorker;
   private readonly sessionRunner: SessionRunner;
   private readonly imageBudget: ImageBudgetController;
   readonly sessionRuns: Map<string, SessionRunRecord>;
@@ -1134,7 +1133,7 @@ export class SessionManager {
       recordSpan: (name, duration, sessionId, metadata) => this.recordSpan(name, duration, sessionId, metadata),
       logger: console,
     });
-    this.deferWorker = createDisposableDeferWorker({
+    this.triggerWorker = createDisposableTriggerWorker({
       getSettings: () => this.deps.settingsStore?.getSettings() ?? { mcpServers: {} },
       listModels: () => this.listModels(),
       buildSessionConfig: (options) => this.buildSessionConfig(options),
@@ -5467,8 +5466,8 @@ export class SessionManager {
     }
   }
 
-  tryAcquireDeferWorker(): DeferWorkerLease | undefined {
-    return this.deferWorker.tryAcquire();
+  tryAcquireDeferWorker(): TriggerWorkerLease | undefined {
+    return this.triggerWorker.tryAcquire();
   }
 
   /**
@@ -6696,7 +6695,7 @@ export class SessionManager {
   ): Promise<void> {
     this.shuttingDown = true;
     // A check that fails as "Bridge is restarting" is requeued without costing its defer an attempt.
-    this.deferWorker.abortAll();
+    this.triggerWorker.abortAll();
     this.stopSessionCacheSweep();
     this.backendDisconnectUnsubscribe?.();
     this.backendDisconnectUnsubscribe = null;

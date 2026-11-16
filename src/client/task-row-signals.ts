@@ -45,7 +45,7 @@ export function getTaskAttentionSignal(
     stalled: indicator?.stalled,
     readStateKnown: indicator?.readStateKnown ?? true,
     sessionStateKnown: indicator?.sessionStateKnown ?? true,
-    liveWorkCount: (indicator?.busyCount ?? 0) + (indicator?.deferCount ?? 0)
+    liveWorkCount: (indicator?.busyCount ?? 0) + (indicator?.triggerCount ?? 0)
       + (indicator?.backgroundRunningCount ?? 0) + (indicator?.externalCount ?? 0),
     activity: options.activity,
   }, now.getTime());
@@ -89,8 +89,8 @@ export function getTaskActivityDescription(task: SignalTask, indicator?: TaskInd
   if ((activity?.heldCount ?? 0) > 0) return "A continuation is pending";
   if ((activity?.managementJobCount ?? 0) > 0) return "A background management job is pending";
   if ((activity?.pendingDeliveryCount ?? 0) > 0) return "A result is queued for delivery";
-  if (Math.max(indicator?.deferCount ?? 0, activity?.deferredCount ?? 0) > 0) return "Automatic check scheduled";
-  if ((activity?.scheduledCount ?? 0) > 0) return "Automatic work scheduled";
+  if (Math.max(indicator?.triggerCount ?? 0, activity?.chatTriggerCount ?? 0) > 0) return "Trigger active";
+  if ((activity?.taskTriggerCount ?? 0) > 0) return "Automation scheduled";
   if (Math.max(indicator?.externalCount ?? 0, activity?.externalCount ?? 0) > 0) return "Open in another client";
   if (task.waitingOn?.trim()) return `Waiting for: ${task.waitingOn.trim()}`;
   if (getRevisitState(task.nextTouchAt) === "upcoming") return "A future revisit is planned";

@@ -39,7 +39,7 @@ describe("native task deferral dialog", () => {
     expect(saved).toHaveBeenCalledExactlyOnceWith({ ...task, deferred: true });
     expect(close).toHaveBeenCalledOnce();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["dashboard"] });
-    expect(harness.dom.container.textContent).toContain("Sessions, schedules and deferred jobs keep running");
+    expect(harness.dom.container.textContent).toContain("Chats and triggers keep running");
   });
   it("preserves an existing timestamp exactly unless the user changes it", async () => {
     await render({ ...task, nextTouchAt: "2030-01-01T10:30:42.123Z" });

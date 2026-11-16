@@ -1,7 +1,7 @@
 // Global event bus for cross-session status changes
 // Pushes run-state/title/intent events to all connected SSE clients
 
-import type { DeferSummary } from "./defer-summary.js";
+import type { TriggerSummary } from "./triggers/types.js";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-store.js";
 import type { BackgroundAgentsSummary } from "../shared/session-agents.js";
 import type { AgentBackendStatus } from "../shared/agent-backend-status.js";
@@ -9,7 +9,7 @@ import type { SendMode } from "../shared/send-mode.js";
 import type { SessionPlaybookView } from "../shared/workflow-vocabulary.js";
 
 export interface StatusEvent {
-  type: "session:busy" | "session:stalled" | "session:idle" | "session:mode" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "session:continuation" | "sessions:changed" | "session:user-input" | "session:defer-summary" | "session:history-truncated" | "server:restart-changed" | "schedule:triggered" | "schedule:changed" | "task:changed" | "readstate:changed" | "management-job:changed" | "backend:status" | "docs:changed" | "helm:changed" | "calendar:changed" | "session:playbook" | "skills:changed" | "session:completion";
+  type: "session:busy" | "session:stalled" | "session:idle" | "session:mode" | "session:title" | "session:intent" | "session:archived" | "session:agents" | "session:continuation" | "sessions:changed" | "session:user-input" | "session:trigger-summary" | "session:history-truncated" | "server:restart-changed" | "trigger:fired" | "trigger:changed" | "task:changed" | "readstate:changed" | "management-job:changed" | "backend:status" | "docs:changed" | "helm:changed" | "calendar:changed" | "session:playbook" | "skills:changed" | "session:completion";
   sessionId?: string;
   /** `session:archived` for several sessions at once; `sessionId` is then absent. */
   sessionIds?: string[];
@@ -25,12 +25,12 @@ export interface StatusEvent {
   pendingUserInputCount?: number;
   needsUserInput?: boolean;
   assistantPreview?: string;
-  deferSummary?: DeferSummary;
+  triggerSummary?: TriggerSummary;
   backgroundAgents?: BackgroundAgentsSummary;
   /** `session:mode`: the CLI mode the session's runs use. */
   agentMode?: SendMode;
-  scheduleId?: string;
-  scheduleName?: string;
+  triggerId?: string;
+  triggerName?: string;
   taskId?: string;
   readState?: Record<string, string>;
   agentBackend?: AgentBackendStatus;

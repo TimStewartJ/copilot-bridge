@@ -232,7 +232,7 @@ export interface CopilotUsageSessionScanResult {
   forkAccounting?: CopilotUsageForkAccounting;
   source?: {
     kind: "defer_worker";
-    deferId: string;
+    triggerId: string;
     parentSessionId: string;
     action: string;
   };

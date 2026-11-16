@@ -21,7 +21,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
 }
 
 function createSession(sessionId: string, at = NOW): Session {
-  return { sessionId, modifiedTime: at, lastVisibleActivityAt: at, archived: false, runState: "idle", diskSizeBytes: 0, deferSummary: { count: 0, runningCount: 0, nextRunAt: null } };
+  return { sessionId, modifiedTime: at, lastVisibleActivityAt: at, archived: false, runState: "idle", diskSizeBytes: 0, triggerSummary: { count: 0, runningCount: 0, nextRunAt: null } };
 }
 
 describe("phone task list sections", () => {

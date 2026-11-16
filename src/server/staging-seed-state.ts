@@ -8,6 +8,15 @@ export function isolateStagingRuntimeState(db: DatabaseSync): Record<string, num
   const reason = "Isolated staging copy: production automatic work is not resumed.";
   const changed: Record<string, number> = {};
   changed.schedules = Number(db.prepare("UPDATE schedules SET enabled=0 WHERE enabled<>0").run().changes);
+  // A production database from before triggers has no triggers table yet: the preview's own
+  // migration then moves the schedules and defers isolated above, already stopped.
+  if (hasTable("triggers")) {
+    // Task triggers stay visible but paused; chat triggers would wake production chats' copies.
+    changed.taskTriggers = Number(db.prepare(`UPDATE triggers SET status='paused',runNow=0,claimToken=NULL,leaseExpiresAt=NULL,updatedAt=?
+      WHERE lane='task' AND status IN ('active','running')`).run(now).changes);
+    changed.chatTriggers = Number(db.prepare(`UPDATE triggers SET status='cancelled',runNow=0,claimToken=NULL,leaseExpiresAt=NULL,lastError=?,updatedAt=?
+      WHERE lane='chat' AND status IN ('active','running','paused')`).run(reason, now).changes);
+  }
   if (hasTable("push_subscriptions")) changed.pushSubscriptions = Number(db.prepare("DELETE FROM push_subscriptions").run().changes);
   for (const table of ["deferred_prompts", "defer_loops"]) {
     if (!hasTable(table)) continue;

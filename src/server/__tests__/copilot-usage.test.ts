@@ -155,7 +155,7 @@ describe("readCopilotUsageSummary", () => {
         ...scanned,
         source: {
           kind: "defer_worker" as const,
-          deferId: "interval_1",
+          triggerId: "interval_1",
           parentSessionId: "parent-1",
           action: "return",
         },
@@ -169,7 +169,7 @@ describe("readCopilotUsageSummary", () => {
 
       expect(result.source).toEqual({
         kind: "defer_worker",
-        deferId: "interval_1",
+        triggerId: "interval_1",
         parentSessionId: "parent-1",
         action: "return",
       });

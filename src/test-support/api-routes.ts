@@ -10,14 +10,13 @@ import type { DeferredPromptRunner } from "../server/deferred-prompt-runner.js";
 import { publishOutboundAttachment } from "../server/outbound-attachments.js";
 import { requestRestart } from "../server/restart-signal.js";
 import { writeRestartState } from "../server/restart-state.js";
-import * as scheduler from "../server/scheduler.js";
 import * as providers from "../server/providers/index.js";
 import { PendingInteractionError } from "../server/pending-interaction-validation.js";
 import { createMockSessionManager, createMockTranscriptionService, makeTestDir, makeTestRuntimePaths } from "../server/__tests__/helpers.js";
 import { createTestApp } from "../server/__tests__/test-app.js";
 
 export { request, get, mkdirSync, writeFileSync, join };
-export { publishOutboundAttachment, writeRestartState, scheduler, providers, PendingInteractionError };
+export { publishOutboundAttachment, writeRestartState, providers, PendingInteractionError };
 export { createMockSessionManager, createMockTranscriptionService, createTestApp, makeTestDir };
 export type { DeferredPromptRunner };
 
@@ -43,9 +42,6 @@ export function installApiRouteTestHooks(assign?: (state: ApiRouteTestState) => 
 
   afterEach(() => {
     vi.useRealTimers();
-    if (scheduler.isInitialized()) {
-      scheduler.shutdown();
-    }
   });
 }
 

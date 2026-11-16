@@ -1,12 +1,10 @@
-export { default as ScheduleRow } from "./ScheduleRow";
-export { default as ScheduleSection } from "./ScheduleSection";
+export { default as TriggerSection } from "./TriggerSection";
 export { default as WorkItemList } from "./WorkItemList";
 export { default as PullRequestList } from "./PullRequestList";
 export { default as TaskChecklistSection } from "./TaskChecklistSection";
 export { default as TaskNotesSection } from "./TaskNotesSection";
 export { default as RelatedDocsSection } from "./RelatedDocsSection";
-export type { ScheduleRowProps } from "./ScheduleRow";
-export type { ScheduleSectionProps } from "./ScheduleSection";
+export type { TriggerSectionProps } from "./TriggerSection";
 export type { WorkItemListProps } from "./WorkItemList";
 export type { PullRequestListProps } from "./PullRequestList";
 export type { TaskChecklistSectionProps } from "./TaskChecklistSection";

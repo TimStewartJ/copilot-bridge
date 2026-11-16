@@ -48,16 +48,9 @@ import {
   type ModelSelection,
   type SessionRunState,
 } from "./session-manager.js";
-import * as scheduler from "./scheduler.js";
-import type { Schedule } from "./schedule-store.js";
-import { enforceScheduleSessionRetention } from "./schedule-session-retention.js";
 import { setSessionsArchived } from "./session-archive.js";
-import {
-  findUnknownFields,
-  formatUnknownFieldsError,
-  normalizeScheduleAutoArchiveKeep,
-  validateScheduleLaunchOptions,
-} from "./schedule-validation.js";
+import { findUnknownFields, formatUnknownFieldsError } from "./request-fields.js";
+import { registerTriggerRoutes } from "./triggers/router.js";
 import {
   enrichWorkItems,
   enrichPullRequests,
@@ -129,9 +122,6 @@ import {
 import { deleteTaskWithOwnedState, isTaskUntouched } from "./task-deletion.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { PendingInteractionError } from "./pending-interaction-validation.js";
-import { emitSessionDeferSummary } from "./defer-summary.js";
-import { parseDeferId } from "./defer-ids.js";
-import { reactivateDefer } from "./defer-reactivate.js";
 import { getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
 import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
@@ -150,13 +140,6 @@ import { buildModelAbTestReport } from "./model-ab-test.js";
 import { MODEL_ROLES, isTierChoice } from "../shared/model-roles.js";
 import { createHelmThinkerRouter } from "./helm/thinker/router.js";
 import { createVoiceRouter } from "./voice/voice-router.js";
-import {
-  formatLoopDeferActivity,
-  formatOneShotDeferActivity,
-  listDeferActivityDeliveries,
-  listDeferActivityRuns,
-  sortDeferActivityItems,
-} from "./defer-activity.js";
 import {
   ChecklistNotFoundError,
   ChecklistValidationError,
@@ -369,30 +352,11 @@ interface DashboardChecklistData {
   completedChecklistItems: DashboardChecklistItem[];
 }
 
-const UNKNOWN_SCHEDULE_RUN_AT = "0001-01-01T00:00:00.000Z";
+/** recordedAt of chats a schedule started before run times were kept (moved into trigger_runs). */
+const UNKNOWN_RUN_AT = "0001-01-01T00:00:00.000Z";
 const TASK_GIT_STATUS_NOT_CONFIGURED_ERROR = "Task working directory is not configured.";
 const SESSION_WORKSPACE_NOT_CONFIGURED_ERROR = "Session workspace is not configured.";
 
-function getSchedulerModule(ctx: AppContext): typeof scheduler {
-  if (ctx.scheduler) return ctx.scheduler;
-  if (ctx.isStaging) {
-    if (!isLocalStagingModule(ctx)) {
-      throw new Error("Staging schedules require an isolated scheduler module.");
-    }
-    scheduler.shutdown();
-    scheduler.initialize(ctx.sessionManager, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-      deferredPromptStore: ctx.deferredPromptStore,
-      deferLoopStore: ctx.deferLoopStore,
-      taskHistoryStore: ctx.taskHistoryStore,
-    });
-    ctx.scheduler = scheduler;
-  }
-  return scheduler;
-}
 const SESSION_WORKSPACE_BUSY_ERROR = "Cannot change workspace for a busy session.";
 const SESSION_WORKSPACE_RESET_NOT_CONFIGURED_ERROR = "Linked task workspace is not configured.";
 const SESSION_WORKTREE_SELECTION_UNAVAILABLE_ERROR = "No sibling worktrees are available for this session.";
@@ -645,55 +609,7 @@ function resolveWorkspaceTask(ctx: AppContext, sessionId: string, requestedTaskI
   return task;
 }
 
-const SCHEDULE_CREATE_FIELDS = [
-  "taskId",
-  "name",
-  "prompt",
-  "type",
-  "cron",
-  "runAt",
-  "timezone",
-  "modelTier",
-  "playbook",
-  "maxRuns",
-  "expiresAt",
-  "autoArchiveKeep",
-] as const;
-const SCHEDULE_UPDATE_FIELDS = [
-  "name",
-  "prompt",
-  "cron",
-  "runAt",
-  "timezone",
-  "modelTier",
-  "playbook",
-  "enabled",
-  "maxRuns",
-  "expiresAt",
-  "autoArchiveKeep",
-] as const;
 const SERVER_INSTANCE_ID = randomUUID();
-
-function validateScheduleCronInput(cronExpr: unknown): string | undefined {
-  if (typeof cronExpr !== "string") return "cron expression must be a string";
-  const validation = validateSupportedCronExpression(cronExpr);
-  return validation.ok ? undefined : validation.error;
-}
-
-async function enforceRetentionForSchedule(ctx: AppContext, schedule: Schedule): Promise<void> {
-  try {
-    await enforceScheduleSessionRetention({
-      schedule,
-      sessionMetaStore: ctx.sessionMetaStore,
-      sessionManager: ctx.sessionManager,
-      globalBus: ctx.globalBus,
-      deferredPromptStore: ctx.deferredPromptStore,
-      deferLoopStore: ctx.deferLoopStore,
-    });
-  } catch (err) {
-    console.warn(`[schedules] Failed to apply retention for "${schedule.name}" (${schedule.id}):`, err);
-  }
-}
 
 class InvalidRecordingError extends Error {}
 
@@ -875,10 +791,6 @@ export function createApiRouter(
   services: ApiServices,
 ): express.Router {
   const router = express.Router();
-  const schedulerModule = () => getSchedulerModule(ctx);
-  // Keep shutdown orchestration on the AppContext even for legacy/test
-  // contexts that rely on the production scheduler fallback.
-  if (!ctx.isStaging) ctx.scheduler ??= schedulerModule();
   const {
     shutdownCoordinator,
     voiceRuntime, voiceGateway, transcriptionService, voiceJobManager, getBridgeGitRevisions,
@@ -1216,7 +1128,7 @@ export function createApiRouter(
       unarchivedCount: counts.total - counts.archived,
       sharedSessionCount: counts.shared,
       busySessionIds,
-      scheduleCount: ctx.scheduleStore?.listSchedules(taskId).length ?? 0,
+      triggerCount: ctx.triggerStore?.list({ taskId, includeInactive: true }).length ?? 0,
       fingerprint: createHash("sha1").update([...sessionIds].sort().join("\n")).digest("hex"),
     };
   }
@@ -2084,116 +1996,7 @@ export function createApiRouter(
     }
   });
 
-  router.get("/sessions/:id/defers", (req, res) => {
-    const sessionId = req.params.id;
-    if (!isCanonicalSessionId(sessionId)) {
-      return res.status(400).json({ error: "Valid sessionId is required" });
-    }
-    const recentDeliveries = listDeferActivityDeliveries(
-      ctx.deferredPromptStore,
-      sessionId,
-    );
-    const failedDeliveryIds = new Set(
-      recentDeliveries
-        .filter((delivery) => delivery.status === "failed")
-        .map((delivery) => delivery.deferId),
-    );
-    const defers = sortDeferActivityItems([
-      ...(ctx.deferredPromptStore?.listForSession(sessionId).map(formatOneShotDeferActivity) ?? []),
-      ...(ctx.deferLoopStore?.listForSession(sessionId).map(formatLoopDeferActivity) ?? []),
-    // A stopped defer is restarted by Reactivate; only one that cannot be restarted offers its lost result again.
-    ].map((item) => failedDeliveryIds.has(item.deferId) && !item.canReactivate
-      ? { ...item, canReactivate: true, failedDelivery: true }
-      : item));
-    res.json({
-      sessionId,
-      defers,
-      recentRuns: listDeferActivityRuns(ctx.telemetryStore, sessionId, {
-        deferredPromptStore: ctx.deferredPromptStore,
-      }),
-      recentDeliveries,
-    });
-  });
-
-  router.get("/sessions/:id/defers/:deferId/runs", (req, res) => {
-    const sessionId = req.params.id;
-    if (!isCanonicalSessionId(sessionId)) {
-      return res.status(400).json({ error: "Valid sessionId is required" });
-    }
-    const parsed = parseDeferId(req.params.deferId);
-    if (!parsed) {
-      return res.status(404).json({ error: `Defer ${req.params.deferId} not found.` });
-    }
-    const item = parsed.kind === "once"
-      ? ctx.deferredPromptStore?.get(parsed.id)
-      : ctx.deferLoopStore?.get(parsed.id);
-    const runs = listDeferActivityRuns(ctx.telemetryStore, sessionId, {
-      deferId: req.params.deferId,
-      limit: 200,
-      deferredPromptStore: ctx.deferredPromptStore,
-    });
-    const deliveries = listDeferActivityDeliveries(
-      ctx.deferredPromptStore,
-      sessionId,
-      { deferId: req.params.deferId, limit: 200 },
-    );
-    if ((!item || item.sessionId !== sessionId) && runs.length === 0 && deliveries.length === 0) {
-      return res.status(404).json({ error: `Defer ${req.params.deferId} not found.` });
-    }
-    res.json({
-      sessionId,
-      deferId: req.params.deferId,
-      runs,
-      deliveries,
-    });
-  });
-
-  router.post("/sessions/:id/defers/:deferId/cancel", (req, res) => {
-    if (rejectCrossSiteUiMutation(req, res, "Defer cancellation")) return;
-    const sessionId = req.params.id;
-    const deferId = req.params.deferId;
-    const parsed = parseDeferId(deferId);
-    if (!parsed) return res.status(404).json({ error: `Defer ${deferId} not found.` });
-    const store = parsed.kind === "once" ? ctx.deferredPromptStore : ctx.deferLoopStore;
-    if (!store) return res.status(503).json({ error: "Deferred work store is unavailable." });
-    const existing = store.get(parsed.id);
-    if (!existing || existing.sessionId !== sessionId) {
-      return res.status(404).json({ error: `Defer ${deferId} not found.` });
-    }
-    const cancellable = parsed.kind === "once"
-      ? existing.status === "pending"
-      : existing.status === "active";
-    if (!cancellable) {
-      return res.status(409).json({ error: `Defer ${deferId} is ${existing.status} and cannot be cancelled.` });
-    }
-    if (!store.cancelById(parsed.id)) {
-      return res.status(409).json({ error: `Failed to cancel defer ${deferId}.` });
-    }
-    emitSessionDeferSummary(ctx.globalBus, sessionId, ctx);
-    ctx.deferredPromptRunner?.poke();
-    ctx.deferLoopRunner?.poke();
-    return res.json({
-      ok: true,
-      deferId,
-      kind: parsed.kind,
-      status: "cancelled",
-    });
-  });
-
-  router.post("/sessions/:id/defers/:deferId/reactivate", (req, res) => {
-    if (rejectCrossSiteUiMutation(req, res, "Defer reactivation")) return;
-
-    const { deferId } = req.params;
-    const result = reactivateDefer(ctx, req.params.id, deferId);
-    if (!result.ok) {
-      const status = result.reason === "unavailable" ? 503 : result.reason === "not_found" ? 404 : 409;
-      return res.status(status).json({
-        error: result.reason === "not_found" ? `Defer ${deferId} not found.` : result.message,
-      });
-    }
-    const { ok, ...body } = result;
-    return res.json({ ok, deferId, ...body });
-  });
+  registerTriggerRoutes(router, ctx, rejectCrossSiteUiMutation);
 
   // Warm a session for passive chat navigation, returning when ready.
   router.post("/sessions/:id/warm", async (req, res) => {
@@ -3657,10 +3460,9 @@ export function createApiRouter(
         ? isTaskUntouched(ctx, task)
         : preview.sessionCount === 0;
       if (nothingToDecide) {
-        const { deletedScheduleIds } = ctx.taskStore.deleteTaskCascade(taskId);
-        for (const scheduleId of deletedScheduleIds) {
-          ctx.scheduler?.unregisterSchedule(scheduleId);
-          ctx.globalBus.emit({ type: "schedule:changed", taskId, scheduleId });
+        const { deletedTriggerIds } = ctx.taskStore.deleteTaskCascade(taskId);
+        for (const triggerId of deletedTriggerIds) {
+          ctx.globalBus.emit({ type: "trigger:changed", taskId, triggerId });
         }
         return res.json({ ok: true, taskDeleted: true, preview });
       }
@@ -4148,175 +3950,16 @@ export function createApiRouter(
     res.json({ progress: workMapBuilds.progress(workMapRequest(req.query).filters) });
   });
 
-  // ── Schedule routes ───────────────────────────────────────────────
-
-  router.get("/schedules", (req, res) => {
-    const taskId = typeof req.query.taskId === "string" ? req.query.taskId.trim() : "";
-    if (!taskId) {
-      return res.status(400).json({ error: "taskId query parameter is required" });
-    }
-    res.json(ctx.scheduleStore.listSchedules(taskId));
-  });
-
-  router.post("/schedules", async (req, res) => {
+  // Chats a task trigger started, newest first, a page at a time.
+  router.get("/triggers/:id/chats", async (req, res) => {
     try {
-      const unknownFields = findUnknownFields(req.body, SCHEDULE_CREATE_FIELDS);
-      if (unknownFields.length > 0) {
-        return res.status(400).json({ error: formatUnknownFieldsError(unknownFields) });
-      }
-      const { taskId, name, prompt, type, cron: cronExpr, runAt, timezone, maxRuns, expiresAt, autoArchiveKeep } = req.body;
-      const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
-      const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(autoArchiveKeep);
-      if (!normalizedAutoArchiveKeep.ok) {
-        return res.status(400).json({ error: normalizedAutoArchiveKeep.error });
-      }
-      if (!taskId || !name || !prompt || !type) {
-        return res.status(400).json({ error: "taskId, name, prompt, and type are required" });
-      }
-      if (type === "cron" && !cronExpr) {
-        return res.status(400).json({ error: "cron expression is required for cron schedules" });
-      }
-      if (type === "cron") {
-        const cronError = validateScheduleCronInput(cronExpr);
-        if (cronError) return res.status(400).json({ error: cronError });
-      }
-      if (type === "once" && !runAt) {
-        return res.status(400).json({ error: "runAt is required for one-shot schedules" });
-      }
-      if (!ctx.taskStore.getTask(taskId)) {
-        return res.status(404).json({ error: "Task not found" });
-      }
-
-      if (timezone && !schedulerModule().isValidTimezone(timezone)) {
-        return res.status(400).json({ error: `Invalid timezone: ${timezone}` });
-      }
-      const launchOptions = validateScheduleLaunchOptions(req.body);
-      if (!launchOptions.ok) {
-        return res.status(400).json({ error: launchOptions.error });
-      }
-
-      const schedule = ctx.scheduleStore.createSchedule({
-        taskId,
-        name,
-        prompt,
-        type,
-        cron: cronExpr,
-        runAt,
-        timezone,
-        modelTier: launchOptions.updates.modelTier ?? undefined,
-        playbook: launchOptions.updates.playbook ?? undefined,
-        maxRuns,
-        expiresAt,
-        autoArchiveKeep: normalizedAutoArchiveKeep.value ?? undefined,
-      });
-      if (autoArchiveKeepProvided && schedule.autoArchiveKeep !== undefined) {
-        await enforceRetentionForSchedule(ctx, schedule);
-      }
-
-      // Register cron job or arm one-shot timer
-      if (schedule.type === "cron") {
-        schedulerModule().registerSchedule(schedule.id);
-      } else if (schedule.type === "once" && schedule.runAt) {
-        schedulerModule().armOneShot(schedule.id, schedule.runAt);
-      }
-
-      console.log(`[schedules] Created schedule "${schedule.name}" (${schedule.type})`);
-      ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
-      res.status(201).json(schedule);
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  router.patch("/schedules/:id", async (req, res) => {
-    try {
-      const unknownFields = findUnknownFields(req.body, SCHEDULE_UPDATE_FIELDS);
-      if (unknownFields.length > 0) {
-        return res.status(400).json({ error: formatUnknownFieldsError(unknownFields) });
-      }
-      if (req.body.timezone && !schedulerModule().isValidTimezone(req.body.timezone)) {
-        return res.status(400).json({ error: `Invalid timezone: ${req.body.timezone}` });
-      }
-      const existing = ctx.scheduleStore.getSchedule(req.params.id);
-      if (!existing) return res.status(404).json({ error: "Schedule not found" });
-
-      const cronProvided = Object.prototype.hasOwnProperty.call(req.body, "cron");
-      if (cronProvided && existing.type === "cron") {
-        const cronError = validateScheduleCronInput(req.body.cron);
-        if (cronError) return res.status(400).json({ error: cronError });
-      }
-
-      const launchOptions = validateScheduleLaunchOptions(req.body);
-      if (!launchOptions.ok) {
-        return res.status(400).json({ error: launchOptions.error });
-      }
-      const updates = { ...req.body, ...launchOptions.updates };
-      const autoArchiveKeepProvided = Object.prototype.hasOwnProperty.call(req.body, "autoArchiveKeep");
-      if (autoArchiveKeepProvided) {
-        const normalizedAutoArchiveKeep = normalizeScheduleAutoArchiveKeep(req.body.autoArchiveKeep);
-        if (!normalizedAutoArchiveKeep.ok) {
-          return res.status(400).json({ error: normalizedAutoArchiveKeep.error });
-        }
-        updates.autoArchiveKeep = normalizedAutoArchiveKeep.value;
-      }
-
-      const schedule = ctx.scheduleStore.updateSchedule(req.params.id, updates);
-      if (autoArchiveKeepProvided && schedule.autoArchiveKeep !== undefined) {
-        await enforceRetentionForSchedule(ctx, schedule);
-      }
-
-      // Re-register cron job if timing or enabled state changed
-      if (schedule.type === "cron") {
-        if (schedule.enabled) {
-          schedulerModule().registerSchedule(schedule.id);
-        } else {
-          schedulerModule().unregisterSchedule(schedule.id);
-        }
-      } else if (schedule.type === "once" && req.body.runAt && schedule.enabled) {
-        schedulerModule().armOneShot(schedule.id, schedule.runAt!);
-      }
-
-      console.log(`[schedules] Updated schedule "${schedule.name}"`);
-      ctx.globalBus.emit({ type: "schedule:changed", taskId: schedule.taskId, scheduleId: schedule.id });
-      res.json(schedule);
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  router.delete("/schedules/:id", (req, res) => {
-    try {
-      const schedule = ctx.scheduleStore.getSchedule(req.params.id);
-      const taskId = schedule?.taskId;
-      schedulerModule().unregisterSchedule(req.params.id);
-      ctx.scheduleStore.deleteSchedule(req.params.id);
-      console.log(`[schedules] Deleted schedule ${req.params.id}`);
-      ctx.globalBus.emit({ type: "schedule:changed", taskId, scheduleId: req.params.id });
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  router.post("/schedules/:id/trigger", async (req, res) => {
-    try {
-      const result = await schedulerModule().triggerSchedule(req.params.id, { source: "manual" });
-      res.json(result);
-    } catch (err) {
-      res.status(400).json({ error: String(err) });
-    }
-  });
-
-  router.get("/schedules/:id/sessions", async (req, res) => {
-    try {
-      const schedule = ctx.scheduleStore.getSchedule(req.params.id);
-      if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+      const trigger = ctx.triggerService?.get(req.params.id);
+      if (!trigger) return res.status(404).json({ error: "Trigger not found." });
 
       const limit = parsePositiveIntegerQuery(req.query.limit, "limit", 100, 20);
       const offset = parseNonNegativeIntegerQuery(req.query.offset, "offset", Number.MAX_SAFE_INTEGER, 0);
 
-      const allRuns = ctx.sessionMetaStore.listScheduleRuns(req.params.id);
-      const pageRuns = allRuns.slice(offset, offset + limit);
+      const { runs: pageRuns, total } = ctx.triggerStore!.listRuns(trigger.id, { limit, offset });
 
       // Only the page's sessions are read, from their own folders and by id.
       const pageSessionIds = pageRuns.map((run) => run.sessionId);
@@ -4352,7 +3995,8 @@ export function createApiRouter(
             ...s,
             runId: run.id,
             recordedAt: run.recordedAt,
-            recordedAtKnown: run.recordedAt !== UNKNOWN_SCHEDULE_RUN_AT,
+            recordedAtKnown: run.recordedAt !== UNKNOWN_RUN_AT,
+            ...(run.taskId ? { createdTaskId: run.taskId } : {}),
             sessionId: run.sessionId,
             summary,
             linkedTaskIds,
@@ -4367,7 +4011,7 @@ export function createApiRouter(
       );
       res.json({
         sessions: enriched,
-        total: allRuns.length,
+        total,
         offset,
         limit,
       });

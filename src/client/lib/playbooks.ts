@@ -28,7 +28,7 @@ export const PLAYBOOK_SOURCE_LABELS: Record<PlaybookSource, string> = {
   user: "You",
   agent: "Agent",
   task: "Task",
-  schedule: "Schedule",
+  schedule: "Trigger",
 };
 
 export const DIRECT_PLAYBOOK_LABEL = "Direct";
@@ -49,7 +49,7 @@ export function playbookIdLabel(id: string | undefined, playbooks?: readonly Pla
 
 /**
  * Whether the picker offers "Follow task": only when the chat made its own choice, since clearing
- * it falls back to the task's or schedule's pin.
+ * it falls back to the task's or trigger's pin.
  */
 export function canClearChatPlaybook(view: SessionPlaybookView | null | undefined): boolean {
   return view?.source === "user" || view?.source === "agent";

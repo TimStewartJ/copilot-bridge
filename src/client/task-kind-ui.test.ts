@@ -56,7 +56,7 @@ vi.mock("./components/NotesSheet", () => ({
   default: () => null,
 }));
 
-vi.mock("./components/ScheduleDetailSheet", () => ({
+vi.mock("./components/TriggerDetailSheet", () => ({
   default: () => null,
 }));
 
@@ -74,7 +74,7 @@ vi.mock("./components/task-sections", () => ({
   TaskChecklistSection: () => null,
   TaskNotesSection: () => null,
   RelatedDocsSection: () => null,
-  ScheduleSection: () => null,
+  TriggerSection: () => null,
 }));
 
 const NOW = "2026-05-01T12:00:00.000Z";
@@ -103,21 +103,21 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
   return {
     enrichedWIs: [],
     enrichedPRs: [],
-    sched: {
-      schedules: [],
-      trigger: vi.fn(),
-      toggle: vi.fn(),
-      remove: vi.fn(),
+    triggers: {
+      triggers: [],
       reload: vi.fn(),
+      saved: vi.fn(),
+      act: vi.fn(),
     },
-    schedDetail: {
+    triggerDetail: {
       openForCreate: vi.fn(),
       openSheet: vi.fn(),
+      showSaved: vi.fn(),
       close: vi.fn(),
       switchToEdit: vi.fn(),
       switchToView: vi.fn(),
       isOpen: false,
-      schedule: null,
+      triggerId: null,
       mode: "view",
     },
     notes: {
@@ -468,14 +468,13 @@ describe("TaskDashboard unique overview", () => {
       checklistItems: [
         { id: "c1", taskId: "task-1", text: "Open", done: false, order: 0, createdAt: NOW },
       ],
-      sched: {
-        schedules: [
-          { id: "schedule-1", taskId: "task-1", name: "Daily check", prompt: "", type: "cron", cron: "0 8 * * *", enabled: true, createdAt: NOW, updatedAt: NOW, runCount: 0 },
+      triggers: {
+        triggers: [
+          { id: "trigger-1", taskId: "task-1", name: "Daily check", prompt: "Check", then: "new_chat", when: { kind: "cron", cron: "0 8 * * *", timezone: "UTC" }, whenLabel: "cron 0 8 * * * (UTC)", status: "active", runNow: false, runCount: 0, fireCount: 0, attempts: 0, createdAt: NOW, updatedAt: NOW, canRun: true, canPause: true, canResume: false, canCancel: true, canReactivate: false },
         ],
-        trigger: vi.fn(),
-        toggle: vi.fn(),
-        remove: vi.fn(),
         reload: vi.fn(),
+        saved: vi.fn(),
+        act: vi.fn(),
       },
       relatedDocs: [{ path: "docs/task", title: "Task doc" }],
     });
@@ -487,7 +486,7 @@ describe("TaskDashboard unique overview", () => {
     expect(html).toContain("/repo");
     expect(html).toContain("Sessions");
     expect(html).toContain("Work items");
-    expect(html).toContain("Schedules");
+    expect(html).toContain("Triggers");
     expect(html).not.toContain("Set revisit date");
     expect(html).not.toContain("Add a wait");
     expect(html).not.toContain("Add notes");

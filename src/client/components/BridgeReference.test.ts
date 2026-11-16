@@ -30,7 +30,7 @@ vi.mock("../hooks/queries/useTasks", () => ({ useTasksQuery: () => ({ data: data
 const SESSION_ID = "aaaaaaaa-1111-4000-8000-000000000001";
 
 function session(overrides: Partial<Session>): Session {
-  return { sessionId: SESSION_ID, deferSummary: { count: 0, runningCount: 0, nextRunAt: null }, ...overrides };
+  return { sessionId: SESSION_ID, triggerSummary: { count: 0, runningCount: 0, nextRunAt: null }, ...overrides };
 }
 
 function task(overrides: Partial<Task>): Task {

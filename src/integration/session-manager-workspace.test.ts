@@ -14,7 +14,6 @@ import { createSessionWorkspaceStore } from "../server/session-workspace-store.j
 import { openMemoryDatabase } from "../server/db.js";
 import { createTaskGroupStore } from "../server/task-group-store.js";
 import { makeAgentSessionStub } from "../server/__tests__/helpers.js";
-import { createScheduleStore } from "../server/schedule-store.js";
 import { createSettingsStore } from "../server/settings-store.js";
 import { createSessionMetaStore } from "../server/session-meta-store.js";
 import { createReadStateStore } from "../server/read-state-store.js";
@@ -90,7 +89,6 @@ describe("SessionManager workspace resolution", () => {
       sessionWorkspaceStore,
       taskStore,
       taskGroupStore: createTaskGroupStore(db, globalBus),
-      scheduleStore: undefined as any,
       settingsStore: createSettingsStore(db),
       checklistStore,
       config: { sessionMcpServers: {} },
@@ -98,7 +96,6 @@ describe("SessionManager workspace resolution", () => {
     const ctx = {
       taskStore,
       taskGroupStore: createTaskGroupStore(db, globalBus),
-      scheduleStore: createScheduleStore(db),
       settingsStore: createSettingsStore(db),
       sessionMetaStore: createSessionMetaStore(db),
       sessionWorkspaceStore,

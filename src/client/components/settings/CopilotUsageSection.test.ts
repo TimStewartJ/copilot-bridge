@@ -351,11 +351,11 @@ describe("CopilotUsageSection", () => {
       },
     })).replace(/<!-- -->/g, "");
 
-    expect(html).toContain("Deferred workers");
+    expect(html).toContain("Trigger workers");
     expect(html).toContain("Included in the totals above.");
     expect(html).toContain("Kept for 90 days");
     expect(html).toContain("Captured runs");
-    expect(html).toContain("Parent sessions");
+    expect(html).toContain("Chats");
     expect(html).toContain("12.5");
     expect(html).toContain("$0.13");
     expect(html).toContain("1,100");

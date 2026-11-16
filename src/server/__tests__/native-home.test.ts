@@ -4,7 +4,7 @@ import { createTaskStore } from "../task-store.js";
 import { createTaskGroupStore } from "../task-group-store.js";
 import { createChecklistStore } from "../checklist-store.js";
 import { createReadStateStore } from "../read-state-store.js";
-import { createScheduleStore } from "../schedule-store.js";
+import { createTriggerStore } from "../triggers/store.js";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import type { DatabaseSync } from "../db.js";
 import type { SessionManager } from "../session-manager.js";
@@ -23,9 +23,9 @@ describe("native Home composition", () => {
       hydratePendingInteractions: vi.fn<SessionManager["hydratePendingInteractions"]>(async () => ({ pendingUserInputs: [], pendingElicitations: [] })),
       readMessagesFromDisk: vi.fn<SessionManager["readMessagesFromDisk"]>(async id => ({ messages: [{ id: "message", type: "message", role: "assistant", sourceEventId: `reply-${id}`, content: "A source-backed answer" }], total: 1, hasMore: false, coverage: {}, agents: [] })),
     };
-    const scheduleStore = createScheduleStore(db);
-    const reader = createHomeReader({ taskStore, checklistStore, readStateStore, scheduleStore, taskGroupStore: createTaskGroupStore(db, bus), sessionManager: manager }, async () => sessions);
-    return { ...reader, taskStore, checklistStore, readStateStore, scheduleStore, manager };
+    const triggerStore = createTriggerStore(db);
+    const reader = createHomeReader({ taskStore, checklistStore, readStateStore, triggerStore, taskGroupStore: createTaskGroupStore(db, bus), sessionManager: manager }, async () => sessions);
+    return { ...reader, taskStore, checklistStore, readStateStore, triggerStore, manager };
   }
   it("uses existing task momentum and identities without creating new work records", async () => {
     const app = setup([{ sessionId: "conversation", summary: "Compare options", lastActivityAt: "2026-09-21T12:00:00Z" }]);
@@ -60,7 +60,7 @@ describe("native Home composition", () => {
     expect(app.taskStore.getTask(task.id)?.deferred).toBe(true);
     const context = formatTaskMomentumContext(app.taskStore.getTask(task.id)!);
     expect(context).toContain("- Deferred:");
-    expect(context).toContain("Running sessions, schedules and session defers are not paused");
+    expect(context).toContain("Running sessions and triggers are not paused");
     expect(context).toContain("- Next step: Read comparison");
   });
 
@@ -303,11 +303,11 @@ describe("native Home composition", () => {
     expect(home.resume[0]).toMatchObject({ id: task.id, state: "in_motion", lastTouchKind: "edited" });
   });
 
-  it("counts enabled schedules and active defers as automation, so their tasks never look abandoned", async () => {
+  it("counts task triggers as automation, so their tasks never look abandoned", async () => {
     const app = setup();
     const task = app.taskStore.createTask("Weekly monitor");
     db.prepare("UPDATE tasks SET createdAt = ? WHERE id = ?").run(new Date(Date.now() - 90 * 86_400_000).toISOString(), task.id);
-    app.scheduleStore.createSchedule({ taskId: task.id, name: "Weekly", prompt: "Check", type: "cron", cron: "0 8 * * 1" } as never);
+    app.triggerStore.create({ taskId: task.id, name: "Weekly", prompt: "Check", when: { kind: "cron", cron: "0 8 * * 1", timezone: "UTC" }, action: { kind: "new_chat" }, nextRunAt: "2099-01-05T08:00:00.000Z" });
     const home = await app.snapshot();
     expect(home.quiet.total).toBe(0);
     expect(home.taskCounts.no_next_step).toBe(1);

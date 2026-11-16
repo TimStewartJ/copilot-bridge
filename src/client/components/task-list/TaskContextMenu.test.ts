@@ -101,7 +101,7 @@ describe("TaskContextMenu copy task id", () => {
       await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Defer task")); });
       expect(harness.dom.container.textContent).toContain("Revisit on (optional)");
       expect(harness.dom.container.textContent).toContain("Out of your task list and Home until you resume it.");
-      expect(harness.dom.container.textContent).toContain("Sessions, schedules and deferred jobs keep running");
+      expect(harness.dom.container.textContent).toContain("Chats and triggers keep running");
       expect(update).not.toHaveBeenCalled();
       expect(onClose).not.toHaveBeenCalled();
       await harness.act(async () => { clickButton(findButtonByText(harness.dom.container, "Cancel")); });

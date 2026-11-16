@@ -19,7 +19,7 @@ You own leaving the work in a state another chat can resume from what is written
 3. Make code durable: commit work in progress as a WIP commit on the current branch, unless the user said not to commit. Never commit on a default or shared branch; if you are on one, create a working branch named the way the user's instructions say. Never switch branches over uncommitted work you did not make.
    - Push only if the branch already has a remote copy that is yours alone. Never push a branch that was not pushed before.
 4. Make other work durable: save drafts, notes and partial results as files or knowledge base pages with docs_write, and note their paths.
-5. Decide what happens to automation in flight: defers, schedules and background commands. Cancel what should not run while paused, keep what should, and note which.
+5. Decide what happens to automation in flight: triggers and background commands. Cancel what should not run while paused, keep what should, and note which.
 6. Write the current state into the task notes with task_update, replacing the old state rather than appending: goal, what is done with evidence, what is in progress, open questions, decisions not yet written down, branch, worktree and file paths.
 7. Set the first resume action with task_update_momentum.
 8. If the chat has no task, write the same state to a knowledge base page or a file in the session folder and give its path.

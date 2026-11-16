@@ -1,7 +1,6 @@
 import type { Express } from "express";
 import type { AppContext } from "../server/app-context.js";
 import type { DatabaseSync } from "../server/db.js";
-import * as scheduler from "../server/scheduler.js";
 import { createTestApp, request } from "../test-support/api-routes.js";
 
 export interface ScenarioWorld {
@@ -20,8 +19,7 @@ export interface ScenarioWorld {
   readPage(path: string): Promise<any>;
   createCollection(folder: string, fields?: Array<Record<string, unknown>>): Promise<any>;
   addCollectionEntry(folder: string, fields: Record<string, unknown>, body?: string): Promise<any>;
-  initializeScheduler(): void;
-  createSchedule(taskId: string, name: string, extra?: Record<string, unknown>): Promise<any>;
+  createTaskTrigger(taskId: string, name: string, extra?: Record<string, unknown>): Promise<any>;
 }
 
 function bodyOrThrow(response: any, expectedStatus: number, operation: string): any {
@@ -95,25 +93,17 @@ export function createScenarioWorld(): ScenarioWorld {
         .send({ fields, ...(body === undefined ? {} : { body }) });
       return bodyOrThrow(response, 200, "add docs entry");
     },
-    initializeScheduler() {
-      if (scheduler.isInitialized()) scheduler.shutdown();
-      scheduler.initialize(ctx.sessionManager as any, {
-        scheduleStore: ctx.scheduleStore,
-        taskStore: ctx.taskStore,
-        sessionMetaStore: ctx.sessionMetaStore,
-        globalBus: ctx.globalBus,
-      });
-    },
-    async createSchedule(taskId, name, extra = {}) {
-      const response = await request(app).post("/api/schedules").send({
+    async createTaskTrigger(taskId, name, extra = {}) {
+      const response = await request(app).post("/api/triggers").send({
         taskId,
         name,
         prompt: `Run ${name}`,
-        type: "cron",
+        then: "new_chat",
         cron: "0 9 * * 1-5",
+        timezone: "UTC",
         ...extra,
       });
-      return bodyOrThrow(response, 201, "create schedule");
+      return bodyOrThrow(response, 201, "create trigger");
     },
   };
 }

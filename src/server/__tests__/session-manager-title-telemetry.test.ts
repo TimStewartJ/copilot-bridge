@@ -17,7 +17,6 @@ describe("session CLI renames", () => {
     const tool = getBridgeToolDefinitions({
       taskStore: { findTaskBySessionId: () => undefined } as any,
       taskGroupStore: {} as any,
-      scheduleStore: {} as any,
       settingsStore: undefined,
       sessionMetaStore: {} as any,
       sessionTitles,

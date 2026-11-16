@@ -24,7 +24,7 @@ import { hasSurfacedBackgroundAgents } from "../../shared/session-agents.js";
 import { useQuery } from "@tanstack/react-query";
 import { useSessionModelQuery } from "../hooks/queries/useSessionModel";
 import { formatSessionModelLabel } from "../lib/session-model";
-import DeferredWorkSheet from "./DeferredWorkSheet";
+import TriggerSheet from "./TriggerSheet";
 import SessionModelDialog, { canKeepCurrentReasoningEffortForModel } from "./SessionModelDialog";
 import { playbookViewLabel } from "../lib/playbooks";
 import { findTaskForSession } from "../lib/task-session-links";
@@ -37,24 +37,24 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function formatDeferSummaryLabel(deferSummary?: Session["deferSummary"]): string | null {
-  const count = deferSummary?.count ?? 0;
+export function formatTriggerSummaryLabel(triggerSummary?: Session["triggerSummary"]): string | null {
+  const count = triggerSummary?.count ?? 0;
   if (count <= 0) return null;
 
-  const runningCount = Math.min(count, Math.max(0, deferSummary?.runningCount ?? 0));
+  const runningCount = Math.min(count, Math.max(0, triggerSummary?.runningCount ?? 0));
   if (runningCount > 0) {
     if (runningCount === count) {
-      return count === 1 ? "Defer running" : `${count} defers running`;
+      return count === 1 ? "Trigger running" : `${count} triggers running`;
     }
-    return `${runningCount} running · ${count - runningCount} queued`;
+    return `${runningCount} running · ${count - runningCount} waiting`;
   }
 
-  const nextRun = deferSummary?.nextRunAt ? timeAgo(deferSummary.nextRunAt) : null;
+  const nextRun = triggerSummary?.nextRunAt ? timeAgo(triggerSummary.nextRunAt) : null;
   if (count === 1) {
-    return nextRun ? `Deferred ${nextRun}` : "Deferred";
+    return nextRun ? `Trigger ${nextRun}` : "Trigger";
   }
 
-  return nextRun ? `${count} defers · next ${nextRun}` : `${count} defers`;
+  return nextRun ? `${count} triggers · next ${nextRun}` : `${count} triggers`;
 }
 
 function getSessionModelSourceLabel(source?: SessionModelState["source"]): string {
@@ -79,7 +79,7 @@ const styles = {
     dotSize: "size-3 mr-1.5",
     /** Lines the meta row up with the title, past the status slot. */
     metaIndent: "pl-[18px]",
-    deferIndent: "left-[30px]",
+    triggerIndent: "left-[30px]",
     listGap: "space-y-1",
   },
   compact: {
@@ -90,7 +90,7 @@ const styles = {
     metaClass: "text-[11px] text-text-muted mt-0.5",
     dotSize: "size-3 mr-1",
     metaIndent: "pl-4",
-    deferIndent: "left-7",
+    triggerIndent: "left-7",
     listGap: "space-y-0.5",
   },
 } as const;
@@ -283,8 +283,8 @@ export default function SessionList({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const anchorRef = useRef<string | null>(null);
   const [modelDialogSessionId, setModelDialogSessionId] = useState<string | null>(null);
-  const [deferredWorkSessionId, setDeferredWorkSessionId] = useState<string | null>(null);
-  const [deferredWorkRestoreFocus, setDeferredWorkRestoreFocus] = useState<HTMLElement | null>(null);
+  const [triggerSheetSessionId, setTriggerSheetSessionId] = useState<string | null>(null);
+  const [triggerSheetRestoreFocus, setTriggerSheetRestoreFocus] = useState<HTMLElement | null>(null);
   const sessionButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const [menuError, setMenuError] = useState<string | null>(null);
   const copyRequestRef = useRef(0);
@@ -400,9 +400,9 @@ export default function SessionList({
     const isExiting = exitingIds?.has(id);
     const isSelected = selectedIds?.has(id);
     const needsUserInput = session.needsUserInput || (session.pendingUserInputCount ?? 0) > 0;
-    const deferLabel = formatDeferSummaryLabel(session.deferSummary);
+    const triggerLabel = formatTriggerSummaryLabel(session.triggerSummary);
     const logSize = describeSessionLogSize(session.eventLogSizeBytes);
-    const deferRunning = (session.deferSummary?.runningCount ?? 0) > 0;
+    const triggerRunning = (session.triggerSummary?.runningCount ?? 0) > 0;
     const backgroundAgents = session.backgroundAgents;
     const showBackgroundAgents = hasSurfacedBackgroundAgents(backgroundAgents);
     const backgroundAgentsRunning = (backgroundAgents?.running ?? 0) > 0;
@@ -509,7 +509,7 @@ export default function SessionList({
                   ? "bg-bg-hover"
                   : "hover:bg-bg-hover"
           } ${isTarget(id) ? "scale-[0.97] bg-bg-hover" : ""} ${isArch || isArchiving ? "opacity-50" : ""} ${
-            deferLabel && !selectMode ? "pb-11 md:pb-8" : ""
+            triggerLabel && !selectMode ? "pb-11 md:pb-8" : ""
           }`}
         >
           <div className={`${unread ? s.titleClass.replace("font-medium", "font-semibold") : s.titleClass} flex items-center min-w-0`}>
@@ -531,9 +531,9 @@ export default function SessionList({
                 {status && <StatusIcon kind={status.kind} label={status.label} />}
               </span>
             )}
-            {session.triggeredBy === "schedule" && session.scheduleEnabled && (
-              <span title={`Scheduled: ${session.scheduleName ?? ""}`} className="inline-flex shrink-0 mr-0.5">
-                <Clock size={10} className="text-accent" />
+            {session.triggeredBy === "schedule" && session.triggerActive && (
+              <span title={`Started by trigger: ${session.triggerName ?? ""}`} className="inline-flex shrink-0 mr-0.5">
+                <Clock size={10} className="text-text-faint" aria-hidden="true" />
               </span>
             )}
             <span className="truncate">
@@ -593,29 +593,29 @@ export default function SessionList({
             )}
           </div>
         </button>
-        {deferLabel && !selectMode && (
+        {triggerLabel && !selectMode && (
           <button
             type="button"
             onClick={(event) => {
               event.stopPropagation();
-              setDeferredWorkRestoreFocus(
+              setTriggerSheetRestoreFocus(
                 sessionButtonRefs.current.get(id) ?? event.currentTarget,
               );
-              setDeferredWorkSessionId(id);
+              setTriggerSheetSessionId(id);
             }}
-            className={`absolute bottom-1.5 ${s.deferIndent} inline-flex min-h-8 max-w-[calc(100%-2.5rem)] items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors md:min-h-0 ${
-              deferRunning
+            className={`absolute bottom-1.5 ${s.triggerIndent} inline-flex min-h-8 max-w-[calc(100%-2.5rem)] items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors md:min-h-0 ${
+              triggerRunning
                 ? "bg-info-surface text-info hover:bg-info/20"
                 : "bg-bg-hover text-text-secondary hover:text-text-primary"
             } ${
               isArch || isArchiving ? "opacity-50" : ""
             }`}
-            title={`${deferLabel}. Open deferred work.`}
+            title={`${triggerLabel}. Open triggers.`}
           >
-            {deferRunning
+            {triggerRunning
               ? <Loader2 size={9} className="shrink-0 animate-spin" aria-hidden="true" />
               : <Clock size={9} className="shrink-0" aria-hidden="true" />}
-            <span className="truncate">{deferLabel}</span>
+            <span className="truncate">{triggerLabel}</span>
           </button>
         )}
       </div>
@@ -802,12 +802,12 @@ export default function SessionList({
           {ctxSession && (
             <CtxItem
               icon={<Clock size={14} />}
-              label="Deferred Work..."
+              label="Triggers..."
               onClick={() => {
-                setDeferredWorkRestoreFocus(
+                setTriggerSheetRestoreFocus(
                   sessionButtonRefs.current.get(ctxSession.sessionId) ?? null,
                 );
-                setDeferredWorkSessionId(ctxSession.sessionId);
+                setTriggerSheetSessionId(ctxSession.sessionId);
                 closeMenu();
               }}
             />
@@ -983,16 +983,16 @@ export default function SessionList({
         />
       )}
 
-      {deferredWorkSessionId && (
-        <DeferredWorkSheet
+      {triggerSheetSessionId && (
+        <TriggerSheet
           session={
-            sessions.find((session) => session.sessionId === deferredWorkSessionId)
-              ?? { sessionId: deferredWorkSessionId }
+            sessions.find((session) => session.sessionId === triggerSheetSessionId)
+              ?? { sessionId: triggerSheetSessionId }
           }
-          restoreFocusTo={deferredWorkRestoreFocus}
+          restoreFocusTo={triggerSheetRestoreFocus}
           onClose={() => {
-            setDeferredWorkSessionId(null);
-            setDeferredWorkRestoreFocus(null);
+            setTriggerSheetSessionId(null);
+            setTriggerSheetRestoreFocus(null);
           }}
         />
       )}

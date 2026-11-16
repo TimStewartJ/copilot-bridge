@@ -8,7 +8,7 @@ import {
   MANAGEMENT_JOB_DELIVERY_RECONCILE_WINDOW_MS,
   managementJobDeliveryId,
 } from "../management-job-delivery.js";
-import { listDeferActivityDeliveries } from "../defer-activity.js";
+import { listTriggerDeliveries } from "../triggers/activity.js";
 import { BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 import { createStagingToolDefinitions } from "../staging-tools.js";
 import { registerManagementJobTools } from "../tools/management-job-tools.js";
@@ -63,7 +63,7 @@ describe("management job result delivery", () => {
 
     const rows = deliveryRows(db);
     expect(rows).toHaveLength(1);
-    expect(listDeferActivityDeliveries(prompts, SESSION)).toEqual([]);
+    expect(listTriggerDeliveries(prompts, SESSION)).toEqual([]);
     expect(rows[0]).toMatchObject({
       id: managementJobDeliveryId(job.id),
       sourceId: managementJobDeliveryId(job.id),

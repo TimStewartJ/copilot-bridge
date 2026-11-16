@@ -3,7 +3,6 @@
 
 import type { TaskStore } from "./task-store.js";
 import type { TaskGroupStore } from "./task-group-store.js";
-import type { ScheduleStore } from "./schedule-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
@@ -46,9 +45,10 @@ import type { VoiceJobManager } from "./voice-job-manager.js";
 import type { RuntimePaths } from "./runtime-paths.js";
 import type { DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { DeferredPromptRunner } from "./deferred-prompt-runner.js";
-import type { DeferLoopStore } from "./defer-loop-store.js";
-import type { DeferLoopRunner } from "./defer-loop-runner.js";
-import type * as SchedulerModule from "./scheduler.js";
+import type { TriggerStore } from "./triggers/store.js";
+import type { TriggerService } from "./triggers/service.js";
+import type { TriggerChatRunner } from "./triggers/chat-runner.js";
+import type { TriggerTaskRunner } from "./triggers/task-runner.js";
 import type { PushSubscriptionStore } from "./push-subscription-store.js";
 import type {
   PushEventNotificationDisposer,
@@ -70,7 +70,6 @@ import type { CuaDriverInstaller } from "./cua-driver.js";
 export interface AppContext {
   taskStore: TaskStore;
   taskGroupStore: TaskGroupStore;
-  scheduleStore: ScheduleStore;
   settingsStore: SettingsStore;
   sessionMetaStore: SessionMetaStore;
   sessionWorkspaceStore: SessionWorkspaceStore;
@@ -85,7 +84,7 @@ export interface AppContext {
   taskStartersStore?: TaskStartersStore;
   /** Serves, refreshes and auto-refreshes suggested chats; created with the API services. */
   taskStarters?: TaskStartersService;
-  /** Chats where defers or schedules ran turns since the user last wrote there. */
+  /** Chats where triggers ran turns since the user last wrote there. */
   unattendedRunStore?: UnattendedRunStore;
   taskHistoryStore?: TaskHistoryStore;
   /** Evidence reports recorded by verify_complete. */
@@ -121,7 +120,7 @@ export interface AppContext {
   pushSubscriptionStore?: PushSubscriptionStore;
   managementJobStore?: ManagementJobStore;
   pushNotificationService?: PushNotificationService;
-  /** Deferred prompt persistence */
+  /** Chat delivery outbox: messages queued for a chat (trigger results, job results, restart notices). */
   deferredPromptStore?: DeferredPromptStore;
   interruptedRunStore?: InterruptedRunStore;
   /** The browser message id each saved chat message was sent as. */
@@ -130,15 +129,16 @@ export interface AppContext {
   unsentMessageStore?: UnsentMessageStore;
   /** Commands running in attached shells, kept so one the Bridge stops can be reported to its agent. */
   backgroundCommandStore?: BackgroundCommandStore;
-  /** Recurring defer loop persistence */
-  deferLoopStore?: DeferLoopStore;
-  /** Deferred prompt dispatcher */
+  /** Every automation: chat wake-ups, chats started in tasks, new tasks. */
+  triggerStore?: TriggerStore;
+  triggerService?: TriggerService;
+  /** Runs triggers that wake their own chat. */
+  triggerChatRunner?: TriggerChatRunner;
+  /** Runs triggers that start a chat in a task or create a task. */
+  triggerTaskRunner?: TriggerTaskRunner;
+  /** Delivers the outbox to chats. */
   deferredPromptRunner?: DeferredPromptRunner;
-  /** Recurring defer loop dispatcher */
-  deferLoopRunner?: DeferLoopRunner;
-  /** Scheduler module instance. Staging previews provide an isolated module. */
-  scheduler?: typeof SchedulerModule;
-  /** Periodic owner of session-overlay/defer row cleanup. Started at boot. */
+  /** Periodic owner of session-overlay/trigger row cleanup. Started at boot. */
   sessionOverlayMaintenance?: SessionOverlayMaintenance;
   /**
    * Discovers atomically published preview generations from management jobs run by

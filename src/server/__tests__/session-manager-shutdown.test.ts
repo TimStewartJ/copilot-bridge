@@ -133,7 +133,7 @@ describe("SessionManager graceful shutdown", () => {
     expect(manager.backend).toBeNull();
   });
 
-  it("aborts active runs and defer checks during shutdown", async () => {
+  it("aborts active runs and trigger workers during shutdown", async () => {
     const session = makeSession();
     const stop = vi.fn().mockResolvedValue(undefined);
     const manager = createManager() as any;
@@ -141,7 +141,7 @@ describe("SessionManager graceful shutdown", () => {
       resumeSession: vi.fn().mockResolvedValue(session),
       stop,
     };
-    const abortDeferChecks = vi.spyOn(manager.deferWorker, "abortAll");
+    const abortTriggerWorkers = vi.spyOn(manager.triggerWorker, "abortAll");
 
     manager.startWork("session-1", "hello");
     await vi.waitFor(() => expect(session.send).toHaveBeenCalledOnce());
@@ -152,7 +152,7 @@ describe("SessionManager graceful shutdown", () => {
     await manager.gracefulShutdown();
 
     expect(session.abort).toHaveBeenCalledTimes(1);
-    expect(abortDeferChecks).toHaveBeenCalledOnce();
+    expect(abortTriggerWorkers).toHaveBeenCalledOnce();
     expect(manager.getActiveSessions()).toEqual([]);
     expect(stop).toHaveBeenCalledOnce();
   });

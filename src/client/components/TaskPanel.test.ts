@@ -120,7 +120,7 @@ vi.mock("./TaskPanelSummaryRow", () => ({
   default: (props: unknown) => taskPanelSummaryRowMock(props),
 }));
 
-vi.mock("./ScheduleDetailSheet", () => ({
+vi.mock("./TriggerDetailSheet", () => ({
   default: () => null,
 }));
 
@@ -154,7 +154,7 @@ vi.mock("./task-sections", () => ({
   TaskChecklistSection: () => null,
   TaskNotesSection: (props: unknown) => taskNotesSectionMock(props),
   RelatedDocsSection: () => null,
-  ScheduleSection: () => null,
+  TriggerSection: () => null,
 }));
 
 function createTask(overrides: Partial<Task> = {}): Task {
@@ -185,7 +185,7 @@ function createSession(overrides: Partial<Session> = {}): Session {
     lastVisibleActivityAt: "2026-01-01T00:00:00.000Z",
     archived: false,
     runState: "idle",
-    deferSummary: { count: 0, runningCount: 0, nextRunAt: null },
+    triggerSummary: { count: 0, runningCount: 0, nextRunAt: null },
     ...overrides,
   };
 }
@@ -195,20 +195,20 @@ function createWorkspace(overrides: Record<string, unknown> = {}) {
     enrichedWIs: [],
     enrichedPRs: [],
     reloadEnriched: async () => {},
-    sched: {
-      schedules: [],
+    triggers: {
+      triggers: [],
       settled: true,
       reload: async () => {},
-      trigger: async () => {},
-      toggle: async () => {},
-      remove: async () => {},
+      saved: () => {},
+      act: async () => {},
     },
-    schedDetail: {
+    triggerDetail: {
       isOpen: false,
-      schedule: null,
+      triggerId: null,
       mode: "view",
       openForCreate: () => {},
       openSheet: () => {},
+      showSaved: () => {},
       close: () => {},
       switchToEdit: () => {},
       switchToView: () => {},
@@ -300,10 +300,10 @@ describe("TaskPanel", () => {
     expect(undated).toContain("Needs a look");
     expect(undated).not.toContain("Time to revisit");
     taskOverviewMock.mockReturnValue({ isError: false, data: { tasks: [{
-      ...data.tasks[0], activity: createTaskActivity({ scheduledCount: 1 }),
+      ...data.tasks[0], activity: createTaskActivity({ taskTriggerCount: 1 }),
     }] } });
     const scheduled = await renderTaskPanelHtml(createTask());
-    expect(scheduled).toContain("Automatic work scheduled");
+    expect(scheduled).toContain("Automation scheduled");
     expect(scheduled).not.toContain("Needs a look");
     expect(scheduled).not.toContain('data-status="working"');
     taskOverviewMock.mockReturnValue({ isError: false, data: { tasks: [{ ...data.tasks[0], inputCount: 1 }] } });

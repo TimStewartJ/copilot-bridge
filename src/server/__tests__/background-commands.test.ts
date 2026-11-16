@@ -8,7 +8,7 @@ import {
   recoverBackgroundCommandsOnBoot,
 } from "../background-commands.js";
 import { createDeferredPromptStore, type DeferredPromptStore } from "../deferred-prompt-store.js";
-import { listDeferActivityDeliveries } from "../defer-activity.js";
+import { listTriggerDeliveries } from "../triggers/activity.js";
 import { isolateStagingRuntimeState } from "../staging-seed-state.js";
 import type { DatabaseSync } from "../db.js";
 import { setupTestDb } from "./helpers.js";
@@ -240,8 +240,8 @@ describe("waking an agent whose commands were stopped", () => {
     expect(poke).toHaveBeenCalledTimes(1);
     // The next message does not repeat it.
     expect(store.listStopped("s1")).toEqual([]);
-    // It is not one of the session's defers.
-    expect(listDeferActivityDeliveries(prompts, "s1")).toEqual([]);
+    // It is not one of the session's trigger messages.
+    expect(listTriggerDeliveries(prompts, "s1")).toEqual([]);
     expect(prompts.listForSession("s1")).toEqual([]);
   });
 

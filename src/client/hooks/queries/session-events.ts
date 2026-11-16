@@ -129,19 +129,19 @@ export function projectSessionEvent(
       refetch(queryKeys.dashboard);
       break;
     }
-    case "session:defer-summary":
-      if (sessionId && event.deferSummary) {
-        patch({ deferSummary: event.deferSummary });
-        refetch(queryKeys.sessionDefers(sessionId), TASK_OVERVIEW_KEY);
+    case "session:trigger-summary":
+      if (sessionId && event.triggerSummary) {
+        patch({ triggerSummary: event.triggerSummary });
+        refetch(queryKeys.sessionTriggers(sessionId), TASK_OVERVIEW_KEY);
       }
       break;
     case "session:history-truncated":
       effects.onHistoryTruncated(sessionId);
       break;
-    case "schedule:triggered":
+    case "trigger:fired":
       refetch(activeSessionsKey, queryKeys.tasks, TASK_OVERVIEW_KEY);
-      if (event.taskId) refetch(queryKeys.task(event.taskId));
-      if (event.scheduleId) refetch(queryKeys.scheduleSessions(event.scheduleId));
+      if (event.taskId) refetch(queryKeys.task(event.taskId), queryKeys.taskTriggers(event.taskId));
+      if (event.triggerId) refetch(queryKeys.triggerChats(event.triggerId));
       effects.onBusy(sessionId);
       break;
     default:

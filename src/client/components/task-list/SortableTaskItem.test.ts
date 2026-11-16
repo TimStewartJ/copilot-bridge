@@ -136,8 +136,8 @@ describe("SortableTaskItem", () => {
       }
     });
 
-    it("keeps deferredCount unmarked while retaining its activity context", async () => {
-      const root = await renderRow(task, indicator(), "rail", { activity: createTaskActivity({ deferredCount: 1 }) });
+    it("keeps chatTriggerCount unmarked while retaining its activity context", async () => {
+      const root = await renderRow(task, indicator(), "rail", { activity: createTaskActivity({ chatTriggerCount: 1 }) });
       expect(statusIcons(root)).toEqual([]);
       expect(root.textContent).not.toContain("Review");
     });

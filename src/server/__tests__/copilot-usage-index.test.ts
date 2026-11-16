@@ -120,7 +120,7 @@ describe("createIncrementalCopilotUsageReader", () => {
       ...scanned,
       source: {
         kind: "defer_worker" as const,
-        deferId: "once_1",
+        triggerId: "once_1",
         parentSessionId: "parent-1",
         action: "return",
       },
@@ -187,7 +187,7 @@ describe("createIncrementalCopilotUsageReader", () => {
       },
       source: {
         kind: "defer_worker" as const,
-        deferId: "once_2",
+        triggerId: "once_2",
         parentSessionId: "parent-2",
         action: "return",
       },

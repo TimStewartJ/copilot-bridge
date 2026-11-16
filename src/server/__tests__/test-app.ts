@@ -18,7 +18,6 @@ import { createTaskStore } from "../task-store.js";
 import { createTaskHistoryStore } from "../task-history-store.js";
 import { createCompletionReportStore } from "../completion-report-store.js";
 import { createTaskGroupStore } from "../task-group-store.js";
-import { createScheduleStore } from "../schedule-store.js";
 import { createSettingsStore } from "../settings-store.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 import { createSessionWorkspaceStore } from "../session-workspace-store.js";
@@ -47,7 +46,8 @@ import { createDocsSnapshotStore } from "../docs-snapshot-store.js";
 import { createApiRouter, type ApiRouterOptions } from "../api-router.js";
 import { createApiServices } from "../api-services.js";
 import { createDeferredPromptStore } from "../deferred-prompt-store.js";
-import { createDeferLoopStore } from "../defer-loop-store.js";
+import { createTriggerStore } from "../triggers/store.js";
+import { createTriggerService } from "../triggers/service.js";
 import { createInterruptedRunStore } from "../interrupted-run-store.js";
 import { createUnsentMessageStore } from "../unsent-message-store.js";
 import { createChatMessageIdStore } from "../chat-message-id-store.js";
@@ -112,7 +112,6 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     completionReportStore: createCompletionReportStore(db),
     taskPageStore: createTaskPageStore(db),
     taskGroupStore,
-    scheduleStore: createScheduleStore(db),
     settingsStore: createSettingsStore(db),
     sessionMetaStore: createSessionMetaStore(db),
     sessionWorkspaceStore: createSessionWorkspaceStore(db),
@@ -139,7 +138,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     pushSubscriptionStore,
     pushNotificationService: createPushNotificationService({ subscriptionStore: pushSubscriptionStore }),
     deferredPromptStore: createDeferredPromptStore(db),
-    deferLoopStore: createDeferLoopStore(db),
+    triggerStore: createTriggerStore(db),
     interruptedRunStore: createInterruptedRunStore(db),
     chatMessageIdStore: createChatMessageIdStore(db),
     unsentMessageStore: createUnsentMessageStore(db),
@@ -162,6 +161,9 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     listSessions: () => ctx.sessionManager.listSessionsFromDisk({ includeArchived: true }),
   });
   ctx.runtimePaths = runtimePaths;
+  ctx.triggerService ??= ctx.triggerStore
+    ? createTriggerService({ store: ctx.triggerStore, taskStore: ctx.taskStore, globalBus: ctx.globalBus, deferredPromptStore: ctx.deferredPromptStore })
+    : undefined;
   ctx.copilotHome ??= copilotHome;
   ctx.skillUsageStore ??= createSkillUsageStore(db);
   ctx.unattendedRunStore ??= createUnattendedRunStore(db);
@@ -207,10 +209,6 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     if (hasNoArgFunction(ctx.sessionManager, "gracefulShutdown")) {
       try {
         await ctx.sessionManager.gracefulShutdown();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-      try {
       } catch (error) {
         cleanupErrors.push(error);
       }

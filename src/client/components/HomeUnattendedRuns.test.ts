@@ -38,7 +38,7 @@ describe("Ran while you were away", () => {
     ]);
     await waitUntilAct(harness.act, () => text().includes("Nightly build check"));
     expect(text()).toContain("Release prep");
-    expect(text()).toContain("3 turns · defer, schedule");
+    expect(text()).toContain("3 turns · trigger");
     expect(text()).toContain("Inbox triage");
     expect(text()).toContain("Renamed chat");
     expect(buttons("Review")).toHaveLength(5);

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CalendarEvent } from "../../shared/calendar.js";
 import { buildCalendar, CalendarRangeError, type CalendarSources } from "../calendar-view.js";
 import type { ChecklistItem } from "../checklist-store.js";
-import type { Schedule } from "../schedule-store.js";
+import type { Trigger, TriggerWhen } from "../triggers/types.js";
 
 const LA = "America/Los_Angeles";
 // Monday 2 November 2026, 08:00 in Los Angeles.
@@ -16,11 +16,15 @@ function event(overrides: Partial<CalendarEvent>): CalendarEvent {
   };
 }
 
-function schedule(overrides: Partial<Schedule>): Schedule {
+/** A task trigger; give `cron` (with `timezone`), or `when` for other timing. */
+function trigger(overrides: Partial<Trigger> & { cron?: string; timezone?: string } = {}): Trigger {
+  const { cron = "0 9 * * *", timezone = LA, ...rest } = overrides;
+  const when: TriggerWhen = { kind: "cron", cron, timezone };
   return {
-    id: "s1", taskId: "t1", name: "Digest", prompt: "", type: "cron", cron: "0 9 * * *", timezone: LA, enabled: true,
-    createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", runCount: 0,
-    ...overrides,
+    id: "s1", taskId: "t1", name: "Digest", prompt: "", when, action: { kind: "new_chat" }, status: "active",
+    runNow: false, runCount: 0, fireCount: 0, attempts: 0,
+    createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    ...rest,
   };
 }
 
@@ -29,7 +33,7 @@ function sources(parts: {
   deadlines?: Array<ChecklistItem & { taskTitle?: string }>;
   overdue?: Array<ChecklistItem & { taskTitle?: string }>;
   revisits?: Array<{ id: string; title: string; nextTouchAt: string; deferred: boolean }>;
-  schedules?: Schedule[];
+  triggers?: Trigger[];
   helm?: string[];
 } = {}): CalendarSources {
   return {
@@ -37,7 +41,7 @@ function sources(parts: {
     listDeadlines: (from, to) => (parts.deadlines ?? []).filter((item) => item.deadline! >= from && item.deadline! <= to),
     deadlineSummary: () => ({ overdue: parts.overdue ?? [], overdueTotal: (parts.overdue ?? []).length, undated: 4 }),
     listRevisits: () => parts.revisits ?? [],
-    listEnabledSchedules: () => parts.schedules ?? [],
+    listActiveTriggers: () => parts.triggers ?? [],
     taskTitle: () => "A task",
     helmLookTimes: () => parts.helm ?? [],
     serverTimezone: LA,
@@ -105,10 +109,10 @@ describe("buildCalendar events", () => {
         event({ id: "daily", allDay: true, start: "2026-10-31", end: "2026-10-31", repeat: { every: "day", interval: 1 } }),
         event({ id: "overnight", start: "2026-11-02T07:00:00.000Z", end: "2026-11-02T09:00:00.000Z" }),
       ],
-      schedules: [schedule({ id: "minute", cron: "* * * * *" }), schedule({ id: "past", cron: "0 7 * * *" })],
+      triggers: [trigger({ id: "minute", cron: "* * * * *" }), trigger({ id: "past", cron: "0 7 * * *" })],
     }), { from: "2026-11-02", to: "2026-11-02", timezone: LA, now: NOW });
 
-    expect(calendar.items.map(({ kind, eventId, scheduleId, start }) => [kind, eventId ?? scheduleId, start])).toEqual([
+    expect(calendar.items.map(({ kind, eventId, triggerId, start }) => [kind, eventId ?? triggerId, start])).toEqual([
       ["event", "overnight", "2026-11-02T07:00:00.000Z"],
       ["event", "daily", "2026-11-02"],
       ["run", "minute", "2026-11-02T16:00:00.000Z"],
@@ -136,17 +140,18 @@ describe("buildCalendar derived dates", () => {
     expect(starts(buildCalendar(sources({ revisits }), { from: "2026-11-02", to: "2026-11-02", timezone: "UTC", now: NOW }), "revisit")).toHaveLength(1);
   });
 
-  it("lists overlapping events and unexpired runs beside the week’s overdue work", () => {
+  it("lists overlapping events and unexpired calendar runs, not interval ones, beside the week’s overdue work", () => {
     const calendar = buildCalendar(sources({
       events: [event({ id: "trip", allDay: true, start: "2026-10-30", end: "2026-11-03" })],
-      schedules: [
-        schedule({ id: "daily", expiresAt: "2026-11-03T17:30:00.000Z" }),
-        schedule({ id: "once", type: "once", cron: undefined, runAt: "2026-11-03T17:00:00.000Z", expiresAt: "2026-11-03T17:00:00.000Z" }),
+      triggers: [
+        trigger({ id: "daily", expiresAt: "2026-11-03T17:30:00.000Z" }),
+        trigger({ id: "once", when: { kind: "at", at: "2026-11-03T17:00:00.000Z" }, expiresAt: "2026-11-03T17:00:00.000Z" }),
+        trigger({ id: "interval", when: { kind: "every", seconds: 3600 } }),
       ],
       revisits: [{ id: "t1", title: "Check back", nextTouchAt: "2026-10-30T16:00:00.000Z", deferred: false }],
       overdue: [{ id: "c1", taskId: "t2", text: "Pay", done: false, order: 0, createdAt: "", deadline: "2026-10-20" }],
     }), { from: "2026-11-02", to: "2026-11-08", timezone: LA, now: NOW });
-    expect(calendar.items.map(({ kind, eventId, scheduleId, start }) => [kind, eventId ?? scheduleId, start])).toEqual([
+    expect(calendar.items.map(({ kind, eventId, triggerId, start }) => [kind, eventId ?? triggerId, start])).toEqual([
       ["event", "trip", "2026-10-30"], ["run", "daily", "2026-11-02T17:00:00.000Z"], ["run", "daily", "2026-11-03T17:00:00.000Z"],
     ]);
     expect(calendar.runCounts).toEqual({ "2026-11-02": 1, "2026-11-03": 1 });
@@ -157,24 +162,24 @@ describe("buildCalendar derived dates", () => {
   it.each([
     {
       name: "a run limit counts the runs before the window",
-      schedule: schedule({ maxRuns: 5, runCount: 2 }),
+      trigger: trigger({ maxRuns: 5, runCount: 2 }),
       from: "2026-11-04", to: "2026-11-10",
       runs: ["2026-11-04T17:00:00.000Z"], counts: { "2026-11-04": 1 },
     },
     {
-      name: "an hourly schedule in another zone is counted on the viewer's days",
-      schedule: schedule({ cron: "0 * * * *", timezone: "UTC" }),
+      name: "an hourly trigger in another zone is counted on the viewer's days",
+      trigger: trigger({ cron: "0 * * * *", timezone: "UTC" }),
       from: "2026-11-03", to: "2026-11-03",
       runs: ["2026-11-03T08:00:00.000Z", "2026-11-03T09:00:00.000Z", "2026-11-03T10:00:00.000Z"], counts: { "2026-11-03": 24 },
     },
-  ])("$name", ({ schedule: plan, from, to, runs, counts }) => {
-    const calendar = buildCalendar(sources({ schedules: [plan] }), { from, to, timezone: LA, now: NOW });
+  ])("$name", ({ trigger: plan, from, to, runs, counts }) => {
+    const calendar = buildCalendar(sources({ triggers: [plan] }), { from, to, timezone: LA, now: NOW });
     expect(starts(calendar, "run")).toEqual(runs);
     expect(calendar.runCounts).toEqual(counts);
   });
 
-  it("counts a dense schedule on the day the clock springs forward", () => {
-    const calendar = buildCalendar(sources({ schedules: [schedule({ cron: "* * * * *" })] }),
+  it("counts a dense trigger on the day the clock springs forward", () => {
+    const calendar = buildCalendar(sources({ triggers: [trigger({ cron: "* * * * *" })] }),
       { from: "2027-03-14", to: "2027-03-14", timezone: LA, now: new Date("2027-03-13T12:00:00.000Z") });
     expect(calendar.runCounts).toEqual({ "2027-03-14": 1380 });
   });

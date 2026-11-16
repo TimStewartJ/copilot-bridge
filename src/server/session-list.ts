@@ -4,7 +4,7 @@
 // stats per listed session. Its rows hold what only changes structurally (which sessions exist,
 // their names, workspaces and files) and are kept until something structural is announced or
 // they are 30 seconds old. Everything that changes while people work (run state, questions,
-// archived, activity and read times, task links, schedules, deferred work) is read for each
+// archived, activity and read times, task links, triggers) is read for each
 // response, by session id, for the rows in hand. So archiving, reading or linking a chat needs
 // no build, and a response never reads a whole table.
 //
@@ -16,7 +16,7 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppContext } from "./app-context.js";
-import { createDeferSummaryLookup } from "./defer-summary.js";
+import { EMPTY_TRIGGER_SUMMARY } from "./triggers/types.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
 import { parseWorkspaceCwd } from "./session-formatting.js";
 import type { SessionWorkspace } from "./session-workspace-store.js";
@@ -134,10 +134,7 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
       meta: everySession ? ctx.sessionMetaStore.listMeta() : ctx.sessionMetaStore.listMetaFor(sessionIds),
       readState: everySession ? ctx.readStateStore.getReadState() : ctx.readStateStore.getReadStateFor(sessionIds),
       links: ctx.taskStore.listTaskLinksBySession(everySession ? undefined : sessionIds),
-      getDeferSummary: createDeferSummaryLookup({
-        deferredPromptStore: ctx.deferredPromptStore,
-        deferLoopStore: ctx.deferLoopStore,
-      }),
+      triggerSummaries: ctx.triggerStore?.listSummariesBySession() ?? new Map(),
     };
   }
 
@@ -150,7 +147,7 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
     const lastAttentionAt = meta?.lastAttentionAt ?? row.lastAttentionAt;
     const lastActivityAt = maxIsoTime(lastVisibleActivityAt, lastAttentionAt);
     const archived: boolean = meta?.archived ?? row.archived ?? false;
-    const deferSummary = volatile.getDeferSummary(id);
+    const triggerSummary = { ...(volatile.triggerSummaries.get(id) ?? EMPTY_TRIGGER_SUMMARY) };
     const shown = isShown({
       includeArchived,
       archived,
@@ -160,21 +157,22 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
       hasSessionName: typeof row.summary === "string" && row.summary.trim().length > 0,
       hasReadState: !!volatile.readState[id],
       hasBridgeActivitySignal: !!meta?.lastVisibleActivityAt || !!meta?.lastAttentionAt,
-      hasDeferredWork: deferSummary.count > 0,
+      hasDeferredWork: triggerSummary.count > 0,
     });
-    return { meta, status, linked, lastVisibleActivityAt, lastAttentionAt, lastActivityAt, archived, deferSummary, shown };
+    return { meta, status, linked, lastVisibleActivityAt, lastAttentionAt, lastActivityAt, archived, triggerSummary, shown };
   }
 
   function overlay(rows: SessionListRow[], includeArchived: boolean): SessionListRow[] {
     const volatile = readVolatile(rows.map((row) => row.sessionId));
-    const scheduleEnabled = new Map<string, boolean>();
-    const isScheduleEnabled = (scheduleId: string): boolean => {
-      let enabled = scheduleEnabled.get(scheduleId);
-      if (enabled === undefined) {
-        enabled = ctx.scheduleStore.getSchedule(scheduleId)?.enabled ?? false;
-        scheduleEnabled.set(scheduleId, enabled);
+    const triggerActive = new Map<string, boolean>();
+    const isTriggerActive = (triggerId: string): boolean => {
+      let active = triggerActive.get(triggerId);
+      if (active === undefined) {
+        const status = ctx.triggerStore?.get(triggerId)?.status;
+        active = status === "active" || status === "running";
+        triggerActive.set(triggerId, active);
       }
-      return enabled;
+      return active;
     };
     const withoutDetails: string[] = [];
     const shown = rows.flatMap((row) => {
@@ -193,14 +191,14 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
         lastActivityAt,
         modifiedTime: lastActivityAt ?? row.modifiedTime,
         ...status,
-        deferSummary: current.deferSummary,
+        triggerSummary: current.triggerSummary,
         archived: current.archived,
         archivedAt: meta?.archivedAt ?? null,
         triggeredBy: meta?.triggeredBy,
-        scheduleId: meta?.scheduleId,
-        scheduleName: meta?.scheduleName,
-        // Only rows built with details say whether their schedule still runs.
-        ...("workspace" in row ? { scheduleEnabled: meta?.scheduleId ? isScheduleEnabled(meta.scheduleId) : undefined } : {}),
+        triggerId: meta?.scheduleId,
+        triggerName: meta?.scheduleName,
+        // Only rows built with details say whether the trigger that started them still runs.
+        ...("workspace" in row ? { triggerActive: meta?.scheduleId ? isTriggerActive(meta.scheduleId) : undefined } : {}),
         intentText: ctx.eventBusRegistry.getBus(row.sessionId)?.getIntentText() ?? null,
       }];
     });

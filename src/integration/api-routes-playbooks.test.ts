@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createTestApp, request, scheduler } from "../test-support/api-routes.js";
+import { createTestApp, request } from "../test-support/api-routes.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 
@@ -52,24 +52,17 @@ describe("playbook routes", () => {
     expect((await request(app).put(`/api/sessions/${sessionId}/playbook`).send({ playbook: "none" })).status).toBe(404);
   });
 
-  it("stores, validates and clears a schedule's and a task's playbook", async () => {
+  it("stores, validates and clears a trigger's and a task's playbook", async () => {
     const { app, ctx } = createTestApp();
-    const task = await request(app).post("/api/tasks").send({ title: "Schedule host" });
-    scheduler.initialize(ctx.sessionManager as any, {
-      scheduleStore: ctx.scheduleStore,
-      taskStore: ctx.taskStore,
-      sessionMetaStore: ctx.sessionMetaStore,
-      globalBus: ctx.globalBus,
-    });
-    const base = { taskId: task.body.task.id, name: "Watch", prompt: "Check it", type: "cron", cron: "0 8 * * *" };
+    const task = await request(app).post("/api/tasks").send({ title: "Trigger host" });
+    const base = { taskId: task.body.task.id, name: "Watch", prompt: "Check it", then: "new_chat", cron: "0 8 * * *" };
 
-    expect((await request(app).post("/api/schedules").send({ ...base, playbook: "a b" })).status).toBe(400);
-    const created = await request(app).post("/api/schedules").send({ ...base, playbook: "watch" });
+    expect((await request(app).post("/api/triggers").send({ ...base, playbook: "a b" })).status).toBe(400);
+    const created = await request(app).post("/api/triggers").send({ ...base, playbook: "watch" });
     expect(created.status).toBe(201);
-    expect(ctx.scheduleStore.getSchedule(created.body.id)?.playbook).toBe("watch");
-    await request(app).patch(`/api/schedules/${created.body.id}`).send({ playbook: null }).expect(200);
-    expect(ctx.scheduleStore.getSchedule(created.body.id)?.playbook).toBeUndefined();
-
+    expect(ctx.triggerStore!.get(created.body.id)?.action).toMatchObject({ kind: "new_chat", playbook: "watch" });
+    await request(app).patch(`/api/triggers/${created.body.id}`).send({ playbook: null }).expect(200);
+    expect(ctx.triggerStore!.get(created.body.id)?.action).toEqual({ kind: "new_chat" });
     await request(app).patch(`/api/tasks/${task.body.task.id}`).send({ playbook: "research" }).expect(200);
     expect(ctx.taskStore.getTask(task.body.task.id)?.playbook).toBe("research");
     await request(app).patch(`/api/tasks/${task.body.task.id}`).send({ playbook: null }).expect(200);

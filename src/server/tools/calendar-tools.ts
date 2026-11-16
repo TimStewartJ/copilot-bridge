@@ -4,7 +4,7 @@ import { isRecord } from "../../shared/is-record.js";
 import { CalendarNotFoundError, CalendarValidationError } from "../calendar-store.js";
 import { createCalendarSources } from "../calendar-router.js";
 import { buildCalendar, CalendarRangeError } from "../calendar-view.js";
-import { getServerTimezone } from "../schedule-store.js";
+import { getServerTimezone } from "../triggers/timing.js";
 import { toolFailure } from "../tool-results.js";
 import {
   defineBridgeTool,
@@ -57,14 +57,14 @@ export function createCalendarToolDefinitions(ctx: AppContext): BridgeToolDefini
   const calendarCtx = { ...ctx, calendarStore: store };
   return [
     defineBridgeTool("calendar_list", {
-      description: "List the Bridge calendar for a date range: the user's events plus checklist deadlines, task revisits and, on request, scheduled agent runs. The Bridge calendar is the user's main calendar.",
+      description: "List the Bridge calendar for a date range: the user's events plus checklist deadlines, task revisits and, on request, upcoming trigger runs. The Bridge calendar is the user's main calendar.",
       parameters: {
         type: "object",
         properties: {
           from: { type: "string", description: "First date, YYYY-MM-DD." },
           to: { type: "string", description: "Last date, YYYY-MM-DD, inclusive; at most 62 days after from." },
           timezone: { type: "string", description: "IANA zone the dates are in. Defaults to the Bridge's zone." },
-          includeRuns: { type: "boolean", description: "Include scheduled agent runs. Default false." },
+          includeRuns: { type: "boolean", description: "Include upcoming trigger runs. Default false." },
         },
         required: ["from", "to"],
       },

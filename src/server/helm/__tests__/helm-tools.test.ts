@@ -170,7 +170,7 @@ describe("Helm tools", () => {
     expect(recent.sessions.map((entry: any) => entry.title)).not.toContain("Old archived chat");
     const archived = await tool(ctx, createFacade(), "list_sessions").run({ filter: "archived" });
     expect(archived.sessions).toEqual([expect.objectContaining({
-      title: "Old archived chat", archived: true, startedBy: expect.stringMatching(/schedule.*docs-maintenance/i),
+      title: "Old archived chat", archived: true, startedBy: 'trigger "docs-maintenance"',
     })]);
   });
 
@@ -388,12 +388,12 @@ describe("Helm tools", () => {
   it("reuses Bridge management tools but nothing that does real work", () => {
     for (const name of [
       "task_list", "task_update", "task_group_create", "task_link_pr", "action_add",
-      "schedule_create", "docs_write", "docs_db_query",
+      "trigger_create", "trigger_list", "docs_write", "docs_db_query",
       "session_rename", "publish_visual", "tag_list",
     ]) {
       expect(isHelmBridgeToolName(name), name).toBe(true);
     }
-    for (const name of ["staging_deploy", "self_restart", "browser_exec", "computer_click", "defer_create", "checklist_add", "feed_save", "report_intent", "git_worktree_release", "decision_save", "alert_save", "event_save", "focus_protection_current"]) {
+    for (const name of ["staging_deploy", "self_restart", "browser_exec", "computer_click", "checklist_add", "feed_save", "report_intent", "git_worktree_release", "decision_save", "alert_save", "event_save", "focus_protection_current"]) {
       expect(isHelmBridgeToolName(name), name).toBe(false);
     }
   });

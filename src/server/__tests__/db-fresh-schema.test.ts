@@ -60,6 +60,9 @@ describe("fresh database schema", () => {
       "task_momentum_events",
       "idx_task_momentum_events_task",
       "idx_bridge_session_state_lastAttentionAt",
+      "triggers",
+      "trigger_runs",
+      "idx_triggers_lane_status_nextRunAt",
     ]) {
       expect(names, `missing ${name}`).toContain(name);
     }
