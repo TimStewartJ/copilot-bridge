@@ -334,7 +334,9 @@ async function main(): Promise<void> {
   startHibernateHandoffKeeper(runtimePaths.dataDir);
 
   try {
-    defaultContext.sessionOverlayMaintenance = createSessionOverlayMaintenance(defaultContext);
+    defaultContext.sessionOverlayMaintenance = createSessionOverlayMaintenance(defaultContext, {
+      deleteSession: (sessionId) => apiServices.deleteSessionWithOwnedState(sessionId, "scratch:expired"),
+    });
     await defaultContext.sessionOverlayMaintenance.start();
   } catch (error) {
     console.error("[session-overlay] Initial maintenance failed:", error);

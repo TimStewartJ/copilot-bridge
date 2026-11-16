@@ -281,6 +281,7 @@ import {
 import { createRetainedCopilotUsageEntry } from "./copilot-usage-store.js";
 import { deleteCliSessionStoreRows, sweepLeakedCliSessionStoreRows } from "./cli-session-store.js";
 import { createDisposableTitleSessionId, DISPOSABLE_TITLE_SESSION_ID_PREFIX } from "./session-name-generator.js";
+import { createListedSessionId } from "./unlisted-sessions.js";
 import { buildCopilotClientOptions, resolveBridgeCopilotGitHubToken } from "./copilot-client-options.js";
 import type { CopilotAccountsStatus } from "../shared/copilot-accounts.js";
 import { BUILT_IN_GITHUB_MCP_SERVER } from "./built-in-mcp-servers.js";
@@ -4858,7 +4859,7 @@ export class SessionManager {
       const client = this.getBackend();
 
       const t0 = Date.now();
-      const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
+      const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? createListedSessionId() : undefined);
       const modelMetadata = await this.loadModelMetadataForRuntime(client);
       const abTestArm = this.pickModelAbTestArm(bridgeSessionId, options, modelMetadata);
       const sessionConfig = this.buildSessionConfig({
@@ -5207,7 +5208,7 @@ export class SessionManager {
       };
 
       const t0 = Date.now();
-      const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? randomUUID() : undefined);
+      const bridgeSessionId = options.expectedSessionId ?? (this.deps.bridgeToolsMcpServer ? createListedSessionId() : undefined);
       const modelMetadata = await this.loadModelMetadataForRuntime(client);
       const initialPlaybook = options.playbook
         ? { playbook: options.playbook, source: "user" as const }

@@ -66,7 +66,7 @@ interface ReaperReferences {
   activeSessionIds: Set<string>;
 }
 
-function getCopilotHome(ctx: AppContext): string {
+export function getCopilotHome(ctx: AppContext): string {
   return ctx.copilotHome ?? ctx.runtimePaths?.copilotHome ?? join(homedir(), ".copilot");
 }
 

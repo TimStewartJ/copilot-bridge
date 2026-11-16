@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -57,4 +57,16 @@ export function useRunTempDir(env: NodeJS.ProcessEnv = process.env, parent = tmp
     }
   });
   return dir;
+}
+
+/**
+ * Points the home folder (HOME, and USERPROFILE on Windows) into the run's temp folder. Code that
+ * falls back to os.homedir() when no path is configured, such as the Copilot home a SessionManager
+ * uses without copilotHome, would otherwise write into the real ~/.copilot of whoever runs the tests.
+ */
+export function useRunHomeDir(runTempDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  const home = join(runTempDir, "home");
+  mkdirSync(home, { recursive: true });
+  env.HOME = env.USERPROFILE = home;
+  return home;
 }

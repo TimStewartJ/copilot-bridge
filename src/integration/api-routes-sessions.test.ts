@@ -386,6 +386,7 @@ describe("Session routes (mocked)", () => {
 
     const res = await request(app)
       .post("/api/sessions")
+      .set("X-Bridge-Client", "web")
       .send({ reasoningEffort: "medium", contextTier: "long_context" });
 
     expect(res.status).toBe(200);

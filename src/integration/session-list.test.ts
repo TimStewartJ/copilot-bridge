@@ -372,6 +372,41 @@ describe("session list routes", () => {
     expect(ids(await list())).toEqual([first]);
   });
 
+  it("lists chats the web client starts and keeps those a script starts off every list and task", async () => {
+    const pending = new Set<string>();
+    let created = 0;
+    const create = vi.fn(async (...args: unknown[]) => {
+      const options = args.at(-1) as { expectedSessionId?: string };
+      const sessionId = options.expectedSessionId ?? `chat-${created += 1}`;
+      pending.add(sessionId);
+      return { sessionId };
+    });
+    const sessionManager = {
+      ...createMockSessionManager(),
+      listPendingSessionCreationIds: () => [...pending],
+      createSession: create,
+      createTaskSession: create,
+    } as any;
+    const { app, ctx } = createTestApp({ sessionManager });
+    const task = ctx.taskStore.createTask("Probe");
+    const other = ctx.taskStore.createTask("Other");
+    // A chat that is still being created is listed once it is linked to a task.
+    const createAndLink = async (headers: Record<string, string>) => {
+      const { sessionId } = (await request(app).post("/api/sessions").set(headers).send({})).body;
+      ctx.taskStore.linkSession(other.id, sessionId);
+      return sessionId as string;
+    };
+
+    const fromWebClient = await createAndLink({ "X-Bridge-Client": "web" });
+    const fromBrowser = await createAndLink({ "Sec-Fetch-Site": "same-origin" });
+    const fromScript = await createAndLink({});
+    const taskFromScript = (await request(app).post(`/api/tasks/${task.id}/session`).send({})).body.sessionId;
+
+    expect([fromScript, taskFromScript]).toEqual([expect.stringMatching(/^5c7a7c40-/), expect.stringMatching(/^5c7a7c40-/)]);
+    expect(ids((await request(app).get("/api/sessions")).body.sessions).sort()).toEqual([fromWebClient, fromBrowser].sort());
+    expect(ctx.taskStore.getTask(task.id)?.sessionIds).toEqual([]);
+  });
+
   it("answers a request whose body was read to its end", async () => {
     const { app } = createApp(["chat"]);
 

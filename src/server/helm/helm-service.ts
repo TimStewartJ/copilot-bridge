@@ -6,7 +6,7 @@
 // - A conversation left idle long enough stops being current, so Helm opens fresh, with a
 //   one-click way back to where you left off.
 // - Recent conversations expire after a retention window unless the user keeps them.
-import { randomUUID } from "node:crypto";
+import { createListedSessionId } from "../unlisted-sessions.js";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -421,7 +421,7 @@ export class HelmService implements HelmToolRuntime {
       ...(options.model?.trim() ? { requested: options.model.trim() } : {}),
       fallbackEffort: HELM_FALLBACK_REASONING_EFFORT,
     });
-    const sessionId = randomUUID();
+    const sessionId = createListedSessionId();
     // Registered before creation so the session is built with the Helm profile from its first config.
     this.store.create(sessionId, new Date(this.now()).toISOString());
     try {

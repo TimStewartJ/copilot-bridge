@@ -234,6 +234,7 @@ import {
   SessionMessageNotFoundError,
 } from "./session-disk-reader.js";
 import { annotateClientMessageIds } from "./chat-message-id-store.js";
+import { createScratchSessionId, isWebClientRequest } from "./scratch-sessions.js";
 
 const HIBERNATE_DELAY_MINUTES = [0, 5, 15, 30, 60] as const;
 /** Idle grace windows (minutes) accepted by the hibernate-on-idle watcher. */
@@ -2492,6 +2493,7 @@ export function createApiRouter(
       const result = await ctx.sessionManager.createSession({
         background: true,
         ...creationResult.options,
+        ...(isWebClientRequest(req.headers) ? {} : { expectedSessionId: createScratchSessionId() }),
       });
       sessionList.invalidate("route:session:create");
       res.json(result);
@@ -3802,6 +3804,7 @@ export function createApiRouter(
       if (creationResult.error) {
         return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
       }
+      const scratch = !isWebClientRequest(req.headers);
       const result = await ctx.sessionManager.createTaskSession(
         task.id,
         task.title,
@@ -3812,12 +3815,13 @@ export function createApiRouter(
         {
           background: true,
           ...creationResult.options,
+          ...(scratch ? { expectedSessionId: createScratchSessionId() } : {}),
         },
       );
       sessionList.invalidate("route:task-session:create");
 
-      // Auto-link session to task
-      ctx.taskStore.linkSession(task.id, result.sessionId);
+      // A scratch chat starts with the task's context but stays off the task.
+      if (!scratch) ctx.taskStore.linkSession(task.id, result.sessionId);
 
       res.json(result);
     } catch (err) {

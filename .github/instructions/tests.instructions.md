@@ -34,7 +34,7 @@ Every test is code someone has to keep passing through later refactors, so add o
 - Fake only what the test needs. Code under test yields with `setImmediate` and does real I/O, so a test that only needs a fixed calendar uses `vi.useFakeTimers({ toFake: ["Date"] })`.
 - Production deadlines (session release and retirement budgets, capacity waits, RPC bounds) run on real timers. A test that holds such an operation open and then asserts on state calls `freezeLifecycleDeadlines()` from `src/server/__tests__/helpers.ts` and restores real timers in `afterEach`.
 - Background work a test starts must finish before the test ends, or it races temp-directory cleanup and the next test.
-- A run keeps its temp files in one folder of its own (`useRunTempDir` in `src/test-support/hermetic-test-env.ts`), removed when the run ends. `os.tmpdir()` is that folder in every worker and child process, so keep using `makeTestDir` and never build a path under `/tmp` by hand.
+- A run keeps its temp files in one folder of its own (`useRunTempDir` in `src/test-support/hermetic-test-env.ts`), removed when the run ends. `os.tmpdir()` is that folder in every worker and child process, so keep using `makeTestDir` and never build a path under `/tmp` by hand. `HOME` (and `USERPROFILE`) point at a `home` folder inside it (`useRunHomeDir`), so code that falls back to `os.homedir()`, such as a `SessionManager` built without `copilotHome`, never writes into the real `~/.copilot`.
 - Tests never see the live Bridge environment: `vitest.shared.ts` strips inherited `BRIDGE_*`, `COPILOT_*`, and GitHub token variables. Stub what a test needs with `vi.stubEnv()` or `withTestEnv()`.
 
 ## Platform mocking

@@ -3,6 +3,7 @@ import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
 import type { ModelAbTestReport, ModelAbTestSettings } from "../shared/model-ab-test.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
+import { WEB_CLIENT_HEADER, WEB_CLIENT_HEADER_VALUE } from "../shared/web-client.js";
 import type { ExperimentalSettings } from "../shared/experimental-settings.js";
 import type { DeployGuardSettings } from "../shared/deploy-guards.js";
 import type {
@@ -799,17 +800,20 @@ export function resetConditionalGetCacheForTests(): void {
   conditionalGetCache.clear();
 }
 
+/** Marks a chat the user starts here as an ordinary one; see src/server/scratch-sessions.ts. */
+const WEB_CLIENT_HEADERS = { [WEB_CLIENT_HEADER]: WEB_CLIENT_HEADER_VALUE };
+
 async function apiFetch<T>(
   path: string,
   body?: unknown,
-  options?: { signal?: AbortSignal; reportTelemetry?: boolean; method?: "POST" | "PATCH" },
+  options?: { signal?: AbortSignal; reportTelemetry?: boolean; method?: "POST" | "PATCH"; headers?: Record<string, string> },
 ): Promise<T> {
   const t0 = performance.now();
   const conditionalKey = body ? null : path;
   const opts: RequestInit = body
     ? {
         method: options?.method ?? "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...options?.headers },
         body: JSON.stringify(body),
         signal: options?.signal,
       }
@@ -1033,7 +1037,7 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(options.contextTier ? { contextTier: options.contextTier } : {}),
     ...(options.playbook ? { playbook: options.playbook } : {}),
-  });
+  }, { headers: WEB_CLIENT_HEADERS });
   return data.sessionId;
 }
 
@@ -1784,6 +1788,7 @@ export async function createTaskSession(
       ...(options.contextTier ? { contextTier: options.contextTier } : {}),
       ...(options.playbook ? { playbook: options.playbook } : {}),
     },
+    { headers: WEB_CLIENT_HEADERS },
   );
   return data.sessionId;
 }

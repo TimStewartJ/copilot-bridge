@@ -5,7 +5,7 @@
 // ordinary Bridge session with the thinker profile, hidden from the chat lists. The run can only
 // read and publish; every change to a conversation, checklist or task comes from Tim's click,
 // except marking FYI replies read on this Bridge when Tim allows routine handling (undoable).
-import { randomUUID } from "node:crypto";
+import { createListedSessionId } from "../../unlisted-sessions.js";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AppContext } from "../../app-context.js";
@@ -647,7 +647,7 @@ export class HelmThinker {
     if (this.active) throw new HelmError("Helm is already looking", 409);
     if (stillDue && !stillDue()) throw new HelmError("The scheduled look is no longer due", 409);
     const run = this.store.createRun({
-      sessionId: randomUUID(),
+      sessionId: createListedSessionId(),
       trigger: options.trigger,
       rebuild: options.rebuild === true,
       model: selection.model ?? null,

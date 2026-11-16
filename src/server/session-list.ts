@@ -17,14 +17,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppContext } from "./app-context.js";
 import { createDeferSummaryLookup } from "./defer-summary.js";
-import { isDisposableDeferWorkerSessionId } from "./defer-worker.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
 import { parseWorkspaceCwd } from "./session-formatting.js";
-import { isDisposableTitleSessionId } from "./session-name-generator.js";
 import type { SessionWorkspace } from "./session-workspace-store.js";
 import { createWorkspaceAvailabilityLookup, type WorkspaceAvailabilityLookup } from "./session-workspace-availability.js";
 import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import type { SessionTaskLink } from "./task-store.js";
+import { isUnlistedSessionId } from "./unlisted-sessions.js";
 import type { SessionRunState } from "./session-run-state-controller.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 
@@ -293,8 +292,7 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
   }
 
   const isListed = (sessionId: string): boolean =>
-    !isDisposableTitleSessionId(sessionId)
-    && !isDisposableDeferWorkerSessionId(sessionId)
+    !isUnlistedSessionId(sessionId)
     // Helm conversations live in Helm's own history, not in the chat lists.
     && !ctx.helmStore?.isHelmSession(sessionId)
     && !ctx.helmThinkerStore?.isRunSession(sessionId);

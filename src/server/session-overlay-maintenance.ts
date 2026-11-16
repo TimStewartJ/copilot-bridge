@@ -8,7 +8,8 @@
 // low-frequency interval, with an unref'd timer and explicit shutdown disposal.
 
 import type { AppContext } from "./app-context.js";
-import { runSessionOverlayReaper } from "./session-overlay-reaper.js";
+import { sweepExpiredScratchSessions } from "./scratch-sessions.js";
+import { getCopilotHome, runSessionOverlayReaper } from "./session-overlay-reaper.js";
 import { repairDanglingTaskSessionLinks } from "./task-session-link-repair.js";
 
 /** Overlay rows are only reaped once they are at least this old. */
@@ -19,6 +20,8 @@ export const DEFER_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const OVERLAY_MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 export interface SessionOverlayMaintenanceResult {
+  /** Scratch chats idle for a day, deleted. */
+  deletedScratchSessions: number;
   /** Task links to conversations that no longer exist, removed. */
   removedDanglingLinks: number;
   reaped: number;
@@ -33,6 +36,8 @@ export interface SessionOverlayMaintenanceOptions {
   deferRetentionMs?: number;
   now?: () => number;
   logger?: Pick<Console, "log" | "error">;
+  /** Deletes a chat with everything the Bridge keeps for it. Without it, scratch chats are kept. */
+  deleteSession?: (sessionId: string) => Promise<void>;
 }
 
 export interface SessionOverlayMaintenance {
@@ -56,7 +61,30 @@ export function createSessionOverlayMaintenance(
   let timer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
 
+  async function sweepScratchSessions(): Promise<number> {
+    const deleteSession = options.deleteSession;
+    if (!deleteSession) return 0;
+    try {
+      const deleted = await sweepExpiredScratchSessions({
+        copilotHome: getCopilotHome(ctx),
+        isProtected: (sessionId) => ctx.sessionManager.getLifecycleBlockingSessionIds().includes(sessionId)
+          || ctx.sessionManager.isSessionBusy(sessionId)
+          || ctx.sessionManager.getPendingUserInputCount(sessionId) > 0
+          || Boolean(ctx.deferredPromptStore?.hasActiveForSession(sessionId))
+          || Boolean(ctx.deferLoopStore?.hasActiveForSession(sessionId)),
+        deleteSession,
+        now,
+        logger,
+      });
+      return deleted.length;
+    } catch (error) {
+      logger.error("[scratch] Deleting idle scratch chats failed:", error);
+      return 0;
+    }
+  }
+
   async function runOnce(): Promise<SessionOverlayMaintenanceResult> {
+    const deletedScratchSessions = await sweepScratchSessions();
     // Before the reaper, so the overlay rows of conversations that are gone lose their last task link.
     let removedDanglingLinks = 0;
     try {
@@ -84,6 +112,7 @@ export function createSessionOverlayMaintenance(
     const prunedDeferLoops = ctx.deferLoopStore?.pruneTerminalRows(deferCutoff) ?? 0;
 
     const result: SessionOverlayMaintenanceResult = {
+      deletedScratchSessions,
       removedDanglingLinks,
       reaped: report.reaped,
       deletedScheduleRuns: report.deletedScheduleRuns.deleted,
@@ -113,13 +142,15 @@ export function createSessionOverlayMaintenance(
   }
 
   function logMaintenance(result: SessionOverlayMaintenanceResult): void {
-    const total = result.reaped
+    const total = result.deletedScratchSessions
+      + result.reaped
       + result.deletedScheduleRuns
       + result.prunedDeferredPrompts
       + result.prunedDeferLoops;
     if (total === 0) return;
     logger.log(
-      `[session-overlay] Reaped ${result.reaped} overlay row(s), `
+      `[session-overlay] Deleted ${result.deletedScratchSessions} idle scratch chat(s), `
+      + `reaped ${result.reaped} overlay row(s), `
       + `${result.deletedScheduleRuns} deleted-schedule run(s), `
       + `${result.prunedDeferredPrompts} terminal deferred prompt(s), `
       + `${result.prunedDeferLoops} terminal defer loop(s)`,

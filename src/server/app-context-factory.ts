@@ -64,6 +64,7 @@ import { createSessionManager } from "./session-manager.js";
 import { createManagementJobStore } from "./management-job-store.js";
 import { createEventLogStatsFoldStore } from "./event-log-stats-fold-store.js";
 import { setEventLogStatsPersistence } from "./session-disk-reader.js";
+import { isUnlistedSessionId } from "./unlisted-sessions.js";
 import {
   BridgeToolsMcpServer,
   registerAllBridgeTools,
@@ -271,7 +272,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
       const sessionStateDir = join(copilotHome ?? join(homedir(), ".copilot"), "session-state");
       try {
         return (await readdir(sessionStateDir, { withFileTypes: true }))
-          .filter((entry) => entry.isDirectory())
+          .filter((entry) => entry.isDirectory() && !isUnlistedSessionId(entry.name))
           .map((entry) => ({ sessionId: entry.name }));
       } catch (error) {
         if (
@@ -319,7 +320,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     env: runtimePaths.env,
   });
   ctx.stopPushEventNotifications = initPushEventNotifications(ctx, ctx.pushNotificationService, {
-    getSessions: () => sessionManager.getPendingInputSessionIds().map(sessionId => ({
+    getSessions: () => sessionManager.getPendingInputSessionIds().filter(sessionId => !isUnlistedSessionId(sessionId)).map(sessionId => ({
       sessionId, pendingUserInputCount: sessionManager.getPendingUserInputCount(sessionId),
     })),
     startImmediately: false,

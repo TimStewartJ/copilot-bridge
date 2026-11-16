@@ -10,6 +10,7 @@ import { isCanonicalSessionId } from "./outbound-attachments.js";
 import { isValidSkillPackId } from "../shared/skill-packs.js";
 import { describePlaybook, type PlaybookInfo } from "../shared/workflow-vocabulary.js";
 import { join } from "node:path";
+import { isUnlistedSessionId } from "./unlisted-sessions.js";
 
 export function registerCatalogRoutes(router: Router, ctx: AppContext, getCopilotHome: () => string): void {
   router.get("/task-groups", (_req, res) => {
@@ -270,6 +271,7 @@ export function registerCatalogRoutes(router: Router, ctx: AppContext, getCopilo
     const store = ctx.unattendedRunStore;
     if (!store) return res.json({ runs: [] });
     const runs = store.list().flatMap((run) => {
+      if (isUnlistedSessionId(run.sessionId)) return [];
       const state = ctx.bridgeSessionStateStore?.getState(run.sessionId);
       if (state?.archived) return [];
       const task = ctx.taskStore.findTaskBySessionId(run.sessionId);

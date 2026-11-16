@@ -9,7 +9,7 @@ describe("playbook routes", () => {
     const task = await request(app).post("/api/tasks").send({ title: "Playbook host" });
     const createTaskSession = vi.spyOn(ctx.sessionManager, "createTaskSession").mockResolvedValue({ sessionId });
 
-    const created = await request(app).post(`/api/tasks/${task.body.task.id}/session`).send({ playbook: "watch" });
+    const created = await request(app).post(`/api/tasks/${task.body.task.id}/session`).set("X-Bridge-Client", "web").send({ playbook: "watch" });
     expect(created.status).toBe(200);
     expect(createTaskSession.mock.calls[0]?.[6]).toMatchObject({ playbook: "watch" });
     expect(created.body.sessionId).toBe(sessionId);

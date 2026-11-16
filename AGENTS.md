@@ -27,6 +27,7 @@ Add a rule here only if it applies across the repository and no check enforces i
 - `npm run check:pr` is the review gate. `staging_preview` runs it, and `staging_deploy` runs it when preview validation was skipped or invalidated, so do not run it by hand right before them. Outside that workflow, run it before asking for review.
 - Documentation-only edits need no test run unless they change generated docs, scripts, examples, or validation guidance.
 - Agent shells get a scratch `COPILOT_HOME` (`src/server/agent-shell-env.ts`), so ad-hoc scripts that create a `CopilotClient` stay out of the Bridge's chat list. Never point such a script at the Bridge's own `COPILOT_HOME`.
+- A chat a script starts through the REST API (`POST /api/sessions` or `/api/tasks/:id/session` without the web client's `X-Bridge-Client` header or a browser's `Sec-Fetch-Site`) is a scratch chat: it works and opens by URL, but no list, search or task shows it, and maintenance deletes it after a day idle (`src/server/scratch-sessions.ts`). Start a chat meant for the user with `session_start`.
 - Docs must not copy figures that another file determines: package versions, download or definition sizes, counts, totals worked out from several constants, or benchmark results. Name the file or constant that holds the value instead. A single configured limit can be stated, ideally with its constant named. A measurement kept as evidence says what it was measured on.
 
 ## Agent output

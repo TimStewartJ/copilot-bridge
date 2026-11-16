@@ -141,7 +141,7 @@ export const operationScenarios: IntegrationScenario[] = [
       const selection = { model: "gpt-test", reasoningEffort: "high", contextTier: "long_context" };
       const validate = vi.spyOn(world.ctx.sessionManager, "validateModelSelection");
       const create = vi.spyOn(world.ctx.sessionManager, "createSession").mockResolvedValue({ sessionId: "global-session" });
-      const response = await request(world.app).post("/api/sessions").send(selection).expect(200);
+      const response = await request(world.app).post("/api/sessions").set("X-Bridge-Client", "web").send(selection).expect(200);
       expect(response.body.sessionId).toBe("global-session");
       expect(validate).toHaveBeenCalledWith(selection);
       expect(create).toHaveBeenCalledWith({ background: true, ...selection });
