@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ConnectionError, ConnectionErrors } from "vscode-jsonrpc/node";
 
-import { getGeneratedImageVisuals, getVisibleEventTimestamp } from "./event-transform.js";
+import { getGeneratedImageVisuals, getTranscriptCompletion, getVisibleEventTimestamp } from "./event-transform.js";
 import type { EventBusRegistry, SessionEventBus } from "./event-bus.js";
 import { createFusionProgress, FUSION_PROGRESS_EVENT_TYPES } from "./fusion-progress.js";
 import type { GlobalBus } from "./global-bus.js";
@@ -52,7 +52,6 @@ import type { SessionConfigOptions } from "./session-config-builder.js";
 import { DEFAULT_SEND_MODE, toSendMode, type SendMode } from "../shared/send-mode.js";
 import type { AutomaticAnswerReason } from "../shared/automatic-answer.js";
 import {
-  extractTerminalCompletion,
   extractTerminalCompletionFromToolCall,
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
@@ -1353,7 +1352,17 @@ export class SessionRunner {
     const contextTelemetryProvider = this.client?.id ?? "copilot";
     const contextTelemetryProviderSessionId = sessionId;
     let currentBridgeTurnId: string | undefined;
+    /** A `task_complete` call no event has yet put in the transcript. */
     let pendingTerminalCompletion: TerminalCompletion | undefined;
+    /** This run's latest completion that an event has put in the transcript. */
+    let recordedTerminalCompletion: TerminalCompletion | undefined;
+    const recordTranscriptCompletion = (event: any): void => {
+      const recorded = getTranscriptCompletion(event, pendingTerminalCompletion);
+      if (!recorded) return;
+      recordedTerminalCompletion = recorded.completion;
+      pendingTerminalCompletion = undefined;
+      bus.recordTranscriptCompletion(recorded);
+    };
     const rememberToolName = (toolCallId: unknown, toolName: unknown): string | undefined => {
       if (typeof toolName !== "string") return undefined;
       const normalized = toolName.trim();
@@ -1467,6 +1476,7 @@ export class SessionRunner {
       lastAssistantContent = undefined;
       lastAssistantSourceEventId = undefined;
       pendingTerminalCompletion = undefined;
+      recordedTerminalCompletion = undefined;
       activeExternalTools.clear();
       resetRunTelemetryState();
       acceptingSessionEvents = true;
@@ -1694,7 +1704,8 @@ export class SessionRunner {
         handleEvent(ending.event, context);
         return;
       }
-      const content = pendingTerminalCompletion?.content ?? lastAssistantContent ?? "";
+      const completion = pendingTerminalCompletion ?? recordedTerminalCompletion;
+      const content = completion?.content ?? lastAssistantContent ?? "";
       endCurrentContextTurn(ending.event);
       recordRunCompletion(ending.event, context, "done", {
         finalContentLength: content.length,
@@ -1759,6 +1770,7 @@ export class SessionRunner {
       }
       if (agentLifecycle.observe(event)) bus.announceAgentChange();
       if (!this.runtimeStampsAgentTurns && showsAgentTurnsAreStamped(event)) this.runtimeStampsAgentTurns = true;
+      recordTranscriptCompletion(event);
       switch (event.type) {
         case "user_input.requested": {
           turnHadSideEffects = true;
@@ -2488,9 +2500,9 @@ export class SessionRunner {
             this.deps.mcpStatus.delete(sessionId);
           }
           const elapsed = ((Date.now() - sendStart) / 1000).toFixed(1);
-          const terminalCompletion = extractTerminalCompletion(event);
-          const resolvedTerminalCompletion = terminalCompletion ?? pendingTerminalCompletion;
-          const content = resolvedTerminalCompletion?.content ?? lastAssistantContent ?? "";
+          // The bus carries a recorded completion to the run's ending with its transcript identity.
+          const completion = pendingTerminalCompletion ?? recordedTerminalCompletion;
+          const content = completion?.content ?? lastAssistantContent ?? "";
           if (
             context.origin === "live"
             && liveAssistantTurnOpen
@@ -2518,7 +2530,7 @@ export class SessionRunner {
           runController.completeDone(
             content,
             {
-              ...(resolvedTerminalCompletion ? { terminalCompletion: resolvedTerminalCompletion } : {}),
+              ...(pendingTerminalCompletion ? { terminalCompletion: pendingTerminalCompletion } : {}),
               ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
               ...(lastAssistantSourceEventId ? { assistantSourceEventId: lastAssistantSourceEventId } : {}),
             },

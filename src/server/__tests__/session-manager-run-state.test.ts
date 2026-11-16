@@ -10,6 +10,7 @@ import { PROVIDER_RETRY_DELAY_MS, PROVIDER_RETRY_PROMPT } from "../session-provi
 import { BrowserBroker } from "../browser-broker.js";
 import { BrowserSessionStore } from "../browser-session-store.js";
 import { createEventBusRegistry } from "../event-bus.js";
+import { transformEventsToMessages } from "../event-transform.js";
 import { createSessionTitlesStore } from "../session-titles.js";
 import { createSessionMetaStore } from "../session-meta-store.js";
 import { createTelemetryStore } from "../telemetry-store.js";
@@ -2978,6 +2979,67 @@ describe("SessionManager run state", () => {
       terminalEventOrigin: "live",
       finalContentLength: 5,
       assistantContentKnown: true,
+    });
+  });
+
+  it.each([
+    { ending: "session.idle", tail: ["session.task_complete", "assistant.turn_end", "session.idle"], terminalType: "done" },
+    { ending: "abort", tail: ["session.task_complete", "abort"], terminalType: "aborted" },
+    { ending: "an unconfirmed stop", tail: ["session.task_complete", "stop"], terminalType: "aborted" },
+    {
+      ending: "session.idle after a follow-up turn",
+      tail: ["assistant.turn_end", "assistant.turn_start", "assistant.message", "assistant.turn_end", "session.idle"],
+      terminalType: "done",
+    },
+  ])("keys an Autopilot completion card to its transcript entry when the run ends on $ending", async ({ tail, terminalType }) => {
+    const sessionId = "session-autopilot-completion";
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    const startedAt = Date.now();
+    const data: Record<string, Record<string, unknown>> = {
+      "tool.execution_start": { toolCallId: "tc-done", toolName: "task_complete", arguments: { summary: "Shipped it" } },
+      "session.task_complete": { summary: "Shipped it" },
+      "assistant.message": { content: "One more thing" },
+    };
+    // The runtime reports task_complete inside a later turn, so the run ends on an event after it.
+    const steps = ["assistant.turn_start", "assistant.turn_end", "assistant.turn_start", "tool.execution_start", ...tail];
+    const persisted: any[] = [];
+    for (const [index, type] of steps.entries()) {
+      if (type === "stop") {
+        const stop = manager.abortSession(sessionId);
+        await vi.advanceTimersByTimeAsync(2_000);
+        await stop;
+        continue;
+      }
+      const event = {
+        id: `ev-${index}`,
+        type,
+        timestamp: new Date(startedAt + index * 1_000).toISOString(),
+        data: data[type] ?? {},
+      };
+      // session.idle is never written to events.jsonl.
+      if (type !== "session.idle") persisted.push(event);
+      getHandler()?.(event);
+    }
+    await flushMicrotasks();
+
+    expect(bus.getTerminalState()).toMatchObject({ complete: true, terminalType });
+    const diskCompletions = transformEventsToMessages(persisted, sessionId)
+      .filter((entry) => entry.type === "completion");
+    expect(diskCompletions).toHaveLength(1);
+    expect(bus.getSnapshot().liveCompletion).toMatchObject({
+      completion: { content: "Shipped it" },
+      sourceEventId: diskCompletions[0].sourceEventId,
+      timestamp: diskCompletions[0].timestamp,
     });
   });
 

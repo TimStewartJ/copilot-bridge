@@ -98,6 +98,34 @@ function isTurnTerminalEvent(event: any): boolean {
     && !isSdkSubagentSessionError(event);
 }
 
+/** A completion card as the transcript records it: the event it is keyed to and that event's time. */
+export interface TranscriptCompletion {
+  completion: TerminalCompletion;
+  sourceEventId?: string;
+  timestamp?: string;
+}
+
+/**
+ * The completion card `event` adds to the transcript, given the `task_complete` call still pending
+ * before it. The disk transcript and the live run both use this, so a live card carries the exact
+ * identity of the disk entry that later replaces it.
+ */
+export function getTranscriptCompletion(
+  event: any,
+  pending: TerminalCompletion | undefined,
+): TranscriptCompletion | undefined {
+  const own = extractTerminalCompletion(event);
+  const completion = own ?? (pending && isTurnTerminalEvent(event) ? pending : undefined);
+  if (!completion) return undefined;
+  const sourceEventId = getSdkEventId(event);
+  const timestamp = own ? event?.timestamp : event?.data?.timestamp ?? event?.timestamp;
+  return {
+    completion,
+    ...(sourceEventId ? { sourceEventId } : {}),
+    ...(typeof timestamp === "string" ? { timestamp } : {}),
+  };
+}
+
 const FORK_BOUNDARY_SKIP_EVENT_TYPES = new Set(["system.message"]);
 
 /**
@@ -830,27 +858,16 @@ export function transformEventsToMessages(
     advanceTranscriptCursor(cursor, event, agentOwners);
     const { activeTurnId, activeTurnInstanceId, activeTurnStartedAt, activeUndoEventId } = cursor;
 
-    if (extractTerminalCompletion(event)) {
-      const completion = extractTerminalCompletion(event)!;
-      entries.push({
-        id: `entry-${idx++}`,
-        type: "completion",
-        ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
-        completion,
-        content: completion.content,
-        timestamp: (event as any).timestamp,
-        ...(closingTurnId ? { turnId: closingTurnId } : {}),
-        ...(closingTurnInstanceId ? { turnInstanceId: closingTurnInstanceId } : {}),
-      });
-    } else if (isTurnTerminalEvent(event)) {
-      if (pendingTerminalCompletion) {
+    if (extractTerminalCompletion(event) || isTurnTerminalEvent(event)) {
+      const recorded = getTranscriptCompletion(event, pendingTerminalCompletion);
+      if (recorded) {
         entries.push({
           id: `entry-${idx++}`,
           type: "completion",
-          ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
-          completion: pendingTerminalCompletion,
-          content: pendingTerminalCompletion.content,
-          timestamp: data?.timestamp ?? (event as any).timestamp,
+          ...(recorded.sourceEventId ? { sourceEventId: recorded.sourceEventId } : {}),
+          completion: recorded.completion,
+          content: recorded.completion.content,
+          timestamp: recorded.timestamp,
           ...(closingTurnId ? { turnId: closingTurnId } : {}),
           ...(closingTurnInstanceId ? { turnInstanceId: closingTurnInstanceId } : {}),
         });

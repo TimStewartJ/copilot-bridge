@@ -16,6 +16,7 @@ import type {
   PendingElicitationRequestView,
 } from "./elicitation-types.js";
 import type { SessionContextSummary } from "../shared/session-context.js";
+import type { TranscriptCompletion } from "./event-transform.js";
 import type { AgentInstruction } from "../shared/subagent.js";
 import {
   appendReasoningDelta,
@@ -475,6 +476,11 @@ export class SessionEventBus {
    * matching disk replay. Cleared when a new turn starts.
    */
   private pendingTerminalCompletion?: TerminalCompletion;
+  /**
+   * The run's latest completion that an event has put in the transcript, with that event's id and
+   * time. The card keeps them whichever event later ends the run, so it hands off to its disk entry.
+   */
+  private transcriptCompletion?: TranscriptCompletion;
   private errorMessage?: string;
   private terminalType?: "done" | "error" | "aborted" | "shutdown";
   private terminalTimestamp?: string;
@@ -508,6 +514,12 @@ export class SessionEventBus {
   }
 
   /** Last assistant text observed on this run, including text not yet persisted to disk. */
+  /** Notes that an event put this run's completion in the transcript (see getTranscriptCompletion). */
+  recordTranscriptCompletion(recorded: TranscriptCompletion): void {
+    this.transcriptCompletion = recorded;
+    this.pendingTerminalCompletion = undefined;
+  }
+
   getLastAssistantSegment(): LiveAssistantSegment | undefined {
     return this.lastAssistantSegment ? { ...this.lastAssistantSegment } : undefined;
   }
@@ -1084,8 +1096,12 @@ export class SessionEventBus {
     }
 
     if (isTerminalStreamEvent(event)) {
+      const recorded = this.transcriptCompletion;
+      // A pending call is newer than the recorded one: recording clears it.
       const resolved = (event.terminalCompletion as TerminalCompletion | undefined)
-        ?? this.pendingTerminalCompletion;
+        ?? this.pendingTerminalCompletion
+        ?? recorded?.completion;
+      const identity = recorded && resolved === recorded.completion ? recorded : undefined;
       if (resolved && event.terminalCompletion !== resolved) {
         event = { ...event, terminalCompletion: resolved };
       }
@@ -1104,6 +1120,7 @@ export class SessionEventBus {
       this.errorMessage = terminalType === "error" ? event.message : undefined;
       this.terminalCompletion = resolved;
       this.pendingTerminalCompletion = undefined;
+      this.transcriptCompletion = undefined;
       this._complete = true;
       this.cancelAgentChangeRecheck();
       this.streamingContent = "";
@@ -1121,10 +1138,13 @@ export class SessionEventBus {
             success: terminalType === "done",
           });
       if (resolved) {
+        // Autopilot's run ends on session.idle, which is never persisted, after session.task_complete.
+        const sourceEventId = identity ? identity.sourceEventId : this.terminalEventId;
+        const timestamp = identity?.timestamp ?? this.terminalTimestamp;
         this.liveCompletion = {
           completion: resolved,
-          ...(this.terminalEventId ? { sourceEventId: this.terminalEventId } : {}),
-          ...(this.terminalTimestamp ? { timestamp: this.terminalTimestamp } : {}),
+          ...(sourceEventId ? { sourceEventId } : {}),
+          ...(timestamp ? { timestamp } : {}),
           ...(this.terminalTurnId ? { turnId: this.terminalTurnId } : {}),
           ...(this.terminalTurnInstanceId ? { turnInstanceId: this.terminalTurnInstanceId } : {}),
         };
@@ -1270,6 +1290,7 @@ export class SessionEventBus {
     this.finalContent = undefined;
     this.terminalCompletion = undefined;
     this.pendingTerminalCompletion = undefined;
+    this.transcriptCompletion = undefined;
     this.errorMessage = undefined;
     this.currentTurnId = undefined;
     this.terminalTurnId = undefined;
@@ -1299,7 +1320,10 @@ export class SessionEventBus {
       endingTurnInstanceId,
       (block) => Boolean(block.sourceEventId),
     );
+    // A recorded completion belongs to the run, not the turn that recorded it.
+    const transcriptCompletion = this.transcriptCompletion;
     this.resetLiveTurnState();
+    this.transcriptCompletion = transcriptCompletion;
     this.liveAssistantSegments = segments;
     this.liveTools = tools;
     this.liveVisuals = visuals;
