@@ -11,6 +11,7 @@ const isExecutableFile = vi.fn<(file: string) => Promise<boolean>>();
 const readJsonFile = vi.fn<(file: string) => Promise<unknown>>();
 const readModifiedAt = vi.fn<(file: string) => Promise<number | undefined>>();
 const readBrowserVersion = vi.fn<(file: string) => Promise<string | undefined>>();
+const findDownloadedBrowser = vi.fn<() => Promise<string | undefined>>();
 
 let launch: typeof import("../browser-launch.js");
 
@@ -37,11 +38,13 @@ beforeEach(async () => {
   readJsonFile.mockReset().mockResolvedValue(undefined);
   readModifiedAt.mockReset().mockResolvedValue(undefined);
   readBrowserVersion.mockReset().mockResolvedValue(undefined);
+  findDownloadedBrowser.mockReset().mockResolvedValue(undefined);
   vi.doMock("../browser-launch-host.js", () => ({
     isExecutableFile,
     readJsonFile,
     readModifiedAt,
     readBrowserVersion,
+    findDownloadedBrowser,
   }));
   vi.resetModules();
   launch = await import("../browser-launch.js");
@@ -314,6 +317,35 @@ describe("resolveBrowserExecutable", () => {
     // Candidates after the first installed one play no part.
     expect(isExecutableFile.mock.calls).toEqual([[candidates[0]], [candidates[1]]]);
   });
+
+  it("names agent-browser's newest download only when no system browser is installed", async () => {
+    const downloaded = testPath("home", ".agent-browser", "browsers", "chrome-153.0.8010.52", "chrome");
+    findDownloadedBrowser.mockResolvedValue(downloaded);
+
+    await expect(launch.resolveBrowserExecutable({}, detectionEnv))
+      .resolves.toStrictEqual({ path: downloaded, source: "downloaded" });
+
+    launch.resetBrowserLaunchCachesForTests();
+    findDownloadedBrowser.mockResolvedValue(undefined);
+    await expect(launch.resolveBrowserExecutable({}, detectionEnv)).resolves.toStrictEqual({ source: "auto-detect" });
+  });
+});
+
+describe("browserUserAgent", () => {
+  const tail = "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36";
+
+  it.each([
+    ["edge", "win32", "Microsoft Edge 157.0.4341.46", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${tail} Edg/157.0.0.0`],
+    ["chrome", "darwin", "Google Chrome 157.0.7390.37", `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${tail}`],
+    ["chrome-for-testing", "linux", "157.0.7390.37", `Mozilla/5.0 (X11; Linux x86_64) ${tail}`],
+  ] as const)("is what a person's %s on %s sends, with only the major version", (kind, platformName, version, expected) => {
+    expect(launch.browserUserAgent({ kind, version }, platformName)).toBe(expected);
+  });
+
+  it("is undefined when the version is unknown, rather than naming a wrong one", () => {
+    expect(launch.browserUserAgent({ kind: "edge" }, "win32")).toBeUndefined();
+    expect(launch.browserUserAgent({ kind: "unknown", version: "Vivaldi" }, "linux")).toBeUndefined();
+  });
 });
 
 describe("buildBrowserEnv", () => {
@@ -381,6 +413,33 @@ describe("buildBrowserEnv", () => {
     expect(env.AGENT_BROWSER_EXECUTABLE_PATH).toBe(firstCandidate);
   });
 
+  it("sends the running browser's own User-Agent without HeadlessChrome, and drops a stale inherited one", async () => {
+    const executablePath = testPath("Microsoft", "Edge", "Application", "msedge.exe");
+    readModifiedAt.mockResolvedValue(Date.now());
+    readBrowserVersion.mockResolvedValue("157.0.4341.46");
+
+    const env = await launch.buildBrowserEnv({ ...target, executablePath }, {});
+    expect(env.AGENT_BROWSER_USER_AGENT).toBe(launch.browserUserAgent({ kind: "edge", version: "157.0.4341.46" }));
+    expect(env.AGENT_BROWSER_USER_AGENT).not.toMatch(/Headless/);
+
+    readBrowserVersion.mockResolvedValue(undefined);
+    launch.resetBrowserLaunchCachesForTests();
+    const unknown = await launch.buildBrowserEnv({ ...target, executablePath }, { AGENT_BROWSER_USER_AGENT: "  " });
+    expect(unknown).not.toHaveProperty("AGENT_BROWSER_USER_AGENT");
+  });
+
+  it("keeps a User-Agent the deployment sets itself", async () => {
+    readModifiedAt.mockResolvedValue(Date.now());
+    readBrowserVersion.mockResolvedValue("157.0.4341.46");
+
+    const env = await launch.buildBrowserEnv(
+      { ...target, executablePath: testPath("Microsoft", "Edge", "Application", "msedge.exe") },
+      { AGENT_BROWSER_USER_AGENT: " Custom/1.0 " },
+    );
+
+    expect(env.AGENT_BROWSER_USER_AGENT).toBe("Custom/1.0");
+  });
+
 });
 
 describe("describeBrowserBuild", () => {
@@ -391,6 +450,14 @@ describe("describeBrowserBuild", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
+  });
+
+  it("calls agent-browser's download Chrome for Testing even when its version names no build", async () => {
+    readModifiedAt.mockResolvedValue(NOW);
+    readBrowserVersion.mockResolvedValue("153.0.8010.52");
+
+    await expect(launch.describeBrowserBuild({ path: neutralBinary("chrome"), source: "downloaded" }))
+      .resolves.toMatchObject({ kind: "chrome-for-testing", version: "153.0.8010.52" });
   });
 
   it("tells only the kind (chromium) from the path of chromium-browser when the file cannot be read", async () => {

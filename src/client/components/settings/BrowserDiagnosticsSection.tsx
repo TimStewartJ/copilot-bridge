@@ -49,6 +49,7 @@ const EXECUTABLE_SOURCE_LABEL: Record<BrowserExecutableSource, string> = {
   settings: "set in Settings",
   environment: "set by the environment",
   system: "found on this machine",
+  downloaded: "downloaded by agent-browser",
   "auto-detect": "chosen by agent-browser",
 };
 
@@ -570,6 +571,7 @@ export function BrowserDiagnosticsSection({
               <Field label="Binary" mono>{binaryState}</Field>
               <Field label="Effective browser" mono>{config ? (config.executablePath ?? "agent-browser auto-detect") : "checking"}</Field>
               <Field label="Browser source" mono>{config?.executablePathSource ?? "checking"}</Field>
+              <Field label="User agent" mono>{!config ? "checking" : config.userAgent ?? "the browser's own"}</Field>
               <Field label="Profile" mono>{profileState}</Field>
               <Field label="Authenticated profile" mono>{config?.masterProfileDirectory ?? authContext?.profilePath ?? "checking"}</Field>
               <Field label="Session" mono>{config?.sessionName ?? "checking"}</Field>

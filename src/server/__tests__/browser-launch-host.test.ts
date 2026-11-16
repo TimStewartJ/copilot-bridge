@@ -121,6 +121,49 @@ describe("readBrowserVersion", () => {
         .resolves.toBeUndefined();
       expect(execFileMock).not.toHaveBeenCalled();
     });
+
+    it("reads a Chrome for Testing download's version from the name of its folder", async () => {
+      const root = makeTestDir("browser-version-download");
+      const flat = path.join(root, "chrome-153.0.8010.52");
+      const nested = path.join(root, "chrome-147.0.7727.57", "chrome-win64");
+      mkdirSync(path.join(flat, "locales"), { recursive: true });
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(path.join(flat, "chrome.exe"), "");
+      writeFileSync(path.join(nested, "chrome.exe"), "");
+      const host = await importHost("win32");
+
+      await expect(host.readBrowserVersion(path.join(flat, "chrome.exe"))).resolves.toBe("153.0.8010.52");
+      await expect(host.readBrowserVersion(path.join(nested, "chrome.exe"))).resolves.toBe("147.0.7727.57");
+    });
+  });
+});
+
+describe("findDownloadedBrowser", () => {
+  function download(home: string, folder: string, binary?: string[]): string | undefined {
+    const directory = path.join(home, ".agent-browser", "browsers", folder);
+    mkdirSync(directory, { recursive: true });
+    if (!binary) return undefined;
+    const file = path.join(directory, ...binary);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "");
+    return file;
+  }
+
+  it("picks the highest version by number that holds a browser", async () => {
+    const home = makeTestDir("browser-downloads");
+    download(home, "chrome-99.0.4844.84", ["chrome.exe"]);
+    download(home, "chrome-153.0.8010.52");
+    const expected = download(home, "chrome-147.0.7727.57", ["chrome-win64", "chrome.exe"]);
+    download(home, "chromium-200.0.0.0", ["chrome.exe"]);
+    const host = await importHost("win32");
+
+    await expect(host.findDownloadedBrowser(home)).resolves.toBe(expected);
+  });
+
+  it("finds nothing when agent-browser never downloaded a browser", async () => {
+    const host = await importHost("win32");
+
+    await expect(host.findDownloadedBrowser(makeTestDir("browser-downloads-none"))).resolves.toBeUndefined();
   });
 });
 

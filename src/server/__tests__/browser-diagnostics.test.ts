@@ -125,6 +125,7 @@ describe("browser diagnostics", () => {
     vi.stubEnv("AGENT_BROWSER_EXECUTABLE_PATH", undefined);
     vi.stubEnv("AGENT_BROWSER_ARGS", undefined);
     vi.stubEnv("AGENT_BROWSER_CONFIG", undefined);
+    vi.stubEnv("AGENT_BROWSER_USER_AGENT", undefined);
 
     isExecutableFile.mockReset().mockResolvedValue(false);
     readJsonFile.mockReset().mockResolvedValue(undefined);
@@ -135,6 +136,7 @@ describe("browser diagnostics", () => {
       readJsonFile,
       readModifiedAt,
       readBrowserVersion,
+      findDownloadedBrowser: async () => undefined,
     }));
     // Every test imports the modules fresh, so none sees another's cached version or launch setup.
     vi.resetModules();

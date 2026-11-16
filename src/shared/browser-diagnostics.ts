@@ -85,8 +85,11 @@ export interface AuthenticatedBrowserDiagnostics extends BrowserContextRuntimeDi
   serviceChecks: AuthenticatedServiceCheck[];
 }
 
-/** Where the browser executable comes from. `auto-detect` leaves the choice to agent-browser. */
-export type BrowserExecutableSource = "settings" | "environment" | "system" | "auto-detect";
+/**
+ * Where the browser executable comes from. `downloaded` is the newest Chrome for Testing that
+ * agent-browser downloaded; `auto-detect` leaves the choice to agent-browser.
+ */
+export type BrowserExecutableSource = "settings" | "environment" | "system" | "downloaded" | "auto-detect";
 
 export type BrowserBuildKind = "chrome" | "edge" | "chromium" | "chrome-for-testing" | "unknown";
 
@@ -133,6 +136,11 @@ export interface BrowserDiagnosticsResponse {
     masterProfileDirectoryExists: boolean;
     headed: boolean;
     browser: BrowserBuildDiagnostics;
+    /**
+     * The User-Agent every Bridge browser sends instead of the `HeadlessChrome` one headless mode
+     * would. Absent when the browser's version is unknown, so the browser sends its own.
+     */
+    userAgent?: string;
     launch: BrowserLaunchDiagnostics;
     agentBrowserVersion?: string;
     /** Whether a browser can be shown to the user to watch and act in. Absent until it was tried. */

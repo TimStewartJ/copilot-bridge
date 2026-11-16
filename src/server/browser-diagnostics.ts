@@ -26,7 +26,12 @@ import type {
   BrowserContext,
   BrowserContextHealth,
 } from "./browser-broker.js";
-import { describeBrowserBuild, resolveBrowserExecutable, resolveBrowserLaunchArgs } from "./browser-launch.js";
+import {
+  describeBrowserBuild,
+  resolveBrowserExecutable,
+  resolveBrowserLaunchArgs,
+  resolveBrowserUserAgent,
+} from "./browser-launch.js";
 import { getBrowserRuntime } from "./browser-runtime.js";
 import type { TelemetrySpan } from "./telemetry-store.js";
 
@@ -307,7 +312,10 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
     getAgentBrowserVersion(),
     broker.getPublicProfileStats().catch(() => ({ profiles: 0, inUse: 0 })),
   ]);
-  const browserBuild = await describeBrowserBuild(effectiveExecutablePath);
+  const [browserBuild, userAgent] = await Promise.all([
+    describeBrowserBuild(effectiveExecutablePath),
+    resolveBrowserUserAgent(effectiveExecutablePath),
+  ]);
   const executablePathConfigured = effectiveExecutablePath.source === "settings"
     || effectiveExecutablePath.source === "environment";
   const masterProfileDirectoryConfigured = !!launchConfig.masterProfileDirectory;
@@ -375,6 +383,7 @@ export async function getBrowserDiagnostics(ctx: AppContext): Promise<BrowserDia
       masterProfileDirectoryExists,
       headed: target.headed === true,
       browser: browserBuild,
+      ...(userAgent ? { userAgent } : {}),
       launch: launchArgs,
       ...(agentBrowserVersion ? { agentBrowserVersion } : {}),
       ...(liveView ? { liveView } : {}),

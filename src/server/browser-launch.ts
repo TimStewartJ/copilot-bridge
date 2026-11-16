@@ -11,7 +11,7 @@ import type {
   BrowserExecutableSource,
   BrowserLaunchDiagnostics,
 } from "../shared/browser-diagnostics.js";
-import { isExecutableFile, readBrowserVersion, readJsonFile, readModifiedAt } from "./browser-launch-host.js";
+import { findDownloadedBrowser, isExecutableFile, readBrowserVersion, readJsonFile, readModifiedAt } from "./browser-launch-host.js";
 
 export interface BrowserTarget {
   sessionName: string;
@@ -145,7 +145,20 @@ function findSystemBrowser(env: NodeJS.ProcessEnv): Promise<string | undefined> 
   return found;
 }
 
-/** The executable a Bridge browser runs: the configured one, else the system's own browser. */
+let downloadedBrowser: { expiresAt: number; path: Promise<string | undefined> } | undefined;
+
+function findDownloadedBrowserCached(): Promise<string | undefined> {
+  const now = Date.now();
+  if (downloadedBrowser && downloadedBrowser.expiresAt > now) return downloadedBrowser.path;
+  downloadedBrowser = { expiresAt: now + SYSTEM_BROWSER_CACHE_MS, path: findDownloadedBrowser() };
+  return downloadedBrowser.path;
+}
+
+/**
+ * The executable a Bridge browser runs: the configured one, else the system's own browser, else
+ * the newest Chrome for Testing agent-browser downloaded. The Bridge names the download itself
+ * rather than leaving the choice to agent-browser, so it knows which version runs.
+ */
 export async function resolveBrowserExecutable(
   launchConfig: BrowserLaunchConfig = {},
   env: NodeJS.ProcessEnv = process.env,
@@ -155,7 +168,39 @@ export async function resolveBrowserExecutable(
   const environmentPath = normalizeConfiguredPath(env.AGENT_BROWSER_EXECUTABLE_PATH);
   if (environmentPath) return { path: environmentPath, source: "environment" };
   const systemPath = await findSystemBrowser(env);
-  return systemPath ? { path: systemPath, source: "system" } : { source: "auto-detect" };
+  if (systemPath) return { path: systemPath, source: "system" };
+  const downloadedPath = await findDownloadedBrowserCached();
+  return downloadedPath ? { path: downloadedPath, source: "downloaded" } : { source: "auto-detect" };
+}
+
+/** What the browser's own window would say it is running on; Chrome reports these fixed values. */
+function userAgentPlatform(platformName: PlatformName): string {
+  if (platformName === "win32") return "Windows NT 10.0; Win64; x64";
+  if (platformName === "darwin") return "Macintosh; Intel Mac OS X 10_15_7";
+  return "X11; Linux x86_64";
+}
+
+/**
+ * The User-Agent a person's copy of this browser sends. Headless mode replaces `Chrome/` with
+ * `HeadlessChrome/`, which sites block on sight. Undefined when the version is unknown: a
+ * User-Agent that names the wrong version is a surer sign of automation than the real one.
+ */
+export function browserUserAgent(build: BrowserBuildDiagnostics, platformName: PlatformName = platform()): string | undefined {
+  const major = build.version?.match(/(\d+)(?:\.\d+)+/)?.[1];
+  if (!major) return undefined;
+  const version = `${major}.0.0.0`;
+  const base = `Mozilla/5.0 (${userAgentPlatform(platformName)}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`;
+  return build.kind === "edge" ? `${base} Edg/${version}` : base;
+}
+
+/** The deployment's own AGENT_BROWSER_USER_AGENT, else the one built for the browser that runs. */
+export async function resolveBrowserUserAgent(
+  executable: ResolvedBrowserExecutable,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | undefined> {
+  const configured = env.AGENT_BROWSER_USER_AGENT?.trim();
+  if (configured) return configured;
+  return browserUserAgent(await describeBrowserBuild(executable));
 }
 
 /** Splits arguments the way agent-browser does: by newlines when there are any, else by commas. */
@@ -242,6 +287,7 @@ export async function buildBrowserEnv(
     resolveBrowserExecutable({ executablePath: target.executablePath }, baseEnv),
     resolveBrowserLaunchArgs(baseEnv),
   ]);
+  const userAgent = await resolveBrowserUserAgent(executable, baseEnv);
   const env: NodeJS.ProcessEnv = {
     ...baseEnv,
     AGENT_BROWSER_NAMESPACE: "copilot-bridge",
@@ -251,6 +297,11 @@ export async function buildBrowserEnv(
     ...(executable.path ? { AGENT_BROWSER_EXECUTABLE_PATH: executable.path } : {}),
     ...(target.idleTimeoutMs !== undefined ? { AGENT_BROWSER_IDLE_TIMEOUT_MS: String(target.idleTimeoutMs) } : {}),
   };
+  if (userAgent) {
+    env.AGENT_BROWSER_USER_AGENT = userAgent;
+  } else {
+    delete env.AGENT_BROWSER_USER_AGENT;
+  }
   if (target.headed) {
     env.AGENT_BROWSER_HEADED = "true";
   } else {
@@ -276,15 +327,18 @@ const browserBuilds = new Map<string, Promise<BrowserBuildDiagnostics>>();
 export async function describeBrowserBuild(executable: ResolvedBrowserExecutable): Promise<BrowserBuildDiagnostics> {
   if (!executable.path) return { kind: "chrome-for-testing" };
   const executablePath = executable.path;
+  // agent-browser downloads only Chrome for Testing, whose Windows build names no version banner.
+  const kindOf = (description: string): BrowserBuildKind =>
+    executable.source === "downloaded" ? "chrome-for-testing" : browserBuildKind(description);
   const modifiedAtMs = await readModifiedAt(executablePath);
-  if (modifiedAtMs === undefined) return { kind: browserBuildKind(executablePath) };
+  if (modifiedAtMs === undefined) return { kind: kindOf(executablePath) };
   const key = `${executablePath}\u0000${modifiedAtMs}`;
   let build = browserBuilds.get(key);
   if (!build) {
     build = (async (): Promise<BrowserBuildDiagnostics> => {
       const version = await readBrowserVersion(executablePath);
       return {
-        kind: browserBuildKind(`${version ?? ""} ${executablePath}`),
+        kind: kindOf(`${version ?? ""} ${executablePath}`),
         ...(version ? { version } : {}),
       };
     })();
@@ -299,6 +353,7 @@ export async function describeBrowserBuild(executable: ResolvedBrowserExecutable
 
 export function resetBrowserLaunchCachesForTests(): void {
   systemBrowser = undefined;
+  downloadedBrowser = undefined;
   inheritedArgs = undefined;
   browserBuilds.clear();
 }
