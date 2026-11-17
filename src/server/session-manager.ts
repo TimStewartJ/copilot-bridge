@@ -59,7 +59,7 @@ import { buildBridgeContextSections, emptyBridgeContextHashes, renderBridgeConte
 import { NO_PLAYBOOK, type PlaybookSource, type SessionPlaybookView } from "../shared/workflow-vocabulary.js";
 import { isRecord } from "../shared/is-record.js";
 import type { SendMode } from "../shared/send-mode.js";
-import { AUTOMATIC_ANSWERS, type AutomaticAnswerReason } from "../shared/automatic-answer.js";
+import { AUTOMATIC_ANSWERS, unshowableQuestionAnswer, type AutomaticAnswerReason } from "../shared/automatic-answer.js";
 import type { PreviousRunReport } from "./scheduled-run-report.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
 import type { InterruptedRunStore } from "./interrupted-run-store.js";
@@ -335,12 +335,21 @@ function automaticFormAnswer(
   request: PendingElicitationRequestView,
   reason: AutomaticAnswerReason,
 ): AgentElicitationResponse | undefined {
-  const firstField = Object.entries(request.requestedSchema?.properties ?? {})[0];
-  if (request.elicitationSource || !firstField) return undefined;
-  const answer = AUTOMATIC_ANSWERS[reason];
+  return formAnswer(request.requestedSchema?.properties, request.elicitationSource, AUTOMATIC_ANSWERS[reason]);
+}
+
+/** Puts `answer` in the form's first field; undefined for an MCP server's form or one with no field. */
+function formAnswer(
+  properties: Readonly<Record<string, unknown>> | undefined,
+  elicitationSource: unknown,
+  answer: string,
+): AgentElicitationResponse | undefined {
+  const firstField = Object.entries(properties ?? {})[0];
+  if (elicitationSource || !firstField) return undefined;
+  const isList = isRecord(firstField[1]) && firstField[1].type === "array";
   return {
     action: "accept",
-    content: { [firstField[0]]: firstField[1].type === "array" ? [answer] : answer },
+    content: { [firstField[0]]: isList ? [answer] : answer },
   };
 }
 
@@ -1230,6 +1239,8 @@ export class SessionManager {
         Object.keys(request.requestedSchema?.properties ?? {}),
       ),
       answerQuestionUnshown: (sessionId, question, reason) => this.answerQuestionUnshown(sessionId, question, reason),
+      answerUnshowableQuestion: (sessionId, kind, request, problem) =>
+        this.answerUnshowableQuestion(sessionId, kind, request, problem),
       recordPendingInteractionEvent: (sessionId, kind, state, at) =>
         this.recordPendingInteractionEvent(sessionId, kind, state, at),
       recordSessionAttention: (sessionId, at) => this.markSessionAttention(sessionId, at),
@@ -2815,16 +2826,61 @@ export class SessionManager {
     if (!session) return undefined;
     const { requestId } = question.request;
     let respond: () => Promise<boolean>;
+    let action: "answer" | AgentElicitationResponse["action"];
     if (question.kind === "user_input") {
       const response = { answer: AUTOMATIC_ANSWERS[reason], wasFreeform: true };
       respond = () => session.respondToUserInput(requestId, response);
+      action = "answer";
     } else {
       const response = automaticFormAnswer(question.request, reason);
       if (!response) return undefined;
       respond = () => session.tryRespondToElicitation(requestId, response);
+      action = response.action;
     }
+    return this.sendUnshownReply(sessionId, question.kind, requestId, reason, action, respond);
+  }
+
+  /**
+   * Replies to a question Bridge received but cannot show, because the request breaks one of its
+   * limits, so the runtime does not wait for an answer that can never come. The agent's own form
+   * gets the problem as its answer so it can ask again; an MCP server's form is cancelled.
+   * Undefined when the request carries no id to reply to. Never rejects.
+   */
+  private answerUnshowableQuestion(
+    sessionId: string,
+    kind: PendingQuestion["kind"],
+    request: unknown,
+    problem: string,
+  ): Promise<boolean> | undefined {
+    const session = this.sessionObjects.get(sessionId);
+    if (!session || !isRecord(request)) return undefined;
+    const requestId = typeof request.requestId === "string" && request.requestId.trim()
+      ? request.requestId
+      : undefined;
+    if (!requestId) return undefined;
+    const answer = unshowableQuestionAnswer(problem);
+    if (kind === "user_input") {
+      const response = { answer, wasFreeform: true };
+      return this.sendUnshownReply(sessionId, kind, requestId, "unshowable", "answer", () =>
+        session.respondToUserInput(requestId, response));
+    }
+    const schema = isRecord(request.requestedSchema) ? request.requestedSchema : undefined;
+    const properties = schema && isRecord(schema.properties) ? schema.properties : undefined;
+    const response = formAnswer(properties, request.elicitationSource, answer) ?? CANCELED_ELICITATION_RESPONSE;
+    return this.sendUnshownReply(sessionId, kind, requestId, "unshowable", response.action, () =>
+      session.tryRespondToElicitation(requestId, response));
+  }
+
+  private sendUnshownReply(
+    sessionId: string,
+    kind: PendingQuestion["kind"],
+    requestId: string,
+    reason: AutomaticAnswerReason,
+    action: "answer" | AgentElicitationResponse["action"],
+    respond: () => Promise<boolean>,
+  ): Promise<boolean> {
     const label = `[sdk] [${sessionId.slice(0, 8)}]`;
-    const subject = `${question.kind} ${requestId}`;
+    const subject = `${kind} ${requestId}`;
     return (async () => {
       const startedAt = Date.now();
       let answered = false;
@@ -2840,8 +2896,8 @@ export class SessionManager {
         );
       }
       this.recordSpan("session.pending_interaction.auto_answer", Date.now() - startedAt, sessionId, {
-        kind: question.kind,
-        action: question.kind === "user_input" ? "answer" : "accept",
+        kind,
+        action,
         answered,
         waitedMs: 0,
         reason,

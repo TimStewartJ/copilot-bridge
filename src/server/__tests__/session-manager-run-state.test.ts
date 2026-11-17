@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeRestartState } from "../restart-state.js";
 import { SessionManager } from "../session-manager.js";
-import { AUTOMATIC_ANSWERS } from "../../shared/automatic-answer.js";
+import { AUTOMATIC_ANSWERS, unshowableQuestionAnswer } from "../../shared/automatic-answer.js";
 import { PROVIDER_RETRY_DELAY_MS, PROVIDER_RETRY_PROMPT } from "../session-provider-retry.js";
 
 import { BrowserBroker } from "../browser-broker.js";
@@ -2288,6 +2288,65 @@ describe("SessionManager run state", () => {
     const answerSpans = telemetryStore!.querySpans({ name: "session.pending_interaction.auto_answer", sessionId });
     expect(answerSpans).toHaveLength(4);
     expect(answerSpans.map((span) => span.metadata?.reason)).toEqual(Array(4).fill("unanswered"));
+
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    getHandler()?.({ type: "session.idle", data: {}, timestamp: new Date().toISOString() });
+    await flushMicrotasks();
+    expect(manager.getSessionRunState(sessionId)).toBe("idle");
+    unsubscribe();
+  });
+
+  it("tells the agent when its question cannot be shown instead of leaving the run waiting", async () => {
+    const sessionId = "session-unshowable-question";
+    const { manager, globalBus } = createManager();
+    const inputStatus = vi.fn();
+    const unsubscribe = globalBus.subscribe(inputStatus);
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = { resumeSession: vi.fn().mockResolvedValue(session) };
+    // Like the runtime, a responder completes the request with a live event before it returns.
+    session.tryRespondToElicitation.mockImplementation(async (...[requestId, response]: any[]) => {
+      getHandler()?.({
+        type: "elicitation.completed",
+        data: { requestId, action: response.action },
+        timestamp: new Date().toISOString(),
+      });
+      return true;
+    });
+
+    manager.startWork(sessionId, "hello");
+    await flushMicrotasks();
+
+    const tooLong = { cleanup: { type: "boolean", title: "Delete them?", description: "x".repeat(501) } };
+    const timestamp = new Date().toISOString();
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp,
+      data: { requestId: "el-ask", message: "Clean up?", mode: "form", requestedSchema: { type: "object", properties: tooLong } },
+    });
+    getHandler()?.({
+      type: "elicitation.requested",
+      timestamp,
+      data: {
+        requestId: "el-mcp",
+        message: "Token?",
+        mode: "form",
+        elicitationSource: "some-mcp",
+        requestedSchema: { type: "object", properties: tooLong },
+      },
+    });
+    await flushMicrotasks();
+
+    const answer = unshowableQuestionAnswer(
+      "requestedSchema.properties.cleanup.description must be at most 500 characters",
+    );
+    expect(session.tryRespondToElicitation.mock.calls).toEqual([
+      ["el-ask", { action: "accept", content: { cleanup: answer } }],
+      ["el-mcp", { action: "cancel" }],
+    ]);
+    expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
+    expect(inputStatus).not.toHaveBeenCalledWith(expect.objectContaining({ type: "session:user-input", needsUserInput: true }));
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
 
     getReleaseSend()?.();
     await flushMicrotasks();

@@ -4,15 +4,16 @@
  */
 
 /**
- * Why Bridge answered: the chat was in Autopilot, nobody answered in time, or the user sent a
- * message instead of answering.
+ * Why Bridge answered: the chat was in Autopilot, nobody answered in time, the user sent a
+ * message instead of answering, or Bridge could not show the question at all.
  */
-export type AutomaticAnswerReason = "autopilot" | "unanswered" | "skipped";
+export type AutomaticAnswerReason = "autopilot" | "unanswered" | "skipped" | "unshowable";
 
 const OPENINGS: Readonly<Record<AutomaticAnswerReason, string>> = {
   autopilot: "Autopilot is on, so this question was not shown to the user, who will review your work later.",
   unanswered: "The user is not available to respond and will review your work later.",
   skipped: "The user skipped this question and sent a new message instead.",
+  unshowable: "Bridge could not show this question to the user, so nobody has seen or answered it.",
 };
 
 // The Copilot CLI's autopilot `ask_user` response, minus its autopilot-only task_complete tool and
@@ -26,11 +27,23 @@ const GUIDANCE =
 const SKIPPED_GUIDANCE =
   "Their message follows this result: act on it. This reply is neither an answer to the question nor an approval.";
 
+const UNSHOWABLE_GUIDANCE =
+  "Fix that and ask again. This reply is neither an answer to the question nor an approval.";
+
 export const AUTOMATIC_ANSWERS: Readonly<Record<AutomaticAnswerReason, string>> = {
   autopilot: `${OPENINGS.autopilot} ${GUIDANCE}`,
   unanswered: `${OPENINGS.unanswered} ${GUIDANCE}`,
   skipped: `${OPENINGS.skipped} ${SKIPPED_GUIDANCE}`,
+  unshowable: `${OPENINGS.unshowable} ${UNSHOWABLE_GUIDANCE}`,
 };
+
+/** The reply to a question Bridge could not show, naming what was wrong with it. */
+export function unshowableQuestionAnswer(problem: string): string {
+  const detail = problem.trim().replace(/\.+$/, "");
+  return detail
+    ? `${OPENINGS.unshowable} The problem: ${detail}. ${UNSHOWABLE_GUIDANCE}`
+    : AUTOMATIC_ANSWERS.unshowable;
+}
 
 /**
  * Reads why an `ask_user` call was answered without the user, from its result. The reply reaches
@@ -42,5 +55,6 @@ export function readAutomaticAnswerReason(result: string): AutomaticAnswerReason
   if (result.includes(OPENINGS.autopilot)) return "autopilot";
   if (result.includes(OPENINGS.unanswered)) return "unanswered";
   if (result.includes(OPENINGS.skipped)) return "skipped";
+  if (result.includes(OPENINGS.unshowable)) return "unshowable";
   return undefined;
 }

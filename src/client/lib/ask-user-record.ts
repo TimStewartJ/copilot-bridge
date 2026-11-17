@@ -101,6 +101,7 @@ function classify(toolCall: Pick<ToolCall, "success">, result: string | undefine
   if (result === undefined) return "unanswered";
   // A reply Bridge gave in the user's place arrives as an answer, so it is recognised first.
   const automatic = readAutomaticAnswerReason(result);
+  if (automatic === "unshowable") return "failed";
   if (automatic) return automatic === "unanswered" ? "away" : automatic;
   if (ANSWER_LABEL.test(result)) return "answered";
   if (/^user (?:cancell?ed|dismissed)/i.test(result)) return "cancelled";
@@ -121,7 +122,7 @@ export function readAskUserRecord(toolCall: Pick<ToolCall, "name" | "args" | "re
     const answer = result!.replace(ANSWER_LABEL, "").replace(/\r\n?/g, "\n").trim();
     return { message, fields, outcome, ...(answer ? { answer } : {}) };
   }
-  const note = outcome === "failed" || outcome === "other" ? result : undefined;
+  const note = outcome === "failed" || outcome === "other" ? result?.replace(ANSWER_LABEL, "").trim() : undefined;
   return { message, fields, outcome, ...(note ? { note } : {}) };
 }
 

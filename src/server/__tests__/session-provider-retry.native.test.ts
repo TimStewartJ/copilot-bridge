@@ -113,7 +113,7 @@ async function fixture(signal: AbortSignal) {
     abortSession: async () => { await session.abort(); return true; },
     markCachedSessionForEviction: () => {}, deferMcpStatusSessionEviction: () => {}, flushPendingSessionEviction: () => {},
     getPendingUserInputCount: () => 0, getPendingInteractionCount: () => 0, autoAnswerOverdueInteractions: async () => {},
-    answerQuestionUnshown: () => undefined, recordPendingInteractionEvent: () => {},
+    answerQuestionUnshown: () => undefined, answerUnshowableQuestion: () => undefined, recordPendingInteractionEvent: () => {},
     recordSessionAttention: () => {}, maybeAutoNameSession: () => {},
   };
   const runner = new SessionRunner(deps);

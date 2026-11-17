@@ -76,6 +76,11 @@ describe("readAskUserRecord", () => {
     expect(readAskUserRecord(call(FORM))?.outcome).toBe("unanswered");
     expect(readAskUserRecord(call(FORM, "boom", { success: false }))).toMatchObject({ outcome: "failed", note: "boom" });
     expect(readAskUserRecord(call(FORM, "Something new"))).toMatchObject({ outcome: "other", note: "Something new" });
+    // A question Bridge could not show is a failed question whose note says what was wrong.
+    expect(readAskUserRecord(call(FORM, `User responded: ${AUTOMATIC_ANSWERS.unshowable}`))).toMatchObject({
+      outcome: "failed",
+      note: AUTOMATIC_ANSWERS.unshowable,
+    });
   });
 
   it("does not show a reply Bridge gave in the user's place as the user's answer", () => {

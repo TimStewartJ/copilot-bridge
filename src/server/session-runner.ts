@@ -28,6 +28,7 @@ import type { Task } from "./task-store.js";
 import {
   normalizePendingElicitationRequest,
   normalizePendingUserInputRequest,
+  PendingInteractionError,
 } from "./pending-interaction-validation.js";
 import type { PendingUserInputRequestView } from "./user-input-types.js";
 import type { BrowserHandoffView } from "../shared/browser-live.js";
@@ -52,6 +53,7 @@ import type {
 import type { SessionConfigOptions } from "./session-config-builder.js";
 import { DEFAULT_SEND_MODE, toSendMode, type SendMode } from "../shared/send-mode.js";
 import type { AutomaticAnswerReason } from "../shared/automatic-answer.js";
+import { isRecord } from "../shared/is-record.js";
 import {
   extractTerminalCompletionFromToolCall,
   type TerminalCompletion,
@@ -495,6 +497,17 @@ export interface SessionRunnerDeps {
     sessionId: string,
     question: PendingQuestion,
     reason: AutomaticAnswerReason,
+  ): Promise<boolean> | undefined;
+  /**
+   * Replies to a question that cannot be shown because the request is invalid, so the run does
+   * not wait on it forever. Undefined when there is nothing to reply to; otherwise the promise
+   * says whether the runtime took the reply. Never rejects.
+   */
+  answerUnshowableQuestion(
+    sessionId: string,
+    kind: PendingQuestion["kind"],
+    request: unknown,
+    problem: string,
   ): Promise<boolean> | undefined;
   recordPendingInteractionEvent(
     sessionId: string,
@@ -1751,6 +1764,27 @@ export class SessionRunner {
         console.warn(`[sdk] [${sid}] Could not show ${question.kind} ${requestId} after a failed automatic reply:`, error);
       });
     };
+    /** Tells the agent a question it asked cannot be shown, rather than leaving the run waiting. */
+    const answerUnshowableQuestion = (kind: PendingQuestion["kind"], request: unknown, error: unknown): void => {
+      if (!(error instanceof PendingInteractionError)) {
+        console.warn(`[sdk] [${sid}] Ignoring ${kind} request that failed to show:`, error);
+        return;
+      }
+      const problem = error.message;
+      console.warn(`[sdk] [${sid}] Cannot show invalid ${kind} request (${problem}); replying to the agent instead`);
+      const requestId = isRecord(request) && typeof request.requestId === "string" ? request.requestId : undefined;
+      // Recorded before the reply is sent, so a completion that arrives first finds it.
+      if (requestId) unshownQuestions.add(requestId);
+      const replying = this.deps.answerUnshowableQuestion(sessionId, kind, request, problem);
+      if (!requestId) return;
+      if (!replying) {
+        unshownQuestions.delete(requestId);
+        return;
+      }
+      void replying.then((answered) => {
+        if (!answered) unshownQuestions.delete(requestId);
+      });
+    };
 
     const fusionProgress = createFusionProgress((modelId) => this.deps.modelDisplayName?.(modelId) ?? modelId);
     const handleEvent = (event: any, context: SessionEventHandlingContext) => {
@@ -1783,7 +1817,7 @@ export class SessionRunner {
               this.deps.recordPendingInteractionEvent(sessionId, "user_input", "requested", requestedAt);
             });
           } catch (error) {
-            console.warn(`[sdk] [${sid}] Ignoring invalid user input request event:`, error);
+            answerUnshowableQuestion("user_input", data, error);
           }
           break;
         }
@@ -1829,7 +1863,7 @@ export class SessionRunner {
               this.deps.recordPendingInteractionEvent(sessionId, "elicitation", "requested", requestedAt);
             });
           } catch (error) {
-            console.warn(`[sdk] [${sid}] Ignoring invalid elicitation request event:`, error);
+            answerUnshowableQuestion("elicitation", data, error);
           }
           break;
         }

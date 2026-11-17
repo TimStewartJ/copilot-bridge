@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AUTOMATIC_ANSWERS, readAutomaticAnswerReason } from "./automatic-answer.js";
+import { AUTOMATIC_ANSWERS, readAutomaticAnswerReason, unshowableQuestionAnswer } from "./automatic-answer.js";
 
 describe("automatic answers", () => {
   it("tells the agent the reply is no approval, whatever the reason", () => {
@@ -17,6 +17,9 @@ describe("automatic answers", () => {
     expect(readAutomaticAnswerReason(`User responded: ${AUTOMATIC_ANSWERS.autopilot}`)).toBe("autopilot");
     expect(readAutomaticAnswerReason(`User responded: ${AUTOMATIC_ANSWERS.unanswered}`)).toBe("unanswered");
     expect(readAutomaticAnswerReason(`User responded:\nchoice: ${AUTOMATIC_ANSWERS.skipped}`)).toBe("skipped");
+    expect(readAutomaticAnswerReason(
+      `User responded: ${unshowableQuestionAnswer("approve.description must be at most 500 characters")}`,
+    )).toBe("unshowable");
     // What the Copilot CLI tells the model when the user declines a form.
     expect(readAutomaticAnswerReason(
       "The user is not available to respond and will review your work later. Work autonomously and make good decisions.",
