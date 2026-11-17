@@ -33,6 +33,8 @@ interface MessageActionToolbarProps {
 }
 
 const actionButtonClass = `inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-wait disabled:opacity-50 ${DS.focus}`;
+/** Room for a fingertip between the pressed point and the menu. */
+const TOUCH_ANCHOR_GAP = 24;
 
 export function MessageActionToolbar({
   messageKey,
@@ -76,6 +78,8 @@ export function MessageActionToolbar({
 
 interface MessageActionsMenuProps {
   position: ContextMenuPosition;
+  /** Opened by a long press: open above the finger so it does not cover the menu. */
+  fromTouch?: boolean;
   target: MessageActionMenuTarget;
   copied: boolean;
   forkLoading: boolean;
@@ -95,6 +99,7 @@ interface MessageActionsMenuProps {
 
 export function MessageActionsMenu({
   position,
+  fromTouch = false,
   target,
   copied,
   forkLoading,
@@ -116,7 +121,11 @@ export function MessageActionsMenu({
     : undefined;
 
   return (
-    <ContextMenu position={position} onClose={onClose}>
+    <ContextMenu
+      position={position}
+      onClose={onClose}
+      {...(fromTouch ? { placement: "above" as const, anchorGap: TOUCH_ANCHOR_GAP } : {})}
+    >
       <div className="flex min-w-[230px] items-start gap-2 px-3 py-2 text-xs text-text-muted">
         <Clock size={14} className="mt-0.5 shrink-0" />
         <div className="min-w-0">

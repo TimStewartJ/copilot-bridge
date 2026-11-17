@@ -358,6 +358,9 @@ export interface AgentSession {
   /** Initialize and validate the currently configured tool set. */
   initializeTools(): Promise<unknown>;
 
+  /** Tools this session's config removed; the runtime never lists them, so readiness skips them. */
+  readonly excludedTools?: readonly string[];
+
   /** Return lightweight metadata for the currently initialized tool set. */
   getCurrentToolMetadata(): Promise<{ tools?: AgentToolMetadata[] | null } | undefined>;
 

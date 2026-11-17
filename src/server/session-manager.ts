@@ -3106,7 +3106,9 @@ export class SessionManager {
   private async warmNativeBridgeTools(sessionId: string, session: AgentSession): Promise<void> {
     if (!this.supportsSessionToolInitialization()) return;
     const bridgeTools = this.eligibleNativeBridgeToolDefinitions().map((tool) => tool.name);
-    const expectedTools = this.deps.resolveSessionProfile?.(sessionId)?.expectedToolNames(bridgeTools) ?? bridgeTools;
+    const excluded = new Set(session.excludedTools ?? []);
+    const expectedTools = (this.deps.resolveSessionProfile?.(sessionId)?.expectedToolNames(bridgeTools) ?? bridgeTools)
+      .filter((name) => !excluded.has(name));
     const startedAt = Date.now();
     let outcome = "ready";
     let phase = "discovery";

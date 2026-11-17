@@ -260,7 +260,7 @@ class CopilotAgentSession implements AgentSession {
       handler: (info: AgentBackendDisconnect) => void,
     ) => () => void,
     private readonly useNativeToolPermissions: boolean,
-    private readonly excludedTools: readonly string[],
+    readonly excludedTools: readonly string[],
     private readonly logger: Pick<Console, "warn">,
     /** Experimental Fusion context limit, given again on every switch to Fusion. */
     private readonly fusionContextTokens?: number,

@@ -48,6 +48,7 @@ function BubbleActions({ side, children }: { side: "left" | "right"; children?: 
   if (!children) return null;
   return (
     <div
+      data-message-hover-actions="true"
       className={`pointer-events-none absolute z-10 opacity-0 transition-opacity duration-150 group-hover/message-bubble:opacity-100 group-focus-within/message-bubble:opacity-100 ${
         side === "right" ? "right-full top-1 mr-1" : "chat-reply-actions -top-3 right-0"
       }`}

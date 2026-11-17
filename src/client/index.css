@@ -646,6 +646,23 @@ html[data-theme="light"] {
     -webkit-user-select: none;
     user-select: none;
   }
+
+  /* A phone opens message actions by long press; the hover toolbar shows only for keyboard focus. */
+  [data-message-hover-actions="true"] {
+    opacity: 0;
+  }
+
+  [data-message-hover-actions="true"] > * {
+    pointer-events: none;
+  }
+
+  [data-message-hover-actions="true"]:has(:focus-visible) {
+    opacity: 1;
+  }
+
+  [data-message-hover-actions="true"]:has(:focus-visible) > * {
+    pointer-events: auto;
+  }
 }
 
 /* ── Docs view ─────────────────────────────────────────────────────

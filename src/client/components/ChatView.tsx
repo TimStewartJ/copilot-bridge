@@ -2822,11 +2822,10 @@ export default function ChatView({
           className={`${CHAT_RAIL_CLASS} relative ${followsActivity ? "pt-2" : "pt-5"} transition-colors ${
             isLongPressTarget ? "bg-bg-hover/50" : ""
           } ${historicalMode && messageSourceId === targetSourceEventId ? "bg-warning/10 ring-1 ring-inset ring-warning/30" : ""}`}
-          onClick={menuBindings?.onClick}
           onContextMenu={menuBindings ? (event: ReactMouseEvent<HTMLDivElement>) => {
             if (shouldUseNativeMessageContextMenu(event.currentTarget, event.target)) return;
-            event.preventDefault();
-            openMessageActionsMenu(event.clientX, event.clientY, messageAnchorKey, msg);
+            setMessageMenuTarget({ key: messageAnchorKey, message: msg });
+            menuBindings.onContextMenu(event);
           } : undefined}
           onTouchStart={menuBindings ? (event: ReactTouchEvent<HTMLDivElement>) => {
             if (targetMatchesSelector(event.target, MESSAGE_TOUCH_CONTROL_SELECTOR)) return;
@@ -3098,6 +3097,7 @@ export default function ChatView({
       {messageMenu && messageMenuTarget && (
         <MessageActionsMenu
           position={messageMenu}
+          fromTouch={messageMenu.touch === true}
           target={messageMenuTarget}
           copied={copiedMessageKey === messageMenuTarget.key}
           forkLoading={messageMenuForkLoading}

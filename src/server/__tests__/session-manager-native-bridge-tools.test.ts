@@ -540,6 +540,18 @@ describe("SessionManager native Bridge tools", () => {
     },
   );
 
+  it("does not wait for a Bridge tool the session's config excluded", async () => {
+    const { manager, backend } = await startManager();
+    const session = Object.assign(createInteractiveFakeSession(
+      "excluded-bridge-tool",
+      DEFAULT_NATIVE_TOOLS.filter((tool) => tool.name !== "session_bridge_tool"),
+    ), { excludedTools: ["session_bridge_tool"] });
+    backend.resumeSession.mockResolvedValueOnce(session);
+    await manager.startWorkAndWaitForDelivery(session.sessionId, "hello");
+    expect(session.send).toHaveBeenCalled();
+    expect(manager.getSessionToolReadiness(session.sessionId)?.state).toBe("ready");
+  });
+
   it("reports unexpected external deferral without permanently blocking the session", async () => {
     const { manager, backend } = await startManager();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

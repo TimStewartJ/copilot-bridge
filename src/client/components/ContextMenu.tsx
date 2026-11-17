@@ -12,40 +12,57 @@ interface ContextMenuProps {
   children: React.ReactNode;
   /** "above" opens upward, for controls at the bottom where a phone keyboard may cover the menu. */
   placement?: "below" | "above";
+  /** Space kept clear around the point, such as a fingertip; with a gap "above" flips below. */
+  anchorGap?: number;
 }
 
 const VIEWPORT_PADDING = 8;
 
-export default function ContextMenu({ position, onClose, children, placement = "below" }: ContextMenuProps) {
+interface MenuPlacementInput {
+  position: ContextMenuPosition;
+  size: { width: number; height: number };
+  viewport: { width: number; height: number };
+  placement: "below" | "above";
+  anchorGap: number;
+}
+
+/** Top-left corner that keeps the menu on screen and clear of the anchor gap where it fits. */
+export function placeContextMenu({ position, size, viewport, placement, anchorGap }: MenuPlacementInput) {
+  const upward = position.y - anchorGap - size.height;
+  const downward = position.y + anchorGap;
+  let top: number;
+  if (placement === "above") {
+    top = anchorGap > 0 && upward < VIEWPORT_PADDING ? downward : upward;
+  } else {
+    top = downward + size.height > viewport.height - VIEWPORT_PADDING ? upward : downward;
+  }
+  top = Math.max(VIEWPORT_PADDING, Math.min(top, viewport.height - size.height - VIEWPORT_PADDING));
+  let left = position.x;
+  if (left + size.width > viewport.width - VIEWPORT_PADDING) {
+    left = Math.max(VIEWPORT_PADDING, viewport.width - size.width - VIEWPORT_PADDING);
+  }
+  return { top, left };
+}
+
+export default function ContextMenu({ position, onClose, children, placement = "below", anchorGap = 0 }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [adjusted, setAdjusted] = useState<{ top: number; left: number } | null>(null);
 
   const stableClose = useCallback(() => onClose(), [onClose]);
 
-  // Measure actual menu size after render and clamp to viewport
+  const { x, y } = position;
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    let top = position.y;
-    let left = position.x;
-
-    if (placement === "above") {
-      top = Math.max(VIEWPORT_PADDING, position.y - rect.height);
-    } else if (top + rect.height > vh - VIEWPORT_PADDING) {
-      // Flip up if overflowing bottom
-      top = Math.max(VIEWPORT_PADDING, position.y - rect.height);
-    }
-    // Flip left if overflowing right
-    if (left + rect.width > vw - VIEWPORT_PADDING) {
-      left = Math.max(VIEWPORT_PADDING, vw - rect.width - VIEWPORT_PADDING);
-    }
-
-    setAdjusted({ top, left });
-  }, [position.x, position.y, placement]);
+    setAdjusted(placeContextMenu({
+      position: { x, y },
+      // Layout size: the open animation's scale would shrink a bounding-rect measurement.
+      size: { width: el.offsetWidth, height: el.offsetHeight },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      placement,
+      anchorGap,
+    }));
+  }, [x, y, placement, anchorGap]);
 
   useEffect(() => {
     const dismiss = (e: MouseEvent | TouchEvent) => {
@@ -67,7 +84,7 @@ export default function ContextMenu({ position, onClose, children, placement = "
   return (
     <div
       ref={ref}
-      className={cx(DS.surface.floating, "fixed z-50 min-w-[180px] max-w-[calc(100vw-16px)] select-none cursor-default py-1 text-sm animate-ctx-menu-in")}
+      className={cx(DS.surface.floating, "fixed z-50 min-w-[180px] max-w-[calc(100vw-16px)] max-h-[calc(100dvh-16px)] overflow-y-auto overscroll-contain select-none cursor-default py-1 text-sm animate-ctx-menu-in")}
       style={{
         top: adjusted?.top ?? position.y,
         left: adjusted?.left ?? position.x,

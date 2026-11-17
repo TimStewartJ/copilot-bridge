@@ -7,7 +7,10 @@ import {
   getReactProps,
   type ReactDomHarness,
 } from "../test-react-harness";
+import { haptic } from "../lib/haptics";
 import useLongPressMenu from "./useLongPressMenu";
+
+vi.mock("../lib/haptics", () => ({ haptic: vi.fn() }));
 
 let resetGuard: (() => void) | null = null;
 
@@ -18,6 +21,7 @@ function LongPressFixture({ onActivate }: { onActivate: () => void }) {
     ...bind("message-1", onActivate),
     type: "button",
     "data-menu-open": menu?.id === "message-1" ? "true" : "false",
+    "data-menu-at": menu ? `${menu.x},${menu.y},${menu.touch ? "touch" : "pointer"}` : "",
     "data-pressing": isTarget("message-1") ? "true" : "false",
   }, "Message");
 }
@@ -32,6 +36,7 @@ describe("useLongPressMenu", () => {
   let harness: ReactDomHarness | null = null;
 
   beforeEach(async () => {
+    vi.mocked(haptic).mockClear();
     vi.useFakeTimers();
     harness = await createReactDomHarness();
   });
@@ -79,6 +84,41 @@ describe("useLongPressMenu", () => {
     await harness.act(async () => resetGuard?.());
     await harness.act(async () => {
       getReactProps(findButton(harness!))?.onClick?.({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    });
+    expect(onActivate).toHaveBeenCalledOnce();
+  });
+
+  it("opens a right-click menu at the pointer, and a touch contextmenu once at the press", async () => {
+    if (!harness) throw new Error("Harness not initialized");
+    const onActivate = vi.fn();
+    await harness.render(createElement(LongPressFixture, { onActivate }));
+    const contextMenu = (clientX: number, clientY: number, pointerType?: string) => harness!.act(async () => {
+      getReactProps(findButton(harness!))?.onContextMenu?.({
+        preventDefault: vi.fn(),
+        clientX,
+        clientY,
+        nativeEvent: { pointerType },
+      });
+    });
+
+    await contextMenu(70, 80);
+    expect(findButton(harness).getAttribute("data-menu-at")).toBe("70,80,pointer");
+
+    await harness.act(async () => {
+      getReactProps(findButton(harness!))?.onTouchStart?.({ touches: [{ clientX: 20, clientY: 30 }] });
+    });
+    // Android: contextmenu arrives before the hold timer, then the touch is cancelled.
+    await contextMenu(25, 35);
+    expect(findButton(harness).getAttribute("data-menu-at")).toBe("20,30,touch");
+    await advanceTimersByTimeAct(harness.act, 500);
+    await contextMenu(25, 35, "touch");
+    expect(findButton(harness).getAttribute("data-menu-at")).toBe("20,30,touch");
+    expect(haptic).toHaveBeenCalledOnce();
+
+    await harness.act(async () => {
+      const props = getReactProps(findButton(harness!));
+      props?.onTouchCancel?.();
+      props?.onClick?.({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
     });
     expect(onActivate).toHaveBeenCalledOnce();
   });

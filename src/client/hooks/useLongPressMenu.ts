@@ -5,6 +5,8 @@ interface MenuState<T> {
   x: number;
   y: number;
   id: T;
+  /** Opened by a finger, which covers the point it opened at. */
+  touch?: boolean;
 }
 
 export interface LongPressBindings {
@@ -65,6 +67,17 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
     setMenu(null);
   }, [cancelLongPress]);
 
+  const fireLongPress = useCallback((x: number, y: number, id: T) => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    triggered.current = true;
+    haptic("medium");
+    setLongPressTarget(null);
+    setMenu({ x, y, id, touch: true });
+  }, []);
+
   const bind = useCallback(
     (id: T, onClick: () => void): LongPressBindings => ({
       onClick: (e) => {
@@ -78,22 +91,28 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
       },
       onContextMenu: (e: React.MouseEvent) => {
         e.preventDefault();
+        // Android also fires contextmenu on a long press: open the touch menu once.
+        const press = origin.current;
+        if (press && timer.current) {
+          fireLongPress(press.x, press.y, id);
+          return;
+        }
+        const pointerType = (e.nativeEvent as Partial<PointerEvent> | undefined)?.pointerType;
+        if (pointerType === "touch") {
+          if (!triggered.current) fireLongPress(e.clientX, e.clientY, id);
+          return;
+        }
         setMenu({ x: e.clientX, y: e.clientY, id });
       },
       onTouchStart: (e: React.TouchEvent) => {
         const touch = e.touches[0];
         if (!touch) return;
         if (timer.current) clearTimeout(timer.current);
-        origin.current = { x: touch.clientX, y: touch.clientY };
+        const { clientX, clientY } = touch;
+        origin.current = { x: clientX, y: clientY };
         triggered.current = false;
         setLongPressTarget(id);
-        timer.current = setTimeout(() => {
-          timer.current = null;
-          triggered.current = true;
-          haptic("medium");
-          setLongPressTarget(null);
-          setMenu({ x: touch.clientX, y: touch.clientY, id });
-        }, LONG_PRESS_MS);
+        timer.current = setTimeout(() => fireLongPress(clientX, clientY, id), LONG_PRESS_MS);
       },
       onTouchMove: (e: React.TouchEvent) => {
         if (!origin.current) return;
@@ -104,9 +123,13 @@ export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
         if (dx * dx + dy * dy > MOVE_THRESHOLD_SQ) cancelLongPress();
       },
       onTouchEnd: () => cancelLongPress(),
-      onTouchCancel: () => cancelLongPress(),
+      onTouchCancel: () => {
+        cancelLongPress();
+        // A cancelled touch gets no click, so a kept guard would eat the next tap.
+        triggered.current = false;
+      },
     }),
-    [cancelLongPress],
+    [cancelLongPress, fireLongPress],
   );
 
   const isTarget = useCallback(
