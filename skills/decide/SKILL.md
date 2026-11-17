@@ -18,6 +18,7 @@ You own the recommendation and the evidence under it. The user owns the decision
 2. List the options, always including doing nothing or waiting.
 3. Name the criteria the user cares about (cost, time, risk, reversibility, effort, quality) from the request, task notes and earlier decisions in task history.
 4. Find the factual forks: questions whose answer would change the recommendation. Settle each one by experiment, measurement or an opened source.
+   - For a UI or behavior choice, build throwaway variants behind one switch and observe them (principles skill: Prototype the choice).
 5. Gather evidence for each option against each criterion and label it measured, sourced, inferred or unknown.
 6. Note for each option how reversible it is and what being wrong would cost.
 7. For close or high-stakes calls, run the `panel-review` helper on the recommendation before presenting it.

@@ -18,10 +18,12 @@ You own the answer and the evidence behind it. You change nothing: no edits, com
    - Load any skill that <skill_roles> lists as extending `investigate` and add its steps where it says.
 2. Write down what would count as an answer: a code path, a log line, a measured value, a reproduction. If the question is really a decision, name the options now.
 3. Find the entry points (code search, symbol lookup, logs, docs, task history) and follow the trace yourself to the code or record that decides the behavior.
+   - For "why is it like this" questions, read the commits and pull request discussions that introduced the code and each later change. Cite what the authors wrote, mark your own inferences, and say what the record does not answer.
 4. Prefer runtime evidence over reading when it is cheap: run the code, a read-only query, a test or a command, and keep the output.
    - Commands stay read-only. Scratch files go in the session folder, never in the repository.
+   - For a hang, leak or slowdown, reduce a profile, heap snapshot or trace to the hot path or the retainer chain. Capture one from a local or test process; from a shared one only when pausing it is safe, otherwise use an existing capture. Load a large capture into a form you can query (for example SQLite) before reading it.
 5. Cite every claim that matters as `path:line`, a commit, a link or a quoted output line, and label it measured, sourced, inferred or unknown.
-6. Look for the case that would prove you wrong (another caller, a config override, a different version or platform) and check it.
+6. Look for the case that would prove you wrong (another caller, a config override, a different version or platform) and check it. When two explanations fail on the same assumption, test the assumption (principles skill: Attack the premise).
 7. For "are we sure" questions, give your real judgment and the confidence the evidence supports, including "no" or "not proven" when that is what it shows.
 8. When the answer feeds a decision, give one recommendation with its main tradeoff and the fact that would change it.
 9. If the answer shows a change is needed, stop and name the playbook that should make it (`bug-fix`, `feature` or `refactor`) with the evidence it starts from. Do not make the change here.

@@ -37,6 +37,8 @@ Other instructions pull in different directions on when to ask and when to act. 
 export const AGENT_LIFECYCLE_GUIDANCE = `
 **Sub-agent lifecycle** (refines the sync and background defaults above)
 * Use task for bounded work whose result belongs here. session_start opens a persistent chat whose results stay there; supply its own prompt and taskId because neither history nor task is inherited.
+* You own each sub-agent's result: read its diff or output, check what you will repeat, and write your own summary instead of relaying its words. A missing or empty result is a gap, not a pass.
+* When a sub-agent's work fails its check, look at what it changed before rerunning the same brief on a fresh agent. Move to a stronger model from <model_roles> only after two runs of the same brief fail, not because the task looks hard.
 * Use session_send for a persistent chat and write_agent for a sub-agent. session_send reports delivery, not results; do not resend a queued message.
 * Agents launched with mode "sync" are one-shot: never call write_agent on them. Default to sync for one-off work; background needs independent work or an expected same-task follow-up.
 * To wait for a background agent, call read_agent once with wait: true. If still running, end the turn and await notification; do not poll.

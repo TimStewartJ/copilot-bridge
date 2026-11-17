@@ -17,7 +17,7 @@ You own the plan until the user accepts it, then its upkeep on the task.
    - Load any skill that <skill_roles> lists as extending `plan-project` and add its steps where it says.
 2. Write the finish line as a pass/fail condition a person could check. Once the user accepts it, set it as the task doneWhen with task_update.
 3. Gather the constraints: deadline, budget, who is involved, what already exists, and what the user ruled out. Read task notes, history and related knowledge base pages first.
-4. Break the work into 3 to 8 milestones, each a checkable outcome rather than an activity.
+4. Break the work into 3 to 8 milestones, each a checkable outcome rather than an activity, with the check or live scenario that proves it.
 5. Order the milestones by dependency and name the outside people or systems each one waits on.
 6. List the top risks with an early warning sign and a mitigation for each. Settle cheap unknowns now with a quick experiment or lookup instead of planning around them.
 7. Pick the first action: one step that can start now.

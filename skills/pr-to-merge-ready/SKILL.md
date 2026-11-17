@@ -25,11 +25,12 @@ You own the pull request's path to merge-ready: conflicts, review threads and CI
    - For each, either fix it with a commit or draft a reply that says why not.
 7. CI: for each failing check, read its log and classify it as caused by this change, already failing on the target branch, an infrastructure flake, or a policy or configuration problem. Classify before any retry.
    - Fix failures caused by the change. Retry an infrastructure flake at most once; if it fails again, report it with the log excerpt.
-8. In drive mode, push fixes to the pull request branch and confirm a new run started. If a new commit makes the description wrong, update the description.
-9. For waits longer than about 45 minutes, create a recurring trigger (trigger_create with intervalSeconds, and maxRuns or expiresAt) whose `check` runs a command that prints the state. The worker wakes only when the command's exit code or output changes, so print stable fields, not elapsed times.
+8. Name the one fact the change is safe because of and say how far it is proven; in drive mode, prove it by running code (principles skill: Prove the safety fact).
+9. In drive mode, push fixes to the pull request branch and confirm a new run started. If a new commit makes the description wrong, update the description.
+10. For waits longer than about 45 minutes, create a recurring trigger (trigger_create with intervalSeconds, and maxRuns or expiresAt) whose `check` runs a command that prints the state. The worker wakes only when the command's exit code or output changes, so print stable fields, not elapsed times.
    - Example: `check: { command: ["gh", "pr", "checks", "123", "--json", "name,state"] }`. The command is an argument array with the executable first and no shell; `cwd` must be an absolute path.
-10. Stop at the human's line. Approving, final sign-off, any personal confirmation step and merging belong to the user unless they explicitly delegated them in this chat or the task instructions.
-11. List what remains, who owns each item, and what you are waiting on; set task_update_momentum waitingOn to the person or system when the chat has a task.
+11. Stop at the human's line. Approving, final sign-off, any personal confirmation step and merging belong to the user unless they explicitly delegated them in this chat or the task instructions.
+12. List what remains, who owns each item, and what you are waiting on; set task_update_momentum waitingOn to the person or system when the chat has a task.
 
 ## Gates
 

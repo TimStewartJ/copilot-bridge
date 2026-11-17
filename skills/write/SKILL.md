@@ -16,10 +16,12 @@ You own the text from its purpose to its delivery; when it goes out as the user,
 1. Restate what the piece is for and the smallest piece that does it. For task-linked work with no doneWhen, set one with task_update as a pass/fail condition.
    - Load any skill that <skill_roles> lists as extending `write` and add its steps where it says.
 2. Pin the audience, purpose, form (email, chat message, doc, post, description), length and destination before drafting.
+   - Give a technical doc one mode: a tutorial, a how-to, a reference or an explanation. Split and link rather than mixing them.
 3. Read the context the piece answers (the thread, the doc, the request) and gather the facts it depends on. Verify facts that change, such as dates, numbers and status, against their source.
 4. Load the skill that fills the `writing-style` role when <skill_roles> lists one, and follow the destination's own conventions.
 5. Draft: open with what the reader needs, give each paragraph one point, and match the length to the purpose.
 6. Self-audit the draft: cut padding, recaps, warm-up openers and closing offers; remove AI writing tells such as stock phrases, mannered metaphors, reflexive hedges and bold-label lists; check each fact against step 3.
+   - Other tells: trailing "-ing" phrases that add no fact, vague attributions ("experts say"), "serves as" for "is", "not just X but Y", ideas forced into threes, "from X to Y" without a real range, abstract nouns where a concrete word exists, and closing lines that could end any document.
 7. Check the piece stands alone for a reader who saw none of this chat: names, links and context included.
 8. Deliver the draft where asked: in the reply, as a file with send_attachment, or in the knowledge base with docs_write.
 9. If it is to be sent or posted as the user, get approval with ask_user for the exact final text and destination.

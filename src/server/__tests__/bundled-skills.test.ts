@@ -79,4 +79,25 @@ describe("bundled skills", () => {
       expect(metadata["bridge-kind"]).toBeUndefined();
     }
   });
+
+  it("cites only principles the principles skill defines, and every principle is cited", () => {
+    const principles = matter(readFileSync(join(SKILLS_DIR, "principles", "SKILL.md"), "utf8")).content
+      .split(/\r?\n/)
+      .flatMap((line) => line.startsWith("## ") ? [line.slice(3).trim()] : []);
+    expect(new Set(principles).size).toBe(principles.length);
+
+    const cited = new Set<string>();
+    for (const dir of bundled.filter((name) => name !== "principles")) {
+      const body = matter(readFileSync(join(SKILLS_DIR, dir, "SKILL.md"), "utf8")).content;
+      // A parenthetical that starts like a citation must use the exact citation form.
+      for (const [loose] of body.matchAll(/\(principles?(?: skill)?:[^)]*\)/gi)) {
+        expect(loose, `${dir}: malformed citation`).toMatch(/^\(principles skill: [^,)]+(?:, [^,)]+)*\)$/);
+        for (const name of loose.slice("(principles skill: ".length, -1).split(", ")) {
+          expect(principles, `${dir} cites "${name}"`).toContain(name);
+          cited.add(name);
+        }
+      }
+    }
+    expect(principles.filter((name) => !cited.has(name)), "principles no playbook cites").toEqual([]);
+  });
 });

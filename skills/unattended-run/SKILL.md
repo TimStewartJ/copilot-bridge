@@ -23,9 +23,10 @@ You own a bounded run toward one pass/fail condition, every decision along the w
    - when you stop and wait: a gated action is needed, the condition proves impossible, or the budget runs out.
    - If the user is still present, confirm these with ask_user before starting.
 4. For code, work in an isolated workspace: a separate worktree and working branch, never the user's checkout or a default branch.
-5. Measure the starting point against the exit condition and record it with task_history_add.
+5. Measure the starting point against the exit condition and record it with task_history_add. Run the check once by hand first and confirm it fails or passes for the right reason; a loop with a broken check only produces unchecked work faster.
 6. Each iteration: make the smallest change the evidence justifies, verify it against the condition, keep it if it helps and discard it if not, then add one task_history_add row with the decision, why, the evidence and the result.
-7. On a plateau, change the approach (a different hypothesis, a different lens, a sub-agent's idea) rather than stopping.
+   - When the same kind of edit repeats, script it and prove the script on the first unit (principles skill: Build the lever).
+7. On a plateau, change the approach (a different hypothesis, a different lens, a sub-agent's idea) rather than stopping. When two attempts fail on the same assumption, test the assumption before the next one (principles skill: Attack the premise).
 8. Never relax the condition: do not edit the tests, thresholds or doneWhen to make the run pass.
 9. Schedule each wake with trigger_create: a one-time trigger (delaySeconds) for the next step, or, for an external wait, a recurring trigger (intervalSeconds, with maxRuns or expiresAt) whose `check` command wakes the worker only when its output changes or it exits with 10.
    - Example: `check: { command: ["gh", "run", "view", "4567", "--json", "status,conclusion"] }`. The command is an argument array with the executable first and no shell; `cwd` must be an absolute path.
