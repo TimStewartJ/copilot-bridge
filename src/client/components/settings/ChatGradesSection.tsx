@@ -23,6 +23,7 @@ const CLASSIFIER_NAMES: Readonly<Record<string, string>> = {
   user_message_sentiment: "Sentiment",
   session_taxonomy: "Kind of work",
   requested_task_demand: "Request size",
+  task_completion_criteria: "Done criteria",
 };
 const CLASSIFIER_ORDER = Object.keys(CLASSIFIER_NAMES);
 
