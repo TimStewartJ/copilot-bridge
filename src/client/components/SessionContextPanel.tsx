@@ -133,6 +133,12 @@ export default function SessionContextPanel({
             <div className="space-y-2.5">
               <ContextMeter metrics={metrics} segments={segments} />
               <MeterLegend segments={segments} mcpToolsTokens={live?.mcpToolsTokens} />
+              {live?.mcpServerTools && live.mcpServerTools.length > 0 && (
+                <p className={DS.usage.meta}>
+                  MCP tools:{" "}
+                  {live.mcpServerTools.map((server) => `${server.serverName} ${formatCompactTokens(server.tokens)}`).join(" · ")}
+                </p>
+              )}
               <p className={DS.usage.prose}>
                 {pressure === "room" && (
                   <>

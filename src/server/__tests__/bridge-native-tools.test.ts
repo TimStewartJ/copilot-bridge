@@ -57,16 +57,18 @@ describe("bridge-native-tools", () => {
     );
   });
 
-  it("lets only the rarely used Bridge tools load on demand, and only when asked", () => {
-    const definitions = ["sample_tool", "tag_create"].map((name): BridgeToolDefinition => ({
+  it("lets only the rarely used Bridge tools load on demand, and only when asked, and marks only read-only tools idempotent", () => {
+    const definitions = ["sample_tool", "tag_create", "docs_read"].map((name): BridgeToolDefinition => ({
       name, description: name, inputSchema: { type: "object", properties: {} }, handler: async () => "ok",
     }));
     const policy = (tools: ReturnType<typeof createNativeBridgeTools>) =>
       Object.fromEntries(tools.map((tool) => [tool.name, tool.defer]));
 
     expect(policy(createNativeBridgeTools(definitions, { deferRarelyUsed: true })))
-      .toEqual({ sample_tool: "never", tag_create: "auto" });
-    expect(policy(createNativeBridgeTools(definitions))).toEqual({ sample_tool: "never", tag_create: "never" });
+      .toEqual({ sample_tool: "never", tag_create: "auto", docs_read: "never" });
+    expect(policy(createNativeBridgeTools(definitions))).toEqual({ sample_tool: "never", tag_create: "never", docs_read: "never" });
+    expect(Object.fromEntries(createNativeBridgeTools(definitions).map((tool) => [tool.name, tool.idempotent])))
+      .toEqual({ sample_tool: undefined, tag_create: undefined, docs_read: true });
   });
 
   it("prefers Bridge content contract text over SDK-shaped fields", () => {

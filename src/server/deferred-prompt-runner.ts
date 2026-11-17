@@ -91,7 +91,8 @@ export function createDeferredPromptRunner(
           await sessionManager.startWorkAndWaitForDelivery(item.sessionId, item.prompt, undefined, {
             completionAttention: true,
             origin: "defer",
-            ...(clientMessageId ? { clientMessageId } : {}),
+            // A queued chat message is the person's own; everything else here is a trigger's.
+            ...(clientMessageId ? { clientMessageId } : { promptSource: "automation-defer" }),
           });
           // A false result means the message was cancelled or reactivated while this try ran; that state wins.
           store.complete(item.id, { claimToken });

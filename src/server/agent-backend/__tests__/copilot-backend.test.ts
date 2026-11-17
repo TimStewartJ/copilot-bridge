@@ -321,6 +321,36 @@ describe("CopilotBackend wrap fidelity", () => {
     expect(setReasoningEffort).toHaveBeenCalledWith({ reasoningEffort: "max" });
   });
 
+  it("asks for a Fusion tier by its Fusion name once the catalog gives one, and other Auto tiers by id", async () => {
+    const switchTo = vi.fn(async () => ({}));
+    const switchFusionTier = vi.fn(async () => ({ status: "pending" }));
+    const getCurrent = vi.fn(async (): Promise<Record<string, unknown>> => ({ modelId: "auto", autoTier: "balance" }));
+    const client = createFakeClient(createFakeSession({ model: { getCurrent, switchTo, switchFusionTier } }));
+    client.rpc.models.list.mockResolvedValueOnce({
+      models: [{ id: "auto", name: "Auto" }],
+      auto: {
+        defaultTier: "balance",
+        tiers: [
+          { id: "balance", displayName: "Standard", description: "", type: "fusion", fusionTier: "standard", status: { enabled: true } },
+          { id: "hydrafusion-max", displayName: "Max", description: "", type: "fusion", fusionTier: "max", status: { enabled: true } },
+          { id: "fast", displayName: "Fast", description: "", type: "auto", status: { enabled: true } },
+        ],
+      },
+    });
+    const backend = new CopilotBackend(client as any);
+    await backend.listModels();
+
+    const wrapped = await backend.createSession({ model: "auto", reasoningEffort: "hydrafusion-max" });
+    await backend.resumeSession("fast-chat", { model: "auto", reasoningEffort: "fast" });
+    expect(client.createSession).toHaveBeenCalledWith({ model: "auto", capi: { fusionTier: "max" }, toolSearch: { enabled: true } });
+    expect(client.resumeSession).toHaveBeenCalledWith("fast-chat", { model: "auto", capi: { autoTier: "fast" }, toolSearch: { enabled: true } });
+
+    await wrapped.setModel("auto", { reasoningEffort: "balance" });
+    expect(switchTo).toHaveBeenLastCalledWith({ modelId: "auto", fusionTier: "standard" });
+    await wrapped.setReasoningEffort!("hydrafusion-max");
+    expect(switchFusionTier).toHaveBeenCalledWith({ fusionTier: "max" });
+  });
+
   it("gives the experimental Fusion context limit only to a session on Fusion, on create, resume and switch", async () => {
     const capabilities = { limits: { max_prompt_tokens: 600_000, max_context_window_tokens: 728_000 } };
     const switchTo = vi.fn(async () => ({}));
@@ -1019,6 +1049,28 @@ describe("CopilotAgentSession wrap fidelity", () => {
     expect(list.mock.invocationCallOrder[0]).toBeLessThan(contextInfo.mock.invocationCallOrder[0]!);
     contextInfo.mockResolvedValueOnce({ contextInfo: null });
     await expect(wrapped.getContextInfo()).resolves.toBeUndefined();
+  });
+
+  it("adds each MCP server's tool cost to the split, largest first, and keeps the split when that fails", async () => {
+    const contextInfo = vi.fn(async (): Promise<unknown> => ({ contextInfo: {
+      systemTokens: 20_000, conversationTokens: 1_000, toolDefinitionsTokens: 9_000, mcpToolsTokens: 7_000, totalTokens: 30_000,
+    } }));
+    const getToolTokenBreakdown = vi.fn(async (): Promise<unknown> => ({ servers: [
+      { serverName: "notes", totalTokens: 2_000, tools: [] },
+      { serverName: "tickets", totalTokens: 5_000, tools: [] },
+      { serverName: "empty", totalTokens: 0, tools: [] },
+    ] }));
+    const session = createFakeSession({ model: { list: vi.fn(async () => ({ models: [] })) }, metadata: { contextInfo }, mcp: { getToolTokenBreakdown } });
+    const wrapped = await new CopilotBackend(createFakeClient(session) as any).createSession({} as any);
+
+    await expect(wrapped.getContextInfo()).resolves.toMatchObject({
+      mcpToolsTokens: 7_000,
+      mcpServerTools: [{ serverName: "tickets", tokens: 5_000 }, { serverName: "notes", tokens: 2_000 }],
+    });
+    getToolTokenBreakdown.mockRejectedValueOnce(new Error("not ready"));
+    const withoutDetail = await wrapped.getContextInfo();
+    expect(withoutDetail).toMatchObject({ mcpToolsTokens: 7_000 });
+    expect(withoutDetail).not.toHaveProperty("mcpServerTools");
   });
 
   it("updates native reasoning effort without switching the model", async () => {

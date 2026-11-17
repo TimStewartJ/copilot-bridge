@@ -188,7 +188,7 @@ export function createTriggerTaskRunner(deps: TriggerTaskRunnerDeps) {
       // the occurrence settled as fired rather than started again.
       taskStore.linkSession(target.id, sessionId);
       store.recordRun({ triggerId: trigger.id, sessionId, ...(createdTaskId ? { taskId: createdTaskId } : {}), occurrence });
-      await sessionManager.startWorkAndWaitForDelivery(sessionId, startedChatPrompt(trigger), undefined, { origin: "schedule" });
+      await sessionManager.startWorkAndWaitForDelivery(sessionId, startedChatPrompt(trigger), undefined, { origin: "schedule", promptSource: "automation-schedule" });
     } catch (error) {
       store.deleteRunByOccurrence(trigger.id, occurrence);
       await rollback(target.id, sessionId, createdTaskId);

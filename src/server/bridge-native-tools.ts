@@ -36,6 +36,18 @@ export const DEFERRED_BRIDGE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "trigger_delete", "trigger_run",
 ]);
 
+/**
+ * Bridge tools that only read, so calling one again with the same arguments changes nothing. The
+ * runtime may repeat such a call when a crash lost its outcome (the SDK's `idempotent` hint).
+ */
+export const IDEMPOTENT_BRIDGE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "action_list", "bridge_overview", "calendar_list", "checklist_list",
+  "docs_db_query", "docs_db_schema", "docs_list", "docs_read", "docs_search", "docs_snapshot_list",
+  "find", "list_models", "list_sessions", "management_job_status", "management_job_wait",
+  "read_bridge", "read_conversation", "read_session", "read_source",
+  "tag_list", "task_get_info", "task_group_list", "task_history_list", "task_list", "trigger_list",
+]);
+
 const SDK_TOOL_RESULT_TYPES = new Set([
   "success",
   "failure",
@@ -110,6 +122,7 @@ export function createNativeBridgeTools(
     description: definition.description,
     parameters: definition.inputSchema ?? { type: "object", properties: {} },
     defer: options.deferRarelyUsed && DEFERRED_BRIDGE_TOOL_NAMES.has(definition.name) ? "auto" : "never",
+    ...(IDEMPOTENT_BRIDGE_TOOL_NAMES.has(definition.name) ? { idempotent: true } : {}),
     skipPermission: true,
     handler: async (args, invocation) => convertBridgeToolResultToSdk(
       await definition.handler(normalizeArgs(args), createSdkInvocationExtra(invocation)),

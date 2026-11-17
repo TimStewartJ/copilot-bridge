@@ -325,9 +325,11 @@ export interface StartWorkOptions {
   displayPrompt?: string;
   /**
    * "system" marks an application-generated turn. The runtime records it with system
-   * provenance, so it never appears in the transcript as a user message.
+   * provenance, so it never appears in the transcript as a user message. An `automation-<name>`
+   * source marks a turn automation started (a trigger's prompt or result): it sets the chat's task
+   * like a user message and shows as one, but the runtime gives it no human authority.
    */
-  promptSource?: "system";
+  promptSource?: "system" | `automation-${string}`;
   /**
    * Reasoning effort for this turn, applied to the session just before the prompt is sent.
    * Lets one conversation think harder for some turns than others (Helm: typed vs spoken).

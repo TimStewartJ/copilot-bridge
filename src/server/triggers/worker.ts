@@ -550,6 +550,7 @@ export class DisposableTriggerWorker {
       turn = session.sendAndWait({
         prompt: buildTriggerWorkerPrompt(input),
         attachments: [],
+        source: "automation-trigger",
       }, null);
       await Promise.race([turn, stopSignal]);
       if (!submission.result) {

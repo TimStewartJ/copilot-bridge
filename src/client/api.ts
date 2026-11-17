@@ -1508,6 +1508,8 @@ export interface SessionUsageMetrics {
     conversationTokens: number;
     toolDefinitionsTokens: number;
     mcpToolsTokens?: number;
+    /** What each MCP server's loaded tool definitions cost, largest first. */
+    mcpServerTools?: Array<{ serverName: string; tokens: number }>;
     totalTokens: number;
     limit?: number;
     promptTokenLimit?: number;

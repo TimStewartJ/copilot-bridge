@@ -320,12 +320,19 @@ export interface AgentUsageCodeChanges {
   filesModified: number;
 }
 
+export interface AgentMcpServerToolTokens {
+  serverName: string;
+  tokens: number;
+}
+
 export interface AgentContextInfo {
   systemTokens: number;
   conversationTokens: number;
   toolDefinitionsTokens: number;
   /** The MCP share of the tool definitions. */
   mcpToolsTokens?: number;
+  /** What each MCP server's loaded tool definitions cost, largest first. */
+  mcpServerTools?: AgentMcpServerToolTokens[];
   totalTokens: number;
   /** Advertised prompt allowance used for context displays. */
   limit?: number;

@@ -19,12 +19,15 @@ import { subagentSettingsForModel, type SubagentPlan } from "../../shared/subage
 
 import {
   AUTO_MODEL_ID,
+  autoTierSwitch,
   fromRuntimeCurrentModel,
   fusionContextCapabilities,
+  fusionTierNamesFromList,
   modelCatalogFromList,
   replacementForRetiredModel,
   toRuntimeModelSwitch,
   toRuntimeSessionConfig,
+  type FusionTierNames,
 } from "./copilot-fusion.js";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
 import { writeAgentShellInitScripts, type AgentShellInitScript } from "../agent-shell-env.js";
@@ -78,6 +81,7 @@ import type {
   AgentSetModelOptions,
   AgentUsageMetrics,
   AgentContextInfo,
+  AgentMcpServerToolTokens,
   AgentUsageCodeChanges,
   AgentUsageTokenTotals,
   AgentUserInputResponse,
@@ -284,6 +288,8 @@ class CopilotAgentSession implements AgentSession {
     private readonly logger: Pick<Console, "warn">,
     /** Experimental Fusion context limit, given again on every switch to Fusion (see copilot-fusion.ts). */
     private readonly fusionContextTokens?: number,
+    /** The catalog's Fusion names for Auto tiers, read when a switch is made (see copilot-fusion.ts). */
+    private readonly fusionTiers: () => FusionTierNames = () => new Map(),
   ) {}
 
   /**
@@ -436,7 +442,7 @@ class CopilotAgentSession implements AgentSession {
   }
 
   async setModel(model: string, opts?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined> {
-    const target = toRuntimeModelSwitch(model, opts, this.fusionContextTokens);
+    const target = toRuntimeModelSwitch(model, opts, this.fusionContextTokens, this.fusionTiers());
     // SDK session.setModel() awaits model.switchTo but discards the result, which hides the compaction preflight.
     const switchTo = this.session?.rpc?.model?.switchTo;
     if (typeof switchTo !== "function") {
@@ -461,10 +467,12 @@ class CopilotAgentSession implements AgentSession {
     const model = this.session?.rpc?.model;
     // On `auto` the effort is its Auto tier, which the runtime keeps apart from reasoning effort.
     if ((await this.getCurrentModel())?.modelId === AUTO_MODEL_ID) {
-      if (typeof model?.switchAutoTier !== "function") {
+      const request = autoTierSwitch(reasoningEffort, this.fusionTiers());
+      const switchTier = model?.[request.method];
+      if (typeof switchTier !== "function") {
         throw new Error("Auto tier updates are not available in this Copilot SDK build");
       }
-      await this.rpc("session.setReasoningEffort", () => model.switchAutoTier({ autoTier: reasoningEffort }));
+      await this.rpc("session.setReasoningEffort", () => switchTier.call(model, request.params));
       return;
     }
     const set = model?.setReasoningEffort;
@@ -647,17 +655,21 @@ class CopilotAgentSession implements AgentSession {
   async getContextInfo(): Promise<AgentContextInfo | undefined> {
     const contextInfo = this.session?.rpc?.metadata?.contextInfo;
     if (typeof contextInfo !== "function") return undefined;
-    const result = await this.rpc(
-      "session.getContextInfo",
-      async () => {
-        // The metadata RPC does not initialize the session model catalog.
-        await this.session.rpc.model.list();
-        return contextInfo.call(this.session.rpc.metadata, {
-          promptTokenLimit: 0,
-          outputTokenLimit: 0,
-        });
-      },
-    ) as { contextInfo?: unknown };
+    const [result, mcpServerTools] = await Promise.all([
+      this.rpc(
+        "session.getContextInfo",
+        async () => {
+          // The metadata RPC does not initialize the session model catalog.
+          await this.session.rpc.model.list();
+          return contextInfo.call(this.session.rpc.metadata, {
+            promptTokenLimit: 0,
+            outputTokenLimit: 0,
+          });
+        },
+      ) as Promise<{ contextInfo?: unknown }>,
+      // Per-server detail of the MCP share; the split stands without it.
+      this.getMcpToolTokens().catch(() => undefined),
+    ]);
     const info = isRecord(result?.contextInfo) ? result.contextInfo : undefined;
     if (!info) return undefined;
     const read = (key: string) => normalizeNonNegativeNumber(info[key]);
@@ -670,12 +682,27 @@ class CopilotAgentSession implements AgentSession {
       conversationTokens,
       toolDefinitionsTokens,
       mcpToolsTokens: read("mcpToolsTokens"),
+      ...(mcpServerTools?.length ? { mcpServerTools } : {}),
       totalTokens: read("totalTokens") ?? systemTokens + conversationTokens + toolDefinitionsTokens,
       limit: read("limit"),
       promptTokenLimit: read("promptTokenLimit"),
       compactionThreshold: read("compactionThreshold"),
       bufferTokens: read("bufferTokens"),
     };
+  }
+
+  private async getMcpToolTokens(): Promise<AgentMcpServerToolTokens[] | undefined> {
+    const mcp = this.session?.rpc?.mcp;
+    if (typeof mcp?.getToolTokenBreakdown !== "function") return undefined;
+    const result: unknown = await this.rpc("session.getToolTokenBreakdown", () => mcp.getToolTokenBreakdown.call(mcp));
+    if (!isRecord(result) || !Array.isArray(result.servers)) return undefined;
+    return result.servers
+      .flatMap((server: unknown) => {
+        if (!isRecord(server) || typeof server.serverName !== "string") return [];
+        const tokens = normalizeNonNegativeNumber(server.totalTokens);
+        return tokens ? [{ serverName: server.serverName, tokens }] : [];
+      })
+      .sort((a, b) => b.tokens - a.tokens);
   }
 
   async truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined> {
@@ -779,7 +806,7 @@ function keepMcpToolsLoaded(servers: unknown): unknown {
   ]));
 }
 
-function prepareCopilotSessionConfig(config: AgentSessionConfig): {
+function prepareCopilotSessionConfig(config: AgentSessionConfig, fusionTiers?: FusionTierNames): {
   sdkConfig: Record<string, unknown>;
   pendingInteractionEvents: boolean;
   useNativeToolPermissions: boolean;
@@ -795,7 +822,7 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig): {
   const fusionContextTokens = typeof requestedFusionContext === "number" && requestedFusionContext > 0
     ? requestedFusionContext
     : undefined;
-  const sdkConfig = toRuntimeSessionConfig(callerConfig, fusionContextTokens);
+  const sdkConfig = toRuntimeSessionConfig(callerConfig, fusionContextTokens, fusionTiers);
   // Apply on every create/resume, including helpers and sessions with a different model. Only
   // Bridge tools marked defer "auto" load on demand; MCP servers stay loaded unless a server's
   // own settings say otherwise.
@@ -823,6 +850,7 @@ function wrapCopilotSession(
   excludedTools: readonly string[],
   logger: Pick<Console, "warn">,
   fusionContextTokens: number | undefined,
+  fusionTiers: () => FusionTierNames,
 ): CopilotAgentSession {
   if (pendingInteractionEvents) {
     // The placeholder makes the Node SDK advertise elicitation and register
@@ -830,7 +858,7 @@ function wrapCopilotSession(
     // session so only Bridge transport listeners can answer runtime requests.
     session.registerElicitationHandler?.(undefined);
   }
-  return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions, excludedTools, logger, fusionContextTokens);
+  return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions, excludedTools, logger, fusionContextTokens, fusionTiers);
 }
 
 /** A runtime whose transport still looks alive must miss this many consecutive pings before it is declared lost. */
@@ -907,6 +935,8 @@ export class CopilotBackend implements AgentBackend {
   private ownedChild: ChildProcess | undefined;
   private ownedTree: ProcessTreeSnapshot | null = null;
   private modelCatalog: Promise<AgentModelInfo[]> | undefined;
+  /** Filled when the catalog loads; until then Auto tiers are requested by their ids. */
+  private fusionTierNames: FusionTierNames = new Map();
   private readonly localStdioOwnership: boolean;
   private readonly startClient: () => Promise<void>;
   private readonly agentShellDir: string | undefined;
@@ -1408,7 +1438,10 @@ export class CopilotBackend implements AgentBackend {
 
   async listModels(): Promise<AgentModelInfo[]> {
     // Cached for this client's lifetime, as the SDK's own listModels does; refreshing models rotates the client.
-    this.modelCatalog ??= this.rpc("backend.listModels", () => this.client.rpc.models.list({})).then(modelCatalogFromList);
+    this.modelCatalog ??= this.rpc("backend.listModels", () => this.client.rpc.models.list({})).then((list) => {
+      this.fusionTierNames = fusionTierNamesFromList(list);
+      return modelCatalogFromList(list);
+    });
     const catalog = this.modelCatalog;
     try {
       return [...await catalog];
@@ -1442,14 +1475,14 @@ export class CopilotBackend implements AgentBackend {
 
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     if (this.fenceRequested) throw new Error("Cannot create a session on a fenced backend");
-    const prepared = prepareCopilotSessionConfig(config);
+    const prepared = prepareCopilotSessionConfig(config, this.fusionTierNames);
     const session = await this.client.createSession(prepared.sdkConfig as any);
     return this.wrapSession(session, prepared, typeof prepared.sdkConfig.model === "string" ? prepared.sdkConfig.model : undefined);
   }
 
   async resumeSession(sessionId: string, config: AgentSessionConfig): Promise<AgentSession> {
     if (this.fenceRequested) throw new Error("Cannot resume a session on a fenced backend");
-    const prepared = prepareCopilotSessionConfig(config);
+    const prepared = prepareCopilotSessionConfig(config, this.fusionTierNames);
     const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
     if (prepared.sdkConfig.enableConfigDiscovery === true) {
       // CLI 1.0.97 drops discovered agents on resume when explicit agents are supplied.
@@ -1548,6 +1581,7 @@ export class CopilotBackend implements AgentBackend {
       normalizeStringArray(prepared.sdkConfig.excludedTools) ?? [],
       this.logger,
       prepared.fusionContextTokens,
+      () => this.fusionTierNames,
     );
     if (prepared.subagents) await wrapped.startSubagentPlan(prepared.subagents, initialModel);
     return wrapped;

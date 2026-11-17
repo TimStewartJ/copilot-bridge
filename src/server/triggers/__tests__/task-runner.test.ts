@@ -86,7 +86,7 @@ describe("trigger task runner", () => {
       owner.id, "Release train", [], "", owner.cwd,
       expect.objectContaining({ name: "Daily review", type: "cron", runCount: 0 }),
     );
-    expect(sm.startWorkAndWaitForDelivery).toHaveBeenCalledWith("chat-1", "Review yesterday's builds.", undefined, { origin: "schedule" });
+    expect(sm.startWorkAndWaitForDelivery).toHaveBeenCalledWith("chat-1", "Review yesterday's builds.", undefined, { origin: "schedule", promptSource: "automation-schedule" });
     expect(store.get(trigger.id)).toMatchObject({
       status: "active", runCount: 1, fireCount: 1, lastSessionId: "chat-1", nextRunAt: "2026-11-16T16:00:00.000Z",
     });

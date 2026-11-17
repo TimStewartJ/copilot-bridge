@@ -62,7 +62,7 @@ describe("deferred-prompt-runner", () => {
 
       expect(sm._started).toHaveLength(1);
       expect(sm._started[0]).toEqual({ sessionId: "session-1", prompt: "Do something" });
-      expect(sm._deliveryOptions).toEqual([{ completionAttention: true, origin: "defer" }]);
+      expect(sm._deliveryOptions).toEqual([{ completionAttention: true, origin: "defer", promptSource: "automation-defer" }]);
       const dp = store.listForSession("session-1")[0];
       expect(dp.status).toBe("completed");
 

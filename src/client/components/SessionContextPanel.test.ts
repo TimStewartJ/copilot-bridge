@@ -79,6 +79,7 @@ describe("SessionContextPanel", () => {
       contextInfo: {
         systemTokens: 10_000, toolDefinitionsTokens: 20_000, conversationTokens: 750_000, totalTokens: 780_000,
         limit: 1_000_000, promptTokenLimit: 968_000, compactionThreshold: 774_400, bufferTokens: 80_400,
+        mcpToolsTokens: 9_000, mcpServerTools: [{ serverName: "tickets", tokens: 6_000 }, { serverName: "notes", tokens: 3_000 }],
       },
     };
     const stale = summary({ tokensUsed: 60_000, contextWindow: 72_000, tokensRemaining: 12_000, usageRatio: 60_000 / 72_000 });
@@ -94,6 +95,7 @@ describe("SessionContextPanel", () => {
       expect(harness.dom.container.textContent).toContain("78% full");
       expect(harness.dom.container.textContent).toContain("Past 77%");
       expect(harness.dom.container.textContent).toContain("pauses at 92%");
+      expect(harness.dom.container.textContent).toContain("MCP tools: tickets 6k · notes 3k");
       expect(findAllByTag(harness.dom.container, "SPAN").some((node) =>
         getReactProps(node)?.title?.includes("input budget 968,000 tokens"))).toBe(true);
       const bar = findAllByTag(harness.dom.container, "DIV").find((node) => getReactProps(node)?.role === "progressbar");

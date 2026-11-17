@@ -4,6 +4,11 @@
 // levels, which is how GitHub presents them, and translates between the two only here, at the
 // Copilot backend boundary. The experimental Fusion context limit (Settings › Experimental) is
 // translated here too, into the capability override the runtime applies to every Fusion step.
+//
+// Since CLI 1.0.112 a request names a Fusion tier by its Fusion name (`standard`, `high`, `max`), as
+// `copilot --fusion-tier` does; the tier ids Bridge stores (`balance`, `hydrafusion`, ...) are
+// deprecated as requests but remain what the runtime reports back as `autoTier`. Requests therefore
+// use the Fusion name whenever the catalog gives one for the tier, and the tier id otherwise.
 import type { CopilotClient } from "@github/copilot-sdk";
 import { isRecord } from "../../shared/is-record.js";
 import type { AgentCurrentModel, AgentModelInfo, AgentSetModelOptions } from "./types.js";
@@ -39,6 +44,19 @@ function withCapabilities(model: AgentModelInfo): AgentModelInfo {
   };
 }
 
+/** Auto tier id to the Copilot Fusion name a request uses for it, for the tiers that are Fusion tiers. */
+export type FusionTierNames = ReadonlyMap<string, string>;
+
+export function fusionTierNamesFromList(list: CopilotModelList): FusionTierNames {
+  return new Map((list.auto?.tiers ?? []).flatMap((tier) => tier.fusionTier ? [[tier.id, tier.fusionTier] as const] : []));
+}
+
+/** How a request asks for an Auto tier: by its Fusion name when it has one, else by the tier id. */
+function autoTierRequest(tier: string, names: FusionTierNames | undefined): { autoTier: string } | { fusionTier: string } {
+  const fusionTier = names?.get(tier);
+  return fusionTier ? { fusionTier } : { autoTier: tier };
+}
+
 function describeAuto(model: AgentModelInfo, auto: AutoTierMetadata | undefined): AgentModelInfo {
   const tiers = (auto?.tiers ?? []).filter((tier) => tier.status?.enabled === true && tier.status.pickerVisible !== false);
   const routed: AgentModelInfo = { ...model, selectionMode: "dynamic" };
@@ -61,6 +79,7 @@ function describeAuto(model: AgentModelInfo, auto: AutoTierMetadata | undefined)
 export function toRuntimeSessionConfig(
   config: Record<string, unknown>,
   fusionContextTokens?: number,
+  fusionTiers?: FusionTierNames,
 ): Record<string, unknown> {
   const next: Record<string, unknown> = config.model === RETIRED_HYDRAFUSION_MODEL_ID
     ? { ...config, model: AUTO_MODEL_ID, reasoningEffort: RETIRED_HYDRAFUSION_TIER }
@@ -71,7 +90,7 @@ export function toRuntimeSessionConfig(
     ? rest
     : { ...rest, modelCapabilities: fusionContextCapabilities(fusionContextTokens) };
   if (typeof tier !== "string" || !tier) return withContext;
-  return { ...withContext, capi: { ...(isRecord(rest.capi) ? rest.capi : {}), autoTier: tier } };
+  return { ...withContext, capi: { ...(isRecord(rest.capi) ? rest.capi : {}), ...autoTierRequest(tier, fusionTiers) } };
 }
 
 /**
@@ -82,6 +101,7 @@ export function toRuntimeModelSwitch(
   model: string,
   options: AgentSetModelOptions | undefined,
   fusionContextTokens?: number,
+  fusionTiers?: FusionTierNames,
 ): { modelId: string; options: Record<string, unknown> | undefined } {
   const retired = model === RETIRED_HYDRAFUSION_MODEL_ID;
   const modelId = retired ? AUTO_MODEL_ID : model;
@@ -90,7 +110,7 @@ export function toRuntimeModelSwitch(
   const tier = retired ? RETIRED_HYDRAFUSION_TIER : reasoningEffort;
   const next = {
     ...rest,
-    ...(tier ? { autoTier: tier } : {}),
+    ...(tier ? autoTierRequest(tier, fusionTiers) : {}),
     ...(fusionContextTokens === undefined ? {} : { modelCapabilities: fusionContextCapabilities(fusionContextTokens) }),
   };
   return { modelId, options: Object.keys(next).length > 0 ? next : undefined };
@@ -107,6 +127,15 @@ export function fusionContextCapabilities(tokens: number): { limits: Record<stri
   return {
     limits: { max_prompt_tokens: tokens, max_context_window_tokens: tokens + FUSION_OUTPUT_ALLOWANCE_TOKENS },
   };
+}
+
+/** The request that switches a live session to an Auto tier, by its Fusion name when it has one. */
+export function autoTierSwitch(tier: string, names: FusionTierNames | undefined):
+  { method: "switchAutoTier"; params: { autoTier: string } } | { method: "switchFusionTier"; params: { fusionTier: string } } {
+  const request = autoTierRequest(tier, names);
+  return "fusionTier" in request
+    ? { method: "switchFusionTier", params: request }
+    : { method: "switchAutoTier", params: request };
 }
 
 /** What a resumed session on the retired preview switches to, or undefined for any other model. */
