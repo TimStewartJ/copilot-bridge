@@ -1,13 +1,32 @@
-// One bar per model split by label value; values are open strings, coloured by rank.
+// One bar per model split by label value; values are open strings, coloured by meaning when known.
 import type { ChatGradesClassifier } from "../../../shared/chat-grades.js";
 import { formatUsageCount } from "../../lib/usage-presentation";
 
 export interface ChartColors {
   /** Categorical colours for label values, in rank order. */
   palette: string[];
+  /** Colours that carry a meaning: good, partly good, bad, and no answer. */
+  tones: Record<Tone, string>;
   text: string;
   grid: string;
 }
+
+type Tone = "good" | "partial" | "bad" | "muted";
+
+/** Classifier vocabulary values with a meaning, in bar order; others go between, by count. */
+const KNOWN_VALUES: ReadonlyArray<readonly [value: string, tone: Tone, leading: boolean]> = [
+  ["succeeded", "good", true],
+  ["satisfied", "good", true],
+  ["partially_succeeded", "partial", true],
+  ["neutral", "muted", true],
+  ["failed", "bad", false],
+  ["not_satisfied", "bad", false],
+  ["negative", "bad", false],
+  ["abandoned", "muted", false],
+  ["other", "muted", false],
+  ["unknown", "muted", false],
+];
+const KNOWN_VALUE = new Map(KNOWN_VALUES.map(([value, tone, leading], index) => [value, { tone, leading, index }]));
 
 export interface ChartSegment {
   model: string;
@@ -30,6 +49,7 @@ const PALETTE_VARIABLES = [
 
 const FALLBACK_COLORS: ChartColors = {
   palette: ["#59a0f9", "#e3ae28", "#3db87c", "#ee6570", "#b883e6", "#17bac8", "#ea7d2e", "#f080b8", "#8189ef", "#94a0ae"],
+  tones: { good: "#3db87c", partial: "#e3ae28", bad: "#ee6570", muted: "#94a0ae" },
   text: "#cacaca",
   grid: "#2c2c2c",
 };
@@ -41,9 +61,32 @@ export function readChartColors(): ChartColors {
   const read = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
   return {
     palette: PALETTE_VARIABLES.map((name, index) => read(name, FALLBACK_COLORS.palette[index]!)),
+    tones: {
+      good: read("--color-identity-emerald", FALLBACK_COLORS.tones.good),
+      partial: read("--color-identity-amber", FALLBACK_COLORS.tones.partial),
+      bad: read("--color-identity-rose", FALLBACK_COLORS.tones.bad),
+      muted: read("--color-identity-slate", FALLBACK_COLORS.tones.muted),
+    },
     text: read("--color-text-secondary", FALLBACK_COLORS.text),
     grid: read("--color-border-subtle", FALLBACK_COLORS.grid),
   };
+}
+
+/** A value's colour: its meaning when it has one, else the next unused palette colour. */
+export function valueColors(values: readonly string[], colors: ChartColors): string[] {
+  const used = new Set(values.flatMap((value) => {
+    const known = KNOWN_VALUE.get(value);
+    return known ? [colors.tones[known.tone]] : [];
+  }));
+  const free = colors.palette.filter((color) => !used.has(color));
+  let next = 0;
+  return values.map((value) => {
+    const known = KNOWN_VALUE.get(value);
+    if (known) return colors.tones[known.tone];
+    const color = (free.length > 0 ? free : colors.palette)[next % (free.length || colors.palette.length)]!;
+    next += 1;
+    return color;
+  });
 }
 
 const UNIT_NOUNS: Readonly<Record<string, string>> = { session: "chat", task: "task", turn: "turn", prompt: "message" };
@@ -64,7 +107,14 @@ export interface ChartRow {
   dim: boolean;
 }
 
-/** One row per bar segment; values ranked by their total count across models. */
+/** Sort group: good values first, then unknown ones (by count), then bad and no-answer values. */
+function valueRank(value: string): number {
+  const known = KNOWN_VALUE.get(value);
+  if (!known) return KNOWN_VALUES.length;
+  return known.leading ? known.index : KNOWN_VALUES.length + 1 + known.index;
+}
+
+/** One row per bar segment; values ordered good to bad, unknown values by total count. */
 export function buildChartRows(
   classifier: ChatGradesClassifier,
   modelName: (model: string) => string,
@@ -75,7 +125,7 @@ export function buildChartRows(
     for (const entry of series.values) totals.set(entry.value, (totals.get(entry.value) ?? 0) + entry.count);
   }
   const values = [...totals.entries()]
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .sort((left, right) => valueRank(left[0]) - valueRank(right[0]) || right[1] - left[1] || left[0].localeCompare(right[0]))
     .map(([value]) => value);
   const noun = unitNoun(classifier.scope);
   const rows = [...classifier.models]
@@ -102,6 +152,7 @@ export function buildChatGradesChartSpec(
   modelName: (model: string) => string,
   colors: ChartColors,
   selected?: ChartSegment | null,
+  legendColumns = 4,
 ): Record<string, unknown> {
   const { rows, values } = buildChartRows(classifier, modelName, selected);
   const bars = [...new Set(rows.map((row) => row.bar))];
@@ -119,8 +170,9 @@ export function buildChatGradesChartSpec(
         field: "value",
         type: "nominal",
         title: null,
-        scale: { domain: values, range: values.map((_, index) => colors.palette[index % colors.palette.length]) },
-        legend: { orient: "bottom", columns: 3, symbolType: "square", labelLimit: 200 },
+        scale: { domain: values, range: valueColors(values, colors) },
+        // Values are snake_case identifiers; the legend reads them as words.
+        legend: { orient: "bottom", columns: legendColumns, symbolType: "square", labelLimit: 160, labelExpr: "replace(datum.label, /_/g, ' ')" },
       },
       order: { field: "rank", type: "quantitative" },
       opacity: { condition: { test: "datum.dim", value: 0.3 }, value: 1 },

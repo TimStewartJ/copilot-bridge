@@ -278,11 +278,20 @@ const scopeRank = (scope: string): number => SCOPE_RANK[scope] ?? 0;
 /** A taxonomy classifier's top level. */
 const TAXONOMY_TOP_KEY = "l1";
 
-/** Chart key from the output schema: the classifier's last word, else `l1`, else first sorted. */
+/** Keys about the judgment, not the thing judged; charted only when nothing else exists. */
+const JUDGMENT_DETAIL_KEYS: ReadonlySet<string> = new Set(["confidence", "prompt_id"]);
+/** A classifier's yes/no style answer, as task_completion_criteria reports it. */
+const VERDICT_KEY = "verdict";
+
+/** Chart key: the classifier's last word, else `l1`, else `verdict`, else first non-detail key. */
 export function chartLabelKey(classifier: string, keys: Iterable<string>): string | undefined {
   const sorted = [...new Set(keys)].sort();
   const lastWord = classifier.split("_").at(-1);
-  return sorted.find((key) => key === lastWord) ?? sorted.find((key) => key === TAXONOMY_TOP_KEY) ?? sorted[0];
+  return sorted.find((key) => key === lastWord)
+    ?? sorted.find((key) => key === TAXONOMY_TOP_KEY)
+    ?? sorted.find((key) => key === VERDICT_KEY)
+    ?? sorted.find((key) => !JUDGMENT_DETAIL_KEYS.has(key))
+    ?? sorted[0];
 }
 
 export interface ChatGradeReportChat extends ChatGradeCandidate {

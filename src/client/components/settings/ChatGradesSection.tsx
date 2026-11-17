@@ -59,6 +59,21 @@ function useDocumentTheme(): string | null {
   return theme;
 }
 
+/** Phone width, where the chart's legend gets two columns instead of four. */
+function useNarrowViewport(): boolean {
+  const query = "(max-width: 639px)";
+  const read = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(query).matches;
+  const [narrow, setNarrow] = useState(read);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(query);
+    const update = () => setNarrow(media.matches);
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+  return narrow;
+}
+
 export function ChatGradesSection() {
   const queryClient = useQueryClient();
   const [range, setRange] = useState(defaultRange);
@@ -226,10 +241,11 @@ function ChatGradesChart({ classifier, modelName, selected, onSegment }: ChatGra
   const onSegmentRef = useRef(onSegment);
   onSegmentRef.current = onSegment;
   const theme = useDocumentTheme();
+  const narrow = useNarrowViewport();
   const [renderError, setRenderError] = useState<string | null>(null);
   // The theme attribute changes what the colour variables hold.
   const colors = useMemo(() => readChartColors(), [theme]);
-  const specJson = JSON.stringify(buildChatGradesChartSpec(classifier, modelName, colors, selected));
+  const specJson = JSON.stringify(buildChatGradesChartSpec(classifier, modelName, colors, selected, narrow ? 2 : 4));
 
   useEffect(() => {
     const element = containerRef.current;

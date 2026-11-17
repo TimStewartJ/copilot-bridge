@@ -113,7 +113,11 @@ describe("chat grades report", () => {
         row({ classifier: "session_taxonomy", scope: "turn", unitId: "t", labels: { l1: "chat" } }),
         row({ classifier: "requested_task_demand", scope: "task", labels: { scope: "small", autonomy: "high" } }),
       ]),
-      graded("chat-2", [row({ labels: { outcome: "succeeded" } })]),
+      graded("chat-2", [
+        row({ labels: { outcome: "succeeded" } }),
+        // Only the verdict says something; confidence and prompt_id describe the judgment.
+        row({ classifier: "task_completion_criteria", scope: "prompt", unitId: "p", labels: { confidence: "high", prompt_id: "v1", verdict: "satisfied" } }),
+      ]),
       graded("chat-3", [row({ labels: { outcome: "succeeded" } })]),
     ];
 
@@ -127,6 +131,10 @@ describe("chat grades report", () => {
       {
         classifier: "session_taxonomy", scope: "session", label: "l1",
         models: [{ model: "model-a", chats: 1, units: 1, judgeTokens: 0, values: [{ value: "debugging", count: 1 }] }],
+      },
+      {
+        classifier: "task_completion_criteria", scope: "prompt", label: "verdict",
+        models: [{ model: "model-a", chats: 1, units: 1, judgeTokens: 0, values: [{ value: "satisfied", count: 1 }] }],
       },
       {
         classifier: "task_outcome", scope: "task", label: "outcome",

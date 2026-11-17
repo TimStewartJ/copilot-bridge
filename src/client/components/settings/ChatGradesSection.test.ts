@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatGradesView } from "../../../shared/chat-grades.js";
 import { createReactDomHarness, findAllByTag, getReactProps, waitUntilAct } from "../../test-react-harness";
 import { installSelectAwareDomShim } from "../../test-dom-shim";
+import { buildChartRows, valueColors, type ChartColors } from "./chat-grades-chart";
 
 type ClickHandler = (event: unknown, item: { datum?: unknown } | null) => void;
 
@@ -102,5 +103,26 @@ describe("ChatGradesSection", () => {
     await harness.act(async () => { await getReactProps(grade)!.onClick(); });
     expect(mocks.startChatGrading).toHaveBeenCalledWith({ from: "2026-03-01", to: "2026-03-28", includeScheduled: false }, false);
     expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["chat-grades"] });
+  });
+});
+
+describe("chat grades chart colours", () => {
+  const colors: ChartColors = {
+    palette: ["p1", "p2", "good", "bad"],
+    tones: { good: "good", partial: "partial", bad: "bad", muted: "muted" },
+    text: "t",
+    grid: "g",
+  };
+
+  it("orders good to bad and colours known values by meaning, others from the unused palette", () => {
+    const { values } = buildChartRows({
+      classifier: "task_outcome", scope: "task", label: "outcome",
+      models: [{ model: "m", chats: 1, units: 9, judgeTokens: 0, values: [
+        { value: "failed", count: 5 }, { value: "abandoned", count: 1 }, { value: "succeeded", count: 2 }, { value: "partially_succeeded", count: 1 },
+      ] }],
+    }, (model) => model);
+    expect(values).toEqual(["succeeded", "partially_succeeded", "failed", "abandoned"]);
+    expect(valueColors(values, colors)).toEqual(["good", "partial", "bad", "muted"]);
+    expect(valueColors(["research", "succeeded", "collaboration"], colors)).toEqual(["p1", "good", "p2"]);
   });
 });
