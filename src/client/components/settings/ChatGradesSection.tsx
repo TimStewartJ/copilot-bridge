@@ -245,7 +245,7 @@ function ChatGradesChart({ classifier, modelName, selected, onSegment }: ChatGra
   const [renderError, setRenderError] = useState<string | null>(null);
   // The theme attribute changes what the colour variables hold.
   const colors = useMemo(() => readChartColors(), [theme]);
-  const specJson = JSON.stringify(buildChatGradesChartSpec(classifier, modelName, colors, selected, narrow ? 2 : 4));
+  const specJson = JSON.stringify(buildChatGradesChartSpec(classifier, modelName, colors, selected, narrow ? 1 : 4));
 
   useEffect(() => {
     const element = containerRef.current;
