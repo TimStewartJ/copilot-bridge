@@ -24,7 +24,7 @@ import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { createReadStateStore } from "./read-state-store.js";
 import { createModelAbTestStore } from "./model-ab-test.js";
-import { createModelAbGradeStore, createModelAbTestGrader, readChatEventsForGrading } from "./model-ab-grading.js";
+import { createChatGradeStore, createChatGrader, createChatGradesService, hasChatEventsLog, readChatEventsForGrading } from "./chat-grading.js";
 import { createChecklistStore } from "./checklist-store.js";
 import { createCalendarStore } from "./calendar-store.js";
 import { createDocsStore } from "./docs-store.js";
@@ -121,7 +121,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
   const modelAbTestStore = createModelAbTestStore(db);
-  const modelAbGradeStore = createModelAbGradeStore(db);
+  const chatGradeStore = createChatGradeStore(db);
   const checklistStore = createChecklistStore(db, globalBus);
   const calendarStore = createCalendarStore(db, globalBus);
   const telemetryStore = createTelemetryStore(db);
@@ -205,7 +205,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     cliSessionCatalog,
     readStateStore,
     modelAbTestStore,
-    modelAbGradeStore,
+    chatGradeStore,
     checklistStore,
     calendarStore,
     docsStore,
@@ -261,11 +261,29 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     runtimePaths,
   });
   ctx.sessionManager = sessionManager;
-  ctx.modelAbTestGrader = createModelAbTestGrader({
-    store: modelAbGradeStore,
-    listAssignments: (testStartedAt) => modelAbTestStore.listForTest(testStartedAt),
-    classify: (request) => sessionManager.classifyTrajectory(request),
-    readEvents: (sessionId) => readChatEventsForGrading(resolveSessionEventsPath(copilotHome, sessionId)),
+  ctx.chatGrades = createChatGradesService({
+    store: chatGradeStore,
+    grader: createChatGrader({
+      store: chatGradeStore,
+      classify: (request) => sessionManager.classifyTrajectory(request),
+      readEvents: (sessionId) => readChatEventsForGrading(resolveSessionEventsPath(copilotHome, sessionId)),
+    }),
+    // The usage reader is created with the API services; until then there are no chats to offer.
+    readUsageSessions: async () => (await ctx.copilotUsageReader?.readSummary({ range: "all" }))?.sessions ?? [],
+    scheduledSessionIds: (sessionIds) => new Set(Object.values(bridgeSessionStateStore.listStatesFor(sessionIds))
+      .filter((state) => state.triggeredBy === "schedule")
+      .map((state) => state.sessionId)),
+    hasEventsLog: (sessionId) => hasChatEventsLog(resolveSessionEventsPath(copilotHome, sessionId)),
+    chatTitles: async (sessionIds) => {
+      const states = bridgeSessionStateStore.listStatesFor(sessionIds);
+      const catalog = sessionIds.length > 0 ? await cliSessionCatalog.listSessions({ ids: sessionIds }).catch(() => undefined) : undefined;
+      const summaries = new Map((catalog ?? []).map((session) => [session.sessionId, session.summary?.trim()]));
+      return new Map(sessionIds.map((sessionId) => [
+        sessionId,
+        states[sessionId]?.titleOverride?.trim() || sessionTitles.getTitle(sessionId)?.trim() || summaries.get(sessionId) || "",
+      ]));
+    },
+    modelNames: async () => new Map((await sessionManager.listModels()).map((model) => [model.id, model.name])),
   });
   ctx.searchIndex = createSearchIndex(db, {
     copilotHome: copilotHome ?? join(homedir(), ".copilot"),

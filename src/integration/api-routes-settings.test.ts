@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createModelAbTestGrader } from "../server/model-ab-grading.js";
+import { createChatGrader, createChatGradesService } from "../server/chat-grading.js";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import {
   createMockSessionManager,
@@ -315,15 +315,19 @@ describe("Model A/B test routes", () => {
       ],
     });
   });
+});
 
-  it("POST /api/model-ab-test/grade starts one grading run and GET reports it", async () => {
+describe("Chat grades routes", () => {
+  it("GET /api/chat-grades validates filters, and POST /api/chat-grades/runs starts one run at a time", async () => {
     const local = createTestApp();
-    expect((await request(local.app).post("/api/model-ab-test/grade").send({})).status).toBe(503);
+    expect((await request(local.app).get("/api/chat-grades").query({ from: "March" })).status).toBe(400);
+    expect((await request(local.app).post("/api/chat-grades/runs").send({})).status).toBe(503);
+
     let finish!: () => void;
     const held = new Promise<void>((resolve) => { finish = resolve; });
-    const grader = createModelAbTestGrader({
-      store: local.ctx.modelAbGradeStore!,
-      listAssignments: (testStartedAt) => local.ctx.modelAbTestStore!.listForTest(testStartedAt),
+    const store = local.ctx.chatGradeStore!;
+    const grader = createChatGrader({
+      store,
       classify: async () => {
         await held;
         return { classifications: [], trajectoryFingerprint: "fp-1" };
@@ -331,22 +335,35 @@ describe("Model A/B test routes", () => {
       readEvents: async () => ({ kind: "ok", events: [{ type: "user.message" }], malformedLines: 0 }),
       logger: { log: vi.fn(), warn: vi.fn() },
     });
-    local.ctx.modelAbTestGrader = grader;
-    expect((await request(local.app).post("/api/model-ab-test/grade").send({})).status).toBe(409);
+    local.ctx.chatGrades = createChatGradesService({
+      store,
+      grader,
+      readUsageSessions: async () => [
+        { sessionId: "chat-a", models: [{ model: "model-a", outputTokens: 10, totalTokens: 100 }], days: [{ date: "2026-03-02" }] },
+        { sessionId: "chat-b", models: [{ model: "model-b", outputTokens: 10, totalTokens: 100 }], days: [{ date: "2026-03-02" }] },
+      ],
+      scheduledSessionIds: () => new Set(),
+      hasEventsLog: async () => true,
+      chatTitles: async (sessionIds) => new Map(sessionIds.map((sessionId) => [sessionId, `Title ${sessionId}`])),
+      modelNames: async () => new Map([["model-a", "Model A"]]),
+    });
 
-    local.ctx.settingsStore.updateSettings({ modelPresets: { preset2: { model: "model-standard" }, preset3: { model: "model-deep" } } });
-    const startedAt = local.ctx.settingsStore.updateSettings({ modelAbTest: { enabled: true, a: "preset2", b: "preset3" } }).modelAbTest!.startedAt!;
-    local.ctx.modelAbTestStore!.record({ sessionId: "chat-a", testStartedAt: startedAt, arm: "a", tier: "preset2", model: "model-standard", source: "chat", assignedAt: startedAt });
-
-    const started = await request(local.app).post("/api/model-ab-test/grade").send({});
+    const started = await request(local.app).post("/api/chat-grades/runs").send({ from: "2026-03-01", models: ["model-a"] });
     expect(started.status).toBe(202);
     expect(started.body).toMatchObject({ running: true, total: 1, done: 0 });
-    expect((await request(local.app).post("/api/model-ab-test/grade").send({ regrade: true })).status).toBe(409);
+    expect((await request(local.app).post("/api/chat-grades/runs").send({ regrade: true })).status).toBe(409);
     finish();
     await grader.settled();
 
-    const report = await request(local.app).get("/api/model-ab-test");
-    expect(report.body.grading).toMatchObject({ running: false, total: 1, done: 1, ungraded: 0 });
-    expect(report.body.arms[0].grades).toMatchObject({ graded: 1 });
+    const view = await request(local.app).get("/api/chat-grades").query({ from: "2026-03-01", models: "model-a" });
+    expect(view.status).toBe(200);
+    expect(view.body).toMatchObject({
+      matching: 1,
+      graded: 1,
+      ungraded: 0,
+      models: [{ id: "model-a", name: "Model A", chats: 1 }, { id: "model-b", name: "model-b", chats: 1 }],
+      run: { running: false, total: 1, done: 1 },
+      report: { classifiers: [], chats: [{ sessionId: "chat-a", title: "Title chat-a", model: "model-a" }] },
+    });
   });
 });

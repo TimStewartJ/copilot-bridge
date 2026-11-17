@@ -10,9 +10,12 @@ interface VegaLiteVisualProps {
 }
 
 type VegaSpecObject = Record<string, unknown>;
-type VegaEmbedResult = {
+export type VegaEmbedResult = {
   finalize?: () => void;
-  view?: { finalize: () => void };
+  view?: {
+    finalize: () => void;
+    addEventListener?: (type: string, handler: (event: unknown, item: { datum?: unknown } | null | undefined) => void) => void;
+  };
 };
 
 const RESIZE_DEBOUNCE_MS = 120;
@@ -138,16 +141,22 @@ export function prepareResponsiveVegaSpec(
   };
 }
 
-async function renderVegaLite(container: HTMLElement, spec: VegaSpecObject): Promise<VegaEmbedResult> {
+/** Renders a spec with vega-embed, loaded on first use. Shared with charts the app builds itself. */
+export async function renderVegaLite(
+  container: HTMLElement,
+  spec: VegaSpecObject,
+  options: { tooltipTheme?: "light" | "dark" } = {},
+): Promise<VegaEmbedResult> {
   const vegaEmbed = (await import("vega-embed")).default;
   const result = await vegaEmbed(container, spec as Parameters<typeof vegaEmbed>[1], {
     actions: false,
     renderer: "canvas",
+    ...(options.tooltipTheme ? { tooltip: { theme: options.tooltipTheme } } : {}),
   });
   return result as VegaEmbedResult;
 }
 
-function finalizeVegaEmbed(result: VegaEmbedResult | null): void {
+export function finalizeVegaEmbed(result: VegaEmbedResult | null): void {
   if (!result) return;
   if (result.finalize) {
     result.finalize();

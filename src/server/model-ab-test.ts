@@ -6,7 +6,6 @@ import type { CopilotUsageSessionRow } from "./copilot-usage.js";
 import { resolveModelTier, type RoleModelInfo } from "./model-roles.js";
 import { isModelPresetSlot, type ModelPresetSlot } from "../shared/model-presets.js";
 import { isCopilotContextTier, type CopilotContextTier } from "../shared/copilot-context.js";
-import { summarizeModelAbGrades, type ModelAbTestGrade } from "./model-ab-grading.js";
 import {
   MODEL_AB_TEST_ARMS,
   type ModelAbTestArm,
@@ -47,19 +46,14 @@ export function chooseModelAbTestArm(
   return { testStartedAt: test.startedAt, arm, tier: test[arm] };
 }
 
-/**
- * Counts and recorded cost per arm for the current test; `usage` is the usage reader's session rows and
- * `grades` the saved trajectory grades of the test's chats (model-ab-grading.ts).
- */
+/** Counts and recorded cost per arm for the current test; `usage` is the usage reader's session rows. */
 export function buildModelAbTestReport(
   test: ModelAbTestSettings | undefined,
   assignments: readonly ModelAbTestAssignment[],
   usage: readonly Pick<CopilotUsageSessionRow, "sessionId" | "meteredAiCredits" | "meteredTokens">[],
-  grades: readonly ModelAbTestGrade[] = [],
 ): ModelAbTestReport {
   if (!test?.startedAt) return { startedAt: null, arms: [] };
   const usageBySession = new Map(usage.map((row) => [row.sessionId, row]));
-  const gradesByArm = grades.length > 0 ? summarizeModelAbGrades(grades) : undefined;
   const arms = MODEL_AB_TEST_ARMS.map((arm): ModelAbTestArmReport => {
     const report: ModelAbTestArmReport = {
       arm,
@@ -69,7 +63,6 @@ export function buildModelAbTestReport(
       switched: 0,
       meteredSessions: 0,
       meteredAiCredits: 0,
-      ...(gradesByArm ? { grades: gradesByArm[arm] } : {}),
     };
     for (const assignment of assignments) {
       if (assignment.arm !== arm) continue;

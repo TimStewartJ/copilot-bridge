@@ -26,6 +26,8 @@ export const queryKeys = {
   modelClientInfo: ["models", "client-info"] as const,
   /** Keyed by the test's start, so a new test never shows the last one's results. */
   modelAbTest: (startedAt: string | null) => ["model-ab-test", startedAt] as const,
+  chatGrades: (filters: { from?: string; to?: string; models?: readonly string[]; includeScheduled?: boolean }) =>
+    ["chat-grades", filters.from ?? null, filters.to ?? null, [...(filters.models ?? [])].sort(), filters.includeScheduled ?? false] as const,
   tags: ["tags"] as const,
   playbooks: ["playbooks"] as const,
   skills: ["skills"] as const,

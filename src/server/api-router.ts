@@ -137,6 +137,7 @@ import { SESSION_HOLD_INTENT } from "./session-holds.js";
 import { createHelmRouter } from "./helm/helm-router.js";
 import { describeModelRoles } from "./model-roles.js";
 import { buildModelAbTestReport } from "./model-ab-test.js";
+import { parseChatGradesFilters } from "./chat-grading.js";
 import { MODEL_ROLES, isTierChoice } from "../shared/model-roles.js";
 import { createHelmThinkerRouter } from "./helm/thinker/router.js";
 import { createVoiceRouter } from "./voice/voice-router.js";
@@ -1300,8 +1301,7 @@ export function createApiRouter(
     }
   });
 
-  // GET /model-ab-test — the current model A/B test per arm: chats, scheduled runs, recorded cost,
-  // and what Copilot's trajectory classifiers measured on the graded chats.
+  // GET /model-ab-test — the current model A/B test per arm: chats, scheduled runs and recorded cost.
   router.get("/model-ab-test", async (_req, res) => {
     try {
       const test = ctx.settingsStore.getSettings().modelAbTest;
@@ -1312,35 +1312,56 @@ export function createApiRouter(
       const usage = assignments.length > 0
         ? await copilotUsageReader.readSummary({ sessionIds: assignments.map((assignment) => assignment.sessionId), range: "all" })
         : undefined;
-      const grades = test?.startedAt && ctx.modelAbGradeStore ? ctx.modelAbGradeStore.listForTest(test.startedAt) : [];
-      const report = buildModelAbTestReport(test, assignments, usage?.sessions ?? [], grades);
-      res.json(test?.startedAt && ctx.modelAbTestGrader
-        ? { ...report, grading: ctx.modelAbTestGrader.status(test.startedAt) }
-        : report);
+      res.json(buildModelAbTestReport(test, assignments, usage?.sessions ?? []));
     } catch (err) {
       console.error("[model-ab-test] Error:", err);
       res.status(500).json({ error: err instanceof Error ? err.message : "Unable to read the model A/B test." });
     }
   });
 
-  // POST /model-ab-test/grade — grades the current test's chats in the background (billed as AI
-  // credits). Grades only chats without a grade unless `regrade` is true.
-  router.post("/model-ab-test/grade", (req, res) => {
-    const startedAt = ctx.settingsStore.getSettings().modelAbTest?.startedAt;
-    if (!ctx.modelAbTestGrader) {
+  // GET /chat-grades — chats matching the filters (`from`, `to`, `models`, `includeScheduled`), how
+  // many are graded, the models used in the range, the grading run, and the label counts per model.
+  router.get("/chat-grades", async (req, res) => {
+    const parsed = parseChatGradesFilters(req.query);
+    if ("error" in parsed) {
+      res.status(400).json({ error: parsed.error });
+      return;
+    }
+    if (!ctx.chatGrades) {
       res.status(503).json({ error: "Grading is not available on this server." });
       return;
     }
-    if (!startedAt) {
-      res.status(409).json({ error: "Start an A/B test first." });
+    try {
+      res.json(await ctx.chatGrades.view(parsed.filters));
+    } catch (err) {
+      console.error("[chat-grades] Error:", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : "Unable to read chat grades." });
+    }
+  });
+
+  // POST /chat-grades/runs — grades the matching chats in the background (billed as AI credits): only
+  // chats without a grade unless `regrade` is true. One run at a time.
+  router.post("/chat-grades/runs", async (req, res) => {
+    const parsed = parseChatGradesFilters(req.body ?? {});
+    if ("error" in parsed) {
+      res.status(400).json({ error: parsed.error });
       return;
     }
-    const outcome = ctx.modelAbTestGrader.start(startedAt, { regrade: req.body?.regrade === true });
-    if (outcome === "running") {
-      res.status(409).json({ error: "Grading is already running." });
+    if (!ctx.chatGrades) {
+      res.status(503).json({ error: "Grading is not available on this server." });
       return;
     }
-    res.status(outcome === "started" ? 202 : 200).json(ctx.modelAbTestGrader.status(startedAt));
+    try {
+      const outcome = await ctx.chatGrades.startRun(parsed.filters, req.body?.regrade === true);
+      if (outcome === "running") {
+        res.status(409).json({ error: "Grading is already running." });
+        return;
+      }
+      res.status(outcome === "started" ? 202 : 200).json(ctx.chatGrades.status());
+    } catch (err) {
+      console.error("[chat-grades] Error:", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : "Unable to start grading." });
+    }
   });
 
   // GET /copilot-usage/quota — live account counter from the backend SDK.

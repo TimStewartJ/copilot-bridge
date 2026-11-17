@@ -1,6 +1,7 @@
 import type { TaskStartersResponse } from "../shared/task-starters.js";
 import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
-import type { ModelAbTestGradingStatus, ModelAbTestReport, ModelAbTestSettings } from "../shared/model-ab-test.js";
+import type { ModelAbTestReport, ModelAbTestSettings } from "../shared/model-ab-test.js";
+import type { ChatGradesFilters, ChatGradesRunStatus, ChatGradesView } from "../shared/chat-grades.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
 import { WEB_CLIENT_HEADER, WEB_CLIENT_HEADER_VALUE } from "../shared/web-client.js";
@@ -3197,9 +3198,20 @@ export async function fetchModelAbTestReport(signal?: AbortSignal): Promise<Mode
   return apiFetch<ModelAbTestReport>("/api/model-ab-test", undefined, { signal });
 }
 
-/** Starts grading the A/B test's chats with Copilot's trajectory classifiers; billed as AI credits. */
-export async function startModelAbTestGrading(regrade: boolean): Promise<ModelAbTestGradingStatus> {
-  return apiFetch<ModelAbTestGradingStatus>("/api/model-ab-test/grade", { regrade }, { method: "POST" });
+/** The chats matching the filters, their grades and the grading run (Settings › Usage › Chat grades). */
+export async function fetchChatGrades(filters: ChatGradesFilters, signal?: AbortSignal): Promise<ChatGradesView> {
+  const params = new URLSearchParams();
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  for (const model of filters.models ?? []) params.append("models", model);
+  if (filters.includeScheduled) params.set("includeScheduled", "true");
+  const query = params.toString();
+  return apiFetch<ChatGradesView>(`/api/chat-grades${query ? `?${query}` : ""}`, undefined, { signal });
+}
+
+/** Starts grading the matching chats with Copilot's trajectory classifiers; billed as AI credits. */
+export async function startChatGrading(filters: ChatGradesFilters, regrade: boolean): Promise<ChatGradesRunStatus> {
+  return apiFetch<ChatGradesRunStatus>("/api/chat-grades/runs", { ...filters, regrade }, { method: "POST" });
 }
 
 export async function fetchModels(): Promise<ModelInfo[]> {

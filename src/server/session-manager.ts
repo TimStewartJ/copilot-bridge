@@ -4314,7 +4314,7 @@ export class SessionManager {
     return user;
   }
 
-  /** Runs the runtime's trajectory classifiers over a recorded chat (model-ab-grading.ts). */
+  /** Runs the runtime's trajectory classifiers over a recorded chat (chat-grading.ts). */
   async classifyTrajectory(request: AgentTrajectoryClassifyRequest): Promise<AgentTrajectoryClassifyResult> {
     const client = await this.getBackendAfterRotation();
     if (typeof client.classifyTrajectory !== "function") {

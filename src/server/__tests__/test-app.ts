@@ -26,7 +26,7 @@ import { createBridgeSessionStateStore } from "../bridge-session-state-store.js"
 import { createCopilotCliSessionCatalog } from "../copilot-cli-session-catalog.js";
 import { createReadStateStore } from "../read-state-store.js";
 import { createModelAbTestStore } from "../model-ab-test.js";
-import { createModelAbGradeStore } from "../model-ab-grading.js";
+import { createChatGradeStore } from "../chat-grading.js";
 import { createChecklistStore } from "../checklist-store.js";
 import { createCalendarStore } from "../calendar-store.js";
 import { createTagStore } from "../tag-store.js";
@@ -121,7 +121,7 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     cliSessionCatalog: createCopilotCliSessionCatalog({ copilotHome: runtimePaths.copilotHome }),
     readStateStore: createReadStateStore(db),
     modelAbTestStore: createModelAbTestStore(db),
-    modelAbGradeStore: createModelAbGradeStore(db),
+    chatGradeStore: createChatGradeStore(db),
     checklistStore,
     calendarStore,
     tagStore: createTagStore(db),
