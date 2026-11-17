@@ -1,6 +1,7 @@
 // System instruction constants used when constructing Copilot sessions.
 
 import { BACKGROUND_COMMAND_PROTECT_MS } from "./background-commands.js";
+import { CUA_FOREGROUND_GRANT_MINUTES, CUA_FOREGROUND_REQUEST_TOOL } from "./cua-driver.js";
 
 export const BRIDGE_EXCLUDED_TOOLS = ["session_store_sql", "report_intent"];
 
@@ -145,10 +146,12 @@ export function computerUseCuaGuidance(awayAfterMinutes: number): string {
 <computer_use>
 Desktop apps on this PC are driven with Cua Driver's tools (names start with "cua-"). They load on demand: search for "cua" with the tool search tool before the first use. Start from cua-get_guide or the server instructions, find windows with cua-list_windows, read with cua-get_window_state, and batch actions with cua-run_steps or cua-run_script. Element tokens last for this chat's connection only.
 
-Whether the user is here decides how you may act:
-- Away: no keyboard or mouse input on this PC for at least ${awayAfterMinutes} minutes. Then you have full control of the desktop: bring windows to the front with cua-bring_to_front and keep them there, use delivery_mode "foreground", real input, screenshots, launching, closing and restarting apps.
-- Active: anything else, including when the user works in a remote desktop window on this PC. Stay in the background: Cua's default background delivery, plus the shell, files and APIs. If the task needs the foreground, wait for the user to be away when the task can wait; otherwise ask.
-The Bridge refuses foreground calls while the user is active; treat that refusal as an answer, not an obstacle. Use Cua's own foreground tools rather than shell focus tricks.
+Background work is always allowed, whether or not the user is at the PC, so use it rather than handing the user steps you can do: listing, reading and screenshotting windows, launching, closing and restarting apps, and clicking, typing and setting values in a window you name (an element token, or pid and window_id) with Cua's default background delivery.
+
+Foreground work means cua-bring_to_front, cua-invoke_menu, delivery_mode "foreground" or foreground_fallback, input with no window named, and moving the pointer. It is allowed when either holds:
+- The user is away: no keyboard or mouse input on this PC for at least ${awayAfterMinutes} minutes (input through a remote desktop window counts). Then you have full control of the desktop.
+- The user allowed it: ${CUA_FOREGROUND_REQUEST_TOOL} shows them an Allow button, and once they allow, this chat may use the foreground for ${CUA_FOREGROUND_GRANT_MINUTES} minutes. Call it when a step needs the foreground while they are here, and right away when they tell you in chat that you may take over.
+Otherwise the Bridge refuses that one call. A refusal is not a reason to stop: try the background route, then ask with ${CUA_FOREGROUND_REQUEST_TOOL}, or wait until the user is away if the task can wait. Use Cua's own foreground tools rather than shell focus tricks.
 
 Always: the usual approval rules apply (sending as the user, purchases, deleting their data, installing software). Don't unlock a locked screen. Hand UAC, Windows Security and credential prompts to the user.
 </computer_use>

@@ -67,6 +67,7 @@ import { resolveComputerUsePlugin, type ComputerUsePluginStatus } from "./comput
 import {
   buildCuaMcpServerConfig,
   createCuaForegroundGuard,
+  CUA_FOREGROUND_REQUEST_TOOL,
   CUA_MCP_SERVER_NAME,
   type CuaDriverStatus,
 } from "./cua-driver.js";
@@ -310,6 +311,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       cfg.pluginDirectories = [computerUsePlugin.pluginDirectory];
     }
   }
+  // Asking for the foreground only means something where the Cua guard can refuse it.
+  if (!cuaMcpServer) cfg.excludedTools.push(CUA_FOREGROUND_REQUEST_TOOL);
 
   // A resident session keeps the last value given, so send this on create and every resume.
   const imageGenerationEnabled = isImageGenerationEnabled(settings);

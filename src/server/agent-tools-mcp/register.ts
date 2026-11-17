@@ -19,6 +19,7 @@ import { registerTaskGroupTools } from "../tools/task-group-tools.js";
 import { registerVisualTools } from "../tools/visual-tools.js";
 import { registerWorkflowTools } from "../tools/workflow-tools.js";
 import { registerCompletionTools } from "../tools/completion-tools.js";
+import { registerComputerUseTools } from "../tools/computer-use-tools.js";
 import { registerTaskPageTools } from "../tools/task-page-tools.js";
 import { BRIDGE_TOOLS_REPO_ROOT } from "../tools/helpers.js";
 import { registerStagingTools, STAGING_TOOLS } from "../staging-tools.js";
@@ -70,6 +71,7 @@ export function registerAllBridgeTools(
   registerCompletionTools(server, ctx, { hiddenTools });
   registerTaskPageTools(server, ctx, { hiddenTools });
   registerBrowserSessionTools(server, ctx, { hiddenTools });
+  registerComputerUseTools(server, ctx, { hiddenTools });
 }
 
 export function getBridgeToolDefinitions(

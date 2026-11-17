@@ -89,28 +89,90 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const INPUT_TOOLS = new Set(["click", "double_click", "right_click", "drag", "scroll", "type_text", "press_key", "hotkey"]);
+const INPUT_TOOLS = new Set([
+  "click", "double_click", "right_click", "drag", "scroll", "type_text", "press_key", "hotkey", "set_value", "move_cursor",
+]);
+/** Fields of a run_steps step that are not its tool. */
+const STEP_FIELDS = new Set(["tool", "args", "wait_for", "expect", "timeout_ms"]);
 
-/** Whether a Cua call would focus a window or send real input; a safety net, not a guarantee. */
-export function cuaCallTakesForeground(tool: string, args: unknown): boolean {
-  if (tool === "bring_to_front" || tool === "invoke_menu") return true;
-  if (!isRecord(args)) return INPUT_TOOLS.has(tool);
+// Input that names a window reaches it in the background, also by app or role in run_steps.
+function targetsWindow(args: Record<string, unknown>): boolean {
+  if (args.scope === "desktop") return false;
+  if (isRecord(args.target)) return args.target.kind === "window";
+  return ["pid", "window_id", "element_token", "app", "window", "role", "name"].some((key) => args[key] !== undefined);
+}
+
+// Steps are {tool, args}, {tool, ...args} or {<tool>: args}; a check-only step has no tool.
+function runStep(step: unknown): { tool: string; args: Record<string, unknown> } | undefined {
+  if (!isRecord(step)) return undefined;
+  if (typeof step.tool === "string") {
+    if (isRecord(step.args)) return { tool: step.tool, args: step.args };
+    return { tool: step.tool, args: Object.fromEntries(Object.entries(step).filter(([key]) => !STEP_FIELDS.has(key))) };
+  }
+  const entry = Object.entries(step).find(([key, value]) => !STEP_FIELDS.has(key) && isRecord(value));
+  return entry ? { tool: entry[0], args: entry[1] as Record<string, unknown> } : undefined;
+}
+
+function actionTakesForeground(tool: string, args: Record<string, unknown>, windowScoped: boolean): boolean {
+  if (tool === "bring_to_front" || tool === "invoke_menu" || tool === "move_cursor") return true;
   if (args.delivery_mode === "foreground" || args.foreground_fallback === true) return true;
-  // Without a pid the input goes to the whole visible desktop, not one window in the background.
-  if (INPUT_TOOLS.has(tool) && args.pid === undefined) return true;
+  // Input with no window goes to whatever has the desktop's focus.
+  return INPUT_TOOLS.has(tool) && !windowScoped;
+}
+
+/** Whether a Cua call would focus a window or send input to the focused one; a safety net. */
+export function cuaCallTakesForeground(tool: string, args: unknown): boolean {
+  if (!isRecord(args)) return actionTakesForeground(tool, {}, false);
   if (tool === "run_steps" && Array.isArray(args.steps)) {
-    return args.steps.some((step) => isRecord(step) && typeof step.tool === "string" && cuaCallTakesForeground(step.tool, step.args));
+    if (args.foreground_fallback === true || args.delivery_mode === "foreground") return true;
+    // Batch pid/app/window apply to every step; later steps inherit a step's window.
+    let windowScoped = targetsWindow({ pid: args.pid, window_id: args.window_id, app: args.app, window: args.window });
+    return args.steps.some((step) => {
+      const parsed = runStep(step);
+      if (!parsed) return false;
+      windowScoped = windowScoped || targetsWindow(parsed.args);
+      return actionTakesForeground(parsed.tool, parsed.args, windowScoped && parsed.args.scope !== "desktop");
+    });
   }
   if (tool === "run_script" && typeof args.script === "string") {
-    return /bring_?to_?front|foreground|invoke_?menu/i.test(args.script);
+    return /bring_?to_?front|foreground|invoke_?menu|move_?cursor/i.test(args.script);
   }
-  return false;
+  return actionTakesForeground(tool, args, targetsWindow(args));
 }
+
+/** How long the user's Allow in computer_use_request_foreground lets a chat use the foreground. */
+export const CUA_FOREGROUND_GRANT_MINUTES = 30;
+
+/** Chats the user has let use the foreground while they are at the PC, until the grant expires. */
+export class CuaForegroundGrants {
+  private readonly expiresAt = new Map<string, number>();
+
+  grant(sessionId: string, now = Date.now()): number {
+    const expiresAt = now + CUA_FOREGROUND_GRANT_MINUTES * 60_000;
+    this.expiresAt.set(sessionId, expiresAt);
+    return expiresAt;
+  }
+
+  /** The grant's expiry, or undefined when the chat has none in force. */
+  activeUntil(sessionId: string, now = Date.now()): number | undefined {
+    const expiresAt = this.expiresAt.get(sessionId);
+    if (expiresAt === undefined) return undefined;
+    if (expiresAt > now) return expiresAt;
+    this.expiresAt.delete(sessionId);
+    return undefined;
+  }
+}
+
+/** Shared by the foreground guard of every chat and the tool that asks the user. */
+export const cuaForegroundGrants = new CuaForegroundGrants();
+
+export const CUA_FOREGROUND_REQUEST_TOOL = "computer_use_request_foreground";
 
 export interface CuaForegroundGuardOptions {
   awayAfterMinutes: number;
   readIdleSeconds: () => Promise<number | undefined>;
   now?: () => number;
+  grants?: CuaForegroundGrants;
 }
 
 export interface CuaForegroundDecision {
@@ -124,18 +186,21 @@ const OWN_INPUT_GRACE_MS = 3_000;
 /** Deny foreground Cua calls while the user is active; input from our own calls doesn't count. */
 export function createCuaForegroundGuard(options: CuaForegroundGuardOptions) {
   const now = options.now ?? Date.now;
+  const grants = options.grants ?? cuaForegroundGrants;
   let takenOver = false;
   let runningCalls = 0;
   let lastCallEndedAt = 0;
 
   const deny = (permissionDecisionReason: string): CuaForegroundDecision => ({ permissionDecision: "deny", permissionDecisionReason });
+  const askOrWait = `use background delivery for this step, call ${CUA_FOREGROUND_REQUEST_TOOL} to ask the user for the foreground, or wait until they are away.`;
 
-  async function decide(tool: string, args: unknown): Promise<CuaForegroundDecision | undefined> {
+  async function decide(tool: string, args: unknown, sessionId: string | undefined): Promise<CuaForegroundDecision | undefined> {
     if (!cuaCallTakesForeground(tool, args)) return undefined;
+    if (sessionId && grants.activeUntil(sessionId, now()) !== undefined) return undefined;
     const idle = await options.readIdleSeconds();
     if (idle === undefined) {
       takenOver = false;
-      return deny("Couldn't tell whether the user is at this PC, so the foreground stays theirs. Use background delivery, or ask the user.");
+      return deny(`Couldn't tell whether the user is at this PC, so the foreground stays theirs. Instead, ${askOrWait}`);
     }
     if (idle >= options.awayAfterMinutes * 60) {
       takenOver = true;
@@ -146,21 +211,24 @@ export function createCuaForegroundGuard(options: CuaForegroundGuardOptions) {
     takenOver = false;
     return deny(
       `The user is using this PC (last input ${Math.round(idle)} s ago; away means ${options.awayAfterMinutes} min without input). `
-      + "Use background delivery, wait until they have been away that long, or ask the user.",
+      + `Only this call was refused: ${askOrWait}`,
     );
   }
 
   return {
-    beforeToolUse: async (input: { toolName: string; toolArgs: unknown }): Promise<CuaForegroundDecision | undefined> => {
+    beforeToolUse: async (
+      input: { toolName: string; toolArgs: unknown; sessionId?: string },
+      invocation?: { sessionId: string },
+    ): Promise<CuaForegroundDecision | undefined> => {
       const tool = cuaToolName(input.toolName);
       if (!tool) return undefined;
       try {
-        const decision = await decide(tool, input.toolArgs);
+        const decision = await decide(tool, input.toolArgs, invocation?.sessionId ?? input.sessionId);
         if (!decision) runningCalls += 1;
         return decision;
       } catch {
         // The runtime allows a call whose hook throws, so a failed check refuses here.
-        return deny("The Bridge couldn't check whether the user is at this PC. Use background delivery, or ask the user.");
+        return deny(`The Bridge couldn't check whether the user is at this PC. Instead, ${askOrWait}`);
       }
     },
     afterToolUse: (input: { toolName: string }): void => {
