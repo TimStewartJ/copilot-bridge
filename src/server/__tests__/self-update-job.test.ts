@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sh } from "../shell-command.js";
 import { join } from "node:path";
 import type { PrepareReleaseSlotOptions } from "../release-slots.js";
 import { makeTestDir } from "./helpers.js";
@@ -30,7 +31,7 @@ const runValidationCommandMock = vi.hoisted(() => vi.fn(async (options: Validati
       return { ok: true, output: "Already up to date.\n" };
     case "git rev-parse --short HEAD":
       return { ok: true, output: "22222222\n" };
-    case "git merge-base --is-ancestor \"1111111111111111111111111111111111111111\" \"2222222222222222222222222222222222222222\"":
+    case "git merge-base --is-ancestor 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222":
       return { ok: true, output: "" };
     default:
       throw new Error(`Unexpected command: ${options.command}`);
@@ -118,7 +119,6 @@ describe("runSelfUpdateJob active-release drift", () => {
     expect(runValidationCommandMock).toHaveBeenCalledWith(expect.objectContaining({
       command: "git",
       args: ["pull", "--rebase", "origin", "main"],
-      shell: false,
     }));
     expect(prepareReleaseSlotMock).not.toHaveBeenCalled();
     expect(requestRestartMock).toHaveBeenCalledWith(
@@ -232,7 +232,7 @@ describe("runSelfUpdateJob active-release drift", () => {
     vi.stubEnv("BRIDGE_DISTRIBUTION_MODE", "development");
     vi.stubEnv("BRIDGE_CONTROL_DISTRIBUTION_MODE", "development");
     prepareReleaseSlotMock.mockImplementation(async (options: PrepareReleaseSlotOptions) => {
-      const result = await options.run("npm run check:deploy", options.sourceDir, {
+      const result = await options.run(sh`npm run check:deploy`, options.sourceDir, {
         timeoutMs: 600_000,
         isolateRuntimeEnv: true,
       });

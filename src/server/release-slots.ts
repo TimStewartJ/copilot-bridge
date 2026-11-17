@@ -13,6 +13,7 @@ import { dependencySyncHash, preparePatchedPackagesForInstall } from "./dependen
 import type { RestartValidationMode, RestartReleaseCandidate } from "./restart-signal.js";
 import type { ValidationCommandOptions } from "./validation-pipeline.js";
 import { isPathAtOrUnder, pathsEqual } from "./path-utils.js";
+import { sh, type ShellCommand } from "./shell-command.js";
 
 const RELEASE_SLOT_VERSION = 1;
 const RELEASE_SLOT_MANIFEST = "release-slot.json";
@@ -50,7 +51,7 @@ export interface ReleaseSlotRunResult {
 }
 
 export type ReleaseSlotRunCommand = (
-  command: string,
+  command: ShellCommand,
   cwd: string,
   options?: ValidationCommandOptions,
 ) => Promise<ReleaseSlotRunResult>;
@@ -72,9 +73,9 @@ export interface PrepareReleaseSlotOptions {
   validationMode: RestartValidationMode;
   run: ReleaseSlotRunCommand;
   log?: (message: string) => void;
-  installCommand: string;
+  installCommand: ShellCommand;
   installTimeoutMs: number;
-  buildCommand?: string;
+  buildCommand?: ShellCommand;
   buildTimeoutMs?: number;
   now?: Date;
   /** Test seam for deterministic Windows rename retry coverage. */
@@ -371,7 +372,7 @@ export async function prepareReleaseSlot(options: PrepareReleaseSlotOptions): Pr
   const slotRoot = join(releaseParent, id);
   const tempRoot = join(releaseParent, `.${id}.${process.pid}.tmp`);
   const dependencyHash = dependencySyncHash(sourceDir);
-  const buildCommand = options.buildCommand ?? "npm run build";
+  const buildCommand = options.buildCommand ?? sh`npm run build`;
   const buildTimeoutMs = options.buildTimeoutMs ?? 10 * 60_000;
 
   await mkdir(releaseParent, { recursive: true });

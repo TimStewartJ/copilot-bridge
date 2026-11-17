@@ -15,7 +15,7 @@ description: "In-tree packages: code published to npm by itself; keep it free of
 - Keep the package README true: it is the page a user of the published package reads. Numbers in it must come from a measurement you can repeat.
 - A version is released only by the `Publish Package` workflow. It publishes the version at once: nobody approves it on npm in between, and a published version can never be changed. Never run `npm publish` yourself. The one release that cannot go through the workflow is the first version of a new package, which the owner publishes (see "Releasing a version" in `src/packages/README.md`).
 - Do not start the workflow, and do not change a package's name or version, unless the user asked for that release. Starting the workflow is the release. `"private": true` stays in every package's `package.json`: a release is the built tarball, never the folder.
-- When you change a package's `src/`, add a line under `## Unreleased` at the top of its `CHANGELOG.md`. A released version can never be changed, and that section is what tells users what the next one brings.
+- When you change a package's `src/`, add a line under `## Unreleased` at the top of its `CHANGELOG.md`. A released version can never be changed, and that section is what tells users what the next one brings. `npm run packages:changelog-check` (in `check:pr`, `check:packages` and CI) enforces it: it compares `src/` with the package's latest release tag, `<folder>-v<version>`, and ignores edits to comments and whitespace.
 
 ## Tests and checks
 

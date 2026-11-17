@@ -155,19 +155,19 @@ export const DEPLOY_VALIDATION_COMMANDS = [
 ] as const;
 export const DEPLOY_SMOKE_COMMAND = "npm run preview:smoke";
 export const DEPLOY_STASH_SHA = "cafebabecafebabecafebabecafebabecafebabe";
-export const STASH_LIST_COMMAND = 'git --no-pager stash list --format="%H %gs"';
+export const STASH_LIST_COMMAND = "git --no-pager stash list --format=%H %gs";
 
 export function isStashListCommand(cmd: string): boolean {
   return cmd === STASH_LIST_COMMAND;
 }
 
 export function isStashPushCommand(cmd: string): boolean {
-  return cmd.startsWith('git stash push --include-untracked -m "bridge-deploy-');
+  return cmd.startsWith("git stash push --include-untracked -m bridge-deploy-");
 }
 
 /** The unique marker the deploy stashes production changes under. */
 export function stashMarkerOf(cmd: string): string {
-  return cmd.slice(cmd.indexOf('"') + 1, cmd.lastIndexOf('"'));
+  return cmd.slice(cmd.lastIndexOf(" ") + 1);
 }
 
 export function stagingStampJson(prefix: string, commitSha: string, dependencyHash = "same-hash"): string {
@@ -269,7 +269,7 @@ export function publishTestPreviewGeneration(
 }
 
 export function successfulCommandOutput(command: string): string {
-  const viteOutDir = command.match(/\bnpx vite build\b.*--outDir "([^"]+)"/)?.[1];
+  const viteOutDir = command.match(/\bvite\.js build\b.*--outDir (.+) --emptyOutDir$/)?.[1];
   if (viteOutDir) {
     mkdirSync(viteOutDir, { recursive: true });
     writeFileSync(join(viteOutDir, "index.html"), "<!doctype html>");
@@ -382,7 +382,7 @@ function deployHappyPath(stagingDir: string, branch: string, git: DeployGitState
     },
     merge: (cmd) => {
       if (cmd === "git rev-parse HEAD") return `${VALIDATED_SHA}\n`;
-      if (cmd === `git merge "${branch}" --no-edit`) return "";
+      if (cmd === `git merge ${branch} --no-edit`) return "";
       return cmd === "git rev-parse --short HEAD" ? "1111111\n" : undefined;
     },
     push: (cmd) => (cmd === "git push origin main" ? "" : undefined),

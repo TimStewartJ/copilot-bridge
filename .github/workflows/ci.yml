@@ -27,6 +27,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # The shallow checkout brings no tags, and changelog-check compares each package with its
+      # latest release tag. The tagged trees are all it reads, so one commit per tag is enough.
+      - name: Fetch release tags
+        shell: pwsh
+        run: git fetch --depth=1 --no-recurse-submodules origin "+refs/tags/*:refs/tags/*"
+
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
@@ -44,6 +50,10 @@ jobs:
       - name: Public repo audit
         shell: pwsh
         run: npm run test:public-audit
+
+      - name: Package changelog check
+        shell: pwsh
+        run: npm run packages:changelog-check
 
       - name: Agent text audit
         shell: pwsh

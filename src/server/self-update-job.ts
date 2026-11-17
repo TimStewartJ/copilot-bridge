@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEPENDENCY_SYNC_GIT_PATHSPEC } from "./dependency-sync.js";
+import { DEPENDENCY_SYNC_PATHS } from "./dependency-sync.js";
 import { isBridgeReleaseMode } from "./distribution-mode.js";
 import { preserveOrCreateRollbackCheckpoint, removeRollbackCheckpointIfCreated } from "./pre-deploy-checkpoint.js";
 import {
@@ -17,11 +17,12 @@ import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.js";
 import { runValidationCommand } from "./validation-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./validation-command-env.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
-import { createGitPullRebaseCommand } from "./git-command.js";
+import { createGitCommand, createGitPullRebaseCommand } from "./git-command.js";
+import { commandSpec, commandText, sh, type Command } from "./shell-command.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONTROL_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
-const SELF_UPDATE_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
+const SELF_UPDATE_INSTALL_COMMAND = sh`npm install --no-audit --no-fund --include=dev`;
 // Sized to catch a hang, not a busy machine; see STAGING_INSTALL_TIMEOUT_MS.
 const SELF_UPDATE_INSTALL_TIMEOUT_MS = 15 * 60_000;
 const SELF_UPDATE_DEPLOY_CHECK_TIMEOUT_MS = 10 * 60_000;
@@ -41,15 +42,13 @@ interface SelfUpdateRunOptions {
   cwd?: string;
   timeoutMs?: number;
   isolateRuntimeEnv?: boolean;
-  executable?: string;
-  args?: readonly string[];
   logOutput?: boolean;
 }
 
 function createSelfUpdateRunner(
   controlRoot: string,
   log: (message: string) => void,
-): (cmd: string, options?: SelfUpdateRunOptions) => Promise<CommandResult> {
+): (cmd: Command, options?: SelfUpdateRunOptions) => Promise<CommandResult> {
   return async (cmd, options = {}) => {
     const cwd = options.cwd ?? controlRoot;
     const nodeDir = dirname(process.execPath);
@@ -58,18 +57,15 @@ function createSelfUpdateRunner(
       : undefined;
     const baseEnv = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
     const env = withNonInteractiveCommandEnv(baseEnv);
-    log(`$ ${cmd}\n[cwd] ${cwd}`);
+    log(`$ ${commandText(cmd)}\n[cwd] ${cwd}`);
     try {
       const result = await runValidationCommand({
+        ...commandSpec(cmd),
         rootDir: controlRoot,
         source: "self-update",
-        command: options.executable ?? cmd,
-        args: options.args,
-        displayCommand: cmd,
         cwd,
         env,
         timeoutMs: options.timeoutMs ?? 120_000,
-        shell: options.args ? false : undefined,
         failureOutputFormat: "plain",
       });
       if (options.logOutput !== false && result.output.trim()) log(result.output.trimEnd());
@@ -85,7 +81,7 @@ async function isAncestor(
   ancestor: string,
   descendant: string,
 ): Promise<boolean> {
-  const result = await run(`git merge-base --is-ancestor "${ancestor}" "${descendant}"`, {
+  const result = await run(createGitCommand(["merge-base", "--is-ancestor", ancestor, descendant]), {
     timeoutMs: 30_000,
   });
   return result.ok;
@@ -103,17 +99,13 @@ async function headHoldsRelease(
 ): Promise<boolean> {
   if (await isAncestor(run, releaseSha, headSha)) return true;
 
-  const releaseTree = await run(`git rev-parse --verify --quiet ${releaseSha}^{tree}`, {
-    executable: "git",
-    args: ["rev-parse", "--verify", "--quiet", `${releaseSha}^{tree}`],
+  const releaseTree = await run(createGitCommand(["rev-parse", "--verify", "--quiet", `${releaseSha}^{tree}`]), {
     timeoutMs: 30_000,
   });
   const tree = releaseTree.ok ? releaseTree.output.trim() : "";
   if (!tree) return false;
 
-  const rewrittenSide = await run(`git log --format="%H %T" ${releaseSha}..${headSha}`, {
-    executable: "git",
-    args: ["log", "--format=%H %T", `${releaseSha}..${headSha}`],
+  const rewrittenSide = await run(createGitCommand(["log", "--format=%H %T", `${releaseSha}..${headSha}`]), {
     timeoutMs: 30_000,
     logOutput: false,
   });
@@ -162,7 +154,7 @@ async function prepareOrReuseReleaseCandidate(options: {
     log: options.log,
     installCommand: SELF_UPDATE_INSTALL_COMMAND,
     installTimeoutMs: SELF_UPDATE_INSTALL_TIMEOUT_MS,
-    buildCommand: "npm run check:deploy",
+    buildCommand: sh`npm run check:deploy`,
     buildTimeoutMs: SELF_UPDATE_DEPLOY_CHECK_TIMEOUT_MS,
   });
   return prepared.ok
@@ -304,19 +296,16 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
   const run = createSelfUpdateRunner(controlRoot, log);
 
-  const branchResult = await run("git rev-parse --abbrev-ref HEAD");
+  const branchResult = await run(sh`git rev-parse --abbrev-ref HEAD`);
   const branch = branchResult.ok ? branchResult.output.trim() : "main";
-  const headResult = await run("git rev-parse HEAD");
+  const headResult = await run(sh`git rev-parse HEAD`);
   const preUpdateSha = headResult.ok ? headResult.output.trim() : "";
   const rollbackCheckpoint = preserveOrCreateRollbackCheckpoint(preDeployShaFile, preUpdateSha);
 
   const pullCommand = createGitPullRebaseCommand(branch);
-  const pullResult = await run(pullCommand.displayCommand, {
-    executable: pullCommand.command,
-    args: pullCommand.args,
-  });
+  const pullResult = await run(pullCommand);
   if (!pullResult.ok) {
-    await run("git rebase --abort");
+    await run(sh`git rebase --abort`);
     removeRollbackCheckpointIfCreated(preDeployShaFile, rollbackCheckpoint);
     const message =
       "Git pull failed — likely due to merge conflicts or network issues. " +
@@ -325,9 +314,9 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
     return toolFailure(message, { sessionLog: pullResult.output.slice(-500) });
   }
 
-  const newFullHead = await run("git rev-parse HEAD");
+  const newFullHead = await run(sh`git rev-parse HEAD`);
   const newFullSha = newFullHead.ok ? newFullHead.output.trim() : "";
-  const newHead = await run("git rev-parse --short HEAD");
+  const newHead = await run(sh`git rev-parse --short HEAD`);
   const newSha = newHead.ok ? newHead.output.trim() : "unknown";
   const changed = preUpdateSha !== newFullSha;
 
@@ -367,7 +356,7 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
   });
   if (!releaseSlotResult.ok) {
     const resetResult = preUpdateSha
-      ? await run(`git reset --hard ${preUpdateSha}`)
+      ? await run(createGitCommand(["reset", "--hard", preUpdateSha]))
       : { ok: true, output: "" };
     if (resetResult.ok) {
       removeRollbackCheckpointIfCreated(preDeployShaFile, rollbackCheckpoint);
@@ -394,7 +383,7 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
 
   const dependencyInputsChanged = !!preUpdateSha
     && (() => {
-      const diffPromise = run(`git diff "${preUpdateSha}" HEAD --name-only -- ${DEPENDENCY_SYNC_GIT_PATHSPEC}`);
+      const diffPromise = run(createGitCommand(["diff", preUpdateSha, "HEAD", "--name-only", "--", ...DEPENDENCY_SYNC_PATHS]));
       return diffPromise.then((diffResult) => diffResult.ok && !!diffResult.output.trim());
     })();
   const dependencyChanged = await dependencyInputsChanged;

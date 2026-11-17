@@ -10,10 +10,11 @@ import { getAgentBrowserCommand } from "./agent-browser-command.js";
 import { buildBrowserEnv, getBrowserLaunchConfig, type BrowserLaunchConfig, type BrowserTarget } from "./browser-launch.js";
 import { windowsShellInvocation } from "./platform.js";
 import { getProcessHost, type HostExecOptions } from "./process-host.js";
+import { sh, type ShellCommand } from "./shell-command.js";
 import type { TelemetryStore } from "./telemetry-store.js";
 
 const DEFAULT_TIMEOUT = 30_000;
-const execAsync = (command: string, options: HostExecOptions) => getProcessHost().exec(command, options);
+const execAsync = (command: ShellCommand, options: HostExecOptions) => getProcessHost().exec(command, options);
 const execFileAsync = (file: string, args: readonly string[], options: HostExecOptions) =>
   getProcessHost().execFile(file, args, options);
 const LOCK_FILES = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
@@ -732,7 +733,7 @@ export async function saveAgentBrowserLogin(
 }
 
 export async function run(
-  cmd: string,
+  cmd: ShellCommand,
   timeout = DEFAULT_TIMEOUT,
   execOptions: { env?: NodeJS.ProcessEnv } = {},
 ): Promise<{ ok: boolean; output: string }> {
@@ -800,7 +801,7 @@ export function browserFailureAdvice(output: string): string | undefined {
 }
 
 export async function isAgentBrowserInstalled(): Promise<boolean> {
-  const cmd = platform() === "win32" ? "where.exe agent-browser" : "which agent-browser";
+  const cmd = platform() === "win32" ? sh`where.exe agent-browser` : sh`which agent-browser`;
   return (await run(cmd, 5_000)).ok;
 }
 

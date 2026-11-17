@@ -12,18 +12,15 @@ import {
   type ValidationCommandRunResult,
 } from "./validation-command-runner.js";
 import { isCommandTimeoutResult } from "./validation-command-log.js";
+import type { CommandSpec } from "./shell-command.js";
 
-export interface SyncCommandRunOptions {
+export type SyncCommandRunOptions = CommandSpec & {
   rootDir: string;
   source: string;
-  command: string;
-  args?: readonly string[];
-  displayCommand?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
-  shell?: boolean;
-}
+};
 
 export type SyncCommandRunResult = ValidationCommandRunResult;
 
@@ -61,7 +58,8 @@ export function runSyncCommand(options: SyncCommandRunOptions): SyncCommandRunRe
     const spawnOptions: SpawnSyncOptions = {
       cwd: options.cwd,
       env: options.env,
-      shell: options.shell ?? (!options.args || options.args.length === 0),
+      // Only constant ShellCommand text goes to a shell; a program with arguments never does.
+      shell: options.args === undefined,
       stdio: ["ignore", stdoutFile.fd, stderrFile.fd],
       timeout: options.timeoutMs,
       windowsHide: true,

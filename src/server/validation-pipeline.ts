@@ -1,7 +1,8 @@
 import { formatCommandDuration } from "./validation-command-log.js";
+import { sh, type ShellCommand } from "./shell-command.js";
 
 export type ValidationStep = {
-  command: string;
+  command: ShellCommand;
   timeoutMs: number;
 };
 
@@ -23,13 +24,13 @@ export type ValidationCommandOptions = {
 
 type RunValidationGateOptions<Result extends ValidationCommandResult> = {
   cwd: string;
-  run: (command: string, options?: ValidationCommandOptions) => Result;
+  run: (command: ShellCommand, options?: ValidationCommandOptions) => Result;
   log?: (message: string) => void;
 };
 
 type RunValidationGateAsyncOptions<Result extends ValidationCommandResult> = {
   cwd: string;
-  run: (command: string, options?: ValidationCommandOptions) => Promise<Result>;
+  run: (command: ShellCommand, options?: ValidationCommandOptions) => Promise<Result>;
   log?: (message: string) => void;
 };
 
@@ -55,34 +56,34 @@ export type ValidationGateRunResult<Result extends ValidationCommandResult> =
 const VALIDATION_TIMEOUT_MS = 1_000 * 1000;
 const ROLLBACK_VALIDATION_TIMEOUT_MS = 8 * 60 * 1000;
 // Bump when the deploy gate contract changes in a way that should invalidate existing stamps.
-export const DEPLOY_GATE_VERSION = 2;
+export const DEPLOY_GATE_VERSION = 3;
 // Bump when preview validation no longer proves the PR gate used by deploy fast-path reuse.
-export const PREVIEW_GATE_VERSION = 1;
+export const PREVIEW_GATE_VERSION = 2;
 
 const PR_CHECK_STEP: ValidationStep = {
-  command: "npm run check:pr",
+  command: sh`npm run check:pr`,
   timeoutMs: VALIDATION_TIMEOUT_MS,
 };
 
 const DEPLOY_CHECK_STEP: ValidationStep = {
-  command: "npm run check:deploy",
+  command: sh`npm run check:deploy`,
   timeoutMs: VALIDATION_TIMEOUT_MS,
 };
 
 export const DEPLOY_CHECK_COMMAND = DEPLOY_CHECK_STEP.command;
 
 const PREVIEW_SMOKE_STEP: ValidationStep = {
-  command: "npm run preview:smoke",
+  command: sh`npm run preview:smoke`,
   timeoutMs: VALIDATION_TIMEOUT_MS,
 };
 
 const PRODUCTION_BUILD_STEP: ValidationStep = {
-  command: "npm run build",
+  command: sh`npm run build`,
   timeoutMs: VALIDATION_TIMEOUT_MS,
 };
 
 const VITE_BUILD_STEP: ValidationStep = {
-  command: "npx vite build",
+  command: sh`npx vite build`,
   timeoutMs: ROLLBACK_VALIDATION_TIMEOUT_MS,
 };
 

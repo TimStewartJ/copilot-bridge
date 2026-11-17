@@ -8,6 +8,8 @@
 //   verify [--out <dir>]    pack, install the tarballs into a scratch project, run each smoke test
 //   release-check <package> [--dry-run]
 //                           say whether the package's version can be released from this checkout
+//   changelog-check         fail when a package's src/ changed since its latest release tag
+//                           (<folder>-v<version>) and its CHANGELOG.md does not say so
 //
 // Without --out, pack and verify work in a new temporary directory. pack prints it, because the
 // tarballs are its result. verify removes it once everything passed and leaves it in place after a
@@ -21,6 +23,10 @@
 // developer's machine. It asks npm which versions exist and origin whether the release tag does.
 // With --dry-run it reports a version that is already released instead of failing on it, so the
 // workflow can be tried out between releases.
+//
+// changelog-check ignores edits to comments and whitespace in TypeScript files, and accepts lines
+// under "## Unreleased", or under "## <version>" once package.json has the next version. It needs
+// the release tags (git fetch --tags), and skips itself outside a git checkout.
 
 import { spawnSync } from "node:child_process";
 import {
@@ -38,6 +44,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { changelogCheck, changelogSection, compareReleaseVersions, RELEASE_VERSION } from "./package-changelog.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagesDir = join(repoRoot, "src", "packages");
@@ -45,8 +52,7 @@ const tscCli = join(repoRoot, "node_modules", "typescript", "bin", "tsc");
 const REQUIRED_TARBALL_FILES = ["package.json", "README.md", "LICENSE", "dist/index.js", "dist/index.d.ts"];
 const FORBIDDEN_TARBALL_PATH = /(^|\/)(src|test)\/|\.test\.|\.ts$(?<!\.d\.ts)/;
 const REGISTRY = "https://registry.npmjs.org";
-// A pre-release would need a dist-tag other than "latest", which the release workflow does not set.
-const RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+// RELEASE_VERSION has no pre-release: one would need a dist-tag other than "latest", which the release workflow does not set.
 
 function fail(message) {
   console.error(`[packages] ${message}`);
@@ -188,25 +194,15 @@ function verify(packages, outRoot) {
   console.log(`[packages] verified ${tarballs.map((entry) => entry.manifest.name).join(", ")}`);
 }
 
-function compareReleaseVersions(left, right) {
-  const [a, b] = [left, right].map((version) => version.split(".").map(Number));
-  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
-}
-
 /** What a package's changelog still lacks for a release of this version. */
 function changelogProblems(dir, version) {
   const file = join(dir, "CHANGELOG.md");
   if (!existsSync(file)) return ["it has no CHANGELOG.md"];
-  const lines = readFileSync(file, "utf8").split(/\r?\n/);
-  const isHeading = (line, title) => line === `## ${title}` || line.startsWith(`## ${title} `);
+  const text = readFileSync(file, "utf8");
   const problems = [];
-  if (!lines.some((line) => isHeading(line, version))) problems.push(`CHANGELOG.md has no "## ${version}" section`);
-  const unreleased = lines.findIndex((line) => isHeading(line, "Unreleased"));
-  if (unreleased >= 0) {
-    const next = lines.findIndex((line, index) => index > unreleased && line.startsWith("## "));
-    const entries = lines.slice(unreleased + 1, next < 0 ? lines.length : next).filter((line) => line.trim() !== "");
-    if (entries.length > 0) problems.push(`CHANGELOG.md still lists ${entries.length} line(s) under "## Unreleased"; move them to "## ${version}"`);
-  }
+  if (!changelogSection(text, version)) problems.push(`CHANGELOG.md has no "## ${version}" section`);
+  const entries = changelogSection(text, "Unreleased") ?? [];
+  if (entries.length > 0) problems.push(`CHANGELOG.md still lists ${entries.length} line(s) under "## Unreleased"; move them to "## ${version}"`);
   return problems;
 }
 
@@ -275,6 +271,12 @@ const packages = listPackages(names);
 
 if (command === "typecheck") {
   typecheck(packages);
+} else if (command === "changelog-check") {
+  try {
+    if (!changelogCheck(repoRoot, packages)) process.exit(1);
+  } catch (error) {
+    fail(`changelog-check: ${error.message}`);
+  }
 } else if (command === "release-check") {
   if (names.length !== 1 || packages.length !== 1) fail("release-check needs exactly one package: its name or its folder name");
   await releaseCheck(packages[0], dryRun);
@@ -295,5 +297,5 @@ if (command === "typecheck") {
     console.log(`[packages] output: ${outRoot}`);
   }
 } else {
-  fail("usage: node scripts/packages.mjs <typecheck|pack|verify> [--out <dir>] [package ...]\n       node scripts/packages.mjs release-check <package> [--dry-run]");
+  fail("usage: node scripts/packages.mjs <typecheck|changelog-check|pack|verify> [--out <dir>] [package ...]\n       node scripts/packages.mjs release-check <package> [--dry-run]");
 }

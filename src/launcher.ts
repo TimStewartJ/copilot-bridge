@@ -2,7 +2,7 @@
 
 import "./server/guard-stdio-writes.js";
 import "./log-timestamps.js";
-import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -125,6 +125,7 @@ import { formatTunnelSpec, resolveTunnelConfig } from "./server/tunnel-config.js
 import { listAdditionalTunnelRuntimeStateNames } from "./server/tunnel-runtime-state.js";
 import { withNonInteractiveCommandEnv } from "./server/noninteractive-env.js";
 import { createGitPullRebaseCommand } from "./server/git-command.js";
+import { commandSpec, commandText, sh, type Command } from "./server/shell-command.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -349,12 +350,7 @@ function restorePendingRestartSignal() {
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 
-type LauncherRunOptions = LauncherCommandOptions & {
-  executable?: string;
-  args?: readonly string[];
-};
-
-function run(cmd: string, options: LauncherRunOptions = {}): { ok: boolean; output: string } {
+function run(cmd: Command, options: LauncherCommandOptions = {}): { ok: boolean; output: string } {
   // Prepend the launcher's Node v22 directory to PATH so npx/vitest use it
   const nodeDir = dirname(NODE_PATH);
   const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
@@ -364,21 +360,18 @@ function run(cmd: string, options: LauncherRunOptions = {}): { ok: boolean; outp
   const env = withNonInteractiveCommandEnv(validationEnv?.env ?? prependNodePath(process.env, nodeDir));
   try {
     const result = runSyncCommand({
+      ...commandSpec(cmd),
       rootDir: ROOT,
       source: "launcher",
-      command: options.executable ?? cmd,
-      args: options.args,
-      displayCommand: cmd,
       cwd: ROOT,
       env,
       timeoutMs,
-      shell: options.args ? false : undefined,
     });
     if (result.ok) {
       lastCommandFailure = null;
     } else {
       lastCommandFailure = {
-        command: cmd,
+        command: commandText(cmd),
         validationLogPath: result.validationLogPath,
         validationLogWriteError: result.validationLogWriteError,
       };
@@ -424,7 +417,7 @@ function ensureDeps(): boolean {
   }
 
   log("Dependencies changed — running npm install...");
-  const result = run("npm install --no-audit --no-fund --include=dev", {
+  const result = run(sh`npm install --no-audit --no-fund --include=dev`, {
     timeoutMs: DEPENDENCY_INSTALL_TIMEOUT,
   });
   if (!result.ok) {
@@ -464,16 +457,15 @@ function hasOperationalRestartSourceChanges(): boolean {
     return false;
   }
 
-  const pathspec = OPERATIONAL_RESTART_SOURCE_PATHS.join(" ");
   const env = commandEnv();
   try {
-    execSync(`git --no-pager diff --quiet HEAD -- ${pathspec}`, {
+    execFileSync("git", ["--no-pager", "diff", "--quiet", "HEAD", "--", ...OPERATIONAL_RESTART_SOURCE_PATHS], {
       cwd: ROOT,
       encoding: "utf-8",
       env,
       timeout: 10_000,
     });
-    const untracked = execSync(`git --no-pager ls-files --others --exclude-standard -- ${pathspec}`, {
+    const untracked = execFileSync("git", ["--no-pager", "ls-files", "--others", "--exclude-standard", "--", ...OPERATIONAL_RESTART_SOURCE_PATHS], {
       cwd: ROOT,
       encoding: "utf-8",
       env,
@@ -1674,13 +1666,10 @@ async function main() {
       && DISTRIBUTION.gitAvailable
       && shouldPullOnLauncherStartup(process.env)
     ) {
-      const currentBranch = run("git rev-parse --abbrev-ref HEAD");
+      const currentBranch = run(sh`git rev-parse --abbrev-ref HEAD`);
       const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
       const pullCommand = createGitPullRebaseCommand(branchName);
-      const pullResult = run(pullCommand.displayCommand, {
-        executable: pullCommand.command,
-        args: pullCommand.args,
-      });
+      const pullResult = run(pullCommand);
       if (pullResult.ok) {
         log("Pulled latest from origin");
       } else {

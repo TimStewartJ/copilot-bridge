@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { sh } from "../shell-command.js";
 import { existsSync, readFileSync, readdirSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { runSyncCommand } from "../sync-command-runner.js";
@@ -51,7 +52,7 @@ function runFakeCommand(rootDir: string) {
   return runSyncCommand({
     rootDir,
     source: "test",
-    command: "fake command",
+    command: sh`fake command`,
     cwd: rootDir,
     env: process.env,
     timeoutMs: 1_000,

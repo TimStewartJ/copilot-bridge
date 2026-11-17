@@ -14,6 +14,7 @@ import { isBridgeSourceManagementAvailable } from "./distribution-mode.js";
 import { resolveBridgeControlRoot } from "./control-root.js";
 import { getProcessHost } from "./process-host.js";
 import { resolveRuntimePaths } from "./runtime-paths.js";
+import { sh } from "./shell-command.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -30,7 +31,7 @@ export const FAILURE_DETAIL_OUTPUT_LIMIT = 500;
 export const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 export const COMMAND_OUTPUT_CAPTURE_LIMIT = 1024 * 1024;
-export const STAGING_INSTALL_COMMAND = "npm install --no-audit --no-fund --include=dev";
+export const STAGING_INSTALL_COMMAND = sh`npm install --no-audit --no-fund --include=dev`;
 // An install takes well under a minute, but it is thousands of small file writes with little
 // processor time of its own: next to other heavy work on a busy machine it has needed more than
 // five minutes, which failed a deploy whose checks had already passed. The limit only has to

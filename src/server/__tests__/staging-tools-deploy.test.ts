@@ -6,7 +6,6 @@ import {
   DEPLOY_SMOKE_COMMAND,
   DEPLOY_STASH_SHA,
   DEPLOY_VALIDATION_COMMANDS,
-  STASH_LIST_COMMAND,
   VALIDATED_SHA,
   executedCommands,
   expectIsolatedValidationEnv,
@@ -236,7 +235,7 @@ describe("staging_deploy", () => {
     const headReads = execSyncMock.mock.calls.filter(([cmd]) => String(cmd) === "git rev-parse HEAD");
     expect(headReads).toHaveLength(1);
     expect(headReads[0]?.[1]?.cwd).toBe(stagingDir);
-    expect(commands).not.toContain('git merge "staging/preview-deploy" --no-edit');
+    expect(commands).not.toContain('git merge staging/preview-deploy --no-edit');
     expect(commands).not.toContain("git push origin main");
     expect(removedTrees()).not.toContain(stagingDir);
     expect(commands).not.toContain('git branch -D -- staging/preview-deploy');
@@ -324,7 +323,7 @@ describe("staging_deploy", () => {
     const commands = executedCommands();
     expect(commands.some(isStashPushCommand)).toBe(false);
     expect(commands.filter(guardLog)).toHaveLength(2);
-    expect(commands).not.toContain('git merge "staging/preview-deploy" --no-edit');
+    expect(commands).not.toContain('git merge staging/preview-deploy --no-edit');
     const written = [JSON.stringify(result), ...stagingLogMock.mock.calls.map(([msg]) => String(msg))].join("\n");
     expect(written.toLowerCase()).not.toContain(term);
     expect(existsSync(stagingDir)).toBe(true);
@@ -352,7 +351,7 @@ describe("staging_deploy", () => {
       expect(commands).not.toContain("git stash pop");
       expect(commands).not.toContain("git pull --rebase origin main");
       expect(commands).not.toContain("git rebase main");
-      expect(commands).not.toContain('git merge "staging/preview-deploy" --no-edit');
+      expect(commands).not.toContain('git merge staging/preview-deploy --no-edit');
       expect(commands).not.toContain("git push origin main");
       expect(requestRestartMock).not.toHaveBeenCalled();
     });
@@ -469,7 +468,7 @@ describe("staging_deploy", () => {
       // The command runner itself blows up (not a non-zero exit) right after the
       // stash was created, so the deploy never learns what it stashed.
       stagingLogMock.mockImplementation((message: string) => {
-        if (String(message).includes(`$ ${STASH_LIST_COMMAND}`)) throw new Error("log sink exploded");
+        if (String(message).includes("$ git --no-pager stash list ")) throw new Error("log sink exploded");
       });
       const { git, deploy } = await setupDeployScenario({ stashChanges: true, through: "stash" });
 
@@ -502,9 +501,9 @@ describe("staging_deploy", () => {
       // The restore command runner itself blows up (e.g. spawn failure), which is
       // the only way left for the stash restore to throw.
       const defaultSpawn = spawnMock.getMockImplementation();
-      spawnMock.mockImplementation((cmd: string, options?: any) => {
+      spawnMock.mockImplementation((cmd: string, ...rest: any[]) => {
         if (cmd === "git stash pop") throw new Error("spawn exploded");
-        return defaultSpawn!(cmd, options);
+        return defaultSpawn!(cmd, ...rest);
       });
       const { deploy } = await setupDeployScenario({ stashChanges: true });
 
@@ -586,7 +585,7 @@ describe("staging_deploy", () => {
     expect(wroteDataFile("pre-deploy-sha")).toBe(false);
     expect(hasRestartSignalWriteAttempt()).toBe(false);
     expect(requestRestartMock).not.toHaveBeenCalled();
-    expect(executedCommands()).not.toContain('git merge "staging/preview-deploy" --no-edit');
+    expect(executedCommands()).not.toContain('git merge staging/preview-deploy --no-edit');
   });
 
   it("blocks restart when pushing the merged production branch fails, without rebasing the validated commit", async () => {
@@ -647,7 +646,7 @@ describe("staging_deploy", () => {
     const { deploy } = await setupDeployScenario({
       through: "merge",
       respond: (cmd) => {
-        if (cmd === 'git merge "staging/preview-deploy" --no-edit') throw new Error("merge failed");
+        if (cmd === 'git merge staging/preview-deploy --no-edit') throw new Error("merge failed");
         if (cmd === "git merge --abort") return "";
         return undefined;
       },
@@ -709,7 +708,7 @@ describe("staging_deploy", () => {
     expect(result.success).toBe(true);
 
     const commands = executedCommands();
-    const mergeIndex = commands.indexOf('git merge "staging/preview-ordering" --no-edit');
+    const mergeIndex = commands.indexOf('git merge staging/preview-ordering --no-edit');
     const pushIndex = commands.indexOf("git push origin main");
     expect(mergeIndex).toBeGreaterThan(-1);
     expect(pushIndex).toBeGreaterThan(mergeIndex);

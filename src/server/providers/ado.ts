@@ -19,6 +19,7 @@ import { createProviderCache } from "./cache.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { buildAdoPullRequestUrl } from "../../shared/ado-work-reference.js";
 import { CLOSED_WORK_ITEM_STATES } from "../../shared/work-map.js";
+import { sh } from "../shell-command.js";
 
 // ── Token cache ───────────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ async function fetchAccessTokenOnce(): Promise<string> {
   const { stdout } = await getProcessHost().exec(
     // 499b84ac-1321-427f-aa17-267ca6975798 is the well-known Azure DevOps public resource ID
     // (used by all az CLI / MSAL integrations — not a secret)
-    'az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" --query accessToken -o tsv',
+    sh`az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" --query accessToken -o tsv`,
     { encoding: "utf-8", timeout: TOKEN_FETCH_TIMEOUT_MS },
   );
   const result = stdout.trim();

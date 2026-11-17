@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sh } from "../shell-command.js";
 import { runValidationGate, type ValidationGate } from "../validation-pipeline.js";
 
 const TEST_GATE: ValidationGate = {
   id: "timed",
   label: "Timed validation",
   steps: [
-    { command: "first", timeoutMs: 1_000 },
-    { command: "second", timeoutMs: 1_000 },
+    { command: sh`first`, timeoutMs: 1_000 },
+    { command: sh`second`, timeoutMs: 1_000 },
   ],
 };
 

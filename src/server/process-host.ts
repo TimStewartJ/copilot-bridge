@@ -6,7 +6,8 @@
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ProcessHost, type ProcessHostMode, type ProcessLaunchObservation } from "../packages/spawn-offthread/src/index.js";
+import { ProcessHost, type HostExecOptions, type ProcessHostMode, type ProcessLaunchObservation } from "../packages/spawn-offthread/src/index.js";
+import type { ShellCommand } from "./shell-command.js";
 
 export {
   HostExecError,
@@ -49,8 +50,13 @@ function resolveDefaultMode(): ProcessHostMode {
   return process.env.NODE_ENV === "test" ? "inline" : "worker";
 }
 
+/** The host as the Bridge uses it: `exec` runs only constant shell text (src/server/shell-command.ts). */
+export type BridgeProcessHost = Omit<ProcessHost, "exec"> & {
+  exec(command: ShellCommand, options?: HostExecOptions): ReturnType<ProcessHost["exec"]>;
+};
+
 /** The process-wide host. Created on first use so importing this module starts no threads. */
-export function getProcessHost(): ProcessHost {
+export function getProcessHost(): BridgeProcessHost {
   return (defaultHost ??= new ProcessHost({
     mode: resolveDefaultMode(),
     onLaunch: (observation) => launchObserver?.(observation),

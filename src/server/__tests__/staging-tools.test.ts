@@ -955,7 +955,7 @@ describe("staging tools", () => {
 
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands.every((cmd) => !PREVIEW_VALIDATION_COMMANDS.includes(cmd as (typeof PREVIEW_VALIDATION_COMMANDS)[number]))).toBe(true);
-    expect(commands.some((cmd) => cmd.startsWith("npx vite build --base"))).toBe(true);
+    expect(commands.some((cmd) => cmd.includes("vite.js build --base "))).toBe(true);
     expect(renameSyncCallMock.mock.calls.some(([, target]) =>
       isStagingValidationStampPath(String(target)),
     )).toBe(false);
@@ -1029,7 +1029,7 @@ describe("staging tools", () => {
 
     expect(result).toMatchObject({ success: true });
     expect(execSyncMock.mock.calls.some(([command]) =>
-      String(command).startsWith("npx vite build --base"))).toBe(true);
+      String(command).includes("vite.js build --base "))).toBe(true);
     const target = mod.__testing.readActivePreviewTarget(basename(stagingDir));
     expect(target).toMatchObject({ generationId });
     expect(target?.dataDir).not.toBe(dataDir);
@@ -1114,9 +1114,9 @@ describe("staging tools", () => {
 
     const commands = execSyncMock.mock.calls.map(([cmd]) => String(cmd));
     expect(commands.some((command) =>
-      command.startsWith(`npx vite build --base "/staging/${prefix}/" --outDir "`)
+      command.includes(`vite.js build --base /staging/${prefix}/ --outDir `)
       && command.includes(join(previewParent, ".generations", prefix))
-      && command.endsWith(`${join("client")}" --emptyOutDir`))).toBe(true);
+      && command.endsWith(`${join("client")} --emptyOutDir`))).toBe(true);
   });
 });
 

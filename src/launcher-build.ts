@@ -1,12 +1,14 @@
 import { DEPLOY_GATE, ROLLBACK_GATE, STAMPED_DEPLOY_GATE, runValidationGate, type ValidationCommandOptions } from "./server/validation-pipeline.js";
 import type { RestartValidationMode } from "./server/restart-signal.js";
+import { createGitCommand } from "./server/git-command.js";
+import type { Command } from "./server/shell-command.js";
 
 export type LauncherCommandResult = { ok: boolean; output: string };
 export type LauncherCommandOptions = ValidationCommandOptions;
 
 interface LauncherBuildOptions {
   ensureDeps: () => boolean;
-  run: (cmd: string, options?: LauncherCommandOptions) => LauncherCommandResult;
+  run: (cmd: Command, options?: LauncherCommandOptions) => LauncherCommandResult;
   log: (msg: string) => void;
   validationMode?: RestartValidationMode;
   hasSourceChanges?: () => boolean;
@@ -116,7 +118,7 @@ export function rebuildAfterRollback({ ensureDeps, run, log }: LauncherBuildOpti
 }
 
 export function runLauncherRollback({ rollbackTarget, ensureDeps, run, log }: LauncherRollbackOptions): boolean {
-  const reset = run(`git reset --hard ${rollbackTarget}`);
+  const reset = run(createGitCommand(["reset", "--hard", rollbackTarget]));
   if (!reset.ok) {
     logFailure("Rollback git reset failed", reset.output, log);
     return false;

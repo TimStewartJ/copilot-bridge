@@ -49,7 +49,6 @@ describe("validation command runner retention", () => {
       logPath,
       cwd: rootDir,
       env: process.env,
-      shell: false,
     });
 
     expect(result.ok).toBe(true);

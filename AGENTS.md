@@ -46,7 +46,7 @@ Never decide anything from the words a model wrote. That covers assistant replie
 - Build paths with `path.join`, `path.resolve`, or `path.posix`/`path.win32`. Do not concatenate separators or assume `/`.
 - Split text that may come from Windows with `/\r?\n/`.
 - Keep OS-specific process, shell, and filesystem behavior behind `src/server/platform.ts` or an existing platform abstraction.
-- Pass argument arrays (`execFile`-style) instead of shell strings. Do not rely on shell escaping for correctness.
+- Pass values to a program as arguments (`commandLine()`, `createGitCommand()`, `execFile`), never inside shell text. Shell text is a `ShellCommand`, made only by `` sh`...` `` in `src/server/shell-command.ts`, which accepts constant text. Every runner that can start a shell takes that type, so `tsc` rejects a command built from values.
 
 ## Server event loop
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { commandText, type Command } from "./server/shell-command.js";
 import {
   rebuildAfterRollback,
   runLauncherBuild,
@@ -85,7 +86,7 @@ describe("runLauncherBuild", () => {
 
   it("skips or keeps deploy validation for operational restarts depending on source changes", () => {
     // No source changes: skip validation
-    const run1 = vi.fn((_cmd: string) => ({ ok: true, output: "" }));
+    const run1 = vi.fn((_cmd: Command) => ({ ok: true, output: "" }));
     const log1 = vi.fn();
     expect(runLauncherBuild({
       ensureDeps: vi.fn(() => true),
@@ -98,7 +99,7 @@ describe("runLauncherBuild", () => {
     expect(log1).toHaveBeenCalledWith("Operational restart validation skipped — no source changes detected");
 
     // Source changed: run full validation
-    const run2 = vi.fn((_cmd: string) => ({ ok: true, output: "" }));
+    const run2 = vi.fn((_cmd: Command) => ({ ok: true, output: "" }));
     const log2 = vi.fn();
     expect(runLauncherBuild({
       ensureDeps: vi.fn(() => true),
@@ -129,8 +130,8 @@ describe("rebuildAfterRollback", () => {
 describe("runLauncherRollback", () => {
   it("fails fast when git reset fails", () => {
     const ensureDeps = vi.fn(() => true);
-    const run = vi.fn((cmd: string) =>
-      cmd.startsWith("git reset --hard")
+    const run = vi.fn((cmd: Command) =>
+      commandText(cmd).startsWith("git reset --hard")
         ? { ok: false, output: "reset failed" }
         : { ok: true, output: "" },
     );

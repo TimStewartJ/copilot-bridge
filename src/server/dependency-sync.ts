@@ -8,7 +8,6 @@ const PATCHES_DIR = "patches";
 const BACKUP_DIR_PREFIX = ".patch-package-backups-";
 
 export const DEPENDENCY_SYNC_PATHS = [...ROOT_DEP_FILES, PATCHES_DIR] as const;
-export const DEPENDENCY_SYNC_GIT_PATHSPEC = DEPENDENCY_SYNC_PATHS.join(" ");
 
 /**
  * Remove any leftover .patch-package-backups-* directories under

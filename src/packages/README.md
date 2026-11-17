@@ -54,9 +54,15 @@ npm run check:packages    # server typecheck, per-package typecheck, package uni
 npm run packages:verify   # build, pack, install the tarballs in a scratch project, run each smoke test
 npm run packages:pack -- --out E:\Temp\packages   # just the tarballs
 npm run packages:release-check -- <folder name>   # can this package's version be released?
+npm run packages:changelog-check   # does each CHANGELOG.md cover src/ changes since the last release?
 ```
 
-`check:pr` runs the per-package typecheck, and `npm test` runs the package tests. Build output
+`check:pr` runs the per-package typecheck and the changelog check, and `npm test` runs the package
+tests. The changelog check compares each package's `src/` with its latest release tag
+(`<folder name>-v<version>`, so it needs `git fetch --tags`) and ignores edits to comments and
+whitespace. A change passes once `## Unreleased` in `CHANGELOG.md` has a line about it, or, while a
+release is being prepared, once `package.json` has the next version and its `## <version>` section
+has one. Build output
 never lands in the repository, because the Bridge build stamp hashes `src/`: `scripts/packages.mjs`
 writes to a temporary directory, or to an `--out` directory outside the repository.
 

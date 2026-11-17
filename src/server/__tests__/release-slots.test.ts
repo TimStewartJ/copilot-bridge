@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { sh } from "../shell-command.js";
 import { rename } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -70,7 +71,7 @@ describe("release slots", () => {
       commitSha: "abcdef1234567890",
       source: "staging_deploy",
       validationMode: "deploy",
-      installCommand: "npm install --test",
+      installCommand: sh`npm install --test`,
       installTimeoutMs: 30_000,
       now: new Date("2026-05-18T20:00:00.000Z"),
       run: async (command, cwd, options) => {
@@ -130,7 +131,7 @@ describe("release slots", () => {
       commitSha: "fedcba9876543210",
       source: "release_update",
       validationMode: "deploy",
-      installCommand: "npm install --test",
+      installCommand: sh`npm install --test`,
       installTimeoutMs: 30_000,
       now: new Date("2026-05-18T21:00:00.000Z"),
       run: async (command, cwd) => {
@@ -170,7 +171,7 @@ describe("release slots", () => {
       commitSha: "abcdef1234567890",
       source: "staging_deploy",
       validationMode: "deploy",
-      installCommand: "npm install --test",
+      installCommand: sh`npm install --test`,
       installTimeoutMs: 30_000,
       now: new Date("2026-05-18T22:00:00.000Z"),
       run: async (command, cwd) => {
@@ -210,7 +211,7 @@ describe("release slots", () => {
       commitSha: "abcdef1234567890",
       source: "staging_deploy",
       validationMode: "deploy",
-      installCommand: "npm install --test",
+      installCommand: sh`npm install --test`,
       installTimeoutMs: 30_000,
       now: new Date("2026-05-18T23:00:00.000Z"),
       run: async (command, cwd) => {

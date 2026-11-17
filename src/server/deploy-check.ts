@@ -12,24 +12,21 @@ import {
   VALIDATION_LOG_DIR_ENV,
 } from "./validation-command-log.js";
 import { runStreamingValidationCommand } from "./validation-command-runner.js";
+import { sh, type ShellCommand } from "./shell-command.js";
 
 export const DEPLOY_CHECK_STEPS = [
   // Production-safe deploy validation only. Staging-only preview smoke asserts a
   // bridge-staging worktree and is enforced by STAGING_DEPLOY_GATE instead.
-  ["npm", "run", "check:pr"],
+  sh`npm run check:pr`,
 ] as const;
 
 const LOG_TAIL_BYTES = 24_000;
-type DeployCheckStep = typeof DEPLOY_CHECK_STEPS[number];
+type DeployCheckStep = ShellCommand;
 type DeployCheckStepResult = {
   step: DeployCheckStep;
   elapsedMs: number;
   logPath: string;
 };
-
-function npmCommand(): string {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
-}
 
 function resolveLogDir(cwd: string): string {
   // Explicit operator override; deploy validation points its child processes at
@@ -55,7 +52,8 @@ function ensureLogDir(cwd: string): string {
 }
 
 function runStep(step: DeployCheckStep, stepIndex: number, totalSteps: number): Promise<DeployCheckStepResult> {
-  const displayCommand = step.join(" ");
+  // The shell finds npm on every platform; Windows only has the npm.cmd launcher, which needs one.
+  const displayCommand: string = step;
   const cwd = process.cwd();
   const rootDir = resolveBridgeControlRoot(cwd);
   const logPath = buildValidationCommandLogPath({
@@ -63,20 +61,15 @@ function runStep(step: DeployCheckStep, stepIndex: number, totalSteps: number): 
     source: `deploy-check-${stepIndex + 1}`,
     command: displayCommand,
   });
-  const command = step[0] === "npm" ? npmCommand() : step[0];
-  const shell = process.platform === "win32";
   console.log(`[check:deploy] ${stepIndex + 1}/${totalSteps}: ${displayCommand} (log: ${logPath})`);
 
   return runStreamingValidationCommand({
     rootDir,
     source: `deploy-check-${stepIndex + 1}`,
-    command,
-    args: step.slice(1),
-    displayCommand,
+    command: step,
     logPath,
     cwd,
     env: process.env,
-    shell,
   }).then((result) => {
     const elapsed = formatCommandDuration(result.elapsedMs);
     if (result.ok) {
@@ -103,7 +96,7 @@ function runStep(step: DeployCheckStep, stepIndex: number, totalSteps: number): 
 
 function formatStepSummary(results: DeployCheckStepResult[]): string {
   return results
-    .map(({ step, elapsedMs }, index) => `${index + 1}. ${step.join(" ")} ${formatCommandDuration(elapsedMs)}`)
+    .map(({ step, elapsedMs }, index) => `${index + 1}. ${step} ${formatCommandDuration(elapsedMs)}`)
     .join("; ");
 }
 

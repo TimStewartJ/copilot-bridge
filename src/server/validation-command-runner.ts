@@ -17,6 +17,7 @@ import {
   type ProcessIdentity,
 } from "./platform.js";
 import { getProcessHost, type HostChild } from "./process-host.js";
+import type { CommandSpec } from "./shell-command.js";
 import {
   appendCapturedCommandOutput,
   joinFailureSections,
@@ -38,31 +39,23 @@ export interface ValidationCommandRunResult {
   validationLogWriteError?: string;
 }
 
-export interface AsyncValidationCommandRunOptions {
+export type AsyncValidationCommandRunOptions = CommandSpec & {
   rootDir: string;
   source: string;
-  command: string;
-  args?: readonly string[];
-  displayCommand?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
-  shell?: boolean;
   failureOutputFormat?: ValidationCommandFailureOutputFormat;
-}
+};
 
-export interface StreamingValidationCommandRunOptions {
+export type StreamingValidationCommandRunOptions = CommandSpec & {
   rootDir: string;
   source: string;
-  command: string;
-  args?: readonly string[];
-  displayCommand?: string;
   logPath?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
-  shell?: boolean;
   timeoutMs?: number;
-}
+};
 
 export interface StreamingValidationCommandRunResult extends ValidationCommandRunResult {
   elapsedMs: number;
@@ -192,17 +185,14 @@ export function formatValidationCommandFailureResult({
   };
 }
 
-function spawnShell(options: Pick<AsyncValidationCommandRunOptions, "args" | "shell">): boolean {
-  return options.shell ?? (!options.args || options.args.length === 0);
-}
-
 function startCommand(
-  options: Pick<AsyncValidationCommandRunOptions, "command" | "args" | "cwd" | "env" | "shell">,
+  options: CommandSpec & { cwd: string; env: NodeJS.ProcessEnv },
 ): Promise<HostChild> {
   return getProcessHost().spawn(options.command, options.args ?? [], {
     cwd: options.cwd,
     env: options.env,
-    shell: spawnShell(options),
+    // Only constant ShellCommand text goes to a shell; a program with arguments never does.
+    shell: options.args === undefined,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });

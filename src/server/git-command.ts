@@ -1,5 +1,6 @@
 import { getProcessHost } from "./process-host.js";
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
+import { commandLine, type CommandLine } from "./shell-command.js";
 
 export const LOCAL_GIT_TIMEOUT_MS = 5_000;
 
@@ -7,23 +8,10 @@ export type GitCommandResult =
   | { ok: true; output: string }
   | { ok: false; error: string };
 
-export interface GitCommandInvocation {
-  command: "git";
-  args: string[];
-  displayCommand: string;
-}
-
-function formatDisplayArg(arg: string): string {
-  return /^[A-Za-z0-9_./:@+-]+$/.test(arg) ? arg : JSON.stringify(arg);
-}
+export type GitCommandInvocation = CommandLine;
 
 export function createGitCommand(args: readonly string[]): GitCommandInvocation {
-  const commandArgs = [...args];
-  return {
-    command: "git",
-    args: commandArgs,
-    displayCommand: ["git", ...commandArgs.map(formatDisplayArg)].join(" "),
-  };
+  return commandLine("git", args);
 }
 
 export function createGitPullRebaseCommand(branch: string): GitCommandInvocation {

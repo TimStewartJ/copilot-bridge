@@ -147,6 +147,7 @@ import {
 } from "./staging-preview-discovery.js";
 import { managementJobOriginSessionId, queuedManagementJobResult } from "./management-job-tool-results.js";
 import { createGitCommand, createGitPullRebaseCommand } from "./git-command.js";
+import { commandLine, commandSpec, commandText, sh, type Command } from "./shell-command.js";
 
 
 type StagingRunOptions = {
@@ -154,11 +155,9 @@ type StagingRunOptions = {
   isolateRuntimeEnv?: boolean;
   env?: NodeJS.ProcessEnv;
   log?: (message: string) => void;
-  executable?: string;
-  args?: readonly string[];
 };
 type StagingCommandRunner = (
-  cmd: string,
+  cmd: Command,
   cwd: string,
   options?: StagingRunOptions,
 ) => Promise<{ ok: boolean; output: string }>;
@@ -560,7 +559,7 @@ async function removeStagingDist(prefix: string): Promise<void> {
 }
 
 async function run(
-  cmd: string,
+  cmd: Command,
   cwd: string,
   options: StagingRunOptions = {},
 ): Promise<{ ok: boolean; output: string }> {
@@ -574,18 +573,15 @@ async function run(
     : undefined;
   const baseEnv = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
   const env = withNonInteractiveCommandEnv({ ...baseEnv, ...options.env });
-  options.log?.(`$ ${cmd}\n[cwd] ${cwd}`);
+  options.log?.(`$ ${commandText(cmd)}\n[cwd] ${cwd}`);
   try {
     const result = await runValidationCommand({
+      ...commandSpec(cmd),
       rootDir: PRODUCTION_ROOT,
       source: "staging",
-      command: options.executable ?? cmd,
-      args: options.args,
-      displayCommand: cmd,
       cwd,
       env,
       timeoutMs,
-      shell: options.args ? false : undefined,
       failureOutputFormat: "plain",
     });
     if (result.output.trim()) options.log?.(result.output.trimEnd());
@@ -642,7 +638,7 @@ function deployValidationEnv(): NodeJS.ProcessEnv {
 }
 
 async function listStagingBranchPrefixes(): Promise<Set<string> | null> {
-  const branchList = await run('git branch --format="%(refname:short)" --list "staging/*"', PRODUCTION_ROOT);
+  const branchList = await run(sh`git branch --format="%(refname:short)" --list "staging/*"`, PRODUCTION_ROOT);
   if (!branchList.ok) {
     log(`Warning: could not list staging branches: ${branchList.output.slice(-200)}`);
     return null;
@@ -673,10 +669,7 @@ function ensureNodeModulesIgnored(stagingDir: string): void {
 
 async function runCleanupGit(args: string[]): Promise<string> {
   const command = createGitCommand(args);
-  const result = await run(command.displayCommand, PRODUCTION_ROOT, {
-    executable: command.command,
-    args: command.args,
-  });
+  const result = await run(command, PRODUCTION_ROOT);
   if (!result.ok) throw new Error(`${command.displayCommand}: ${result.output}`);
   return result.output;
 }
@@ -699,7 +692,7 @@ async function removeWorktree(stagingDir: string, branch: string): Promise<void>
 }
 
 async function worktreeHasUncommittedChanges(stagingDir: string): Promise<boolean> {
-  const status = await run("git --no-pager status --porcelain", stagingDir, { timeoutMs: 30_000 });
+  const status = await run(sh`git --no-pager status --porcelain`, stagingDir, { timeoutMs: 30_000 });
   if (!status.ok) return true;
   return status.output.trim().length > 0;
 }
@@ -1075,7 +1068,7 @@ export async function runStagingPreviewJob(
   }
 
   if (shouldValidate) {
-    const preValidationHead = await runCommand("git rev-parse HEAD", stagingDir);
+    const preValidationHead = await runCommand(sh`git rev-parse HEAD`, stagingDir);
     const preValidationCommitSha = preValidationHead.ok ? preValidationHead.output.trim() : "";
     const preValidationDependencyHash = dependencySyncHash(stagingDir);
     const validationResult = await runValidationGateAsync(PREVIEW_GATE, {
@@ -1093,7 +1086,7 @@ export async function runStagingPreviewJob(
         { stagingDir, gateId: validationResult.gate.id },
       );
     }
-    const postValidationHead = await runCommand("git rev-parse HEAD", stagingDir);
+    const postValidationHead = await runCommand(sh`git rev-parse HEAD`, stagingDir);
     const postValidationCommitSha = postValidationHead.ok ? postValidationHead.output.trim() : "";
     const postValidationDependencyHash = dependencySyncHash(stagingDir);
     if (
@@ -1131,16 +1124,23 @@ export async function runStagingPreviewJob(
     writeLog("Skipping staging preview validation");
   }
 
-  const buildResult = await runCommand(
-    `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
-    stagingDir,
-  );
+  // Vite's own entry run with this Node: npx is a .cmd launcher on Windows, which only a shell can start.
+  const buildCommand = commandLine(process.execPath, [
+    join(stagingDir, "node_modules", "vite", "bin", "vite.js"),
+    "build",
+    "--base",
+    basePath,
+    "--outDir",
+    outDir,
+    "--emptyOutDir",
+  ]);
+  const buildResult = await runCommand(buildCommand, stagingDir);
   if (!buildResult.ok) {
     await removePreviewGeneration(target);
     return commandFailure(
       "Staging preview build failed.",
       `Vite could not build the staging preview for ${basePath}.`,
-      `npx vite build --base "${basePath}" --outDir "${outDir}" --emptyOutDir`,
+      buildCommand.displayCommand,
       stagingDir,
       buildResult.output,
       { stagingDir, previewPath: basePath, outDir },
@@ -1382,7 +1382,7 @@ interface ProductionStashEntry {
   subject: string;
 }
 
-const PRODUCTION_STASH_LIST_COMMAND = 'git --no-pager stash list --format="%H %gs"';
+const PRODUCTION_STASH_LIST_COMMAND = createGitCommand(["--no-pager", "stash", "list", "--format=%H %gs"]);
 
 const STASH_RESTORE_WARNING_SUMMARY =
   "Warning: your uncommitted production changes could not be restored automatically and are still saved in git stash.";
@@ -1588,7 +1588,7 @@ async function runStagingDeployJobImpl(
     );
   };
 
-  const addResult = await runCommand("git add -A", stagingDir);
+  const addResult = await runCommand(sh`git add -A`, stagingDir);
   if (!addResult.ok) {
     return commandFailure(
       "Failed to stage staging worktree changes for the deploy commit.",
@@ -1600,7 +1600,7 @@ async function runStagingDeployJobImpl(
       { stagingDir, branch },
     );
   }
-  const status = await runCommand("git --no-pager status --porcelain", stagingDir);
+  const status = await runCommand(sh`git --no-pager status --porcelain`, stagingDir);
   if (!status.ok) {
     return commandFailure(
       "Failed to read the staging worktree status.",
@@ -1618,12 +1618,13 @@ async function runStagingDeployJobImpl(
     const msgFile = join(stagingDir, ".commit-msg");
     try {
       writeFileSync(msgFile, `${String(message ?? "").replace(/\s+$/, "")}\n`);
-      const commitResult = await runCommand(`git commit -F "${msgFile}"`, stagingDir);
+      const commitCommand = createGitCommand(["commit", "-F", msgFile]);
+      const commitResult = await runCommand(commitCommand, stagingDir);
       if (!commitResult.ok) {
         return commandFailure(
           "Failed to commit staged changes.",
           "Failed to create the staging deploy commit. Resolve the git issue and retry.",
-          `git commit -F "${msgFile}"`,
+          commitCommand.displayCommand,
           stagingDir,
           commitResult.output,
           { stagingDir, branch },
@@ -1638,15 +1639,16 @@ async function runStagingDeployJobImpl(
     }
   }
 
-  const prodBranchResult = await runCommand("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
+  const prodBranchResult = await runCommand(sh`git rev-parse --abbrev-ref HEAD`, PRODUCTION_ROOT);
   const prodBranch = prodBranchResult.ok ? prodBranchResult.output.trim() : "main";
 
-  const aheadCheck = await runCommand(`git log ${prodBranch}..${branch} --oneline`, PRODUCTION_ROOT);
+  const aheadCommand = createGitCommand(["log", `${prodBranch}..${branch}`, "--oneline"]);
+  const aheadCheck = await runCommand(aheadCommand, PRODUCTION_ROOT);
   if (!aheadCheck.ok) {
     return commandFailure(
       "Failed to compare staging changes with production.",
       `Failed to verify whether ${branch} is ahead of ${prodBranch}.`,
-      `git log ${prodBranch}..${branch} --oneline`,
+      aheadCommand.displayCommand,
       PRODUCTION_ROOT,
       aheadCheck.output,
       { stagingDir, branch, prodBranch },
@@ -1672,7 +1674,7 @@ async function runStagingDeployJobImpl(
   if (earlyGuardFailure) return earlyGuardFailure;
 
   const stashMarker = `bridge-deploy-${prefix}-${randomBytes(4).toString("hex")}`;
-  const stashCommand = `git stash push --include-untracked -m "${stashMarker}"`;
+  const stashCommand = createGitCommand(["stash", "push", "--include-untracked", "-m", stashMarker]);
   const safeWriteLog = (message: string) => {
     try {
       writeLog(message);
@@ -1699,7 +1701,7 @@ async function runStagingDeployJobImpl(
       safeWriteLog(`Stashed production changes left in place: deploy stash ${stash.sha} is no longer the top stash entry`);
       return;
     }
-    const popResult = await runRecoveryCommand("git stash pop", PRODUCTION_ROOT);
+    const popResult = await runRecoveryCommand(sh`git stash pop`, PRODUCTION_ROOT);
     if (popResult.ok) {
       stash.restored = true;
       safeWriteLog("Restored stashed production changes");
@@ -1716,7 +1718,7 @@ async function runStagingDeployJobImpl(
   // Assume the worst until the stash outcome is confirmed, so an exception
   // between here and identification still tells the user where to look.
   stash.warning = stashRestoreWarning(
-    `The deploy could not confirm the outcome of '${stashCommand}' in ${PRODUCTION_ROOT}, so uncommitted production changes may be stashed under the message '${stashMarker}'.`,
+    `The deploy could not confirm the outcome of '${stashCommand.displayCommand}' in ${PRODUCTION_ROOT}, so uncommitted production changes may be stashed under the message '${stashMarker}'.`,
   );
   const stashResult = await runCommand(stashCommand, PRODUCTION_ROOT);
   if (!stashResult.ok) {
@@ -1725,7 +1727,7 @@ async function runStagingDeployJobImpl(
       "Failed to stash uncommitted production changes.",
       "Stashing the production checkout failed, so the deploy stopped before pulling, rebasing, merging, or pushing anything. " +
         `Check 'git status' and 'git stash list' in ${PRODUCTION_ROOT} for an entry named '${stashMarker}' before retrying; the staging worktree is intact.`,
-      stashCommand,
+      stashCommand.displayCommand,
       PRODUCTION_ROOT,
       stashResult.output,
       { stagingDir, branch, prodBranch },
@@ -1749,19 +1751,17 @@ async function runStagingDeployJobImpl(
   }
 
   const pullCommand = createGitPullRebaseCommand(prodBranch);
-  const pullResult = await runCommand(pullCommand.displayCommand, PRODUCTION_ROOT, {
-    executable: pullCommand.command,
-    args: pullCommand.args,
-  });
+  const pullResult = await runCommand(pullCommand, PRODUCTION_ROOT);
   if (pullResult.ok) {
     writeLog("Pulled latest production from origin");
   } else {
     writeLog(`Git pull failed (non-fatal, using local state): ${pullResult.output.slice(-200)}`);
   }
 
-  const rebaseResult = await runCommand(`git rebase ${prodBranch}`, stagingDir);
+  const rebaseCommand = createGitCommand(["rebase", prodBranch]);
+  const rebaseResult = await runCommand(rebaseCommand, stagingDir);
   if (!rebaseResult.ok) {
-    await runCommand("git rebase --abort", stagingDir);
+    await runCommand(sh`git rebase --abort`, stagingDir);
     await unstashProduction();
     writeLog("Staging rebase failed — manual conflict resolution needed");
     return commandFailure(
@@ -1775,7 +1775,7 @@ async function runStagingDeployJobImpl(
         "4. git rebase --continue\n" +
         "5. Repeat steps 2-4 if there are more conflicts\n" +
         "6. Call staging_deploy again — it will skip the commit and proceed to merge",
-      `git rebase ${prodBranch}`,
+      rebaseCommand.displayCommand,
       stagingDir,
       rebaseResult.output,
       { stagingDir, branch, prodBranch },
@@ -1811,7 +1811,7 @@ async function runStagingDeployJobImpl(
     reason: "missing staging validation stamp",
   };
   if (stagingStamp) {
-    const candidateHeadResult = await runCommand("git rev-parse HEAD", stagingDir);
+    const candidateHeadResult = await runCommand(sh`git rev-parse HEAD`, stagingDir);
     const candidateCommitSha = candidateHeadResult.ok ? candidateHeadResult.output.trim() : "";
     if (candidateCommitSha) {
       dependencyHash = dependencySyncHash(stagingDir);
@@ -1854,7 +1854,7 @@ async function runStagingDeployJobImpl(
     );
   }
   if (!validatedCommitSha) {
-    const validatedHeadResult = await runCommand("git rev-parse HEAD", stagingDir);
+    const validatedHeadResult = await runCommand(sh`git rev-parse HEAD`, stagingDir);
     if (!validatedHeadResult.ok) {
       await unstashProduction();
       return commandFailure(
@@ -1911,7 +1911,7 @@ async function runStagingDeployJobImpl(
     );
   }
 
-  const headResult = await runCommand("git rev-parse HEAD", PRODUCTION_ROOT);
+  const headResult = await runCommand(sh`git rev-parse HEAD`, PRODUCTION_ROOT);
   const preDeploySha = headResult.ok ? headResult.output.trim() : "";
   let rollbackCheckpoint = { sha: "", createdByCurrentOperation: false };
   if (preDeploySha) {
@@ -1924,9 +1924,10 @@ async function runStagingDeployJobImpl(
     );
   }
 
-  const mergeResult = await runCommand(`git merge "${branch}" --no-edit`, PRODUCTION_ROOT);
+  const mergeCommand = createGitCommand(["merge", branch, "--no-edit"]);
+  const mergeResult = await runCommand(mergeCommand, PRODUCTION_ROOT);
   if (!mergeResult.ok) {
-    await runCommand("git merge --abort", PRODUCTION_ROOT);
+    await runCommand(sh`git merge --abort`, PRODUCTION_ROOT);
     await unstashProduction();
     removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
     return commandFailure(
@@ -1934,14 +1935,14 @@ async function runStagingDeployJobImpl(
       `Merge failed after rebase (unexpected). The merge has been aborted.\n` +
         `Your staging worktree is still intact. Try running 'git rebase ${prodBranch}' ` +
         "in the staging directory to resolve conflicts, then call staging_deploy again.",
-      `git merge "${branch}" --no-edit`,
+      mergeCommand.displayCommand,
       PRODUCTION_ROOT,
       mergeResult.output,
       { stagingDir, branch, prodBranch },
     );
   }
 
-  const newHead = await runCommand("git rev-parse --short HEAD", PRODUCTION_ROOT);
+  const newHead = await runCommand(sh`git rev-parse --short HEAD`, PRODUCTION_ROOT);
   const commitSha = newHead.ok ? newHead.output.trim() : "unknown";
   if (
     !newHead.ok
@@ -1951,14 +1952,14 @@ async function runStagingDeployJobImpl(
   ) {
     let resetFailure = "";
     if (preDeploySha) {
-      const resetCommand = `git reset --hard ${preDeploySha}`;
+      const resetCommand = createGitCommand(["reset", "--hard", preDeploySha]);
       const resetResult = await runCommand(resetCommand, PRODUCTION_ROOT);
       if (resetResult.ok) {
         removeRollbackCheckpointIfCreated(PRE_DEPLOY_SHA_FILE, rollbackCheckpoint);
         writeLog(`Production checkout reset after validated commit mismatch: ${preDeploySha}`);
       } else {
         resetFailure = joinFailureSections(
-          `Reset command: ${resetCommand}`,
+          `Reset command: ${resetCommand.displayCommand}`,
           resetResult.output,
         ) ?? resetResult.output;
       }
@@ -1992,14 +1993,15 @@ async function runStagingDeployJobImpl(
   }
   writeLog(`Merged to production: ${commitSha}`);
 
-  let pushResult = await runCommand(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
+  const pushCommand = createGitCommand(["push", "origin", prodBranch]);
+  let pushResult = await runCommand(pushCommand, PRODUCTION_ROOT);
   if (!pushResult.ok) {
     writeLog("Push failed, retrying the same validated commit without rebasing...");
-    pushResult = await runCommand(`git push origin ${prodBranch}`, PRODUCTION_ROOT);
+    pushResult = await runCommand(pushCommand, PRODUCTION_ROOT);
   }
   if (!pushResult.ok) {
     if (preDeploySha) {
-      const resetCommand = `git reset --hard ${preDeploySha}`;
+      const resetCommand = createGitCommand(["reset", "--hard", preDeploySha]);
       writeLog(`Push failed — resetting production checkout to pre-deploy SHA ${preDeploySha}`);
       const resetResult = await runCommand(resetCommand, PRODUCTION_ROOT);
       if (!resetResult.ok) {
@@ -2013,7 +2015,7 @@ async function runStagingDeployJobImpl(
             (stash.pending
               ? `Your uncommitted production changes are stashed as '${stashMarker}' (${stash.sha}); restore them only after recovering the checkout.`
               : "If production changes were stashed, restore them only after recovering the checkout."),
-          resetCommand,
+          resetCommand.displayCommand,
           PRODUCTION_ROOT,
           joinFailureSections(pushResult.output, resetResult.output) ?? resetResult.output,
           { stagingDir, branch, prodBranch, commitSha, preDeploySha },
@@ -2030,7 +2032,7 @@ async function runStagingDeployJobImpl(
       preDeploySha
         ? `The production merge succeeded locally, but pushing ${prodBranch} to origin failed. The local production checkout was reset back to ${preDeploySha}, restart signaling was blocked, and the staging worktree was left intact so deployment can be retried.`
         : `The production merge succeeded locally, but pushing ${prodBranch} to origin failed. Restart signaling was blocked, the rollback checkpoint was preserved, and the staging worktree was left intact for manual recovery.`,
-      `git push origin ${prodBranch}`,
+      pushCommand.displayCommand,
       PRODUCTION_ROOT,
       pushResult.output,
       { stagingDir, branch, prodBranch, commitSha, ...(preDeploySha ? { revertedTo: preDeploySha } : {}) },
@@ -2038,7 +2040,7 @@ async function runStagingDeployJobImpl(
   }
   writeLog("Pushed to origin");
 
-  const deployedHeadResult = await runCommand("git rev-parse HEAD", PRODUCTION_ROOT);
+  const deployedHeadResult = await runCommand(sh`git rev-parse HEAD`, PRODUCTION_ROOT);
   const deployedCommitSha = deployedHeadResult.ok ? deployedHeadResult.output.trim() : "";
   if (
     !deployedCommitSha
@@ -2177,13 +2179,10 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       log(`Creating staging worktree: ${stagingDir} (branch: ${branch})`);
 
       // Pull latest from origin so the worktree starts from the newest remote state
-      const currentBranch = await run("git rev-parse --abbrev-ref HEAD", PRODUCTION_ROOT);
+      const currentBranch = await run(sh`git rev-parse --abbrev-ref HEAD`, PRODUCTION_ROOT);
       const branchName = currentBranch.ok ? currentBranch.output.trim() : "main";
       const pullCommand = createGitPullRebaseCommand(branchName);
-      const pullResult = await run(pullCommand.displayCommand, PRODUCTION_ROOT, {
-        executable: pullCommand.command,
-        args: pullCommand.args,
-      });
+      const pullResult = await run(pullCommand, PRODUCTION_ROOT);
       if (pullResult.ok) {
         log("Pulled latest from origin");
       } else {
@@ -2191,12 +2190,13 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       }
 
       // Create branch from current HEAD
-      const branchResult = await run(`git branch "${branch}"`, PRODUCTION_ROOT);
+      const branchCommand = createGitCommand(["branch", branch]);
+      const branchResult = await run(branchCommand, PRODUCTION_ROOT);
       if (!branchResult.ok) {
         return commandFailure(
           "Failed to create staging branch.",
           `Failed to create branch ${branch} for a new staging worktree.`,
-          `git branch "${branch}"`,
+          branchCommand.displayCommand,
           PRODUCTION_ROOT,
           branchResult.output,
           { branch, stagingDir },
@@ -2204,13 +2204,14 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       }
 
       // Create worktree
-      const wtResult = await run(`git worktree add "${stagingDir}" "${branch}"`, PRODUCTION_ROOT);
+      const worktreeCommand = createGitCommand(["worktree", "add", stagingDir, branch]);
+      const wtResult = await run(worktreeCommand, PRODUCTION_ROOT);
       if (!wtResult.ok) {
-        await run(`git branch -D "${branch}"`, PRODUCTION_ROOT);
+        await run(createGitCommand(["branch", "-D", branch]), PRODUCTION_ROOT);
         return commandFailure(
           "Failed to create staging worktree.",
           `Failed to create worktree ${stagingDir} from branch ${branch}.`,
-          `git worktree add "${stagingDir}" "${branch}"`,
+          worktreeCommand.displayCommand,
           PRODUCTION_ROOT,
           wtResult.output,
           { branch, stagingDir },

@@ -147,13 +147,8 @@ describe("deploy check contract", () => {
     expect(normalizePath(results[0].logPath).startsWith(normalizePath(cwd))).toBe(true);
     expect(readFileSync(results[0].logPath, "utf-8")).toBe("pr ok\n");
     expect(spawnMock).toHaveBeenCalledWith(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      ["run", "check:pr"],
-      expect.objectContaining({
-        cwd,
-        shell: process.platform === "win32",
-        windowsHide: true,
-      }),
+      "npm run check:pr",
+      expect.objectContaining({ cwd, shell: true, windowsHide: true }),
     );
   });
 
