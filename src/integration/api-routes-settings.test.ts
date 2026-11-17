@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createModelAbTestGrader } from "../server/model-ab-grading.js";
 import type { ApiRouteTestState } from "../test-support/api-routes.js";
 import {
   createMockSessionManager,
@@ -313,5 +314,39 @@ describe("Model A/B test routes", () => {
         { arm: "b", chats: 0, scheduledRuns: 1, meteredSessions: 0 },
       ],
     });
+  });
+
+  it("POST /api/model-ab-test/grade starts one grading run and GET reports it", async () => {
+    const local = createTestApp();
+    expect((await request(local.app).post("/api/model-ab-test/grade").send({})).status).toBe(503);
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => { finish = resolve; });
+    const grader = createModelAbTestGrader({
+      store: local.ctx.modelAbGradeStore!,
+      listAssignments: (testStartedAt) => local.ctx.modelAbTestStore!.listForTest(testStartedAt),
+      classify: async () => {
+        await held;
+        return { classifications: [], trajectoryFingerprint: "fp-1" };
+      },
+      readEvents: async () => ({ kind: "ok", events: [{ type: "user.message" }], malformedLines: 0 }),
+      logger: { log: vi.fn(), warn: vi.fn() },
+    });
+    local.ctx.modelAbTestGrader = grader;
+    expect((await request(local.app).post("/api/model-ab-test/grade").send({})).status).toBe(409);
+
+    local.ctx.settingsStore.updateSettings({ modelPresets: { preset2: { model: "model-standard" }, preset3: { model: "model-deep" } } });
+    const startedAt = local.ctx.settingsStore.updateSettings({ modelAbTest: { enabled: true, a: "preset2", b: "preset3" } }).modelAbTest!.startedAt!;
+    local.ctx.modelAbTestStore!.record({ sessionId: "chat-a", testStartedAt: startedAt, arm: "a", tier: "preset2", model: "model-standard", source: "chat", assignedAt: startedAt });
+
+    const started = await request(local.app).post("/api/model-ab-test/grade").send({});
+    expect(started.status).toBe(202);
+    expect(started.body).toMatchObject({ running: true, total: 1, done: 0 });
+    expect((await request(local.app).post("/api/model-ab-test/grade").send({ regrade: true })).status).toBe(409);
+    finish();
+    await grader.settled();
+
+    const report = await request(local.app).get("/api/model-ab-test");
+    expect(report.body.grading).toMatchObject({ running: false, total: 1, done: 1, ungraded: 0 });
+    expect(report.body.arms[0].grades).toMatchObject({ graded: 1 });
   });
 });

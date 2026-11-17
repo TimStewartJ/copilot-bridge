@@ -237,7 +237,14 @@ import {
   type RuntimeLogExcerpt,
 } from "./backend-loss-record.js";
 import { getLastHostResume } from "./host-suspend.js";
-import type { AgentBackendDisconnect, AgentContextInfo, AgentUsageCodeChanges, AgentUsageTokenTotals } from "./agent-backend/types.js";
+import type {
+  AgentBackendDisconnect,
+  AgentContextInfo,
+  AgentTrajectoryClassifyRequest,
+  AgentTrajectoryClassifyResult,
+  AgentUsageCodeChanges,
+  AgentUsageTokenTotals,
+} from "./agent-backend/types.js";
 import {
   modelSupportsLongContext,
   modelUsesDynamicSelection,
@@ -4282,6 +4289,18 @@ export class SessionManager {
     const user = await client.fetchAccountCopilotUser();
     this.recordSpan("session.fetchAccountCopilotUser", Date.now() - t0);
     return user;
+  }
+
+  /** Runs the runtime's trajectory classifiers over a recorded chat (model-ab-grading.ts). */
+  async classifyTrajectory(request: AgentTrajectoryClassifyRequest): Promise<AgentTrajectoryClassifyResult> {
+    const client = await this.getBackendAfterRotation();
+    if (typeof client.classifyTrajectory !== "function") {
+      throw new Error("Trajectory classification is not supported by the active agent backend");
+    }
+    const t0 = Date.now();
+    const result = await client.classifyTrajectory(request);
+    this.recordSpan(request.validateOnly ? "session.validateTrajectory" : "session.classifyTrajectory", Date.now() - t0);
+    return result;
   }
 
   /** Current backend auth state, used to enrich the quota counter. */

@@ -31,6 +31,7 @@
 // backend forces the shape question.
 
 import type {
+  CopilotClient,
   CopilotSession,
   ModelInfo,
   PermissionHandler,
@@ -168,6 +169,24 @@ type CopilotHistoryCompact = CopilotSession["rpc"]["history"]["compact"];
 export type AgentCompactionResult = Awaited<ReturnType<CopilotHistoryCompact>>;
 
 export type AgentModelSwitchConfirmation = NonNullable<AgentModelSwitchResult["confirmation"]>;
+
+type CopilotClassifyTrajectory = CopilotClient["rpc"]["taskAnalytics"]["classifyTrajectory"];
+
+/**
+ * Copilot runtime `taskAnalytics.classifyTrajectory` result: the runtime's retrospective classifiers
+ * run over a recorded chat. Model-derived and untrusted: measurements only, never a decision input.
+ */
+export type AgentTrajectoryClassifyResult = Awaited<ReturnType<CopilotClassifyTrajectory>>;
+export type AgentTrajectoryClassification = AgentTrajectoryClassifyResult["classifications"][number];
+
+export interface AgentTrajectoryClassifyRequest {
+  /** The chat's events.jsonl records, parsed, in file order. */
+  events: unknown[];
+  /** Check the input locally only: free, no inference, no classifications. */
+  validateOnly?: boolean;
+  /** An earlier result for the identical log; only its failed rows run again. */
+  previousResult?: AgentTrajectoryClassifyResult;
+}
 
 export interface AgentSlashCommandInvocation {
   name: string;
@@ -711,6 +730,12 @@ export interface AgentBackend {
 
   /** The accounts the runtime has signed in, without their tokens. */
   listAccounts?(): Promise<CopilotAccount[]>;
+
+  /**
+   * Runs the runtime's trajectory classifiers over a recorded chat on the signed-in account. Billed
+   * unless `validateOnly`. Optional because older runtimes lack the experimental RPC.
+   */
+  classifyTrajectory?(request: AgentTrajectoryClassifyRequest): Promise<AgentTrajectoryClassifyResult>;
 }
 
 /**

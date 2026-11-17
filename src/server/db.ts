@@ -1157,6 +1157,26 @@ function initSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_model_ab_assignments_test ON model_ab_assignments(testStartedAt);
   `);
+  // What Copilot's trajectory classifiers measured on each A/B test chat (model-ab-grading.ts). The
+  // result holds categorical labels, metrics and token counts, never transcript text.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS model_ab_grades (
+      sessionId TEXT PRIMARY KEY,
+      testStartedAt TEXT NOT NULL,
+      arm TEXT NOT NULL CHECK (arm IN ('a', 'b')),
+      status TEXT NOT NULL CHECK (status IN ('graded', 'skipped')),
+      reason TEXT,
+      detail TEXT,
+      gradedAt TEXT NOT NULL,
+      trajectoryFingerprint TEXT,
+      eventCount INTEGER NOT NULL DEFAULT 0,
+      inputTokens INTEGER NOT NULL DEFAULT 0,
+      outputTokens INTEGER NOT NULL DEFAULT 0,
+      cachedInputTokens INTEGER NOT NULL DEFAULT 0,
+      result TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_ab_grades_test ON model_ab_grades(testStartedAt);
+  `);
 
   const taskColumns = db.prepare("PRAGMA table_info(tasks)").all();
   if (!taskColumns.some(column => column.name === "deferred")) {

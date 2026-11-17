@@ -1,6 +1,6 @@
 import type { TaskStartersResponse } from "../shared/task-starters.js";
 import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
-import type { ModelAbTestReport, ModelAbTestSettings } from "../shared/model-ab-test.js";
+import type { ModelAbTestGradingStatus, ModelAbTestReport, ModelAbTestSettings } from "../shared/model-ab-test.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
 import { WEB_CLIENT_HEADER, WEB_CLIENT_HEADER_VALUE } from "../shared/web-client.js";
@@ -3174,6 +3174,11 @@ export async function fetchModelRoles(signal?: AbortSignal): Promise<ModelRolesV
 
 export async function fetchModelAbTestReport(signal?: AbortSignal): Promise<ModelAbTestReport> {
   return apiFetch<ModelAbTestReport>("/api/model-ab-test", undefined, { signal });
+}
+
+/** Starts grading the A/B test's chats with Copilot's trajectory classifiers; billed as AI credits. */
+export async function startModelAbTestGrading(regrade: boolean): Promise<ModelAbTestGradingStatus> {
+  return apiFetch<ModelAbTestGradingStatus>("/api/model-ab-test/grade", { regrade }, { method: "POST" });
 }
 
 export async function fetchModels(): Promise<ModelInfo[]> {

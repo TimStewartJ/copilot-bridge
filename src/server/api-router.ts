@@ -1300,7 +1300,8 @@ export function createApiRouter(
     }
   });
 
-  // GET /model-ab-test — the current model A/B test per arm: chats, scheduled runs and recorded cost.
+  // GET /model-ab-test — the current model A/B test per arm: chats, scheduled runs, recorded cost,
+  // and what Copilot's trajectory classifiers measured on the graded chats.
   router.get("/model-ab-test", async (_req, res) => {
     try {
       const test = ctx.settingsStore.getSettings().modelAbTest;
@@ -1311,11 +1312,35 @@ export function createApiRouter(
       const usage = assignments.length > 0
         ? await copilotUsageReader.readSummary({ sessionIds: assignments.map((assignment) => assignment.sessionId), range: "all" })
         : undefined;
-      res.json(buildModelAbTestReport(test, assignments, usage?.sessions ?? []));
+      const grades = test?.startedAt && ctx.modelAbGradeStore ? ctx.modelAbGradeStore.listForTest(test.startedAt) : [];
+      const report = buildModelAbTestReport(test, assignments, usage?.sessions ?? [], grades);
+      res.json(test?.startedAt && ctx.modelAbTestGrader
+        ? { ...report, grading: ctx.modelAbTestGrader.status(test.startedAt) }
+        : report);
     } catch (err) {
       console.error("[model-ab-test] Error:", err);
       res.status(500).json({ error: err instanceof Error ? err.message : "Unable to read the model A/B test." });
     }
+  });
+
+  // POST /model-ab-test/grade — grades the current test's chats in the background (billed as AI
+  // credits). Grades only chats without a grade unless `regrade` is true.
+  router.post("/model-ab-test/grade", (req, res) => {
+    const startedAt = ctx.settingsStore.getSettings().modelAbTest?.startedAt;
+    if (!ctx.modelAbTestGrader) {
+      res.status(503).json({ error: "Grading is not available on this server." });
+      return;
+    }
+    if (!startedAt) {
+      res.status(409).json({ error: "Start an A/B test first." });
+      return;
+    }
+    const outcome = ctx.modelAbTestGrader.start(startedAt, { regrade: req.body?.regrade === true });
+    if (outcome === "running") {
+      res.status(409).json({ error: "Grading is already running." });
+      return;
+    }
+    res.status(outcome === "started" ? 202 : 200).json(ctx.modelAbTestGrader.status(startedAt));
   });
 
   // GET /copilot-usage/quota — live account counter from the backend SDK.

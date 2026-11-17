@@ -79,6 +79,8 @@ import type {
   AgentSessionEventHandler,
   AgentSessionSummary,
   AgentSetModelOptions,
+  AgentTrajectoryClassifyRequest,
+  AgentTrajectoryClassifyResult,
   AgentUsageMetrics,
   AgentContextInfo,
   AgentMcpServerToolTokens,
@@ -1672,6 +1674,30 @@ export class CopilotBackend implements AgentBackend {
     });
     if (!response.ok) throw new Error(`Copilot user lookup failed with HTTP ${response.status}`);
     return response.json();
+  }
+
+  async classifyTrajectory(request: AgentTrajectoryClassifyRequest): Promise<AgentTrajectoryClassifyResult> {
+    const analytics = (this.client as any).rpc?.taskAnalytics;
+    const classify = analytics?.classifyTrajectory;
+    if (typeof classify !== "function") {
+      throw new Error("Trajectory classification is not available in this Copilot runtime");
+    }
+    const params = {
+      events: request.events,
+      ...(request.validateOnly ? { validateOnly: true } : {}),
+      ...(request.previousResult ? { previousResult: request.previousResult } : {}),
+    };
+    // The guard only stops waiting; aborting also tells the runtime to stop the billed judge calls.
+    const controller = new AbortController();
+    try {
+      return await this.rpc(
+        request.validateOnly ? "backend.validateTrajectory" : "backend.classifyTrajectory",
+        () => classify.call(analytics, params, { signal: controller.signal }),
+      );
+    } catch (error) {
+      if (isAgentRpcTimeoutError(error)) controller.abort();
+      throw error;
+    }
   }
 }
 

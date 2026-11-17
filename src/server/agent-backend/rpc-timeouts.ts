@@ -50,6 +50,10 @@ export const AGENT_RPC_TIMEOUTS_MS = {
   "backend.getAccountAuth": 30_000,
   "backend.getAccountUsers": 30_000,
   "backend.getAccountUsageQuota": 30_000,
+  // Local checks of a whole chat log; no inference.
+  "backend.validateTrajectory": 2 * 60_000,
+  // Eight classifiers over a long chat, a few judge calls at a time.
+  "backend.classifyTrajectory": 30 * 60_000,
   "backend.ping": 5_000,
 } as const;
 

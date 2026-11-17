@@ -44,6 +44,7 @@ import { Button, ChoiceButton, Details, Field, FieldList, FormRow, MetaLine, Not
 import { DS, cx } from "../../design/tokens";
 import { SettingsSection } from "./SettingsSection";
 import { ModelMoveDisclosure } from "./ModelMoveDisclosure";
+import { ModelAbTestGrading } from "./ModelAbTestGrades";
 
 const ROLES_KEY = ["models", "roles"] as const;
 
@@ -309,6 +310,7 @@ function ModelAbTestBlock({ draft, setDraft, models }: {
     queryKey: queryKeys.modelAbTest(test.startedAt ?? null),
     queryFn: ({ signal }) => fetchModelAbTestReport(signal),
     enabled: Boolean(test.startedAt),
+    refetchInterval: (query) => (query.state.data?.grading?.running ? 2_000 : false),
   });
   const save = (next: Partial<ModelAbTestSettings>) => setDraft({ ...draft, modelAbTest: { ...test, ...next } });
   const ready = Boolean(presets[test.a]?.model && presets[test.b]?.model);
@@ -369,6 +371,7 @@ function ModelAbTestResults({ report, running, models }: {
           );
         })}
       </FieldList>
+      <ModelAbTestGrading report={report} />
     </div>
   );
 }

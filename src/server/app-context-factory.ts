@@ -24,6 +24,7 @@ import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { createReadStateStore } from "./read-state-store.js";
 import { createModelAbTestStore } from "./model-ab-test.js";
+import { createModelAbGradeStore, createModelAbTestGrader, readChatEventsForGrading } from "./model-ab-grading.js";
 import { createChecklistStore } from "./checklist-store.js";
 import { createCalendarStore } from "./calendar-store.js";
 import { createDocsStore } from "./docs-store.js";
@@ -63,7 +64,7 @@ import { createSessionManager } from "./session-manager.js";
 
 import { createManagementJobStore } from "./management-job-store.js";
 import { createEventLogStatsFoldStore } from "./event-log-stats-fold-store.js";
-import { setEventLogStatsPersistence } from "./session-disk-reader.js";
+import { resolveSessionEventsPath, setEventLogStatsPersistence } from "./session-disk-reader.js";
 import { isUnlistedSessionId } from "./unlisted-sessions.js";
 import {
   BridgeToolsMcpServer,
@@ -120,6 +121,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
   const modelAbTestStore = createModelAbTestStore(db);
+  const modelAbGradeStore = createModelAbGradeStore(db);
   const checklistStore = createChecklistStore(db, globalBus);
   const calendarStore = createCalendarStore(db, globalBus);
   const telemetryStore = createTelemetryStore(db);
@@ -203,6 +205,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     cliSessionCatalog,
     readStateStore,
     modelAbTestStore,
+    modelAbGradeStore,
     checklistStore,
     calendarStore,
     docsStore,
@@ -258,6 +261,12 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     runtimePaths,
   });
   ctx.sessionManager = sessionManager;
+  ctx.modelAbTestGrader = createModelAbTestGrader({
+    store: modelAbGradeStore,
+    listAssignments: (testStartedAt) => modelAbTestStore.listForTest(testStartedAt),
+    classify: (request) => sessionManager.classifyTrajectory(request),
+    readEvents: (sessionId) => readChatEventsForGrading(resolveSessionEventsPath(copilotHome, sessionId)),
+  });
   ctx.searchIndex = createSearchIndex(db, {
     copilotHome: copilotHome ?? join(homedir(), ".copilot"),
     taskStore,

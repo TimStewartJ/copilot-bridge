@@ -7,7 +7,13 @@ import { installSelectAwareDomShim } from "../../test-dom-shim";
 const mocks = vi.hoisted(() => ({
   useModelsQuery: vi.fn(),
   invalidateQueries: vi.fn(),
+  startGrading: vi.fn(async () => ({ running: true, total: 1, done: 0, ungraded: 1 })),
   abTestReport: undefined as unknown,
+}));
+
+vi.mock("../../api", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../api")>(),
+  startModelAbTestGrading: mocks.startGrading,
 }));
 
 vi.mock("../../hooks/queries/useModels", () => ({ useModelsQuery: () => mocks.useModelsQuery() }));
@@ -172,6 +178,39 @@ describe("ModelsSection", () => {
     expect(text).toContain("Cost not recorded yet");
     // A running test keeps its arms until it is turned off.
     expect(getReactProps(button(group(harness.dom.container, "Tier A"), "Fast"))!.disabled).toBe(true);
+    mocks.abTestReport = undefined;
+  });
+
+  it("shows the classifiers' label counts per arm and starts grading the ungraded chats", async () => {
+    mocks.useModelsQuery.mockReturnValue({ data: MODELS });
+    const startedAt = new Date(Date.now() - 3_600_000).toISOString();
+    const arm = (name: "a" | "b", grades: object) => ({ arm: name, tier: name === "a" ? "preset2" : "preset3", chats: 2, scheduledRuns: 0, switched: 0, meteredSessions: 0, meteredAiCredits: 0, grades });
+    mocks.abTestReport = {
+      startedAt,
+      arms: [
+        arm("a", { graded: 2, notGraded: {}, judgeTokens: 1200, labels: [
+          { classifier: "outcome", scope: "session", label: "result", value: "done", count: 2 },
+        ] }),
+        arm("b", { graded: 1, notGraded: { missing: 1 }, judgeTokens: 600, labels: [
+          { classifier: "outcome", scope: "session", label: "result", value: "done", count: 1 },
+          { classifier: "outcome", scope: "session", label: "result", value: "partial", count: 1 },
+        ] }),
+      ],
+      grading: { running: false, total: 0, done: 0, ungraded: 1 },
+    };
+    harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+    await harness.render(createElement(ModelsSection, {
+      draft: { ...DRAFT, modelAbTest: { enabled: true, a: "preset2", b: "preset3", startedAt } } as AppSettings,
+      setDraft: vi.fn(),
+    }));
+
+    const rows = findAllByTag(harness.dom.container, "tr").map((element) => element.textContent);
+    expect(rows).toEqual(["ClassifierAB", "outcome per session", "done21", "partial01"]);
+    expect(harness.dom.container.textContent).toContain("1 no log");
+
+    await harness.act(() => getReactProps(button(harness!.dom.container, "Grade chats"))!.onClick());
+    expect(mocks.startGrading).toHaveBeenCalledWith(false);
+    expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["model-ab-test", startedAt] });
     mocks.abTestReport = undefined;
   });
 });
