@@ -3,13 +3,8 @@ import { Download, ExternalLink, X } from "lucide-react";
 import { DS, cx } from "../design/tokens";
 import { useModalDialog } from "./shared/useModalDialog";
 
-/**
- * The full-screen viewer for published diagrams, charts and interactive visuals. The page falls
- * away behind a blurred backdrop, a thin bar names what is open and holds its actions, and the
- * content takes the rest of the screen. Images use the gesture viewer in image-viewer.ts instead.
- */
 
-/** Marks an element whose clicks close the viewer, so the empty space around content dismisses it. */
+/** Marks elements whose clicks close the viewer, so empty space around content dismisses it. */
 export const LIGHTBOX_BACKDROP_ATTR = "data-lightbox-backdrop";
 
 interface LightboxShellProps {
@@ -73,7 +68,7 @@ export function LightboxShell({ title, subtitle, actions, onClose, children }: L
   );
 }
 
-/** A link that opens what is on screen in a browser tab of its own, styled as the viewer's other actions. */
+/** Opens what is on screen in its own browser tab, styled like the viewer's other actions. */
 export function LightboxNewTab({ href, fileName }: { href: string; fileName: string }) {
   return (
     <a

@@ -1,5 +1,4 @@
-// Bridge-side client for the speech engine child process: lazy start, on-demand model loading,
-// request routing, streaming synthesis, idle shutdown and crash recovery.
+// Bridge-side client for the speech engine process: lazy start, routing, idle stop, crash recovery.
 import { createRequire } from "node:module";
 import { cpus } from "node:os";
 import { dirname, join } from "node:path";
@@ -66,7 +65,7 @@ function clampThreads(value: number): number {
 export function defaultEngineThreads(logicalCpus = cpus().length): Pick<VoiceEngineInitOptions, "asrThreads" | "ttsThreads" | "turnThreads"> {
   return {
     asrThreads: clampThreads(logicalCpus / 5),
-    // First audio waits on synthesis: on 8 logical CPUs a 78-character sentence took 1.7 s on 3 threads, 1.4 s on 4 (28 Sep 2026).
+    // First audio waits on synthesis, which measured faster on four threads than three.
     ttsThreads: clampThreads(logicalCpus / 2),
     turnThreads: clampThreads(logicalCpus / 5),
   };
@@ -130,7 +129,7 @@ export class VoiceEngine implements VoiceEngineApi {
     return this.speechModelValue;
   }
 
-  /** Chooses the recognizer. One loaded at a time: a running engine stops, and the next use starts with this one. */
+  /** Only one recognizer loads at a time: a running engine stops and restarts on next use. */
   useSpeechModel(model: SpeechModel): void {
     if (model.id === this.speechModelValue.id) return;
     this.speechModelValue = model;

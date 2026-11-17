@@ -40,11 +40,7 @@ export function resolveDefaultReleaseDataDir(
   return join(env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "CopilotBridge", "data");
 }
 
-/**
- * Working directory for sessions without a project folder. It sits beside the per-user
- * release data directory in every distribution mode, because the development data
- * directory lives inside the Bridge checkout and would inherit its repository instructions.
- */
+/** Beside the release data dir: the dev data dir is in the checkout and would inherit AGENTS.md. */
 export function resolveDefaultWorkspaceDir(
   env: NodeJS.ProcessEnv = process.env,
   platform = process.platform,

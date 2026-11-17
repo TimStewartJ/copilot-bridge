@@ -5,7 +5,7 @@ interface SkillLoadedCardProps {
   entry: ChatSkillEntry;
 }
 
-/** Skill context the agent pulled in: one quiet line, like any other step, that opens onto its text. */
+/** Skill context the agent pulled in: one quiet step line that opens onto its text. */
 export default function SkillLoadedCard({ entry }: SkillLoadedCardProps) {
   const label = entry.skill.label || "skill";
   const content = entry.content?.trim() ?? "";

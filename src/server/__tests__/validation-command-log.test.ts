@@ -192,8 +192,7 @@ describe("validation-command-log retention", () => {
   });
 
   it("sweeps in the background after writing a failure log and then throttles", async () => {
-    // The harness disables background sweeps so no test can delete real logs;
-    // this test is specifically about that behavior, so it opts back in.
+    // The harness disables background sweeps to protect real logs; this test opts back in.
     vi.stubEnv("BRIDGE_DISABLE_BACKGROUND_LOG_RETENTION", "");
     const logDir = makeLogDir("validation-log-write-sweep");
     const rootDir = join(logDir, "..", "..");
@@ -213,9 +212,7 @@ describe("validation-command-log retention", () => {
     expect(written.path).toBeDefined();
     await vi.waitFor(() => expect(existsSync(ancient)).toBe(false));
     expect(existsSync(written.path as string)).toBe(true);
-    // The ancient log disappears mid-sweep, before the temp capture dir is
-    // pruned and the throttle is recorded. Join the in-flight sweep so the
-    // throttle assertion observes a completed run instead of racing it.
+    // Join the in-flight sweep so the throttle check sees a finished run, not a race.
     await scheduleValidationCommandLogSweep(logDir);
     await expect(scheduleValidationCommandLogSweep(logDir)).resolves.toBeNull();
   });
@@ -238,9 +235,7 @@ describe("validation-command-log retention", () => {
   });
 
   it("ignores an ambient log-dir override so an explicit rootDir always wins", async () => {
-    // Deploy validation runs the suite with BRIDGE_VALIDATION_LOG_DIR pointed at the
-    // live data dir. A caller that passes its own rootDir must never be redirected
-    // there, or a sweep would delete real logs.
+    // Deploy validation points the env at the live data dir; an explicit rootDir must not follow.
     const rootDir = makeTestDir("validation-log-ambient-override");
     const ambient = makeTestDir("validation-log-ambient-target");
     vi.stubEnv("BRIDGE_VALIDATION_LOG_DIR", ambient);

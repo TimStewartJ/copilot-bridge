@@ -1,13 +1,4 @@
-// Sub-agents as a session's event log records them.
-//
-// The transcript shows a window of a session's history, and an agent's steps arrive in that window
-// long after the call that launched it has scrolled out of it. Every history read therefore carries
-// one record per agent the session has run, so a step can always be shown under the agent that
-// made it, by name and with its state, whichever part of the history is loaded.
-//
-// This is what the log says happened. The runtime's task registry (`SessionAgentTask` in
-// session-agents.ts) is what the runtime says right now about the agents it still tracks; that
-// backs the agents list and stopping an agent.
+// Every history read carries all agents, so steps show under their agent after launch scrolls off.
 
 export type TranscriptAgentStatus =
   /** A turn is in flight. */
@@ -21,7 +12,7 @@ export type TranscriptAgentStatus =
 export interface TranscriptAgent {
   /** The tool call that launched the agent. Its own steps name it as their `parentToolCallId`. */
   toolCallId: string;
-  /** The runtime's id for the agent, which `read_agent`, `write_agent` and the task registry use. */
+  /** The runtime's id for the agent; `read_agent` and the task registry use it. */
   agentId?: string;
   /** The name it was launched under ("moves-agent"), or its type when it was given none. */
   name: string;
@@ -84,10 +75,7 @@ export function getTranscriptAgentActiveMs(agent: TranscriptAgent, nowMs?: numbe
   return Math.max(0, agent.activeMs) + inFlight;
 }
 
-/**
- * The launching call of the agent the main agent launched, following `parentToolCallId` up from
- * an agent that another agent launched. An id the directory does not know is its own answer.
- */
+/** Walks `parentToolCallId` up to the main agent's launch call; an unknown id returns itself. */
 export function getTopLevelAgentToolCallId(
   toolCallId: string,
   directory: Pick<TranscriptAgentDirectory, "byToolCallId">,

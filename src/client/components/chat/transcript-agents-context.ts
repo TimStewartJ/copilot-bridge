@@ -7,10 +7,7 @@ import {
 /** What the rows of a transcript know about the session's sub-agents. */
 export interface TranscriptAgentsContextValue {
   directory: TranscriptAgentDirectory;
-  /**
-   * For each agent, by launching call, the stretch of work that holds its newest row. An agent at
-   * work across several stretches has a row in each; only the newest shows it working.
-   */
+  /** Per launching call, the stretch with the agent's newest row, the only one shown working. */
   latestBlockByAgent: ReadonlyMap<string, string>;
 }
 

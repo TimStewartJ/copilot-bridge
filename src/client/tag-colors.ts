@@ -1,6 +1,3 @@
-// Tag color definitions for rendering tag pills.
-// The classes come from the design system's identity colours (design/identity.ts).
-
 import { IDENTITY_EDGE, IDENTITY_FILL, IDENTITY_TEXT, IDENTITY_TINT } from "./design/identity";
 
 export const TAG_COLORS = [

@@ -1,8 +1,4 @@
-/**
- * The shared words of the playbook workflow: what kind of skill something is, which family a
- * playbook belongs to, which roles a machine's own skills can fill and which kinds of evidence a
- * finished playbook can show. Skills declare these in their frontmatter `metadata` map.
- */
+/** Playbook workflow vocabulary; skills declare these in their frontmatter `metadata` map. */
 export const PLAYBOOK_FAMILIES = ["code", "knowledge", "ongoing", "errand", "meta"] as const;
 export type PlaybookFamily = typeof PLAYBOOK_FAMILIES[number];
 
@@ -51,10 +47,7 @@ export const EVIDENCE_KIND_DESCRIPTIONS: Record<EvidenceKind, string> = {
 /** `playbook_select` takes this to record that a request takes the direct path. */
 export const NO_PLAYBOOK = "none";
 
-/**
- * Who set a chat's playbook. The user's choice wins over the agent's, and both win over the
- * playbook the chat's task or schedule pins.
- */
+/** Who set a chat's playbook: the user beats the agent, and both beat a task or schedule pin. */
 export const PLAYBOOK_SOURCES = ["user", "agent", "task", "schedule"] as const;
 export type PlaybookSource = typeof PLAYBOOK_SOURCES[number];
 

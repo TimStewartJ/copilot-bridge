@@ -1,14 +1,4 @@
-// Long-delay timer helper.
-//
-// Node coerces any `setTimeout` delay greater than 2147483647 ms (2^31 - 1,
-// ~24.8 days) — or a non-finite/negative delay — to 1ms, firing almost
-// immediately instead of at the intended time. `safeSetTimeout` clamps each
-// underlying timer to the Node maximum and re-arms in chunks against an
-// absolute deadline so timers scheduled far in the future fire at (not far
-// before) their target, and remain correct even if the host sleeps or the
-// event loop stalls past a chunk boundary.
-
-/** Maximum delay (ms) Node's `setTimeout` accepts without coercion (2^31 - 1). */
+/** Largest `setTimeout` delay (2^31-1 ms); Node fires longer ones at once, so re-arm in chunks. */
 export const MAX_SAFE_TIMEOUT_DELAY_MS = 2_147_483_647;
 
 export interface LongTimeout {
@@ -18,11 +8,7 @@ export interface LongTimeout {
   unref(): void;
 }
 
-/**
- * Schedule `callback` to run once after `delayMs`, transparently re-arming
- * across Node's per-timer maximum so long delays are honored. Non-finite or
- * negative delays fire on the next tick, matching Node's native coercion.
- */
+/** setTimeout that honors delays past Node's max; bad or negative delays fire next tick. */
 export function safeSetTimeout(callback: () => void, delayMs: number): LongTimeout {
   const normalizedDelayMs = Number.isFinite(delayMs) ? Math.max(0, Math.floor(delayMs)) : 0;
   const targetAt = Date.now() + normalizedDelayMs;

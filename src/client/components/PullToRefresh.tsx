@@ -22,7 +22,7 @@ const DISABLED_SCROLL_RESTORATION = {
 
 const THRESHOLD = 64;    // px to pull before triggering refresh
 const MAX_PULL = 100;    // max visual displacement
-const RESISTANCE = 0.45; // damping factor past threshold
+const RESISTANCE = 0.45;
 // Tolerate sub-pixel scroll positions left over from momentum / rounding
 const SCROLL_TOP_EPSILON = 1;
 
@@ -44,10 +44,7 @@ export default function PullToRefresh({ onRefresh, children, className = "", scr
 
   useElementScrollRestoration(containerRef, scrollRestoration ?? DISABLED_SCROLL_RESTORATION);
 
-  // Register ALL touch handlers as native listeners with { passive: false }
-  // so the browser waits for our preventDefault before committing to native
-  // scrolling. React synthetic handlers are delegated to the root element
-  // which some mobile browsers don't consider when choosing touch-action.
+  // Native non-passive listeners: React's root-delegated touch handlers can't block scrolling.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -93,8 +90,7 @@ export default function PullToRefresh({ onRefresh, children, className = "", scr
       if (!pullingRef.current) return;
       pullingRef.current = false;
 
-      // Read from ref so we always get the latest value,
-      // even if React hasn't committed the last setPullDistance yet.
+      // The ref has the latest value even before React commits setPullDistance.
       if (pullDistRef.current >= THRESHOLD && !refreshingRef.current) {
         setRefreshing(true);
         refreshingRef.current = true;

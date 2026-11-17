@@ -1,18 +1,4 @@
-// Delayed device hibernation scheduler and idle watcher.
-//
-// Holds a single in-memory pending hibernation timer so the API can schedule,
-// inspect, and cancel a future hibernation. A generation token guards against a
-// stale timer callback clearing newer pending state. Clients reflect the real
-// server state by re-fetching status.
-//
-// The idle watcher is the "hibernate on idle" mode: while armed it samples the
-// active session count on a poll interval and hibernates once every session has
-// stayed idle for the whole grace window. It disarms itself before it hibernates,
-// so waking the device does not hibernate again in a loop.
-//
-// Both live in memory only. device-hibernate-handoff.ts keeps a copy on disk
-// while one is pending and hands it to the next server, so neither a deploy
-// restart nor a server that dies drops a hibernation the user asked for.
+// In-memory hibernate timer and idle watcher; the watcher disarms first so waking can't loop.
 
 import { requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
 import { safeSetTimeout, type LongTimeout } from "./long-timeout.js";
@@ -34,10 +20,7 @@ export type HibernateOnIdleStatus = {
   idleSince: number | null;
   /** Projected hibernation time while idle, or null while sessions are active. */
   hibernateAt: number | null;
-  /**
-   * Why hibernation is held off for a reason other than session activity
-   * (a deploy/update job or a restart cutover), or null when nothing blocks it.
-   */
+  /** Why hibernation is held off besides sessions (deploy/update job, restart cutover), or null. */
   blockedReason: string | null;
 };
 
@@ -88,10 +71,7 @@ let idleWatch: IdleWatch | null = null;
 let tokenCounter = 0;
 let intentListener: (() => void) | null = null;
 
-/**
- * Registers the one listener that is told whenever the hibernation still to come has changed:
- * armed, scheduled, turned off, or fired. Null removes it.
- */
+/** Sets the one listener told when the next hibernation changes (armed, scheduled, off, fired). */
 export function setHibernateIntentListener(listener: (() => void) | null): void {
   intentListener = listener;
 }
@@ -129,8 +109,7 @@ export function scheduleHibernate(
   const timer = safeSetTimeout(() => {
     if (!pending || pending.token !== token || pending.handedOff) return;
     pending = null;
-    // The device is going down now; leaving the watcher armed would hibernate
-    // again shortly after the next wake.
+    // The device is going down; an armed watcher would hibernate again soon after the next wake.
     if (!disarmHibernateOnIdle()) notifyIntentChanged();
     void requestDeviceHibernate(command).catch((error) => {
       console.error("[device] Hibernate request failed:", error);
@@ -195,16 +174,7 @@ function readActiveSessionCount(watch: IdleWatch): number {
   }
 }
 
-/**
- * Refresh the watcher's view of session activity. Returns true when the idle
- * window has been held for the full grace period and hibernation should fire.
- *
- * Deploy/restart work blocks the same way active sessions do — and resets the
- * grace window — because a self_update or staging_deploy cutover runs for
- * minutes with zero active sessions. Suspending the host there makes the
- * launcher's wall-clock health-check window look like a timeout and can roll
- * back a good release.
- */
+/** True after a full idle grace; deploys and restarts count as busy, or a cutover may roll back. */
 function sampleIdleWatch(watch: IdleWatch): boolean {
   const blockedReason = readBlockingReason(watch);
   watch.blockedReason = blockedReason;
@@ -219,11 +189,7 @@ function sampleIdleWatch(watch: IdleWatch): boolean {
   return now - watch.idleSince >= watch.graceMs;
 }
 
-/**
- * Hibernate as soon as every session has been idle for `graceMs`. Sampling only
- * fires from the poll interval, never from arming, so an API response always
- * flushes before the device can start hibernating.
- */
+/** Never sample on arm: the API response must flush before the device can start hibernating. */
 export function armHibernateOnIdle(options: {
   command: DeviceHibernateCommand;
   graceMs: number;
@@ -265,10 +231,7 @@ export function armHibernateOnIdle(options: {
   return getHibernateOnIdleStatus();
 }
 
-/**
- * Arms the idle watcher against the server's own activity: running sessions, deploy and update
- * jobs, and a restart that is requested or under way.
- */
+/** Arms the idle watcher on the server's sessions, deploy/update jobs and pending restarts. */
 export function armHibernateOnIdleForServer(
   sources: HibernateIdleSources,
   command: DeviceHibernateCommand,
@@ -287,11 +250,7 @@ export function armHibernateOnIdleForServer(
   });
 }
 
-/**
- * Returns the hibernation that is still to come and stops this process from firing it, for a
- * server that is shutting down. Status keeps reporting it, so a client that polls through the
- * restart does not see it switch off and on again.
- */
+/** For shutdown: stops this process firing it; status still reports it so polls don't flicker. */
 export function handOffHibernateIntent(): HibernateIntent | null {
   const intent = getHibernateIntent();
   if (pending) pending.handedOff = true;

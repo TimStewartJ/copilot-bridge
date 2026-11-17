@@ -1,15 +1,13 @@
-// Starting a chat on a task with a prompt the Bridge writes, such as a tidy-up or a page, from one tap
-// in the task panel. The chat is linked to the task and its first message is sent before this returns.
 import type { AppContext } from "./app-context.js";
 import { resolveSessionCreationOptions } from "./session-creation-options.js";
 import type { Task } from "./task-store.js";
 
 export type TaskChatLaunch =
   | { ok: true; sessionId: string }
-  /** The chat exists but its first message was not confirmed; open it rather than starting another. */
+  /** The chat exists but its first message was not confirmed; open it, don't start another. */
   | { ok: false; sessionId: string; error: string };
 
-/** Starts a chat on the task with `buildPrompt(task)` as its first message, and waits until it is accepted. */
+/** Starts a task chat with `buildPrompt(task)` as its first message and waits for acceptance. */
 export async function startTaskChat(
   ctx: Pick<AppContext, "settingsStore" | "sessionManager" | "taskStore">,
   taskId: string,
@@ -20,7 +18,7 @@ export async function startTaskChat(
   if (!task) throw new Error("Task not found");
   const creation = await resolveSessionCreationOptions(ctx, {});
   if (creation.error) throw new Error(creation.error);
-  // Created in the foreground, so a chat that failed to start is an error rather than a chat to open.
+  // Created in the foreground, so a chat that fails to start is an error, not a chat to open.
   const { sessionId } = await ctx.sessionManager.createTaskSession(
     task.id, task.title, task.workItems, task.notes, task.cwd, undefined, creation.options,
   );

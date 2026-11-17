@@ -38,9 +38,7 @@ describe("installed Copilot package contract", () => {
     });
   });
 
-  // The Bridge recognises a lost runtime connection with `instanceof ConnectionError`. When the SDK
-  // pins a vscode-jsonrpc the Bridge does not, npm installs the SDK its own copy and the check fails
-  // for every error the SDK raises.
+  // Fails when the SDK gets its own vscode-jsonrpc copy, breaking the Bridge's instanceof check.
   it("recognises a closed connection raised by the SDK's vscode-jsonrpc", () => {
     const sdkRequire = createRequire(sdkPackageJsonPath!);
     const { ConnectionError, ConnectionErrors } = sdkRequire("vscode-jsonrpc/node") as typeof import("vscode-jsonrpc/node");

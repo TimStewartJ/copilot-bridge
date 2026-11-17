@@ -428,10 +428,7 @@ export function installDomShim() {
   };
 }
 
-/**
- * DOM shim variant that teaches the fake `<select>`/`<option>` nodes just enough
- * about `options`/`value`/`selected` for React DOM's controlled-select handling.
- */
+/** Adds enough `<select>`/`<option>` behavior for React DOM's controlled selects. */
 export function installSelectAwareDomShim() {
   const dom = installDomShim();
   const documentRef = globalThis.document as typeof globalThis.document & {

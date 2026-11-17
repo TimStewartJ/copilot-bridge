@@ -1,6 +1,4 @@
-// GitHub provider — enriches issues and pull requests via the GitHub REST API.
-// Auth is ambient (no secrets in settings): BRIDGE_COPILOT_GITHUB_TOKEN → GH_TOKEN →
-// GITHUB_TOKEN → `gh auth token`. Without any token, public repositories still enrich.
+// Auth is ambient (env tokens, then `gh auth token`); public repos enrich without one.
 
 import { getProcessHost } from "../process-host.js";
 import type { PRRef, EnrichedWorkItem, EnrichedPR, WorkTrackingProvider, GitHubProviderConfig } from "./types.js";
@@ -32,8 +30,6 @@ interface IssueRef extends RepoRef {
 /** Provider metadata without caller-facing identity fields, so cache entries stay canonical. */
 type IssueMetadata = Omit<EnrichedWorkItem, "id" | "provider">;
 type PRMetadata = Omit<EnrichedPR, "repoId" | "prId" | "provider">;
-
-// ── Reference parsing ─────────────────────────────────────────────
 
 /** Repo/owner segments must be plain names — "." and ".." would escape the API path. */
 function isNameSegment(value: string): boolean {
@@ -71,10 +67,7 @@ function parseIssueUrl(value: string): IssueRef | null {
   return number === null ? null : { owner, repo, number };
 }
 
-/**
- * Canonicalize a GitHub-style work item reference to `owner/repo#123`.
- * Non-GitHub ids (ADO numbers, Linear identifiers) pass through unchanged.
- */
+/** Canonicalizes a GitHub reference to `owner/repo#123`; other ids pass through unchanged. */
 export function canonicalizeGitHubWorkItemId(id: string): string {
   const trimmed = id.trim();
   const fromUrl = parseIssueUrl(trimmed);
@@ -115,8 +108,7 @@ async function readTokenFromCli(): Promise<string | null> {
     try {
       value = (await runGhAuthToken()).trim() || null;
     } catch {
-      // `gh` missing, not on PATH, or not logged in — enrich anonymously instead.
-      // Error details are intentionally not logged: they can echo CLI output.
+      // No usable `gh`: enrich anonymously. Errors are not logged, as they can echo CLI output.
       console.warn("[github] No token from `gh auth token`; continuing unauthenticated");
     }
     cliToken = {
@@ -152,7 +144,7 @@ function clampCooldown(ms: number): number {
   return Math.min(Math.max(ms, 1_000), MAX_COOLDOWN_MS);
 }
 
-/** Cooldown for primary (403 + remaining: 0) and secondary (429, Retry-After, or body text) limits. */
+/** Cooldown for primary (403, remaining 0) and secondary (429, Retry-After, body) limits. */
 function rateLimitCooldownMs(res: Response, detail: string, now: number): number | null {
   if (res.status !== 403 && res.status !== 429) return null;
 
@@ -271,11 +263,7 @@ function loadOnce<T>(inFlight: Map<string, Promise<T>>, key: string, load: () =>
   return pending;
 }
 
-/**
- * Serve stale data for retryable failures. Definitive failures (404/401/403) replace any
- * cached metadata with the fallback so missing references neither resurrect old data nor
- * re-request on every refetch.
- */
+/** Transient errors serve stale data; 404/401/403 cache the fallback so they aren't refetched. */
 function recover<T>(cache: ProviderCache<T>, key: string, err: unknown, now: number, fallback: T): T {
   if (isTransientError(err)) return cache.read(key, now, true) ?? fallback;
   cache.write(key, fallback, now);

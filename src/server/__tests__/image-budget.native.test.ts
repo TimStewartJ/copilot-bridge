@@ -16,12 +16,7 @@ import type { ImageBudgetSettings } from "../../shared/image-budget.js";
 import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
 import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
-// Drives the real Copilot CLI against a local model server that rejects any request over a byte cap
-// with a bodyless 400, the way Google Vertex rejects oversized Claude requests. The CLI cannot
-// recover from that on its own; the image budget must compact before a request gets there.
-// The server speaks both the OpenAI completions wire and the Anthropic messages wire, because
-// the CLI measures and shrinks requests differently on each (CLI 1.0.89 shrinks Claude requests
-// to about 32 MiB before sending, which is still above Vertex's 30 MB).
+// Real CLI vs. a fake model server that 400s above a byte cap, like Vertex, on both wires.
 
 type Wire = "completions" | "anthropic";
 const MODELS: Record<Wire, string> = { completions: "fake-vision", anthropic: "claude-fake-vision" };
@@ -257,7 +252,7 @@ async function fixture(signal: AbortSignal, options: { capBytes: number; views: 
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
-    // Each pause stops the current run and starts the next one; wait until no pause is left running.
+    // Each pause stops the current run and starts the next; wait until none is left running.
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 200));
       const pending = continuations.shift();
@@ -282,9 +277,7 @@ async function fixture(signal: AbortSignal, options: { capBytes: number; views: 
 
 const IMAGE_BYTES = Math.ceil((IMAGE_SIDE * (IMAGE_SIDE * 3 + 1)) / 3) * 4;
 
-// One CLI runtime for the file: starting it takes longer than a test's turns. Each test still has
-// its own model server, working folder, session and controller. Its home outlives single tests, so
-// it is removed in afterAll instead of by makeTestDir's per-test cleanup.
+// One CLI runtime per file (slow to start); its home outlives tests, so afterAll removes it.
 let runtime: { home: string; backend: CopilotBackend } | undefined;
 
 beforeAll(async () => {
@@ -347,9 +340,7 @@ describe("native image budget", () => {
     } finally { await cleanup(); }
   });
 
-  // Production Claude goes through the Anthropic messages wire. CLI 1.0.89 shrinks those requests to
-  // about 32 MiB before sending, but still gives up on a bodyless 400 below that. When this starts
-  // failing, the CLI recovers from a provider cap on the Claude path too.
+  // Claude uses the Anthropic wire; if this fails, the CLI now copes with a cap there too.
   it("without a ceiling the CLI cannot get past a byte cap on the Claude messages wire", async ({ signal }) => {
     const { run, requests, cleanup } = await fixture(signal, {
       wire: "anthropic", capBytes: 3 * IMAGE_BYTES, views: 5, perTurn: 1, budget: { ceilingsMb: {} },

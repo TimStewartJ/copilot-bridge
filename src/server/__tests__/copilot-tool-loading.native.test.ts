@@ -190,9 +190,7 @@ describe("native tool loading policy", () => {
       assertToolPolicy(requests.at(-1));
       await raw.rpc.agent.deselect();
 
-      // The model starts sub-agents with a task call inside a turn, as in Bridge chats. Since CLI
-      // 1.0.107 a task the host runs itself between a model or agent switch and the next turn gets
-      // no tools at all; the Bridge never runs one that way.
+      // Start the sub-agent from a model task call: host-run tasks after a switch get no tools.
       const beforeChild = requests.length;
       scripted.push(delegateToFixtureAgent());
       await session.sendAndWait({ prompt: "Delegate to the fixture agent." }, null);

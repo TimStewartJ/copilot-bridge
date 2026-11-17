@@ -305,8 +305,7 @@ export default function ElicitationCard({ request, onSubmit }: ElicitationCardPr
     );
   }
 
-  // A handoff is a form with one choice field. Without that field there is nothing to answer
-  // with, so the request falls through to the ordinary form.
+  // A handoff needs its one choice field to answer with; without it, show the ordinary form.
   const handoff = request.browserHandoff;
   const handoffField = schemaEntries[0]?.[0];
   if (handoff && handoffField) {

@@ -1,6 +1,4 @@
-// Helm's looks over every Bridge: a careful run on Helm's model that reads every Bridge it covers,
-// keeps the layered memory Helm's chat also uses, and writes the brief Home shows. Shared by the
-// server and the client.
+// Helm's looks: runs over every Bridge that keep Helm's memory and write Home's brief.
 
 export type HelmMemoryKind = "priority" | "rule" | "thread" | "person" | "date" | "picture";
 export type HelmMemoryAuthor = "user" | "helm";
@@ -23,16 +21,13 @@ export interface HelmMemoryEntry {
   /** When Helm last saw it was still true. */
   confirmedAt: string;
   uses: number;
-  /**
-   * Ids of the outside sources (MCP servers) whose content may have shaped this entry: read by the
-   * run that wrote it, or carried in through earlier memory or the last brief. Empty when none.
-   */
+  /** Ids of outside sources (MCP servers) that may have shaped this entry, read or carried in. */
   fromSources: string[];
   /** Threads: whose move Helm says the task is. */
   owner?: HelmThreadOwner | null;
   /** Threads: Helm holds off raising the task until this local date (YYYY-MM-DD). */
   holdUntil?: string | null;
-  /** Threads: fingerprint of the task's next step, waiting-for and revisit date the line was written from. */
+  /** Threads: fingerprint of the next step, waiting-for and revisit date behind the line. */
   basis?: string | null;
 }
 
@@ -70,7 +65,7 @@ export interface HelmRunView {
   bridges: HelmBridgeStatus[];
   /** The outside sources the run could read, and whether it did. */
   sources: HelmRunSourceStatus[];
-  /** Ids of the outside sources whose content may have shaped this run's brief (read now or carried in). */
+  /** Ids of outside sources that may have shaped this run's brief, read now or carried in. */
   fromSources: string[];
   /** False once retention deleted the run's conversation. */
   transcriptAvailable: boolean;
@@ -157,10 +152,7 @@ export interface HelmWatching {
   url?: string;
 }
 
-/**
- * A task whose live fields say it needs Tim now: no agent is working on it, it waits on no one else,
- * and a date presses. The server lists these itself, whatever Helm's thread line for it says.
- */
+/** Needs the user now by its live fields (idle, waits on no one, date due), whatever Helm says. */
 export interface HelmOnYou {
   bridge: string;
   taskId: string;
@@ -269,7 +261,7 @@ export interface HelmThinkerSettings {
   rebuildWeekday: number;
   /** This Bridge's name in briefs. */
   label: string;
-  /** Outside sources the looks may read (tools of MCP servers configured here, read-only ones only). */
+  /** Outside sources the looks may read: read-only tools of MCP servers configured here. */
   sources: HelmSourceSelection[];
 }
 

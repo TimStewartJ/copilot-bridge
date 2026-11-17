@@ -49,7 +49,7 @@ export function createWorkflowToolDefinitions(ctx: AppContext): BridgeToolDefini
             message: `Taking the direct path for this request. The chat stays on ${previous.label ?? previous.playbook}.`,
           };
         }
-        // Asking again for the active playbook only fetches its steps; who chose it stays as it was.
+        // Asking again for the active playbook only fetches steps; who chose it is unchanged.
         let view = previous?.playbook === name ? previous : undefined;
         if (!delegated && !view) {
           try {
@@ -81,7 +81,7 @@ export function createWorkflowToolDefinitions(ctx: AppContext): BridgeToolDefini
         ].join("\n\n");
         if (steps.length > MAX_STEPS_CHARS) steps = `${steps.slice(0, MAX_STEPS_CHARS)}\n[truncated: load the rest with the skill tool]`;
         const required = playbook?.evidence ?? [];
-        // The completion check is the last item on every playbook's todo list, so it is never left in a footnote.
+        // The completion check goes last so it ends every playbook's todo list.
         steps += delegated ? "\n\n# Final step for delegated work\nReturn your findings, evidence and limits to your parent agent instead of calling verify_complete." : `\n\n# Final step (required)\nBefore your final reply, call verify_complete with the evidence "Done means" describes${required.length > 0 ? ` (it must include ${required.join(", ")})` : ""}. Report results honestly: "pass" when a check supports the work you report (a reproduced bug is pass, and so is a premise you checked and found false), "fail" only when your own work failed a check, "not_run" for an in-scope check you could not run. List in-scope checks you skipped in unverified, and caveats outside what was asked in notes.`;
         return {
           success: true,

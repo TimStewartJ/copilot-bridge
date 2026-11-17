@@ -42,10 +42,7 @@ export interface ManagementJobRunnerOptions {
   heartbeatIntervalMs?: number;
   staleAfterMs?: number;
   shouldStop?: () => boolean;
-  /**
-   * Where the restart for finished deploys is requested. The runner asks once for all of them and
-   * follows them until their release is active. Unset, each deploy job asks for its own restart.
-   */
+  /** Data dir where one restart for all finished deploys is requested; unset, each deploy asks. */
   deployBatchDataDir?: string;
   requestDeployRestart?: (dataDir: string, candidate: RestartReleaseCandidate) => void | Promise<void>;
   isRestartPending?: (dataDir: string) => boolean;
@@ -216,7 +213,7 @@ async function reconcileDeploys(
   if (!activated && active && latest.result.restartQueued === true
     && !(options.isRestartPending ?? isRestartPending)(dataDir)) {
     try {
-      // A self-update can supersede the deploy candidate while still containing every merged deploy.
+      // A self-update can supersede the candidate while still containing every merged deploy.
       activated = await (options.isCommitIncluded ?? isCommitIncluded)(latest.candidate.commitSha, active.commitSha);
     } catch (error) {
       const message = `Deployment activation could not be verified: ${formatError(error)}`;
@@ -248,7 +245,7 @@ async function reconcileDeploys(
   }
 
   if (latest.result.restartQueued === true) {
-    // The restart waits for the Bridge to go idle for as long as that takes; only its end is a verdict.
+    // The restart waits for the Bridge to go idle however long; only its end is a verdict.
     if ((options.isRestartPending ?? isRestartPending)(dataDir)) return;
     const message = "The restart for this deploy did not activate its release.";
     for (const entry of pending) store.fail(entry.job.id, message, entry.result);
@@ -256,7 +253,7 @@ async function reconcileDeploys(
     return;
   }
 
-  // Asking joins whatever restart is already pending, and the newest release is the one it activates.
+  // Asking joins any pending restart, which activates the newest release.
   try {
     if (options.requestDeployRestart) {
       await options.requestDeployRestart(dataDir, latest.candidate);
@@ -316,8 +313,7 @@ function isMainModule(): boolean {
 async function main(): Promise<void> {
   const runtimePaths = resolveRuntimePaths(process.env);
   Object.assign(process.env, runtimePaths.env);
-  // The launcher that started this runner may predate the setting, so apply it here as well:
-  // checks, installs and builds are this process's children.
+  // The launcher may predate this setting; apply it here too, for the checks and builds we spawn.
   const scheduling = await runOnPerformanceCores();
   if (process.platform === "win32") {
     runnerLog(scheduling.applied

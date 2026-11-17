@@ -6,8 +6,7 @@ import {
   stripLeadingWakePhrase,
 } from "../voice-text.js";
 
-// The speech-shaping rules are tested in src/packages/voice-agent-text. These tests cover the
-// Bridge's own vocabulary: its name, the commands it handles itself, and what always interrupts it.
+// Only the Bridge's own vocabulary; speech shaping is tested in src/packages/voice-agent-text.
 
 describe("Bridge wake phrase", () => {
   it("matches at the start only", () => {

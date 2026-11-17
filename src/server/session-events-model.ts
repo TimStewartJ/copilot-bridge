@@ -1,17 +1,4 @@
-/**
- * Derive the latest model / reasoning effort from a session's events.jsonl.
- *
- * Priority follows event recency and SDK replay semantics:
- *   session.model_change  → data.newModel, data.reasoningEffort if present
- *   session.resume        → data.selectedModel, data.reasoningEffort
- *   session.start         → data.selectedModel, data.reasoningEffort
- * On the `auto` model the event's Auto tier (Copilot Fusion's level) stands in for the effort.
- *
- * session.model_change events that omit reasoningEffort preserve the previous
- * reasoning effort, matching SDK event replay, except across a switch to or from
- * `auto`. Events tagged with a top-level
- * agentId belong to a sub-agent and are ignored. Malformed lines are skipped.
- */
+/** Latest model/effort from events.jsonl; model_change without effort keeps it, except via auto. */
 
 import { readFileSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
@@ -38,10 +25,7 @@ export function isSubagentScopedEvent(event: Record<string, unknown> | null | un
   return typeof event?.agentId === "string" && event.agentId.length > 0;
 }
 
-/**
- * Whether an event that omits the effort keeps the earlier one. Never across `auto`: a Copilot
- * Fusion tier is not a reasoning level, and a reasoning level is not a tier.
- */
+/** An event without effort keeps the earlier one, but not across `auto`: tiers aren't efforts. */
 function keepsEarlierReasoningEffort(state: DerivedModelState, next: DerivedModelState, preserve: boolean): boolean {
   return preserve && state.reasoningEffort !== undefined && (state.model === AUTO_MODEL_ID) === (next.model === AUTO_MODEL_ID);
 }
@@ -51,8 +35,7 @@ function extractFromEvent(event: unknown): ExtractedModelEvent | null {
   const e = event as Record<string, unknown>;
   const data = e.data as Record<string, unknown> | undefined;
   if (!data) return null;
-  // Sub-agents write their own session.model_change into the parent's log, tagged
-  // with agentId. They describe the sub-agent's model, never the session's.
+  // Sub-agents log their own session.model_change in the parent's log; it is not the session's.
   if (isSubagentScopedEvent(e)) return null;
 
   const type = e.type;
@@ -89,10 +72,7 @@ function extractFromEvent(event: unknown): ExtractedModelEvent | null {
   return null;
 }
 
-/**
- * Parse events.jsonl content and return the latest derived model state.
- * Reads all lines so that the last matching event wins.
- */
+/** Latest model state in events.jsonl content; reads every line so the last match wins. */
 export function deriveModelStateFromEventsContent(content: string): DerivedModelState {
   let state: DerivedModelState = {};
   for (const line of content.split(/\r?\n/)) {
@@ -120,13 +100,7 @@ export function deriveModelStateFromEventsContent(content: string): DerivedModel
   return state;
 }
 
-/**
- * Read events.jsonl at the given path and derive the latest model state.
- * Returns an empty object if the file is missing or unreadable.
- *
- * Synchronous whole-file read: only for small logs and tests. Request paths must use
- * {@link deriveModelStateFromEventsFileAsync}, which bounds the read.
- */
+/** Sync whole-file read for small logs and tests; request paths use the Async variant. */
 export function deriveModelStateFromEventsFile(eventsPath: string): DerivedModelState {
   try {
     const content = readFileSync(eventsPath, "utf-8");
@@ -198,14 +172,7 @@ async function foldModelStateRange(
   return next;
 }
 
-/**
- * Bounded, non-blocking variant for request paths. The model is set by `session.start`
- * (head of the log) and changed by later `session.model_change` / `session.resume`
- * events, which for a live session are almost always within the last couple of MB.
- * Read the tail first: if it contains a model-bearing event that does not inherit fields
- * from an earlier one, later events win and the rest of the log is irrelevant. Otherwise
- * stream the log up to the tail window and fold the tail on top.
- */
+/** Tail first: a self-contained model event there wins; else stream the rest and fold the tail. */
 export async function deriveModelStateFromEventsFileAsync(eventsPath: string): Promise<DerivedModelState> {
   let file: FileHandle;
   try {
@@ -257,11 +224,7 @@ function eventTime(event: unknown): number {
   return typeof timestamp === "string" ? Date.parse(timestamp) : Number.NaN;
 }
 
-/**
- * Whether the log records a user turn or a model change at or after `since` (epoch milliseconds).
- * Reads only the end of the log, so the answer is undefined when no such event is there and that
- * end does not reach back to `since`, or when the log cannot be read. Sub-agent events are ignored.
- */
+/** Tail-only read: undefined when the tail has no match and doesn't reach `since`, or on error. */
 export async function turnOrModelChangeSince(eventsPath: string, since: number): Promise<boolean | undefined> {
   let file: FileHandle;
   try {
@@ -277,7 +240,7 @@ export async function turnOrModelChangeSince(eventsPath: string, since: number):
     let records = 0;
     const visit = (record: Buffer) => {
       records += 1;
-      // A window that starts mid-log starts mid-record; the next record shows how far back it reaches.
+      // A window starting mid-log starts mid-record; the next record shows how far back it reaches.
       if (start > 0 && records === 1) return;
       if (start > 0 && records === 2) {
         try {

@@ -46,11 +46,7 @@ interface ActivityBlockProps {
   onToggle: (key: string, expanded: boolean) => void;
   /** The run is still going and this block is where its next step will land. */
   live?: boolean;
-  /**
-   * This block is the last thing in the transcript, so a step still in flight in it is what the
-   * run is doing now. An agent can leave a step in flight in an earlier block; that block keeps
-   * its summary, and the agent's row inside it shows the step. A block shown on its own is the last.
-   */
+  /** Last block: its in-flight step is the run's now; earlier blocks keep their summary. */
   latest?: boolean;
   /** What the agent says it is doing, shown while no single step is in flight. */
   liveLabel?: string;
@@ -62,15 +58,9 @@ interface HeaderText {
   label: string;
   detail?: string;
   detailMono?: boolean;
-  /**
-   * The line is about agents and the main agent did nothing else in this stretch, so the figures
-   * beside it are the agents' steps and need not say whose they are.
-   */
+  /** Only agents worked in this stretch, so the figures are their steps and need not say whose. */
   agentsOnly?: boolean;
-  /**
-   * How many agents the line speaks of, when more may have worked in the stretch: the ones still
-   * being waited on, not the ones that have finished. The figures then say how many they cover.
-   */
+  /** Agents the line names (those still awaited); the figures then say how many they cover. */
   agentsNamed?: number;
 }
 
@@ -81,10 +71,7 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-/**
- * The newest few lines of thinking that is still arriving. It grows to three lines and then holds
- * that height, scrolling older text out of the top, so a long thought cannot push the page around.
- */
+/** Streaming thought capped at three lines, scrolling old text out so it cannot push the page. */
 function ThoughtWindow({ content }: { content: string }) {
   const windowRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLParagraphElement>(null);
@@ -193,11 +180,7 @@ function ActivityTurnDetails({ details }: { details: ChatTurnDetails }) {
   );
 }
 
-/**
- * The main agent's step in flight, for the collapsed line. Steps agents take in the background are
- * left to their own rows: several agents take turns many times a minute, and a line that followed
- * them would say something different every time it was read.
- */
+/** Main agent's step only: agents' steps change many times a minute and would churn the line. */
 function describeStepInFlight(
   main: ToolCall[],
   inAgents: ToolCall[],
@@ -297,8 +280,7 @@ function describeHeader(input: {
     && main.every((toolCall) => toolCall.isSubAgent && getStepStatus(toolCall) !== "failed");
 
   if (handedOut && summary.agentToolCount === 0 && main.every(launchesBackgroundAgent)) {
-    // All that happened here is that work was handed out. What came of it is on the agents' rows,
-    // in the stretches where they did it.
+    // Only work was handed out here; what came of it is on the agents' own rows.
     const [only] = main;
     return main.length === 1
       ? {
@@ -333,11 +315,6 @@ function describeHeader(input: {
   return { label: workedLabel(undefined, summary.durationMs) };
 }
 
-/**
- * Everything that happened between two things the agent said, as one line that opens into a
- * timeline: its thinking, its tool calls, and one row for each agent that was at work. While the
- * run is live the line names the main agent's step in flight, or says it is waiting on agents.
- */
 export default memo(function ActivityBlock({
   block,
   toolForest,
@@ -380,8 +357,7 @@ export default memo(function ActivityBlock({
   const streamingThought = active && inFlight ? getStreamingThought(block.steps) : undefined;
   const showThoughtWindow = !expanded && streamingThought !== undefined;
 
-  // The figures: the main agent's steps, then how many agents worked and how much they did. A line
-  // that is about those agents alone gives just their steps.
+  // Main agent's steps, then agents and their steps; a line about those agents alone gives steps.
   const agentSteps = summary.agentToolCount > 0 ? plural(summary.agentToolCount, "step") : undefined;
   const stepsAreTheNamedAgents = header.agentsOnly === true
     && (header.agentsNamed === undefined || summary.agentCount <= header.agentsNamed);
@@ -423,7 +399,7 @@ export default memo(function ActivityBlock({
       data-activity-state={active ? "active" : "done"}
       data-activity-waiting={active && waiting ? "agents" : undefined}
     >
-      {/* Only the line is measured: a container around the rows would trap the dialogs they open. */}
+      {/* Only the line is measured: a container around rows would trap the dialogs they open. */}
       <div className="@container/activity min-w-0">
         <button
           type="button"

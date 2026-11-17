@@ -1,9 +1,6 @@
 export const MAX_PREVIOUS_RUN_REPORT_LENGTH = 6000;
 
-/**
- * What the previous scheduled run left. "completed" carries its final report; "running" means it
- * had not finished when this run started; "unavailable" means the report could not be read.
- */
+/** What the previous scheduled run left; "running": it had not finished when this one began. */
 export type PreviousRunReport =
   | { status: "completed"; completedAt?: string; content: string }
   | { status: "running" }
@@ -17,10 +14,7 @@ function encodeReportText(text: string): string {
     .replace(/&/g, "\\u0026");
 }
 
-/**
- * The previous scheduled run's report, quoted as data, for playbooks that compare runs (Watch,
- * Sweep: `bridge-compare-previous` in their metadata).
- */
+/** Quotes the previous run's report as data, for playbooks with `bridge-compare-previous`. */
 export function formatPreviousRunReport(report: PreviousRunReport | undefined): string {
   if (report?.status === "running") {
     return "\n<previous_run_report>\nThe previous run was still in progress when this run started, so there is no finished report. Compare against your saved state.\n</previous_run_report>";

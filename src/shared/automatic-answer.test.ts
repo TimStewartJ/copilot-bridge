@@ -8,7 +8,7 @@ describe("automatic answers", () => {
       expect(answer).toContain("Work autonomously and make good decisions.");
     }
     expect(AUTOMATIC_ANSWERS.autopilot).toContain("Autopilot is on, so this question was not shown to the user");
-    // The user is present and has just spoken, so the agent is sent to their message, not told to go on alone.
+    // The user just spoke, so the agent is sent to their message, not told to go on alone.
     expect(AUTOMATIC_ANSWERS.skipped).toContain("neither an answer to the question nor an approval");
     expect(AUTOMATIC_ANSWERS.skipped).not.toContain("Work autonomously");
   });

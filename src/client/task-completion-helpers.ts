@@ -88,17 +88,10 @@ export function isTaskCompleted(task: Pick<Task, "completedAt">): boolean {
   return Boolean(task.completedAt);
 }
 
-// ── Lifecycle display helpers ─────────────────────────────────────────────────
-
 /** Three mutually-exclusive user-facing states derived from status + completedAt. */
 export type TaskLifecycleDisplayState = "completed" | "archived" | "active";
 
-/**
- * Derives the user-facing lifecycle state:
- * - "completed" when completedAt exists
- * - "archived"  when status is "archived" without completedAt
- * - "active"    otherwise
- */
+/** "completed" when completedAt is set, "archived" when archived without it, else "active". */
 export function getTaskLifecycleDisplayState(
   task: Pick<Task, "status" | "completedAt">,
 ): TaskLifecycleDisplayState {

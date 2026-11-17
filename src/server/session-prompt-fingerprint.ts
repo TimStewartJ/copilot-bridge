@@ -21,8 +21,7 @@ export interface PromptFingerprintConfig {
   coauthorEnabled?: boolean;
 }
 
-// Section transforms are functions; their source decides the prompt text, so hash it
-// instead of letting JSON.stringify drop them.
+// Hash section transforms' source, which decides the prompt text; JSON.stringify drops functions.
 function stableJson(value: unknown): string {
   return JSON.stringify(value, (_key, item: unknown) =>
     typeof item === "function" ? `[transform ${item.toString()}]` : item) ?? "null";
@@ -87,11 +86,7 @@ export function normalizePromptCacheBreak(event: unknown): Record<string, unknow
   return result;
 }
 
-/**
- * Independent of the SDK handle cache; bounded and content-free. On a cold
- * comparison, reuse the latest retained applied span (including legacy hashes).
- * Normal telemetry pruning bounds persistence; pruned sessions start a baseline.
- */
+/** Last applied prompt hashes per session; a cold start reads the latest persisted span. */
 export class AppliedPromptFingerprints {
   private readonly latest = new Map<string, Fingerprint>();
 

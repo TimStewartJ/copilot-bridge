@@ -89,7 +89,7 @@ describe("encodeWav", () => {
 });
 
 describe("SoundPresence", () => {
-  /** Two seconds of `floor`, a burst of speech-loud tone at an unaligned offset, then two more seconds. */
+  /** 2 s of `floor`, a loud tone burst at an unaligned offset, then 2 s more. */
   function recording(sampleRate: number, burstSeconds: number, floor = 0): Float32Array {
     const samples = tone(150, sampleRate, 4 + burstSeconds, floor);
     const burst = tone(220, sampleRate, burstSeconds, 0.1);

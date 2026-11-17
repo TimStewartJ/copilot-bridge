@@ -40,11 +40,7 @@ function PickerRow({ label, description, selected, disabled, onClick }: {
   );
 }
 
-/**
- * The chat's active playbook as a few quiet words in the chat header. Tapping it lists the
- * installed playbooks by family, so the user can pick one, take the direct path or clear the chat's
- * own choice.
- */
+/** The chat's playbook in the header; tapping lists installed ones to pick, go direct, or clear. */
 export default function SessionPlaybookChip({ sessionId, view, inTask }: {
   sessionId: string;
   view?: SessionPlaybookView;

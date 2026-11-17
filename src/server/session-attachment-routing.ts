@@ -38,15 +38,11 @@ export interface SavedSessionAttachment {
 export interface PersistedSessionAttachments {
   /** What the SDK is given. */
   routed: RoutedSdkAttachment[] | undefined;
-  /** What was kept on disk, by the names it was saved under, so the message can be shown or sent again. */
+  /** Files kept on disk under their saved names, so the message can be shown or sent again. */
   saved: SavedSessionAttachment[];
 }
 
-/**
- * Save blob attachments to the session's files/ directory and convert
- * non-image attachments to SDK `file` type (path-based) so the agent
- * can access them with its tools. Images stay as `blob` for inline viewing.
- */
+/** Saves blobs to files/; non-images become path-based `file` attachments, images stay blobs. */
 export function persistAndRouteAttachments(
   sessionId: string,
   attachments?: StartWorkAttachment[],

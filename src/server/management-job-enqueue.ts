@@ -33,8 +33,7 @@ export interface ManagementJobEnqueueResult {
   reused: boolean;
 }
 
-// Types whose duplicate enqueue is satisfied by an already-active job with
-// the same inputs (see previewInputsReusable for the staging_preview match).
+// A duplicate enqueue reuses an active job with the same inputs (see previewInputsReusable).
 const REUSE_ELIGIBLE_TYPES: readonly ManagementJobType[] = ["self_update", "staging_preview"];
 
 interface NormalizedRequest {
@@ -71,8 +70,7 @@ function normalizeRequest(req: ManagementJobEnqueueRequest): NormalizedRequest {
 
   switch (req.type) {
     case "self_update": {
-      // self_update accepts no fields today; ignore extras to remain
-      // forward-compatible with the dispatcher.
+      // self_update takes no fields; extras are ignored for forward compatibility.
       return { type: req.type, input: {} };
     }
     case "staging_preview": {
@@ -97,10 +95,7 @@ function normalizeRequest(req: ManagementJobEnqueueRequest): NormalizedRequest {
 function previewInputsReusable(active: ManagementJob, requested: Record<string, unknown>): boolean {
   if (!isRecord(active.input)) return false;
   if (active.input.stagingDir !== requested.stagingDir) return false;
-  // Require exact validate equality. A validate:true caller cannot accept a
-  // validate:false job (no gate), and a validate:false caller should not be
-  // tied to a validate:true job that may fail validation and surface as the
-  // caller's result.
+  // Exact match: validate:true can't take an ungated job, validate:false can't inherit a failure.
   const activeValidate = active.input.validate !== false;
   const requestedValidate = requested.validate !== false;
   if (activeValidate !== requestedValidate) return false;

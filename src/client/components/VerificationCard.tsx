@@ -34,7 +34,7 @@ function isWebUrl(value: string): boolean {
   }
 }
 
-/** A reference opens as a link when it is one; anything else is literal text that unfolds on tap. */
+/** A reference that is a link opens as one; anything else is literal text that unfolds on tap. */
 function EvidenceRef({ value }: { value: string }) {
   const [open, setOpen] = useState(false);
   if (isWebUrl(value)) {

@@ -51,8 +51,7 @@ function isTokenTimeoutError(err: unknown): boolean {
 
 async function fetchAccessTokenOnce(): Promise<string> {
   const { stdout } = await getProcessHost().exec(
-    // 499b84ac-1321-427f-aa17-267ca6975798 is the well-known Azure DevOps public resource ID
-    // (used by all az CLI / MSAL integrations — not a secret)
+    // The well-known public Azure DevOps resource ID, not a secret.
     sh`az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" --query accessToken -o tsv`,
     { encoding: "utf-8", timeout: TOKEN_FETCH_TIMEOUT_MS },
   );
@@ -152,10 +151,7 @@ async function adoFetch(url: string, payload?: unknown, isRetry = false): Promis
   }
   if (isHtmlResponse(contentType, body)) {
     if (!isRetry) {
-      // ADO silently followed a redirect to its sign-in page, which means the
-      // bearer token was rejected. Invalidate the cached token (only if it's
-      // still the one we just sent — avoids burning extra `az` calls when many
-      // parallel requests fail at once) and retry once with a fresh token.
+      // HTML means a sign-in redirect (bad token); clear it only if unchanged, then retry once.
       if (cachedToken?.value === token) {
         cachedToken = null;
       }
@@ -204,11 +200,7 @@ const ASSIGNED_OPEN_WORK_QUERY = "SELECT [System.Id] FROM WorkItems WHERE [Syste
   + ` AND [System.State] NOT IN (${CLOSED_WORK_ITEM_STATES.map((state) => `'${state}'`).join(", ")})`
   + " ORDER BY [System.ChangedDate] DESC";
 
-/**
- * A completed pull request rarely changes again, so it is asked for again only after this long.
- * Everything else uses the cache's short default: closed work can be reopened and an abandoned
- * pull request reactivated, and the task panels that read this cache have no refresh of their own.
- */
+/** Completed PRs rarely change; other entries keep the short default since they can reopen. */
 const COMPLETED_PR_FRESH_MS = 6 * 60 * 60_000;
 
 const workItemCache = createProviderCache<EnrichedWorkItem>();
@@ -232,15 +224,12 @@ export function clearAdoProviderState(): void {
   for (const cache of dataCaches) cache.clear();
 }
 
-/**
- * Makes the next read ask ADO again. The access token and the stale copies that cover an ADO
- * outage are kept, so a refresh never leaves less on screen than there was before it.
- */
+/** Next read asks ADO again; token and stale copies are kept, so a refresh never shows less. */
 export function expireAdoProviderData(): void {
   for (const cache of dataCaches) cache.expire();
 }
 
-/** Told how many work items or pull requests have just been read, so a long read can show progress. */
+/** Told how many work items or pull requests were just read, so a long read shows progress. */
 type Tick = (count: number) => void;
 
 // ── Provider ──────────────────────────────────────────────────────
@@ -357,11 +346,7 @@ export class AdoProvider implements WorkTrackingProvider {
     return item;
   }
 
-  /**
-   * Reads work items in batches, several batches at a time. `onItem` gets each work item's
-   * payload, or null for one ADO has no answer for: deleted, in an organization this login cannot
-   * read, or not a work item number. Returns the error for every id whose batch failed.
-   */
+  /** onItem gets null for ids ADO can't answer; returns the error for each id in a failed batch. */
   private async readWorkItems(
     ids: string[],
     query: string,
@@ -488,10 +473,7 @@ export class AdoProvider implements WorkTrackingProvider {
     });
   }
 
-  /**
-   * The pull requests and other work items that work items link to. The same answer carries each
-   * work item's fields, so a later fetchWorkItems for these ids is served from the cache.
-   */
+  /** Links of work items; also caches their fields, so a later fetchWorkItems hits the cache. */
   async fetchWorkItemLinks(ids: string[], tick?: Tick): Promise<WorkItemLinksResult> {
     const now = Date.now();
     const result = new Map<string, WorkItemLinks>();
@@ -521,11 +503,7 @@ export class AdoProvider implements WorkTrackingProvider {
     };
   }
 
-  /**
-   * Reads one pull request, with the work items it links when `withWorkItems` is set, and
-   * remembers both. A pull request ADO says is not there comes back as a stub and is not reported
-   * as a failed refresh: asking again would not find it.
-   */
+  /** A PR ADO says is missing returns a stub, not a failed refresh: asking again won't find it. */
   private async readPullRequest(
     pr: PRRef,
     now: number,
@@ -540,14 +518,11 @@ export class AdoProvider implements WorkTrackingProvider {
     const hasGuid = REPOSITORY_GUID.test(pr.repoId);
     try {
       const data = await adoFetch(withWorkItems && hasGuid
-        // Only the repository route returns work item refs, and it takes the repository's GUID. Task
-        // links are stored with it. A link without one is read by id and reports no work items.
+        // Only the repository route (which needs the GUID) returns work item refs.
         ? `${this.baseUrl}/_apis/git/repositories/${pr.repoId}/pullrequests/${pr.prId}?includeWorkItemRefs=true&api-version=7.1`
-        // Pull request ids are unique across the organization, so this route resolves links from
-        // every project, including chat links that only carry a repository name.
+        // PR ids are unique per organization, so this resolves links that carry only a repo name.
         : `${this.baseUrl}/_apis/git/pullrequests/${pr.prId}?api-version=7.1`);
-      // The id alone names a pull request in this organization. A link saved from another one
-      // must not show whichever pull request happens to have the same number here.
+      // A link saved from another organization must not show this one's PR with the same number.
       if (hasGuid && String(data.repository?.id).toLowerCase() !== pr.repoId.toLowerCase()) {
         throw new AdoRequestError(`Pull request ${pr.prId} is not in repository ${pr.repoId}`, false, 404);
       }
@@ -581,7 +556,7 @@ export class AdoProvider implements WorkTrackingProvider {
     });
   }
 
-  /** The work items that pull requests link to. A pull request saved without its repository's GUID reports none. */
+  /** Work items that pull requests link to; none for a PR saved without its repository GUID. */
   async fetchPullRequestWorkItems(prs: PRRef[], tick?: Tick): Promise<PullRequestLinksResult> {
     const now = Date.now();
     const unique = [...new Map(prs.map((pr) => [this.prCacheKey(pr), pr])).values()];

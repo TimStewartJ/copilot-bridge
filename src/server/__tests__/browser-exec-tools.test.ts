@@ -49,10 +49,7 @@ vi.mock("node:fs", () => ({
 
 const invocation = {} as any;
 
-/**
- * Directories the code under test created and has not removed again. The mocked filesystem
- * keeps this up to date, so a test can tell whether a directory still exists.
- */
+/** Directories that currently exist in the mocked filesystem. */
 const directories = new Set<string>();
 
 function removeDirectoryTree(target: string): void {
@@ -73,10 +70,7 @@ interface BrowserCall {
 /** What agent-browser prints for a command, or the text it fails with. */
 type BrowserReply = string | { fails: string };
 
-/**
- * What the page-check script (`pageSignalsScript` in browser-page-check.ts) returns for a page,
- * as the JSON text it produces. Without overrides it is an ordinary page with content.
- */
+/** The JSON `pageSignalsScript` returns for a page; without overrides, an ordinary page. */
 function pageSignals(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     url: "https://example.com/",
@@ -122,11 +116,7 @@ const FORM_WITH_CAPTCHA = {
   block: { kind: "captcha", by: "reCAPTCHA", status: 200 },
 } as const;
 
-/**
- * Stands in for the agent-browser binary and records what it was asked. `reply` answers the
- * commands a test cares about. Every other command succeeds, and the page check reads an
- * ordinary page.
- */
+/** Fake agent-browser recording calls; `reply` answers some, the rest succeed on a plain page. */
 function mockAgentBrowser(
   reply: (call: BrowserCall, earlier: readonly BrowserCall[]) => BrowserReply | undefined = () => undefined,
 ): BrowserCall[] {
@@ -355,7 +345,7 @@ describe("browser_exec tool", () => {
       expect(result).not.toHaveProperty("blocked");
       const notice = result.captcha;
       expect(notice).toMatchObject({ kind: page.block.kind, by: page.block.by });
-      // The browser of this call is gone when the agent reads the result, so there is no session to name.
+      // This call's browser is gone by the time the agent reads it, so no session to name.
       expect(notice.guidance).not.toContain("browserSessionId");
       for (const sessionTool of ["browser_session_start", "browser_session_handoff"]) {
         expect(notice.guidance).toContain(sessionTool);
@@ -401,9 +391,7 @@ describe("browser_exec tool", () => {
         };
       }
 
-      // The model is given only `textResultForLlm` of a failure result (see normalizeToolResult in
-      // agent-tools-mcp/server.ts and convertBridgeToolResultToSdk in bridge-native-tools.ts), so a
-      // block that were only in the `blocked` field would never reach it.
+      // The model reads only textResultForLlm of a failure, never the `blocked` field.
       it.each(blockingPages)("reports the failed step, and says in the text the agent reads that the page is %s", async (_name, { page, field, otherField }) => {
         const calls = mockAgentBrowser(replyWithFailedClick(evalOutput(pageSignals(page.signals))));
         const { tool, describePageBlock } = await loadBrowserExec();

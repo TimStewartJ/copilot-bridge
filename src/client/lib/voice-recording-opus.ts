@@ -12,8 +12,7 @@ export interface OpusRecordingEncoder {
 }
 
 export async function createOpusRecordingEncoder(sampleRate: number): Promise<OpusRecordingEncoder | null> {
-  // Chromium reports its delay in input-rate samples, while Ogg requires 48 kHz samples. Using
-  // the Ogg clock for capture and encoding avoids browser-specific delay conversions.
+  // Capture at Ogg's 48 kHz: Chromium reports delay in input-rate samples, and we avoid converting.
   if (sampleRate !== OPUS_CLOCK_RATE || typeof AudioEncoder === "undefined" || typeof AudioData === "undefined") return null;
   const config: AudioEncoderConfig = { codec: "opus", sampleRate, numberOfChannels: 1, bitrate: OPUS_BITRATE };
   const packets: Uint8Array[] = [];
@@ -100,7 +99,7 @@ export async function createOpusRecordingEncoder(sampleRate: number): Promise<Op
         const encodedSamples = packets.reduce((sum, packet) => sum + opusPacketSamples(packet), 0);
         const endSample = preSkip + pushedSamples;
         const lastPacketSamples = packets.length ? opusPacketSamples(packets[packets.length - 1]!) : 0;
-        // Only the last frame's padding may differ; missing even part of the captured audio is a failure.
+        // Only the last frame's padding may differ; missing any captured audio is a failure.
         if (encodedSamples < endSample || encodedSamples - endSample > lastPacketSamples) {
           throw new Error("The Opus encoding does not contain exactly the captured audio.");
         }

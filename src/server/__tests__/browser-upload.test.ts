@@ -60,7 +60,7 @@ describe("uploadFiles", () => {
       .toEqual([`page:14 ${photo},${second}`]);
     // The click is the step's own command: it carries the step's time limit and is never run twice.
     expect(runCommand).toHaveBeenLastCalledWith(["click", "@e3"], 9_000, { skipRecovery: true });
-    // Both the page and its frame were asked for their choosers before the click, and told to stop after.
+    // Page and frame intercept choosers before the click and stop after it.
     expect(chrome.sent("Page.setInterceptFileChooserDialog", (params) => params.enabled))
       .toEqual(["page:true", "frame:true", "page:false", "frame:false"]);
     await chrome.disconnected();

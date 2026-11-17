@@ -1,7 +1,4 @@
-// The server runtime's only way to start a child process. Every process is created on a worker
-// thread, so a slow CreateProcessW never stalls the server's event loop (see
-// .github/instructions/server-runtime.instructions.md). The mechanism is the in-tree package
-// src/packages/spawn-offthread; this module owns the Bridge's process-wide host and its policy.
+// The server's only way to start a child process; spawns on worker threads via spawn-offthread.
 
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -20,17 +17,7 @@ export {
   type ProcessLaunchObservation,
 } from "../packages/spawn-offthread/src/index.js";
 
-/**
- * Locates a worker module that sits beside the caller, such as "cli-session-store-worker".
- * Compiled builds load the .js worker and inherit execArgv. Source runs (tsx, Vitest) load the
- * .ts worker with the tsx loader passed explicitly: loader hooks registered by a tsx parent are
- * not reliably inherited by worker threads. Inherited execArgv is never re-passed, because
- * `new Worker` rejects process-level flags that inheritance silently tolerates.
- *
- * A worker thread loaded from source gets no ".js means .ts" mapping for its own imports, so a
- * module that runs as a worker thread imports nothing from the codebase at run time (type imports
- * are erased). A child process started with the same execArgv has the loader in full.
- */
+/** Source-run worker threads lack .js->.ts mapping: no codebase imports; see process-host.test. */
 export function resolveWorkerEntry(name: string, moduleUrl = import.meta.url): { entry: string; execArgv?: string[] } {
   const isSource = moduleUrl.endsWith(".ts");
   const entry = join(dirname(fileURLToPath(moduleUrl)), `${name}.${isSource ? "ts" : "js"}`);
@@ -50,7 +37,7 @@ function resolveDefaultMode(): ProcessHostMode {
   return process.env.NODE_ENV === "test" ? "inline" : "worker";
 }
 
-/** The host as the Bridge uses it: `exec` runs only constant shell text (src/server/shell-command.ts). */
+/** The host as the Bridge uses it: `exec` runs only constant shell text (see shell-command.ts). */
 export type BridgeProcessHost = Omit<ProcessHost, "exec"> & {
   exec(command: ShellCommand, options?: HostExecOptions): ReturnType<ProcessHost["exec"]>;
 };

@@ -20,9 +20,7 @@ interface PendingSnapshot {
   timer: ReturnType<typeof setTimeout>;
 }
 
-// koffi aborts the whole process when the thread loading it is stopped mid-load (koffi
-// 3.2.1 through 3.3.1). The worker reports ready once its load settles; before that the
-// reader never terminates it: it waits for ready, then stops it.
+// Never stop the worker before ready: koffi 3.2.1-3.3.1 aborts the process if stopped mid-load.
 interface WorkerState {
   worker: WindowsSnapshotWorker;
   ready: boolean;

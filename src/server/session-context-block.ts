@@ -10,14 +10,7 @@ import { sliceTaskNotes, TASK_NOTES_BRIEF_LENGTH, taskNotesRevision, type TaskNo
 import { formatTaskMomentumContext } from "./session-task-momentum.js";
 import { NO_PLAYBOOK, type PlaybookSource } from "../shared/workflow-vocabulary.js";
 
-/**
- * Task and knowledge-base state that changes while a chat runs. It travels at the start of user
- * messages instead of in the system prompt, so edits never invalidate the cached conversation and
- * reach cached chats on their next message. Every section is always present, so a chat that
- * leaves its task or loses its knowledge base is told so like any other change, and each section
- * is resent only when it changes. Notes have a section of their own: a new history line or
- * next step doesn't resend the notes, and a change beyond an excerpt still changes its revision.
- */
+/** Sent with user messages to keep the prompt cache; every section always sent so removals show. */
 export type BridgeContextSectionName = "task_state" | "task_notes" | "knowledge_base" | "playbook";
 
 export interface BridgeContextSection {
@@ -35,10 +28,7 @@ export interface BridgeContextDeps {
 }
 
 export const BRIDGE_CONTEXT_HISTORY_ENTRIES = 3;
-/**
- * Lives in task_state rather than the system prompt so it disappears once the task has a real
- * title: the renamed state replaces this section, and sub-agents never receive it.
- */
+/** Not in the system prompt: it leaves once the task is renamed, and sub-agents skip it. */
 export const PLACEHOLDER_TITLE_GUIDANCE = `This task still has the placeholder title "${PLACEHOLDER_TASK_TITLE}". After reading the user's message, use task_update to give it a concise, descriptive title (3-6 words). Do this silently without mentioning it to the user.`;
 const HISTORY_LINE_LENGTH = 200;
 
@@ -88,8 +78,7 @@ function buildTaskState(deps: BridgeContextDeps, task: Task | null | undefined):
   return section("task_state", lines, "");
 }
 
-// A linked task without notes must not read like a chat without a task: that text is the
-// ledger's starting point, so after a restart a chat whose notes were cleared would not be told.
+// The empty text must differ from NO_TASK_NOTES (the ledger's start), or cleared notes go untold.
 const NO_TASK_NOTES = "This chat is not linked to a Bridge task.";
 const EMPTY_TASK_NOTES = "This task has no notes.";
 
@@ -120,8 +109,7 @@ function buildTaskNotes(
 }
 
 function buildKnowledgeBase(deps: BridgeContextDeps, task: Task | null | undefined): BridgeContextSection {
-  // These are the same prerequisites as docs_search/list/read/schema. No catalog walk is needed,
-  // including for an empty but available knowledge base or a chat without a task.
+  // Same prerequisites as docs_search/list/read/schema; no catalog walk, even for an empty KB.
   if (!deps.docsStore || !deps.docsIndex) return section("knowledge_base", [], "Knowledge base tools are unavailable.");
   const lines = ["Find pages with docs_search or browse with docs_list. Use docs_read for current text and docs_db_schema for collection fields."];
   if (task && deps.tagStore) {
@@ -138,7 +126,7 @@ export interface PlaybookContext {
   playbook: string;
   source: PlaybookSource;
   label?: string;
-  /** False when the name is not an installed playbook (a pin left behind after a skill was removed). */
+  /** False for a pin left behind after its playbook skill was removed. */
   installed: boolean;
   /** Machine skills that add steps to this playbook. */
   extensions: string[];
@@ -206,13 +194,8 @@ export function buildBridgeContextSections(
   ];
 }
 
-/**
- * Start from no linked task and no KB tools. A taskless chat with KB tools receives their
- * lookup pointer once, regardless of how many pages or collections are present.
- */
+/** Hashes for no task and no KB tools, so a chat's first message lists KB tools and playbooks. */
 export function emptyBridgeContextHashes(): Map<BridgeContextSectionName, string> {
-  // With playbooks installed, the playbook section differs from this starting point, so a chat's
-  // first message always says which playbooks exist.
   return new Map(buildBridgeContextSections({}, null).map((candidate) => [candidate.name, candidate.hash]));
 }
 

@@ -22,11 +22,7 @@ export const MAX_VEGA_LITE_SOURCE_BYTES = 500_000; // 500 KB
 export const MAX_VEGA_LITE_DEPTH = 20;
 
 export const HTML_MIME_TYPE = "text/html";
-/**
- * The policy every HTML document an agent writes is served under, as a published visual, a sent
- * file or a task page: the shared sandbox (an opaque origin, so it can never act as the Bridge) and
- * no network.
- */
+/** CSP for all agent HTML: opaque-origin sandbox so it can't act as the Bridge, and no network. */
 export const HTML_SANDBOX_CSP =
   `sandbox ${HTML_SANDBOX}; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'`;
 
@@ -440,11 +436,6 @@ function jsonDepth(value: unknown, current = 0): number {
   return current + 1;
 }
 
-/**
- * Returns an error string if the spec contains network-fetching `data.url` fields at any
- * level of nesting (top-level, composite views, lookup transforms, datasets, etc.).
- * Inline `data.values` is allowed.
- */
 function checkVegaLiteNetworkData(spec: object): string | null {
   function check(node: unknown, path: string): string | null {
     if (!node || typeof node !== "object") return null;

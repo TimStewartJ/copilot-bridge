@@ -475,12 +475,7 @@ describe("event-transform skill injection", () => {
   });
 });
 
-// The agent runtime injects its own `user.message` events tagged `source: "system"`
-// to carry model-only context, currently the deferred-tool `<system_reminder>`
-// block. Copilot CLI <= 1.0.73 left `content` empty and put the text in
-// `transformedContent` (which Bridge never reads), so these dropped out of the
-// timeline by accident. CLI 1.0.75 also emits a copy with the text in `content`,
-// which rendered as though the user had pasted it into the chat.
+// Runtime `source: "system"` user messages (e.g. system_reminder) must never show as the user's.
 describe("event-transform agent-injected system messages", () => {
   const REMINDER = "<system_reminder>\nIMPORTANT: The tools listed below are deferred"
     + " — their full definitions are NOT loaded.\n</system_reminder>";
@@ -1317,8 +1312,7 @@ describe("event-transform tool calls that outlive someone else's turn", () => {
   );
 
   it("ends only the unfinished calls owned by the sub-agent whose turn ended", () => {
-    // Two sub-agents launched side by side, read while both are still running: agent one has just
-    // finished a turn of its own. This is the log as it stood at that moment in a real run.
+    // A real log read while two sub-agents run, just after agent one finished a turn.
     const midRun = [
       { id: "main-turn", type: "assistant.turn_start", timestamp: "2026-09-20T16:29:06.670Z", data: { turnId: "1" } },
       start("task-one", "task", "2026-09-20T16:29:17.578Z", { arguments: { description: "Count tests" } }),
@@ -1391,15 +1385,14 @@ describe("event-transform turns of the main agent and of its sub-agents", () => 
       }]),
   );
 
-  // A background agent working while the main agent goes through turns of its own. `agentStamp`
-  // is what the runtime puts on the agent's turn events: nothing through CLI 1.0.82, the agent since.
+  // `agentStamp` is on the agent's turn events: nothing through CLI 1.0.82, the agent since.
   const backgroundRun = (agentStamp: Record<string, unknown>) => [
     { id: "main-1", type: "assistant.turn_start", timestamp: T(0), data: { turnId: "0" } },
     start("task-bg", "task", 1, { arguments: { name: "moves-agent", description: "Refactor move generation", mode: "background" } }),
     { type: "subagent.started", agentId: "agent-bg", timestamp: T(1), data: { toolCallId: "task-bg", agentName: "general-purpose", agentDisplayName: "moves-agent" } },
     complete("task-bg", 1),
     { id: "agent-turn-1", type: "assistant.turn_start", ...agentStamp, timestamp: T(2), data: {} },
-    // This call says whose it is only by the agent's id; the launching call comes from `subagent.started`.
+    // Owned only via the agent id; the launching call comes from `subagent.started`.
     start("bg-view", "view", 3, {}, "agent-bg"),
     complete("bg-view", 3.5, "agent-bg"),
     { type: "assistant.turn_end", timestamp: T(4), data: { turnId: "0" } },
@@ -1432,7 +1425,7 @@ describe("event-transform turns of the main agent and of its sub-agents", () => 
   });
 
   it("still takes a turn for an agent's when the runtime does not say whose it is", () => {
-    // Through CLI 1.0.82 nothing owns a turn event, so one that starts while an agent runs is guessed to be the agent's.
+    // Through CLI 1.0.82 turns are unowned, so one starting while an agent runs is guessed its.
     const turns = turnsOf(backgroundRun({}));
 
     expect(turns["main-view"]).toMatchObject({ turnId: "subagent-turn-2", parent: undefined });
@@ -1453,8 +1446,7 @@ describe("event-transform turns of the main agent and of its sub-agents", () => 
   });
 
   it("keeps the turn the main agent starts right after a launch, before the agent has begun its own", () => {
-    // What a read finds a moment after a launch: the agent has started and has not taken a turn
-    // yet, so nothing in the log is stamped. How the launch was reported is what says the runtime stamps.
+    // Nothing is stamped yet just after launch; how the launch was reported shows stamping.
     const justLaunched = (started: Record<string, unknown>) => [
       { id: "main-1", type: "assistant.turn_start", timestamp: T(0), data: { turnId: "0" } },
       start("task-bg", "task", 1, { arguments: { name: "moves-agent", mode: "background" } }),

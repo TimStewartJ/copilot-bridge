@@ -1,5 +1,4 @@
-// Platform abstraction — encapsulates OS-specific operations behind a unified API.
-// Windows reads process identities on a native worker, then uses taskkill with verified snapshots.
+// OS-specific operations behind one API; Windows taskkill is checked against process snapshots.
 
 import { existsSync, lstatSync, rmSync, symlinkSync } from "node:fs";
 import { cp, rename, rm } from "node:fs/promises";
@@ -30,12 +29,10 @@ const PROCESS_TABLE_MAX_BUFFER = 16 * 1024 * 1024;
 const TASKKILL_TIMEOUT_MS = 5_000;
 const PROCESS_TREE_DEADLINE_OVERHEAD_MS = 3_000;
 const PROCESS_TABLE_VERIFICATION_RESERVE_MS = PROCESS_TABLE_READ_TIMEOUT_MS;
-// taskkill /F and SIGKILL return before the OS drops every killed process from the process table,
-// so a process that is still listed right after the kill is usually on its way out. Verification
-// keeps looking this long before it reports survivors (measured: gone within ~50 ms on Windows).
+// Killed processes linger in the table briefly (~50 ms on Windows); keep checking this long.
 export const PROCESS_TREE_EXIT_SETTLE_MS = 2_000;
 const PROCESS_TREE_EXIT_POLL_MS = 25;
-// Initial snapshot, taskkill, and verification snapshot, plus the exit settle window and process spawn overhead.
+// Two snapshots and taskkill, plus the exit settle window and process spawn overhead.
 export const PROCESS_TREE_TERMINATION_BUDGET_MS =
   (PROCESS_TABLE_READ_TIMEOUT_MS * 2) + TASKKILL_TIMEOUT_MS + PROCESS_TREE_EXIT_SETTLE_MS + PROCESS_TREE_DEADLINE_OVERHEAD_MS;
 type ProcessTableEntry = { ppid: number; startMarker: string; accessDenied?: true };
@@ -74,7 +71,7 @@ export type ProcessTreeTerminationResult =
       snapshot?: ProcessTreeSnapshot;
       survivors?: ProcessIdentity[];
       error?: string;
-      /** The kill command ran out of time before it finished; the captured tree may be partly terminated. */
+      /** The kill command timed out; the captured tree may be partly terminated. */
       commandTimedOut?: boolean;
     };
 
@@ -169,17 +166,14 @@ function commandError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** execFile sets `killed` when it terminated the command itself, which it does only on timeout or output overflow. */
+/** execFile sets `killed` only when it ended the command itself: on timeout or output overflow. */
 function wasKilledByTimeout(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const failure = error as Error & { code?: unknown; killed?: unknown };
   return failure.killed === true && failure.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
 }
 
-/**
- * execFile's own message is just "Command failed: <full command line>", which
- * hides why a process command failed. Name the operation and the reason instead.
- */
+/** Names the operation and reason; execFile's own message only repeats the command line. */
 function describeProcessCommandFailure(label: string, error: unknown, timeoutMs: number): string {
   if (!(error instanceof Error)) return `${label} failed: ${String(error)}`;
   const failure = error as Error & { code?: unknown; killed?: unknown; signal?: unknown; stderr?: unknown };
@@ -245,13 +239,7 @@ function readProcessTable(
     : readPosixProcessTable(deadline, timeoutCapMs);
 }
 
-// Drop child-before-parent edges. They indicate that a recycled PID, not the
-// captured parent, owns the relationship represented by this snapshot.
-// Also drop a child we may not even query (Windows access denied). Processes in our tree
-// inherit our token and can always be queried, so such a child is another user's or a
-// protected process whose recorded parent PID was recycled for ours. Without a birth
-// marker it could never be ordered against the parent and would leave the tree
-// unverifiable; and since limited query is the weakest right, taskkill could not stop it.
+// Drop recycled-PID edges: child older than parent, or unqueryable (our own children always are).
 function collectDescendantIdentities(
   rootPid: number,
   table: Map<number, ProcessTableEntry>,
@@ -294,15 +282,7 @@ export function shouldSpawnDetachedProcessGroup(): boolean {
   return !isWindows();
 }
 
-/**
- * Concise process-tree sampling helper for telemetry.
- *
- * Reads exactly one bounded process-table snapshot, resolves the root
- * identity from that snapshot, and returns a {@link ProcessTreeSnapshot}
- * containing the root and all reachable descendants with valid start markers.
- * Returns null when the deadline is expired, the snapshot cannot be read, or
- * the root PID is absent or has no start marker in the snapshot.
- */
+/** One bounded snapshot of root and descendants for telemetry; null if unreadable or root gone. */
 export async function sampleProcessTree(
   rootPid: number,
   deadline: Deadline,
@@ -372,10 +352,7 @@ function parseProcessStartMarkerMs(
   return Number.isFinite(milliseconds) ? milliseconds : undefined;
 }
 
-/**
- * Read process start times with one bounded process-table snapshot. Callers can
- * pair these with PID-bearing files to reject stale files after PID reuse.
- */
+/** Start times from one bounded snapshot, so stale PID files can be rejected after PID reuse. */
 export async function captureProcessStartTimes(
   pids: readonly number[],
   deadline: Deadline,
@@ -462,13 +439,7 @@ function requestPosixTreeKill(snapshot: ProcessTreeSnapshot): string | undefined
   return errors.length > 0 ? errors.join("; ") : undefined;
 }
 
-/**
- * Identity-safe, bounded process-tree termination.
- *
- * Windows uses native snapshots and one taskkill /T /F. Unqueryable entries
- * are re-observed within each snapshot budget. It has no WMIC, per-PID PowerShell, or
- * bare-PID fallback path.
- */
+/** Identity-checked bounded tree kill; Windows uses one taskkill /T /F and no PID-only fallback. */
 export async function terminateProcessTree(
   root: ProcessIdentity,
   deadline: Deadline,
@@ -607,10 +578,7 @@ export async function terminateProcessTree(
   };
 }
 
-/**
- * Create a directory junction (Windows) or symlink (Linux).
- * Both allow sharing node_modules without copying.
- */
+/** Creates a directory junction (Windows) or symlink (elsewhere). */
 export function createDirectoryLink(
   linkPath: string,
   targetPath: string,
@@ -624,12 +592,7 @@ export function createDirectoryLink(
   }
 }
 
-/**
- * Remove a directory junction (Windows) or symlink (Linux)
- * without recursing into the target directory.
- * Refuses to delete real directories — callers that need recursive
- * deletion should use rmSync directly.
- */
+/** Removes a junction or symlink without following it; refuses real directories. */
 export function removeDirectoryLink(
   linkPath: string,
   _cwd: string,
@@ -642,8 +605,7 @@ export function removeDirectoryLink(
     } else if (stat.isDirectory()) {
       return { ok: false, output: `Refusing to delete real directory: ${linkPath}` };
     }
-    // Exists but is neither a link nor a directory (e.g. a regular file):
-    // nothing was removed, so reporting success would mask a no-op.
+    // Neither a link nor a directory: nothing was removed, so success would mask a no-op.
     return { ok: false, output: `Refusing to delete non-link path: ${linkPath}` };
   } catch (err: any) {
     if (err.code === "ENOENT") return { ok: true, output: "already removed" };
@@ -700,10 +662,7 @@ async function loadLastInputApi(): Promise<() => number | undefined> {
   };
 }
 
-/**
- * Seconds since the last keyboard or mouse input in this Windows session, or undefined where
- * that can't be read. In a disconnected session it is the time since input before the disconnect.
- */
+/** Seconds since the last input in this Windows session (before any disconnect), else undefined. */
 export async function readSecondsSinceLastInput(platform: NodeJS.Platform = process.platform): Promise<number | undefined> {
   if (platform !== "win32") return undefined;
   try {
@@ -717,12 +676,7 @@ export async function readSecondsSinceLastInput(platform: NodeJS.Platform = proc
 const MOVE_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000, 3_000, 4_000] as const;
 const TRANSIENT_MOVE_ERROR_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 
-/**
- * Moves a file or directory that was only just written. On Windows a virus scanner or
- * indexer that is still reading the new files makes the rename fail for a few seconds, so
- * it is retried and then replaced by a copy. The copy also covers a destination on another
- * volume.
- */
+/** Retry renames Windows scanners block briefly, then copy (also covers cross-volume moves). */
 export async function moveFreshPath(source: string, destination: string, options: {
   renamePath?: (from: string, to: string) => Promise<void>;
   copyPath?: (from: string, to: string) => Promise<void>;
@@ -759,35 +713,10 @@ export interface WindowsShellInvocation {
   verbatim: true;
 }
 
-// cmd.exe reads at most 8191 characters in a line. The launcher's own line, which the arguments
-// are written into, has the same limit; the rest is left for its text.
+// Under cmd.exe's 8191-character line limit, leaving room for the launcher's own text.
 const WINDOWS_SHELL_LINE_LIMIT = 7500;
 
-/**
- * How to run a command that only the Windows command shell can start, which is what a `.cmd`
- * launcher is, so that the program behind it gets every argument unchanged whatever it holds.
- * Undefined for a command that cannot be passed that way: one with a line break, or too long.
- *
- * Node's own `shell: true` joins the arguments as they are, so an `&` in a web address ends the
- * command and runs the rest as another. It also leaves two of the shell's settings to the
- * registry; both are fixed here, because the quoting depends on them.
- *
- * - Inside quotation marks the shell reads `& | < > ^ ( )` and spaces as text. The launcher
- *   passes its arguments on with the quotation marks, and the program takes them off.
- * - A quotation mark in the argument is written twice, which the program reads as one and which
- *   leaves the shell inside the quoting. Backslashes before one, and before the closing mark,
- *   are doubled, or the program would take the last for an escape of that mark.
- * - The shell replaces `%NAME%` even inside quotation marks, and some names give a quotation
- *   mark (`%CMDCMDLINE:~-1%`), which would end the quoting from inside. `%%cd:~,%` leaves the
- *   shell a `%` followed by a variable that is always there and of which nothing is taken, so
- *   no name is ever read out of the argument. That needs command extensions (`/e:on`).
- * - `!NAME!` is replaced only with delayed expansion, which `/v:off` turns off.
- * - A command given by name stays unquoted: a launcher that the shell finds by a quoted name
- *   gets the current folder for `%~dp0` instead of its own, and then cannot find its program.
- *
- * The quoting is that of Rust's standard library (CVE-2024-24576). Whether it holds is tested
- * on Windows itself, in windows-shell-argument.native.test.ts.
- */
+/** cmd.exe quoting per Rust std (CVE-2024-24576); see windows-shell-argument.native.test.ts. */
 export function windowsShellInvocation(
   command: string,
   args: readonly string[],
@@ -817,12 +746,7 @@ export interface NpmInvocation {
 
 const NPM_CLI_SEGMENTS = ["node_modules", "npm", "bin", "npm-cli.js"];
 
-/**
- * How to run the machine's npm client without a shell, or undefined when Windows has none.
- * The npm that ships beside the running Node is preferred and run with that Node binary.
- * Otherwise npm comes from PATH: POSIX can execute the `npm` launcher directly, while the
- * Windows `npm.cmd` shim needs a shell, so the npm-cli.js beside it is run with Node instead.
- */
+/** npm without a shell: Node's bundled npm, else PATH (Windows runs npm-cli.js beside npm.cmd). */
 export function resolveNpmInvocation(options: {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -852,11 +776,7 @@ export function resolveNpmInvocation(options: {
   return undefined;
 }
 
-/**
- * The OS tar binary used to unpack runtime-downloaded archives. Windows ships bsdtar in
- * System32 (gzip and bzip2 support); prefer it over any GNU tar earlier on PATH, which
- * misreads drive-letter paths as remote hosts.
- */
+/** Prefer System32 bsdtar: a GNU tar earlier on PATH reads 'C:' paths as remote hosts. */
 export function resolveTarCommand(options: {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -870,11 +790,7 @@ export function resolveTarCommand(options: {
   return (options.exists ?? existsSync)(candidate) ? candidate : "tar";
 }
 
-/**
- * Opts the current process out of Windows EcoQoS so latency-sensitive native inference
- * runs on performance cores. Hidden background processes are otherwise scheduled onto
- * efficiency cores, which made local speech models 3-10x slower on hybrid CPUs.
- */
+/** Opt out of EcoQoS: hidden processes land on E-cores, making local speech models 3-10x slower. */
 export async function preferHighPerformanceScheduling(options: {
   platform?: NodeJS.Platform;
   loadApi?: () => Promise<WindowsSchedulingApi>;
@@ -931,12 +847,7 @@ export function parseCpuSetInformation(records: Uint8Array): LogicalProcessor[] 
   return processors;
 }
 
-/**
- * The affinity mask of a hybrid CPU's performance cores, or undefined when there is nothing
- * to choose: every core is the same kind, or the machine has several processor groups, where
- * one mask cannot describe the processors. `maxCores` keeps only the last cores, so the first
- * ones stay free for whatever else the machine runs.
- */
+/** P-core mask, or undefined if cores are uniform or span groups; maxCores keeps the last cores. */
 export function selectPerformanceCoreMask(processors: readonly LogicalProcessor[], maxCores?: number): bigint | undefined {
   if (processors.length === 0 || processors.some((processor) => processor.group !== 0)) return undefined;
   const fastest = Math.max(...processors.map((processor) => processor.efficiencyClass));
@@ -958,7 +869,7 @@ export type PerformanceCoreSetting =
   | { mode: "limit"; cores: number }
   | { mode: "invalid"; value: string };
 
-/** `BRIDGE_PERFORMANCE_CORES`: unset or `auto`, `all`, `off`, or how many performance cores to use. */
+/** `BRIDGE_PERFORMANCE_CORES`: unset or `auto`, `all`, `off`, or a performance core count. */
 export function readPerformanceCoreSetting(env: NodeJS.ProcessEnv): PerformanceCoreSetting {
   const value = env[PERFORMANCE_CORES_ENV]?.trim().toLowerCase();
   if (!value || value === "auto") return { mode: "auto" };
@@ -968,11 +879,7 @@ export function readPerformanceCoreSetting(env: NodeJS.ProcessEnv): PerformanceC
   return { mode: "invalid", value };
 }
 
-/**
- * Whether the performance cores are at least half of the machine. Without a setting the Bridge
- * moves onto them only then: a CPU with two performance cores and eight efficiency cores does
- * more work on the efficiency cores Windows already gives a hidden process tree.
- */
+/** Default only when P-cores are half or more: 2P+8E does more on the E-cores Windows gives us. */
 export function performanceCoresAreMajority(processors: readonly LogicalProcessor[]): boolean {
   if (processors.length === 0) return false;
   const fastest = Math.max(...processors.map((processor) => processor.efficiencyClass));
@@ -1010,15 +917,7 @@ async function loadWindowsProcessorApi(): Promise<WindowsProcessorApi> {
   };
 }
 
-/**
- * Keeps this process, and every process it starts from now on, on the performance cores of
- * a hybrid CPU. Windows schedules a process tree that owns no visible window onto the
- * efficiency cores only, even while the performance cores are idle. The Bridge is such a
- * tree, so agent builds, tests and installs shared four slow cores of a 12-core machine and
- * crawled as soon as two of them overlapped. The allowed-processor mask is the only setting
- * child processes inherit; Windows does not pass on a process's scheduling class. A mask
- * that includes an efficiency core puts the work back on those cores, so it never does.
- */
+/** Windows puts windowless trees on E-cores; only affinity is inherited, so mask P-cores only. */
 export async function runOnPerformanceCores(options: {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;

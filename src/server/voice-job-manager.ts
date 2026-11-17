@@ -52,9 +52,9 @@ const VOICE_JOB_DIRECTORY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[
 
 /** Terminal rows remain visible for recovery and diagnostics for 30 days. */
 export const VOICE_JOB_TERMINAL_RETENTION_MS = 30 * DAY_MS;
-/** Recordings of finished jobs are kept briefly so a poor transcript can be replayed against its audio. */
+/** Finished jobs' audio is kept briefly so a poor transcript can be checked against it. */
 export const VOICE_JOB_AUDIO_RETENTION_MS = 2 * DAY_MS;
-/** Young untracked directories may belong to an accept request that has not inserted its DB row yet. */
+/** Young untracked directories may belong to an accept request not yet in the DB. */
 export const VOICE_JOB_ORPHAN_GRACE_MS = DAY_MS;
 
 export interface VoiceJobMaintenanceResult {
@@ -167,7 +167,7 @@ export function createVoiceJobManager({
     return toSnapshot(store.markRecovered(id));
   }
 
-  /** What a client that just started missed while nothing was polling: running jobs, and dictations waiting to be read. */
+  /** What a newly started client missed: running jobs and dictations waiting to be read. */
   function listOpenVoiceJobs(): VoiceJobSnapshot[] {
     return [...store.listPendingVoiceJobs(), ...store.listHeldVoiceJobs()].map((job) => toSnapshot(job)!);
   }
@@ -274,7 +274,7 @@ export function createVoiceJobManager({
 
   async function transcribeAndSend(job: StoredVoiceJob, existingTranscript?: string): Promise<void> {
     let transcript = existingTranscript?.trim();
-    // A transcript saved before coverage existed has no verdict, and that means it was never checked.
+    // A transcript saved before coverage existed has no verdict: it was never checked.
     let reviewReason: VoiceReviewReason | undefined = job.reviewReason
       ?? (transcript && job.speechGapSeconds === undefined ? "unchecked" : undefined);
 
@@ -291,7 +291,7 @@ export function createVoiceJobManager({
           throw new Error("No transcript returned");
         }
         reviewReason = decideVoiceReview(result.coverage);
-        // The verdict is saved with the transcript, so a restart can never send what should be held.
+        // Save the verdict with the transcript so a restart never sends what should be held.
         store.updateVoiceJob(job.id, {
           transcript,
           error: undefined,
@@ -378,12 +378,7 @@ export function createVoiceJobManager({
     return latestTimestamp >= notBeforeTimestamp - 2_000;
   }
 
-  /**
-   * Sends the transcript the way a typed message goes: into a busy chat as steering, past an open
-   * question, kept in the chat as not sent if its run never delivers it. Nothing here queues it,
-   * since a queued voice message would show nowhere; a chat that stays closed fails the job, which
-   * puts the transcript back in the composer.
-   */
+  /** Never queue: a queued voice message shows nowhere; a closed chat fails the job instead. */
   async function sendTranscript(sessionId: string, transcript: string, job: StoredVoiceJob): Promise<void> {
     const deadline = Date.now() + SEND_REFUSED_RETRY_MS;
     for (;;) {
@@ -458,7 +453,7 @@ export function createVoiceJobManager({
     const keepHeld = keepsHeldRecordings();
     for (const job of store.listTerminalVoiceJobs()) {
       const finishedAt = Date.parse(job.updatedAt);
-      // A held dictation nobody has opened still needs its recording; the two days start once it is opened.
+      // An unopened held dictation keeps its audio; the two days start once it is opened.
       const keepsLonger = job.status === "held" || (keepHeld && job.reviewReason);
       const cutoff = keepsLonger ? now - VOICE_JOB_TERMINAL_RETENTION_MS : audioCutoff;
       if (Number.isFinite(finishedAt) && finishedAt > cutoff) continue;

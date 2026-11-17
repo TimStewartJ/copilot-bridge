@@ -1,6 +1,3 @@
-// Native rendering for links to Bridge's own things. Agents write `bridge://session/<id>`,
-// `bridge://task/<id>` or `bridge://doc/<path>` (and sometimes plain app routes); chat shows
-// them as live chips and cards that navigate inside the app instead of opening a new tab.
 import { createContext, useContext, useMemo, type MouseEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { defaultUrlTransform } from "react-markdown";

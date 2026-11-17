@@ -11,7 +11,7 @@ export function getRestartStatusQueryOptions() {
   return queryOptions({
     queryKey: queryKeys.restartStatus,
     queryFn: fetchRestartStatus,
-    // A failed read is itself the news that the server is away, so it shows at once and is asked again soon.
+    // A failed read means the server is away: show it at once and ask again soon.
     retry: false,
     refetchInterval: (currentQuery) =>
       currentQuery.state.status === "error"
@@ -50,10 +50,7 @@ export type RestartNotice =
   /** A different server process answered: the page reloads to run the client that came with it. */
   | { kind: "restarted" };
 
-/**
- * What the restart notice shows, or null for nothing. `pageInstanceId` is the server this page was
- * loaded from; `unreachable` is a status read that just failed.
- */
+/** The restart notice, or null; `pageInstanceId` is the server this page was loaded from. */
 export function describeRestartNotice(
   status: RestartStatus | undefined,
   pageInstanceId: string | undefined,

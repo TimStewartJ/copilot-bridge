@@ -3,7 +3,7 @@ import { getDashboardTabPath } from "../lib/dashboard-routes";
 
 const RETIRED_RECORD_PARAMS = ["focus", "episode", "id", "invalidLink"];
 
-/** Old Focus, Feed, checklist and archive links land on Home; the records they named no longer exist. */
+/** Old Focus, Feed, checklist and archive links land on Home; their records are gone. */
 export default function FocusDashboardRedirect() {
   const location = useLocation();
   const params = new URLSearchParams(location.search);

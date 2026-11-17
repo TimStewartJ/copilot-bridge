@@ -1,6 +1,4 @@
-// Hands-free conversation state machine: turn detection, interruption handling and
-// speech output pacing. Speech models, the Copilot agent and the client transport are
-// injected so the timing logic can be exercised deterministically in tests.
+// Hands-free state machine; speech, agent and transport are injected for deterministic tests.
 import {
   classifyBargeIn,
   countWords,
@@ -33,21 +31,12 @@ export const VOICE_TIMING = {
   continuationPrerollMs: 350,
   bargeInPrerollMs: 300,
   smartTurnCheckOffsetsMs: [0, 250, 550, 900],
-  /** Extra wait when every end-of-turn check says the user is clearly mid-thought ("so I was thinking, um"). */
+  /** Extra wait when every end-of-turn check says the user is clearly mid-thought. */
   unfinishedExtensionMs: 1_500,
   unfinishedProbability: 0.15,
-  /**
-   * Speak a short "One sec." if the agent has said nothing this long after it was asked. The
-   * hands-free layer normally acknowledges within about two seconds (26 Oct 2026, in the Bridge),
-   * so this covers a slow one.
-   */
+  /** Say "One sec." after this silence; the layer usually acks within ~2 s. */
   fillerDelayMs: 3_000,
-  /**
-   * While a reply is still being worked out, say so again when this long has passed in silence since
-   * the last thing said: first gap, second gap, and so on, the last one repeating. On 6 Oct 2026 a
-   * 19-second lookup followed "One sec." with 15 s of silence in a car, and the user hung up one
-   * second before the reply.
-   */
+  /** Re-announce after these silences (last repeats); long silence made a user hang up. */
   progressDelaysMs: [8_000, 12_000, 20_000, 30_000],
   bargeInDuckMs: 250,
   bargeInFirstCheckMs: 450,
@@ -88,10 +77,7 @@ export interface VoiceEngineApi {
   synthesize(request: SpeechSynthesisRequest, onChunk: (pcm: Int16Array, sampleRate: number) => void): SpeechSynthesisHandle;
 }
 
-/**
- * user/continuation/interrupted: something the user said, for the agent to decide about. typed: a
- * message typed while hands-free is on, sent as it is. command: a short command caught locally.
- */
+/** user/continuation/interrupted: speech to judge; typed: sent as is; command: caught locally. */
 export type AgentTurnKind = "user" | "continuation" | "interrupted" | "event" | "greeting" | "typed" | "command";
 
 export interface AgentTurnInput {
@@ -112,10 +98,7 @@ export interface AgentTurnListener {
   onDelta(text: string): void;
   /** One spoken part ended; the next one starts fresh. */
   onMessageEnd?(): void;
-  /**
-   * `handled` says what became of what the user said: "sent" to the chat, "not_sent" (heard but not
-   * meant for it), "end" (leave hands-free), or a command the agent answered itself.
-   */
+  /** `handled`: "sent" to the chat, "not_sent", "end" (leave hands-free), or a command answered. */
   onDone(result: { aborted: boolean; error?: string; handled?: string }): void;
 }
 
@@ -147,12 +130,12 @@ export interface VoiceAgentApi {
   startTurn(input: AgentTurnInput, listener: AgentTurnListener): AgentTurnHandle;
   /** Gives the agent a way to speak on its own. */
   bindOutput?(output: VoiceAgentOutput): void;
-  /** True while the agent has work in hand (the chat is working, a reply is being prepared): no auto-sleep. */
+  /** True while the chat is working or a reply is being prepared; blocks auto-sleep. */
   isBusy?(): boolean;
 }
 
 const SPEECH_PRIORITY: Record<AgentSpeech["kind"], number> = { readback: 0, notice: 1, progress: 2, announce: 3 };
-/** Cancellations that mean "the user is saying something else", after which unheard agent speech waits its turn. */
+/** Cancel reasons after which unheard agent speech is queued again rather than dropped. */
 const REQUEUE_REASONS: ReadonlySet<string> = new Set(["user kept talking", "typed message"]);
 
 export type VoiceServerEvent =
@@ -264,11 +247,11 @@ interface GenerationState {
   cancelled: boolean;
   held: boolean;
   heldAudio: VoiceAudioChunk[];
-  /** Everything emitted for this reply, so a client that reconnects mid-reply can hear what it missed. */
+  /** Every chunk of this reply, so a client that reconnects mid-reply can hear what it missed. */
   sentAudio: VoiceAudioChunk[];
   audioSecondsSent: number;
   firstAudioAt?: number;
-  /** When everything sent so far will have finished playing, allowing for silent gaps between parts. */
+  /** When everything sent so far finishes playing, counting silent gaps between parts. */
   playbackEndsAt?: number;
   playedChunkIds: Set<number>;
   sleepAfter: boolean;
@@ -405,10 +388,7 @@ export class VoiceConversation implements VoiceAgentOutput {
     }
   }
 
-  /**
-   * Hands-free restarted soon after the last connection ended (a dropped call, most likely): the
-   * next thing the user says reaches the model with this note, so it can offer to repeat itself.
-   */
+  /** After a quick restart, the next words carries this note so the model can offer to repeat. */
   setResumeNote(note: string): void {
     this.resumeNote = note;
   }
@@ -430,10 +410,7 @@ export class VoiceConversation implements VoiceAgentOutput {
     this.maybeFinishGeneration(gen, { playbackIdle: true });
   }
 
-  /**
-   * A message typed while hands-free is active (Tether sends these). It always goes to the chat
-   * as it is (never treated as filler or a command); the reply is read back like any other.
-   */
+  /** A typed message: sent to the chat as is, never read as a command; the reply is spoken. */
   submitText(text: string, options: { clientMessageId?: string; onDelivery?: (delivery: TypedTextDelivery) => void } = {}): void {
     const trimmed = text.trim();
     if (this.disposed || !trimmed) {
@@ -464,7 +441,7 @@ export class VoiceConversation implements VoiceAgentOutput {
     if (this.disposed) return;
     this.pendingSpeech = this.pendingSpeech.filter((pending) => pending.key !== item.key);
     this.pendingSpeech.push(item);
-    // Too much waiting: the least important (oldest first) goes, so announcements never push out a reply.
+    // Drop the least important (oldest first) so announcements never push out a reply.
     while (this.pendingSpeech.length > 8) {
       const worst = this.pendingSpeech.reduce((least, candidate) => (SPEECH_PRIORITY[candidate.kind] > SPEECH_PRIORITY[least.kind] ? candidate : least));
       this.pendingSpeech = this.pendingSpeech.filter((pending) => pending !== worst);
@@ -854,8 +831,7 @@ export class VoiceConversation implements VoiceAgentOutput {
       onDelivery?.(delivery);
     };
     if (input.kind === "user" || input.kind === "continuation" || input.kind === "interrupted" || input.kind === "command") {
-      // The agent normally answers within a second or two; this covers a slow one. Counted from now,
-      // not from the end of speech: transcribing a long request can take a second by itself.
+      // Counted from now, not end of speech: transcribing a long request can itself take a second.
       const delay = VOICE_TIMING.fillerDelayMs;
       gen.fillerTimer = this.timers.setTimeout(() => {
         gen.fillerTimer = undefined;
@@ -924,7 +900,7 @@ export class VoiceConversation implements VoiceAgentOutput {
     for (const chunk of chunks) this.enqueueChunk(gen, chunk);
   }
 
-  /** A turn can hold several assistant messages (around tool calls); each has its own spoken part. */
+  /** A turn can hold several assistant messages, each with its own spoken part. */
   private onAgentMessageEnd(gen: GenerationState): void {
     if (this.gen !== gen || gen.cancelled) return;
     this.flushPendingSpeech(gen);
@@ -967,10 +943,7 @@ export class VoiceConversation implements VoiceAgentOutput {
     return gen.playbackEndsAt === undefined ? 0 : Math.max(0, gen.playbackEndsAt - this.timers.now());
   }
 
-  /**
-   * Starts the wait for the next "still working" line, counted from the end of what is playing now.
-   * Called each time something has been said, so only silence lets the wait run out.
-   */
+  /** Restarts the "still working" wait from the end of playback, so only silence ends it. */
   private scheduleProgress(gen: GenerationState): void {
     if (gen.progressTimer) this.timers.clearTimeout(gen.progressTimer);
     gen.progressTimer = undefined;
@@ -1121,11 +1094,7 @@ export class VoiceConversation implements VoiceAgentOutput {
     this.sink.sendAudio(chunk);
   }
 
-  /**
-   * A client that reconnected mid-reply missed the audio sent while it was away (and may have dropped
-   * what it had queued but not started). Sends every chunk of the current reply it has not started
-   * playing again, in order, and restarts the playback clock. Returns how many audio pieces were sent.
-   */
+  /** After a reconnect, resends unplayed chunks of the reply and restarts the playback clock. */
   resendUnplayedAudio(): number {
     const gen = this.gen;
     if (!gen || gen.cancelled || gen.held) return 0;
@@ -1179,8 +1148,7 @@ export class VoiceConversation implements VoiceAgentOutput {
         this.log("metrics", { ...gen.metrics });
       }
     }
-    // Counted from the end of the last part, not from the first: a reply that follows its lead-in
-    // after a long lookup is still playing when its synthesis ends.
+    // From the end of the last part: a reply after a long lookup still plays when synthesis ends.
     const remainingMs = this.remainingPlaybackMs(gen);
     if (!options.playbackIdle && remainingMs > 0) {
       if (gen.playbackIdleTimer) this.timers.clearTimeout(gen.playbackIdleTimer);
@@ -1208,8 +1176,7 @@ export class VoiceConversation implements VoiceAgentOutput {
     if (!gen || gen.cancelled) return;
     gen.cancelled = true;
     this.gen = undefined;
-    // The agent's own speech that nobody heard because the user started talking first waits for the
-    // next gap. Asked to be quiet, it is dropped.
+    // Unheard agent speech waits for the next gap if the user cut in; told to be quiet, it drops.
     if (REQUEUE_REASONS.has(reason) && gen.agentSpeech && gen.firstAudioAt === undefined
       && !this.pendingSpeech.some((item) => item.key === gen.agentSpeech!.key)) {
       this.pendingSpeech.unshift(gen.agentSpeech);
@@ -1246,7 +1213,7 @@ export class VoiceConversation implements VoiceAgentOutput {
     this.speakAgentSpeech(next);
   }
 
-  /** Speaks something the agent asked for on its own. Like a reply, it waits for and yields to the user. */
+  /** Speaks something the agent raised itself; like a reply, it waits for the user and yields. */
   private speakAgentSpeech(item: AgentSpeech): void {
     const gen = this.createGeneration("event", { turnId: ++this.turnSeq, reason: "event", smartTurn: [] }, this.timers.now());
     gen.agentSpeech = item;
@@ -1271,12 +1238,7 @@ function words(text: string): string[] {
   return text.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
 }
 
-/**
- * True when a "user" transcript is mostly the assistant's own recent speech leaking into the mic.
- * Short ones count too: on a phone speaker the Bridge heard its own "One sec." and "Let me check." (as
- * "Let me change.") and cancelled its answer three times (23 Sep 2026). A short transcript is echo when
- * it appears word for word in what was just said, or shares two of its three words with it.
- */
+/** Short transcripts count: on phone speakers it heard its own "One sec." and cancelled itself. */
 export function looksLikeEcho(transcript: string, spokenText: string): boolean {
   const heard = words(transcript);
   if (heard.length === 0 || !spokenText) return false;

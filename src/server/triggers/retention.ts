@@ -1,4 +1,4 @@
-// Keeps the newest chats a trigger started and archives older ones, for triggers that set keepChats.
+// For triggers with keepChats: keeps their newest started chats and archives older ones.
 
 import type { DeferredPromptStore } from "../deferred-prompt-store.js";
 import type { GlobalBus } from "../global-bus.js";
@@ -7,7 +7,7 @@ import type { SessionManager } from "../session-manager.js";
 import type { SessionMetaStore } from "../session-meta-store.js";
 import type { TriggerStore } from "./store.js";
 
-/** Run rows kept per trigger beyond keepChats, so retention always has the full window to look at. */
+/** Minimum run rows kept per trigger, so retention always sees the full window. */
 export const TRIGGER_RUNS_KEEP_MIN = 200;
 const TRIGGER_RUNS_KEEP_HEADROOM = 50;
 
@@ -15,10 +15,7 @@ export function resolveTriggerRunsKeep(keepChats?: number): number {
   return Math.max(TRIGGER_RUNS_KEEP_MIN, (keepChats ?? 0) + TRIGGER_RUNS_KEEP_HEADROOM);
 }
 
-/**
- * Whether a chat has automation that archiving would cancel: an active trigger, or a restart notice
- * waiting to be sent. Without the stores to ask, assume it has.
- */
+/** Whether archiving would cancel a chat's trigger or pending notice; true without the stores. */
 export function hasPendingChatAutomation(
   sessionId: string,
   deps: { triggerStore?: Pick<TriggerStore, "hasActiveForSession">; deferredPromptStore?: Pick<DeferredPromptStore, "listForSession"> },
@@ -39,7 +36,7 @@ export interface TriggerRetentionDeps {
 
 export interface TriggerRetentionResult {
   archivedSessionIds: string[];
-  /** Chats that still exist but were left alone (busy or with triggers of their own); their run rows are kept. */
+  /** Existing chats left alone (busy or with own triggers); their run rows are kept. */
   retainableSessionIds: string[];
 }
 
@@ -57,7 +54,7 @@ export async function enforceTriggerChatRetention(deps: TriggerRetentionDeps): P
   }
   if (candidates.size === 0) return { archivedSessionIds: [], retainableSessionIds: [] };
 
-  // A folder that could not be read throws: this pass then archives and prunes nothing, and the next one retries.
+  // An unreadable folder throws, so this pass changes nothing and the next one retries.
   const sessions = await deps.sessionManager.readSessionsFromDisk([...candidates], { failOnReadError: true });
   const existing = new Set(sessions.map((session: { sessionId: string }) => session.sessionId));
   const toArchive: string[] = [];

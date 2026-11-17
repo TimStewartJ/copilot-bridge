@@ -40,7 +40,7 @@ export function readSessionLaunchContext(directory: string): SessionLaunchContex
     throw error;
   }
   const value: unknown = JSON.parse(text);
-  // Older files may carry an isNewTask flag; the placeholder-title guidance now follows the live title.
+  // An isNewTask flag in older files is ignored: title guidance follows the live title.
   if (!isRecord(value)) {
     throw new Error("Invalid Bridge session launch context");
   }

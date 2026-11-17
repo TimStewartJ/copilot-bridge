@@ -193,7 +193,7 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
       {data?.sourceErrors.map(error => <Notice key={error} tone="warning" title="Some information is unavailable">{error}</Notice>)}
       {!data ? <EmptyHint>{query.error ? "Home is unavailable. Try refreshing." : "Loading Home…"}</EmptyHint> : section === "overview"
         ? <div className="grid items-start gap-7 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)]">
-          {/* On one column the stacks dissolve into the grid so urgent regions lead: needs you, due to-dos, unattended runs, then resuming. */}
+          {/* On one column the stacks dissolve into the grid so the most urgent regions lead. */}
           <div className="contents xl:block xl:min-w-0 xl:space-y-7">
             <div className="order-1 min-w-0">{needsYou}</div>
             <div className="order-3 min-w-0 empty:hidden"><HomeUnattendedRuns onSelectSession={onSelectSession} /></div>

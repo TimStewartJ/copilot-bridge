@@ -27,11 +27,7 @@ export function getSettingsDraftUpdates(saved: AppSettings, draft: AppSettings):
   return updates;
 }
 
-/**
- * Apply what a section changed, relative to the settings it was rendered with, onto the latest
- * settings. A section that built its update from an older render cannot put back a value that
- * changed since in some other key.
- */
+/** Applies only keys changed since base onto current, so a stale section can't revert others. */
 export function applySettingsChanges(base: AppSettings, next: AppSettings, current: AppSettings): AppSettings {
   const result = { ...current } as Record<string, unknown>;
   for (const key of Object.keys({ ...base, ...next }) as Array<keyof AppSettings>) {

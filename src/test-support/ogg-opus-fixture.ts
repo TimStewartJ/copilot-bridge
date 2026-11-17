@@ -1,7 +1,4 @@
-// A 0.4 s, 440 Hz tone as a standard Ogg Opus file (mono, 20 ms packets), made with
-// `ffmpeg -f lavfi -i sine=frequency=440:sample_rate=16000:duration=0.4 -c:a libopus -b:a 12k`.
-// A file from a standard encoder and muxer keeps the reader and decoder honest about the format,
-// rather than only agreeing with the writer that lives next to them.
+// ffmpeg/libopus 0.4 s 440 Hz tone, so the reader is tested against a real muxer, not our writer.
 const BASE64 = [
   "T2dnUwACAAAAAAAAAAAAAAAAAAAAAEkq9qABE09wdXNIZWFkAQE4AYA+AAAAAABPZ2dTAAAAAAAAAAAAAAAAAAABAAAASZW+VAEuT3B1c1RhZ3MG",
   "AAAAZmZtcGVnAQAAABQAAABlbmNvZGVyPUxhdmMgbGlib3B1c09nZ1MABDhMAAAAAAAAAAAAAAIAAACJ3M+dFTMtLComJywxJiUpKSooKCsoISQf",

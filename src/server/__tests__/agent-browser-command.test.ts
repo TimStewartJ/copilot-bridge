@@ -10,10 +10,7 @@ vi.mock("node:fs", () => ({
 
 const WINDOWS_EXECUTABLE = "agent-browser-win32-x64.exe";
 
-/**
- * The real module (src/test-support/vitest-setup.ts replaces it for every other test file), on a
- * given platform. Paths and the PATH delimiter stay the host's, as node:path is not replaced.
- */
+/** The real module (vitest-setup mocks it elsewhere) on a platform; path stays the host's. */
 async function commandOn(platformName: NodeJS.Platform, pathValue: string, installed: string[] = []) {
   vi.resetModules();
   vi.doUnmock("../agent-browser-command.js");

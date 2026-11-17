@@ -1,5 +1,4 @@
-// What clients see of triggers: one view per trigger, the worker runs recorded in telemetry, and the
-// messages triggers queued for a chat.
+// Client views of triggers: one per trigger, worker runs from telemetry, and queued chat messages.
 
 import type { DeferCheckpoint } from "../defer-checkpoint.js";
 import {
@@ -160,7 +159,7 @@ function optionalNumber(metadata: Record<string, unknown>, key: string): number 
 
 const WORKER_ACTIONS = new Set(["continue", "notify", "finish", "return", "expired", "error"]);
 
-/** The trigger a worker span belongs to; spans recorded while triggers were defers carry a prefixed deferId. */
+/** The trigger a worker span belongs to; older spans carry a prefixed deferId instead. */
 function spanTriggerId(metadata: Record<string, unknown>): string | undefined {
   return optionalString(metadata, "triggerId") ?? optionalString(metadata, "deferId")?.replace(/^(once|interval)_/, "");
 }
@@ -191,7 +190,7 @@ function parseWorkerRun(span: TelemetrySpan): TriggerWorkerRun | undefined {
   };
 }
 
-/** Worker runs for a chat's triggers, newest first, with whether each one's message reached the chat. */
+/** A chat's trigger worker runs, newest first, with whether each message reached the chat. */
 export function listTriggerWorkerRuns(
   telemetryStore: TelemetryStore | undefined,
   sessionId: string,

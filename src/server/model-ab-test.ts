@@ -1,5 +1,4 @@
-// Model A/B test (shared/model-ab-test.ts): which arm a new chat starts on, where that is recorded,
-// and the per-arm report Settings › Models shows.
+// Model A/B test: which arm a new chat starts on, where it is recorded, and the per-arm report.
 import type { DatabaseSync } from "./db.js";
 import type { AppSettings } from "./settings-store.js";
 import type { CopilotUsageSessionRow } from "./copilot-usage.js";
@@ -30,10 +29,7 @@ export interface ModelAbTestAssignment extends ModelAbTestChoice {
   switchedAt?: string;
 }
 
-/**
- * The arm a new chat starts on while a test runs, or undefined when it starts on New chats as usual.
- * Both arms have to be usable: skipping only the broken one would send every chat to the other arm.
- */
+/** A new chat's arm, or undefined; both arms must be usable, or every chat would get the other. */
 export function chooseModelAbTestArm(
   settings: Pick<AppSettings, "modelAbTest" | "modelPresets"> | undefined,
   models: readonly RoleModelInfo[] | undefined,
@@ -46,7 +42,7 @@ export function chooseModelAbTestArm(
   return { testStartedAt: test.startedAt, arm, tier: test[arm] };
 }
 
-/** Counts and recorded cost per arm for the current test; `usage` is the usage reader's session rows. */
+/** Counts and recorded cost per arm; `usage` is the usage reader's session rows. */
 export function buildModelAbTestReport(
   test: ModelAbTestSettings | undefined,
   assignments: readonly ModelAbTestAssignment[],

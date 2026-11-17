@@ -1,3 +1,4 @@
+// Live state not on disk yet; events.jsonl owns the transcript, sourceEventId hands items off.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -37,21 +38,7 @@ import { queryKeys } from "./queryClient";
 
 export type { LiveReasoningBlock };
 
-/**
- * Live stream state.
- *
- * `events.jsonl` (served by `/messages-fast`) is the sole authority for committed transcript
- * content and ordering. This hook only carries state that is genuinely not on disk yet:
- * streaming text, in-flight tools, accepted-but-unpersisted prompts, pending interactions, and
- * bridge-native run notices. Everything disk-backed here carries the `sourceEventId` it will be
- * committed under, so the view can hand it off to history by exact identity instead of merging.
- */
-
-/**
- * A tool call known to the stream, including recently-completed ones. The view substitutes this
- * state onto the matching disk entry (matched by `toolCallId`) rather than appending a duplicate,
- * so `events.jsonl` keeps deciding where the tool sits in the transcript.
- */
+/** Laid onto the disk entry with the same toolCallId, never appended, so disk keeps order. */
 export interface PendingTool {
   toolCallId: string;
   name: string;
@@ -96,11 +83,7 @@ export interface LiveCompletion {
   turnInstanceId?: string;
 }
 
-/**
- * Assistant text that has not been observed in loaded disk history yet. A segment with a
- * `sourceEventId` is disk-backed and is dropped once that id appears in history; a segment without
- * one is bridge-native (slash-command output) and has no disk representation at all.
- */
+/** Text not yet in loaded history; dropped when its sourceEventId appears (none: bridge-native). */
 export interface LiveAssistantSegment {
   id: string;
   content: string;
@@ -156,10 +139,7 @@ export interface StreamState {
   liveTools: PendingTool[];
   /** The turn each working sub-agent is in, by the call that launched it. */
   agentTurnInstanceIds: Readonly<Record<string, string>>;
-  /**
-   * The main agent has stopped and background work keeps the run open: agents still running, or
-   * a command in an attached shell.
-   */
+  /** The main agent stopped, but running agents or an attached shell keep the run open. */
   mainAgentIdle: boolean;
   liveVisuals: LiveVisual[];
   liveCompletion: LiveCompletion | null;
@@ -179,12 +159,7 @@ export interface StreamState {
   runMode?: SendMode;
   activeTurnId?: string;
   activeTurnInstanceId?: string;
-  /**
-   * Locally monotonic marker that advances whenever committed disk history may have changed,
-   * including every time a run settles: it is the view's only cue to re-read disk history.
-   * Derived rather than mirrored: the server's per-run counter restarts with each new bus, so the
-   * view would otherwise stop refreshing after the first run of a session.
-   */
+  /** Bumps when disk history may change; local because the server counter restarts per run bus. */
   historyEpoch: number;
 }
 
@@ -359,10 +334,7 @@ export function normalizePendingUserMessage(value: unknown): LivePendingUserMess
   };
 }
 
-/**
- * A message the agent never got stays in the chat. The server's live copy of it ends with its run,
- * so until history lists it (where it then shows instead) this view keeps its own.
- */
+/** Keeps undelivered messages until history lists them; the server's copy ends with its run. */
 function keepUndeliveredMessages(messages: LivePendingUserMessage[]): LivePendingUserMessage[] {
   const kept = messages.filter((message) => message.undelivered);
   return kept.length > 0 ? kept : [];
@@ -579,7 +551,7 @@ export function normalizeLiveTools(
   return [...tools.values()];
 }
 
-/** Reads the `[launching tool call, turn instance]` pairs a snapshot carries for working sub-agents. */
+/** Reads a snapshot's `[launching tool call, turn instance]` pairs for working sub-agents. */
 export function normalizeAgentTurns(value: unknown): Readonly<Record<string, string>> {
   if (!Array.isArray(value)) return NO_AGENT_TURNS;
   const turns: Record<string, string> = {};
@@ -625,11 +597,7 @@ function getStreamContextSummary(event: Record<string, unknown>): SessionContext
   return isRecord(summary) ? (summary as unknown as SessionContextSummary) : null;
 }
 
-/**
- * Segments that survive a turn boundary. Bridge-native text will never reach `events.jsonl`, so it
- * always stays; disk-backed text stays for the one turn its history read may still be in flight
- * (see live-turn-retention.ts) and is hidden by identity as soon as that read lands.
- */
+/** Keeps bridge-native text, and the ending turn's disk text until its history read lands. */
 export function retireSegmentsAtTurnBoundary(
   segments: LiveAssistantSegment[],
   endingTurnInstanceId: string | undefined,
@@ -802,12 +770,11 @@ export function useSessionStream(
             providerRetry: complete ? undefined : normalizeProviderRetryState(event.providerRetry),
             hadVisibleOutput: hasLiveOutput,
             pendingOrigin: complete ? null : current.pendingOrigin,
-            // The server knows the mode of the run it is streaming; a new run it cannot name is unknown.
+            // Trust the server's run mode; a new run it cannot name is unknown.
             runMode: isSendMode(event.runMode)
               ? event.runMode
               : snapshotRunId === previousRunId ? current.runMode : undefined,
-            // A finished run, or a snapshot from a different one, means committed history moved
-            // while disconnected.
+            // A finished or different run means history moved while disconnected.
             historyEpoch: complete || snapshotRunId !== previousRunId
               ? current.historyEpoch + 1
               : current.historyEpoch,
@@ -854,8 +821,7 @@ export function useSessionStream(
 
       if (eventType === "thinking") {
         setStreamState((current) => {
-          // The turn that is ending keeps its disk-backed items for one more turn: the history
-          // read that carries them is usually still in flight (see live-turn-retention.ts).
+          // The ending turn's disk items stay a turn while history loads (live-turn-retention.ts).
           const endingTurnInstanceId = current.activeTurnInstanceId;
           return {
             ...current,
@@ -1001,8 +967,7 @@ export function useSessionStream(
       if (eventType === "assistant_partial") {
         setStreamState((current) => {
           const eventContent = typeof event.content === "string" ? event.content : "";
-          // Mirror the server rule: an empty assistant message yields no disk entry, so its event
-          // id must never be stamped onto streamed text that would then be unable to retire.
+          // Empty messages get no disk entry, so never stamp their id on text that must retire.
           if (!eventContent && current.streamingContent) return current;
           const content = eventContent || current.streamingContent;
           if (!content) return { ...current, streamingContent: "" };
@@ -1087,8 +1052,7 @@ export function useSessionStream(
               liveTools: current.liveTools.filter((tool) => tool.toolCallId !== toolCallId),
             };
           }
-          // Retain the finished tool with its result so it renders immediately; the view drops it
-          // once disk history carries the same completed state.
+          // Keep the finished tool so it renders now; the view drops it once disk history has it.
           return {
             ...current,
             liveTools: upsertLiveTool(current.liveTools, {
@@ -1266,8 +1230,7 @@ export function useSessionStream(
           });
         });
         report("stream.terminal", { terminalType: eventType, source: "event" });
-        // The run you are watching ending is felt: done as success, a failure as an error. Stopping it
-        // yourself was already felt on the stop button, and a shutdown is not about this chat.
+        // Haptics for done and error only: a stop was felt on its button; a shutdown isn't ours.
         if (eventType === "done") haptic("success");
         else if (eventType === "error") haptic("error");
         onSettledRef.current();
@@ -1389,21 +1352,14 @@ export function useSessionStream(
     connectStream(sid, "reconnect");
   }, [connectStream]);
 
-  /**
-   * Attach to a busy session's stream unless this hook is already attached to it. A routine
-   * history refresh must not tear down a healthy stream: every reconnect resets the overlay to
-   * "sending" until the next snapshot lands, which reads as a flicker in the middle of a run.
-   */
+  /** Skip if attached: a reconnect resets the overlay to sending and flickers mid-run. */
   const ensureConnected = useCallback((sid: string) => {
     const source = eventSourceRef.current;
     if (source && sessionRef.current === sid && source.readyState !== EventSource.CLOSED) return;
     connectStream(sid, "reconnect");
   }, [connectStream]);
 
-  /**
-   * Drop what a finished run left behind. Its output stays in state until disk history shows it,
-   * and history that was cut back since (an undone turn) never will.
-   */
+  /** Drops a finished run's leftovers, which history cut back by an undo will never show. */
   const dropFinishedRunOutput = useCallback(() => {
     setStreamState((current) => current.isStreaming
       ? current

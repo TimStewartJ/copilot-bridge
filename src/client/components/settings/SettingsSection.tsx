@@ -1,10 +1,7 @@
 import { Section } from "../../design/primitives";
 import { DS, cx } from "../../design/tokens";
 
-/**
- * One section of a settings category. The description is a single short line at most; longer
- * explanations belong behind a Details inside the section.
- */
+/** One section of a settings category; its description is one short line, more goes in Details. */
 export function SettingsSection({
   id,
   title,

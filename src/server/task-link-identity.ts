@@ -1,14 +1,4 @@
-/**
- * Shared identity resolution for task work-item and pull-request links.
- *
- * Both the MCP tools and the REST link routes go through here so the two paths
- * cannot drift, and so a link is never persisted with a guessed provider.
- *
- * `repoId` is the durable identity a row is keyed by; `repoName` is display
- * text. Azure DevOps links must use the repository GUID (a pull request's
- * `repository.id`) so every ADO row has one identity regardless of project.
- * GitHub references are always canonicalized to `owner/repo` first.
- */
+/** Shared by MCP and REST: repoId keys a row (ADO GUID or owner/repo); repoName is display. */
 
 import type { ProviderName, ProvidersConfig } from "./providers/types.js";
 import { err, ok, type Result } from "./tool-results.js";
@@ -69,10 +59,7 @@ function isGitHubWorkItemShorthand(value: string): boolean {
     && isGitHubRepoShorthand(repoPart);
 }
 
-/**
- * Canonical durable repository id for a GitHub reference.
- * Accepts a github.com URL, `owner/repo`, or a bare repo name when an owner is configured.
- */
+/** Durable GitHub repo id from a URL, `owner/repo`, or a bare name with a default owner. */
 export function canonicalizeGitHubRepoId(value: string, defaultOwner?: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -95,14 +82,7 @@ function configuredProviders(providers: ProvidersConfig | undefined): ProviderNa
   return PROVIDER_NAMES.filter((name) => Boolean(providers?.[name]));
 }
 
-/**
- * Decide which provider owns a link.
- *
- * Precedence: explicit argument, then an exact github.com URL, then the single
- * configured provider, then unambiguous GitHub shorthand. Anything still
- * ambiguous fails — a wrong provider silently produces a dead, never-enriching
- * row, so the caller is asked to say which one it means.
- */
+// Explicit, github URL, sole provider, GitHub shorthand; else fail: a wrong guess is a dead row.
 export function resolveLinkProvider(options: {
   explicit?: unknown;
   ref?: unknown;
@@ -151,12 +131,6 @@ export interface ResolvedPullRequestLink {
   provider: ProviderName;
 }
 
-/**
- * Resolve a pull request link into a durable id plus a display name.
- *
- * `repoId` is the identity the row is keyed by (an ADO repository GUID, or a
- * canonical `owner/repo` for GitHub); `repoName` is only ever display text.
- */
 export function resolvePullRequestRef(input: {
   repoId?: unknown;
   repoName?: unknown;
@@ -200,11 +174,7 @@ export function resolvePullRequestRef(input: {
   });
 }
 
-/**
- * Repo ids an unlink should try: the reference as given plus its canonical
- * GitHub form. A delete is still keyed by task, PR number and (when known)
- * provider, so the extra candidate cannot remove an unrelated row.
- */
+/** Also the canonical GitHub form; safe because deletes are keyed by task and PR too. */
 export function pullRequestRepoIdCandidates(input: {
   repoId?: unknown;
   repoName?: unknown;
@@ -239,14 +209,7 @@ export interface LinkRequest {
   providers?: ProvidersConfig;
 }
 
-/**
- * Full resolution for the four link operations, shared by the MCP tools and the
- * REST routes so neither can drift from these rules. Callers map the `Result`
- * onto their own failure shape (a tool failure or a 400).
- *
- * Unlink resolves a provider only when the caller named one: omitting it means
- * "unlink from every provider".
- */
+/** Unlink without a provider unlinks from every provider. */
 export function resolveWorkItemLink(request: LinkRequest): Result<{ workItemId: string; provider: ProviderName }> {
   const workItemId = normalizeWorkItemRef(request.workItemId);
   if (!workItemId.ok) return workItemId;

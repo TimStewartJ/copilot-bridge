@@ -52,7 +52,7 @@ export function OutcomeNotice({ receipt, error, pending, onUndo, onDismiss }: {
 
 const OUTCOME_KEYS: Record<string, TaskOutcome | "later"> = { f: "finished", a: "archive", l: "later", k: "keep", m: "mute" };
 
-/** Steps through quiet tasks one at a time. The list is fixed when it opens, so settling one never reshuffles the rest. */
+/** Steps through quiet tasks one at a time; the list is fixed on open so nothing reshuffles. */
 export function QuietReviewDialog({ rows, pending, onOutcome, onSetAside, onOpenTask, onClose }: {
   rows: TaskOverviewRow[];
   pending: boolean;

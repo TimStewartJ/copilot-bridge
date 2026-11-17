@@ -1,5 +1,4 @@
-// Reduced-motion resolution. The Appearance setting can override the device preference, so
-// CSS and scripts read the resolved `data-motion` attribute on <html> instead of the media query.
+// CSS and scripts read `data-motion` on <html>, not the media query: Appearance can override it.
 
 import type { MotionPreference } from "../api";
 

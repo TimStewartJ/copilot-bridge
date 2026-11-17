@@ -1,7 +1,4 @@
-// Disconnect detection for CopilotBackend: the SDK only flips `client.state`
-// when its JSON-RPC connection drops, so the backend wrapper watches the
-// transport itself and reports the loss exactly once, never for an
-// intentional stop.
+// The SDK only flips client.state on a drop; the backend watches transport and reports once.
 
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -39,10 +36,7 @@ function createFakeConnection() {
   };
 }
 
-/**
- * One ping timing out where the runtime's output is watched: silence is judged after the retry
- * delay and one more millisecond, which lets the pipe be read once more.
- */
+/** One watched ping timing out: the extra millisecond lets the pipe be read once more. */
 const WATCHED_PING_WINDOW_MS = PING_TIMEOUT_MS + BACKEND_PING_RETRY_DELAY_MS + 1;
 
 function createFakeClient(options: { ping?: () => Promise<unknown>; stdout?: boolean } = {}) {
@@ -393,7 +387,7 @@ describe("CopilotBackend disconnect detection", () => {
     const stdout = (cliProcess as any).stdout as EventEmitter;
 
     const probe = backend.probeHealth(undefined, "rpc-timeout:session.send");
-    // Output during the first ping only: that ping is forgiven, the three silent ones after it are not.
+    // Output during the first ping only: it is forgiven, the silent ones after it are not.
     stdout.emit("data", Buffer.from("x"));
     await vi.advanceTimersByTimeAsync(WATCHED_PING_WINDOW_MS * BACKEND_PING_ATTEMPTS);
     expect(onDisconnect).not.toHaveBeenCalled();

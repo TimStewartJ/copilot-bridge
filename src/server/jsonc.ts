@@ -1,17 +1,4 @@
-/**
- * Minimal JSONC support.
- *
- * Some tools write config files that are JSON with comments. The Copilot CLI
- * config is one of them: it starts with a `// User settings belong in
- * settings.json.` header, so plain `JSON.parse` rejects it.
- *
- * Comment stripping is done with a character scanner rather than a regular
- * expression because comment markers legitimately appear inside string values.
- * The same Copilot config contains `"host": "https://github.com"`, which a
- * naive `//` match would truncate.
- */
-
-/** Strips `//` line comments and block comments that sit outside string literals. */
+/** Strips comments outside strings; a scanner, not a regex, since URLs in strings hold `//`. */
 export function stripJsonComments(text: string): string {
   const out: string[] = [];
   let inString = false;
@@ -44,8 +31,7 @@ export function stripJsonComments(text: string): string {
     if (inString) {
       out.push(char);
       if (char === "\\") {
-        // Copy the escaped character verbatim so an escaped quote does not
-        // look like the end of the string.
+        // Copy the escaped character so an escaped quote does not end the string.
         if (next !== undefined) {
           out.push(next);
           index += 1;

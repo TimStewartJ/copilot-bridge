@@ -6,7 +6,7 @@ function fixture({ autoReady = true }: { autoReady?: boolean } = {}) {
   const worker = Object.assign(new EventEmitter(), {
     postMessage: vi.fn(), ref: vi.fn(), unref: vi.fn(), terminate: vi.fn(async () => 0),
   });
-  // The reader subscribes right after createWorker returns, so a queued ready arrives after it listens.
+  // The reader subscribes right after createWorker returns, so a queued ready reaches it.
   const createWorker = vi.fn(() => {
     if (autoReady) queueMicrotask(() => worker.emit("message", { ready: true }));
     return worker;

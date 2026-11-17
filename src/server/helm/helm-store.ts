@@ -1,6 +1,4 @@
-// Persistence for Helm conversations. A Helm conversation is an ordinary Bridge session
-// with the Helm profile; this table records which sessions those are, which one is
-// current, and the activity retention uses to let old ones expire.
+// Which sessions are Helm conversations, which is current, and activity for retention.
 import type { DatabaseSync } from "../db.js";
 
 export interface HelmConversationRecord {

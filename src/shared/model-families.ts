@@ -8,10 +8,7 @@ export function isModelFamily(value: unknown): value is ModelFamily {
   return value === "gpt" || value === "claude" || value === "other";
 }
 
-/**
- * Families are derived from the model id prefix rather than a curated list so
- * newly entitled models land in a sensible group without a code change.
- */
+/** By id prefix, not a curated list, so new models get a sensible group without a code change. */
 export function getModelFamily(modelId: string): ModelFamily {
   const id = modelId.trim().toLowerCase();
   if (id.startsWith("gpt-") || id === "gpt") return "gpt";

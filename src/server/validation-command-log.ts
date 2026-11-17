@@ -50,11 +50,7 @@ const FULL_COMMAND_OUTPUT_PREFIX = "Full command output:";
 const FULL_COMMAND_OUTPUT_WRITE_ERROR_PREFIX = "Unable to write full command output:";
 
 export const VALIDATION_LOG_DIR_ENV = "BRIDGE_VALIDATION_LOG_DIR";
-/**
- * Set by the Vitest harness. Background sweeps fire as a side effect of writing a
- * log, so a test that exercises a real code path with a real root directory would
- * otherwise delete real logs. Explicit `pruneValidationCommandLogs` calls still run.
- */
+/** Set by Vitest so writing a log never sweeps real logs; explicit prune calls still run. */
 export const DISABLE_BACKGROUND_SWEEP_ENV = "BRIDGE_DISABLE_BACKGROUND_LOG_RETENTION";
 export const VALIDATION_LOG_MAX_AGE_DAYS_ENV = "BRIDGE_VALIDATION_LOG_MAX_AGE_DAYS";
 export const VALIDATION_LOG_MAX_COUNT_ENV = "BRIDGE_VALIDATION_LOG_MAX_COUNT";
@@ -62,12 +58,7 @@ export const DEFAULT_VALIDATION_LOG_MAX_AGE_DAYS = 14;
 export const DEFAULT_VALIDATION_LOG_MAX_COUNT = 5_000;
 /** Transient stdout/stderr capture files; only crash leftovers survive to be swept. */
 export const VALIDATION_LOG_TEMP_DIR_NAME = ".tmp";
-/**
- * Validation logs are streamed to for the whole life of a command, sometimes from
- * another process (deploy validation runs in its own CLI). Nothing written in the
- * last few hours is deleted, so a sweep can never unlink a log that still has an
- * open writer — even one that has been silent for a long time.
- */
+/** Never delete logs written this recently: another process may still hold one open. */
 export const DEFAULT_VALIDATION_LOG_GRACE_MS = 6 * 60 * 60_000;
 const VALIDATION_LOG_TEMP_MAX_AGE_MS = RETENTION_DAY_MS;
 const VALIDATION_LOG_SWEEP_MIN_INTERVAL_MS = 10 * 60_000;
@@ -180,11 +171,6 @@ function resolveRetentionLogDir(options: ValidationCommandLogRetentionOptions): 
   throw new Error("Validation command log retention requires a rootDir or logDir");
 }
 
-/**
- * Applies the age + count caps to a validation log directory. Files still being
- * appended to are protected by the shared grace window, and the transient
- * `.tmp` capture directory is swept by age only so crash leftovers cannot pile up.
- */
 export async function pruneValidationCommandLogs(
   options: ValidationCommandLogRetentionOptions,
 ): Promise<ValidationCommandLogPruneResult> {
@@ -223,10 +209,7 @@ const validationCommandLogSweeps = createRetentionSweepScheduler(
   { minIntervalMs: VALIDATION_LOG_SWEEP_MIN_INTERVAL_MS },
 );
 
-/**
- * Best-effort background sweep. Rate-limited per directory so a long-running
- * process converges without paying a readdir on every failed command.
- */
+/** Best-effort background sweep, rate-limited per directory to avoid a readdir per failure. */
 export function scheduleValidationCommandLogSweep(
   logDir: string,
   options: { force?: boolean; env?: NodeJS.ProcessEnv } = {},

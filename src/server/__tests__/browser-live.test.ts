@@ -44,7 +44,7 @@ const ALL_MODIFIERS = BROWSER_LIVE_MODIFIERS.alt | BROWSER_LIVE_MODIFIERS.ctrl
 
 type RunCommand = NonNullable<BrowserLiveGatewayOptions["runCommand"]>;
 type CliAnswer = BrowserCommandResult | Promise<BrowserCommandResult>;
-/** `eval` for a script run in the page, whatever the script; any other command in full, as "tab close t2". */
+/** `eval` for any page script; any other command in full, as "tab close t2". */
 type CliCommandName = string;
 type CliCall = { command: string[]; timeout: number | undefined; options: Parameters<RunCommand>[2] };
 type ShutdownTarget = NonNullable<BrowserBrokerOptions["shutdownTarget"]>;
@@ -73,10 +73,7 @@ class Queue<T> {
 /** Everything one end of a socket receives, parsed, and how the socket closed. */
 class Inbox {
   private readonly messages = new Queue<unknown>();
-  /**
-   * Every list of tabs received, in order. They are kept out of `next`, so that a test about
-   * the page does not depend on when the view is told its tabs.
-   */
+  /** Tab lists received, kept out of `next` so page tests don't depend on their timing. */
   readonly tabLists: BrowserLiveTab[][] = [];
   readonly closed: Promise<{ code: number; reason: string }>;
 
@@ -151,30 +148,24 @@ function send(endpoint: Endpoint, message: unknown): void {
   endpoint.socket.send(typeof message === "string" ? message : JSON.stringify(message));
 }
 
-/** Resolves once the other end has handled everything this end sent so far: a ping is answered after it. */
+/** Resolves once the other end handled all sent so far: a ping is answered after it. */
 async function handled(endpoint: Endpoint): Promise<void> {
   const pong = once(endpoint.socket, "pong");
   endpoint.socket.ping();
   await pong;
 }
 
-/**
- * A view's own timers (its reads of the page, its pings, its idle limit) then run only when a
- * test lets time pass. Call it before the view is opened. Sockets stay real.
- */
+/** Call before opening a view: its timers run only as a test lets time pass; sockets stay real. */
 function freezeViewTimers(): void {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"], now: T0 });
 }
 
-/**
- * Lets time pass for a view opened after `freezeViewTimers`, at most ten seconds at a time, and
- * gives its client the chance to answer each ping the gateway sent meanwhile, as a real one does.
- */
+/** Advances frozen view timers 10 s at a time, letting the client answer pings like a real one. */
 async function elapse(view: View, ms: number): Promise<void> {
   const client = view.client;
   for (let left = ms; left > 0; left -= 10_000) {
     await vi.advanceTimersByTimeAsync(Math.min(left, 10_000));
-    // The first round trip ends after the client has seen the ping, the second after the gateway has its answer.
+    // Round one: the client has seen the ping; round two: the gateway has its answer.
     for (let round = 0; round < 2; round++) await Promise.race([handled(client), client.inbox.closed]);
   }
 }
@@ -198,10 +189,7 @@ function readsSignInForm(command: readonly string[]): boolean {
   return Buffer.from(command[2] ?? "", "base64").toString("utf-8").includes("password.bridgePassword = true");
 }
 
-/**
- * A stand-in for the agent-browser CLI. By default the stream is on, at `streamPort`, and the
- * page cannot be read, so a view receives nothing but what a test sends through the stream.
- */
+/** Fake agent-browser: stream on at `streamPort`, page unreadable, so views get only the stream. */
 function createFakeCli(streamPort: number, journal: string[] = []) {
   const calls: CliCall[] = [];
   const waiters: Array<{ name: CliCommandName; count: number; resolve: () => void }> = [];
@@ -269,10 +257,7 @@ function createFakeCli(streamPort: number, journal: string[] = []) {
   };
 }
 
-/**
- * A broker whose browsers are stand-ins: by default every browser is running, so the broker's
- * readiness commands succeed, and closing one succeeds at once. A test replaces `answers`.
- */
+/** A broker over fake browsers that are ready and close at once; a test replaces `answers`. */
 function createFakeBrowsers(prefix: string, journal: string[] = []) {
   /** The agent-browser commands the broker ran itself: its readiness check. */
   const commands: CliCall[] = [];
@@ -299,11 +284,7 @@ function createFakeBrowsers(prefix: string, journal: string[] = []) {
   return { broker, commands, shutdowns, answers };
 }
 
-/**
- * The broker waits between its attempts to reach a browser, on real timers. This runs an
- * operation whose browser does not come up without those waits: only the timeouts are faked,
- * sockets stay real, and every round lets both make progress until the operation has settled.
- */
+/** Fakes only the broker's retry timeouts; sockets stay real. */
 async function withoutReadinessWaits<T>(operation: () => Promise<T>): Promise<T> {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
@@ -322,7 +303,7 @@ async function withoutReadinessWaits<T>(operation: () => Promise<T>): Promise<T>
   }
 }
 
-/** A `connectStream` that opens the stream the way the gateway does and keeps the gateway's end of each. */
+/** A `connectStream` that opens streams like the gateway does and keeps the gateway's ends. */
 function recordingStreams() {
   const streams: WebSocket[] = [];
   const connectStream = (url: string): WebSocket => {
@@ -340,10 +321,7 @@ afterEach(async () => {
   for (const teardown of teardowns.splice(0).reverse()) await teardown();
 });
 
-/**
- * A gateway over a real session store and broker, an HTTP server that hands it upgrades the way
- * the Bridge server does, and a WebSocket server standing in for agent-browser's stream.
- */
+/** A real gateway, store and broker behind an HTTP server, with a WebSocket fake browser stream. */
 async function createHarness(options: Pick<BrowserLiveGatewayOptions, "connectStream" | "telemetryStore" | "filesDir" | "logins"> = {}) {
   let upstreamAccepts = true;
   const upstreamServer = new WebSocketServer({
@@ -537,10 +515,7 @@ describe("BrowserLiveGateway.resolveStreamPort", () => {
   });
 });
 
-/**
- * The gateway's end of a stream that exists only in the test. What the gateway sends into it
- * goes to `receive`, which stands in for the browser.
- */
+/** The gateway's end of a test-only stream; what the gateway sends goes to `receive`. */
 class FakeStream extends EventEmitter {
   /** What the gateway sent, parsed. */
   readonly sent: Array<Record<string, unknown>> = [];
@@ -579,10 +554,7 @@ describe("BrowserLiveGateway.checkStream", () => {
     ignoresText?: boolean;
   }
 
-  /**
-   * A gateway whose browser is a stand-in: a page that the check's own script turns into one
-   * text box, which a click through the stream focuses and typed text fills.
-   */
+  /** A gateway over a fake page with one text box that a click focuses and typing fills. */
   function createStreamCheck(page: CheckedPage = {}) {
     const opened = new Queue<FakeStream>();
     let boxId = "";
@@ -823,8 +795,7 @@ describe("BrowserLiveGateway file choosers", () => {
     h.gateway.releaseFileChooser(asked.id);
     await expect(h.gateway.claimFileChooser(asked.id)).resolves.toMatchObject({ multiple: false });
 
-    // The page moved on meanwhile: Chrome no longer finds the element that asked, and the
-    // request is over. Chrome would report success for setting its files all the same.
+    // The page moved on, so the asking element is gone; Chrome would still report success.
     chrome.failing = ["DOM.resolveNode"];
     await expect(h.gateway.chooseFiles(asked.id, ["a.jpg"])).resolves.toEqual({ ok: false, error: GONE });
     expect(chrome.sent("DOM.setFileInputFiles")).toEqual([]);
@@ -838,8 +809,7 @@ describe("BrowserLiveGateway file choosers", () => {
 
     await expect(h.gateway.claimFileChooser(first.id)).resolves.toBeUndefined();
     await expect(h.gateway.claimFileChooser(second.id)).resolves.toBeDefined();
-    // While files are on their way, a tap that opens another chooser changes nothing. The
-    // gateway has dealt with it by the time it asks about the tab Chrome announces after it.
+    // While files are in flight, a tap opening another chooser changes nothing.
     chrome.event("Page.fileChooserOpened", { mode: "selectSingle", backendNodeId: 15 }, "page");
     chrome.event("Target.attachedToTarget", { sessionId: "popup", targetInfo: { type: "page" } });
     await vi.waitFor(() => expect(chrome.sent("Page.enable")).toContain("popup:"));
@@ -848,7 +818,7 @@ describe("BrowserLiveGateway file choosers", () => {
 
     view.client.socket.close(1000);
     await view.upstream.inbox.closed;
-    // The files on their way have no page to go to, and the browser's pages show their own choosers again.
+    // In-flight files have no page to go to, and pages show their own choosers again.
     await expect(h.gateway.chooseFiles(second.id, ["a.jpg"])).resolves.toEqual({ ok: false, error: GONE });
     await chrome.disconnected();
     expect(chrome.sent("Page.setInterceptFileChooserDialog", (params) => params.enabled).filter((sent) => sent.endsWith("false")))
@@ -1399,8 +1369,7 @@ describe("BrowserLiveGateway saved logins", () => {
   });
 });
 
-// What a client sends goes on to the browser's input, so the gateway forwards only what this
-// makes of it: the fields the protocol defines, each of the kind it defines.
+// Client input reaches the browser, so only fields the protocol defines, of their type, pass.
 describe("parseBrowserLiveClientMessage", () => {
   it("accepts the three answers to a sign-in offer and nothing else of that kind", () => {
     for (const action of ["save", "fill", "dismiss"]) {
@@ -1461,7 +1430,7 @@ describe("parseBrowserLiveClientMessage", () => {
     ["a mouse message's modifiers", mouse, "modifiers", allModifiers, notModifiers],
     ["a key name", key, "key", ["", "a", "Backspace", longestName], [`${longestName}k`, 65, null, true, ["a"]]],
     ["a key code", key, "windowsVirtualKeyCode", [0, 8, 255], [256, -1, 8.5, "8", null, true]],
-    // One character is one code point: an emoji is two UTF-16 units, a letter with a combining accent two characters.
+    // One character is one code point: an emoji is two UTF-16 units; e + accent is two.
     ["a key press's text", key, "text", ["", "a", "\r", "\u00e9", "\u{1f600}"], ["ab", "\u{1f600}\u{1f600}", "e\u0301", 5, null, ["a"]]],
     // Only typed text may be several characters; the gateway hands them on one at a time.
     ["typed text", typed, "text", ["", "a", "ab", "e\u0301\u{1f600}"], [5, null, ["a"]]],
@@ -1526,7 +1495,7 @@ describe("parseBrowserLiveClientMessage", () => {
 });
 
 describe("BrowserLiveGateway page size and address", () => {
-  // A view also reads the page every few seconds. Here that happens only when a test lets time pass.
+  // A view also reads the page every few seconds; here only when a test lets time pass.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   });
@@ -1962,10 +1931,7 @@ describe("BrowserLiveGateway tabs", () => {
     expect(view.client.inbox.tabLists[1]).toStrictEqual(Array.from({ length: 20 }, (_unused, index) => told(index + 1)));
   });
 
-  /**
-   * A view of a browser whose one tab, `tab(1)`, has been read twice since it was on show, and
-   * what the view is told about that tab.
-   */
+  /** A view whose one tab, `tab(1)`, was read twice since shown, and what the view is told. */
   async function openOnFirstTab() {
     // Longer than the address a view is told.
     const address = `https://example.com/1/now?${"q".repeat(2_100)}`;
@@ -2160,8 +2126,7 @@ describe("BrowserLiveGateway closing", () => {
     expect(h.journal).toHaveLength(commands);
 
     const client = await h.open(h.liveUrl(ticket));
-    // What the client sent before it heard is ignored. A listener that throws on it is an
-    // uncaught exception in the process.
+    // Input sent before the client heard is ignored; a throwing listener would crash the process.
     send(client, { type: "reload" });
     send(client, { type: "input_mouse", eventType: "mouseReleased", x: 1, y: 1, button: "left", clickCount: 1 });
 

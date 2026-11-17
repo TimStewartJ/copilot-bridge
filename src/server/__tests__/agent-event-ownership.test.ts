@@ -19,7 +19,7 @@ describe("agent event ownership", () => {
   });
 
   it("knows a stream stamps its agents' turns from the first agent it starts", () => {
-    // The start of an agent reported with how it was launched: only runtimes that stamp turns do that.
+    // Only runtimes that stamp turns report how an agent was launched.
     expect(showsAgentTurnsAreStamped({
       type: "subagent.started",
       agentId: "agent-1",

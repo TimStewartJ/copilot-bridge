@@ -1,11 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CHAT_MESSAGE_DELIVERY_ID_PREFIX, type DeferredPromptStore } from "./deferred-prompt-store.js";
 
-/**
- * Keeps a chat message the session cannot take right now (Bridge is holding it, it is resuming or
- * starting a turn, the backend is recovering, the server is restarting) as a deferred delivery. The
- * deferred-prompt runner sends it as a new turn once the session is free, and it survives restarts.
- */
+/** Queues a message the session can't take now as a durable delivery, sent once it's free. */
 export function queueChatMessageDelivery(
   store: Pick<DeferredPromptStore, "get" | "enqueueDelivery">,
   sessionId: string,

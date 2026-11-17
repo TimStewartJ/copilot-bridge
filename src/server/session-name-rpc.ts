@@ -36,17 +36,7 @@ function workspaceYamlPath(
   return join(getSessionStateDir(sessionId), "workspace.yaml");
 }
 
-// Shared base for disposable helper sessions used by session-naming workflows
-// (the resume-only rename RPC and the autogen title helper). Both paths need
-// "no contributed tools, no MCP, no on-disk config/skill/instruction discovery"
-// before layering their path-specific fields on top.
-//
-// availableTools: [] is the SDK's explicit empty allowlist — only tools in
-// this list are available, so an empty array disables every built-in tool.
-// The SDK forbids the bare "*" wildcard in excludedTools (beta.10+), so we
-// rely on the empty allowlist instead. The SDK's `tools` field is for
-// session-contributed Tool implementations; omitting it leaves the default
-// (nothing contributed), which is what we want for both paths.
+// availableTools: [] disables every built-in tool; the SDK rejects excludedTools: ["*"].
 export function buildSessionNameHelperBaseConfig(): {
   availableTools: string[];
   mcpServers: Record<string, never>;

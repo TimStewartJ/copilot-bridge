@@ -28,10 +28,7 @@ function taskOrders(): Record<string, number> {
   return Object.fromEntries(rows.map((row) => [row.title, row.ord]));
 }
 
-/**
- * Force the next matching write to fail, simulating a crash partway through a
- * multi-statement sequence.
- */
+/** Force the next matching write to fail, like a crash partway through a multi-statement write. */
 function failOnStatement(match: string): () => void {
   const original = db.prepare.bind(db);
   const restore = () => { (db as any).prepare = original; };

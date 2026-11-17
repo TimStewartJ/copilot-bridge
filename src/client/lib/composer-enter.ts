@@ -1,11 +1,4 @@
-/**
- * What a keydown in the composer means before slash suggestions get a say:
- * - `composing`: an input method owns the key, so the composer leaves it alone.
- * - `newline`: Enter that inserts a line break natively.
- * - `send`: Ctrl/Cmd+Enter, which sends even while slash suggestions are open.
- * - `submit`: plain Enter from a hardware-style keyboard; it accepts a slash suggestion or sends.
- * - `other`: any other key.
- */
+/** send = Ctrl/Cmd+Enter (skips slash menu); submit = plain hardware Enter (accepts or sends). */
 export type ComposerKeyIntent = "composing" | "newline" | "send" | "submit" | "other";
 
 export interface ComposerKeyEvent {

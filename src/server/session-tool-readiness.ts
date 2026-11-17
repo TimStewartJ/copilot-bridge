@@ -1,8 +1,7 @@
 import { AGENT_RPC_TIMEOUTS_MS } from "./agent-backend/rpc-timeouts.js";
 import { createDeadline, settleByDeadline } from "./deadline.js";
 
-// Readiness spans two sequential RPCs. A shorter caller deadline must not turn
-// normal MCP discovery into a failed prompt while those RPCs are still healthy.
+// Covers both RPCs in turn, so slow but healthy MCP discovery does not fail the prompt.
 export const SESSION_TOOL_READINESS_TIMEOUT_MS =
   AGENT_RPC_TIMEOUTS_MS["session.initializeTools"]
   + AGENT_RPC_TIMEOUTS_MS["session.getCurrentToolMetadata"]

@@ -1,5 +1,4 @@
-// A task's dates in one place: checklist deadlines, events and next agent runs over the coming month,
-// with anything overdue first. The revisit is left to the task's Status. Hidden when the task has none.
+// Revisits are left out: the task's Status already shows them.
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
@@ -13,7 +12,7 @@ import { ItemMark, formatShortDate, itemDayKey, itemTime } from "./calendar-ui";
 
 const SHOWN = 5;
 
-/** The task's month of dates. Data kept from the previous task while this one loads counts as not loaded. */
+/** The task's month of dates; the previous task's placeholder data counts as not loaded. */
 export function useTaskDatesQuery(taskId: string, enabled = true) {
   const today = toDateKey(new Date());
   const calendar = useCalendarQuery(today, addDaysKey(today, 30), { taskId, enabled });

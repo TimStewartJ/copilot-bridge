@@ -105,7 +105,7 @@ export class SessionCapacityError extends Error {
   }
 }
 
-/** Owns admission accounting; the session manager retains ownership of runtime handles and cleanup. */
+/** Owns admission accounting; the session manager still owns runtime handles and cleanup. */
 export class SessionCapacityController {
   private readonly profiles = new WeakMap<AgentSession, { localMcpCount: number }>();
   private readonly resumes = new Map<symbol, SessionCapacityReservation>();

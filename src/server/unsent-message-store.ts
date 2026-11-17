@@ -1,6 +1,4 @@
-// Chat messages the Bridge accepted that the agent never received. Each is recorded when its turn
-// starts and removed once the runtime has saved it, so a Stop, a failed start or a restart before
-// that leaves it in the chat, marked not sent, instead of losing it with the in-memory overlay.
+// Accepted messages not yet saved by the runtime, so Stop, failed start or restart can't lose them.
 
 import type { DatabaseSync } from "./db.js";
 import { isSendMode, type SendMode } from "../shared/send-mode.js";
@@ -11,11 +9,7 @@ import {
   type UnsentMessageView,
 } from "../shared/unsent-message.js";
 
-/**
- * Row states beyond the shown ones: waiting to be sent, handed to the runtime, delivered, being
- * resent, or dismissed. Delivered and dismissed rows stay a while so a repeat of the same browser
- * message is recognised and not run again.
- */
+/** Delivered/discarded rows are kept for a while so a repeated browser send is not run again. */
 type StoredState = UnsentMessageState | "pending" | "sending" | "delivered" | "resending" | "discarded";
 
 const RESOLVED_RETENTION_MS = 14 * 24 * 60 * 60_000;
@@ -115,8 +109,7 @@ export function createUnsentMessageStore(db: DatabaseSync) {
     WHERE sessionId = ? AND id = ? AND state <> 'delivered'
   `);
   const removeSession = db.prepare("DELETE FROM unsent_chat_messages WHERE sessionId = ?");
-  // Never handed to the runtime: it cannot have it. Handed over: the runtime saves a message before
-  // it answers, so it has it.
+  // Unsent messages never reached the runtime; sent ones did, since it saves before answering.
   const interruptUnsent = db.prepare(`
     UPDATE unsent_chat_messages SET state = 'interrupted', error = NULL, updatedAt = ?
     WHERE state IN ('pending', 'resending')
@@ -134,7 +127,7 @@ export function createUnsentMessageStore(db: DatabaseSync) {
   );
 
   return {
-    /** Records a message whose turn is starting. A message already known under this id is left as it is. */
+    /** Records a message whose turn is starting; one already known under this id is left as is. */
     recordPending(message: RecordPendingMessage): boolean {
       const at = (message.at ?? new Date()).toISOString();
       const result = insert.run(
@@ -152,11 +145,11 @@ export function createUnsentMessageStore(db: DatabaseSync) {
     markUndelivered(sessionId: string, id: string, state: UnsentMessageState, error?: string): boolean {
       return transition(sessionId, id, "pending", state, error);
     },
-    /** The message is being handed to the runtime; from here only the runtime's answer settles it. */
+    /** Being handed to the runtime; from here only the runtime's answer settles it. */
     markSending(sessionId: string, id: string): boolean {
       return transition(sessionId, id, "pending", "sending");
     },
-    /** Handing it over failed, so it is waiting again (for a retry, or to be marked undelivered). */
+    /** Handing over failed; it waits again for a retry or to be marked undelivered. */
     markSendFailed(sessionId: string, id: string): boolean {
       return transition(sessionId, id, "sending", "pending");
     },
@@ -181,30 +174,24 @@ export function createUnsentMessageStore(db: DatabaseSync) {
         return view ? [view] : [];
       });
     },
-    /** Hides a not-sent message for good. False when it is not shown (already resent, discarded or saved). */
+    /** Hides a not-sent message for good; false when it is no longer shown. */
     discard(sessionId: string, id: string): boolean {
       const row = read(sessionId, id);
       if (!row || !isUnsentMessageState(row.state)) return false;
       return transition(sessionId, id, row.state, "discarded");
     },
-    /**
-     * Claims a not-sent message for one resend. Only one caller wins; it must call `finishResend`.
-     * Undefined when the message is not shown (another device resent or discarded it).
-     */
+    /** Claims a not-sent message for one resend; the winner must call `finishResend`. */
     claimResend(sessionId: string, id: string): UnsentMessageView | undefined {
       const row = read(sessionId, id);
       if (!row || !isUnsentMessageState(row.state)) return undefined;
       if (!transition(sessionId, id, row.state, "resending")) return undefined;
       return toView(row);
     },
-    /** Ends a claimed resend: the copy was accepted (the original goes), or it was not (it is shown again). */
+    /** Ends a claimed resend: accepted drops the original, otherwise it is shown again. */
     finishResend(sessionId: string, claimed: UnsentMessageView, accepted: boolean): void {
       transition(sessionId, claimed.id, "resending", accepted ? "discarded" : claimed.state, claimed.error);
     },
-    /**
-     * At startup: what was waiting to be sent or resent when the Bridge last stopped never reached
-     * the agent. Old delivered and dismissed records are dropped.
-     */
+    /** At startup: unsent becomes interrupted, sent becomes delivered, old resolved rows go. */
     recoverAfterRestart(now: Date = new Date()): number {
       pruneResolved.run(new Date(now.getTime() - RESOLVED_RETENTION_MS).toISOString());
       settleSending.run(now.toISOString());

@@ -5,8 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { testPath, testPosixPath, testWindowsPath } from "./test-paths.js";
 
-// src/test-support/vitest-setup.ts replaces the host lookups for every test file. This file
-// replaces them again with mocks it can steer, and imports browser-launch fresh for each test.
+// Re-mocks vitest-setup's host lookups with steerable mocks; browser-launch is fresh per test.
 const isExecutableFile = vi.fn<(file: string) => Promise<boolean>>();
 const readJsonFile = vi.fn<(file: string) => Promise<unknown>>();
 const readModifiedAt = vi.fn<(file: string) => Promise<number | undefined>>();

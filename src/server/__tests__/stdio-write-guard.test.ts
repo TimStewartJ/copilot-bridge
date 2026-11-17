@@ -9,7 +9,7 @@ import {
 
 const REFUSED = Object.assign(new Error("UNKNOWN: unknown error, write"), { code: "UNKNOWN", errno: -4094 });
 
-/** A stream that records what it is given. While `refusing` is set it fails each write the way Node does: the callback first, then 'error'. */
+/** Records writes; while `refusing` it fails each like Node: the callback first, then 'error'. */
 class FakeStream extends EventEmitter implements GuardedStream {
   written: string[] = [];
   refusing = false;

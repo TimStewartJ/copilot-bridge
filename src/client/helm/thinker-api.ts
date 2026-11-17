@@ -42,7 +42,7 @@ export const updateHelmMemory = (id: string, patch: { text?: string; status?: "a
 export const fetchHelmRuns = (signal?: AbortSignal) => request<{ runs: HelmRunView[] }>("/runs", { signal });
 export const patchThinkerSettings = (patch: Partial<HelmThinkerSettings>) =>
   request<HelmThinkerSettings>("/thinker/settings", { method: "PATCH", body: JSON.stringify(patch) });
-export interface HelmSourceTool { name: string; description?: string; readOnly: boolean; /** Chosen earlier, no longer offered. */ gone?: boolean }
+export interface HelmSourceTool { name: string; description?: string; readOnly: boolean; gone?: boolean }
 /** Starts the MCP server on the Bridge to read its tools. */
 export const fetchSourceTools = (serverId: string) =>
   request<{ serverId: string; name: string; tools: HelmSourceTool[] }>("/sources/tools", { method: "POST", body: JSON.stringify({ serverId }) });
@@ -58,7 +58,7 @@ export function useHelmBrief() {
   });
 }
 
-/** Whether the latest brief is new to Tim, for the Home icon. Refreshed by `helm:changed` events. */
+/** Whether the latest brief is new to the user, for the Home icon; `helm:changed` refreshes it. */
 export function useHelmBriefStatusQuery() {
   return useQuery({ queryKey: helmBriefStatusKey, queryFn: ({ signal }) => fetchHelmBriefStatus(signal), refetchOnWindowFocus: true });
 }

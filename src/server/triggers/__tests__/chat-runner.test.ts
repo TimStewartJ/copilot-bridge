@@ -18,7 +18,7 @@ let db: DatabaseSync;
 beforeEach(() => {
   db = setupTestDb();
   vi.useFakeTimers();
-  // A Windows worker can have both Path and PATH; neither should start real file lookups under fake timers.
+  // Windows may have both Path and PATH; blank both so no real file lookup runs under fake timers.
   for (const key of Object.keys(process.env)) {
     if (key.toUpperCase() === "PATH") vi.stubEnv(key, "");
   }

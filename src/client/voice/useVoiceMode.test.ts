@@ -150,7 +150,7 @@ describe("useVoiceMode", () => {
     list.length = 0;
     await harness.act(() => controller.start(HELM_SESSION_ID));
     await waitUntilAct(harness.act, () => controller.phase === "active");
-    // The server ends the first conversation (it was replaced), and hands-free starts in another chat at once.
+    // The server ends the replaced conversation, and hands-free starts in another chat at once.
     await harness.act(() => list[0]!.handlers.onEvent({ type: "ended", reason: "hands-free started somewhere else" }));
     await harness.act(() => controller.start("22222222-3333-4444-8555-666666666666"));
     await waitUntilAct(harness.act, () => controller.phase === "active");
@@ -167,7 +167,7 @@ describe("useVoiceMode", () => {
     await waitUntilAct(harness.act, () => controller.phase === "active");
     let open!: () => void;
     connections.gate = new Promise((resolve) => { open = resolve; });
-    // The connection drops; the reconnect is still on its way when hands-free starts in another chat.
+    // The connection drops; hands-free starts in another chat while the reconnect is pending.
     await harness.act(() => list[0]!.handlers.onClose("network"));
     await harness.act(() => new Promise((resolve) => setTimeout(resolve, 600)));
     await harness.act(() => controller.start("22222222-3333-4444-8555-666666666666"));

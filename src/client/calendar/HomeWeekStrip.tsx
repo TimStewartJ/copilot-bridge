@@ -1,5 +1,4 @@
-// The week on Home: seven days from today with what is on them, and one line of arithmetic about
-// today (what is on now or next, free time, what is due or overdue). Tapping a day opens it.
+// Home's week: seven days from today, plus a line on today's next event, free time and dues.
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowRight, CalendarDays, ChevronRight } from "lucide-react";

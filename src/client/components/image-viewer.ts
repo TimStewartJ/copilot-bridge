@@ -4,20 +4,12 @@ import "./image-viewer.css";
 import { prefersReducedMotion } from "../lib/motion";
 import { imageTabUrl, isVectorImage } from "./file-preview";
 
-/**
- * The full-screen image viewer. PhotoSwipe owns the gestures a phone photo viewer has: pinch to
- * zoom around the fingers, pan with momentum and edge springback, double-tap to zoom to a point,
- * swipe between images, drag down to close, and an open/close animation from the thumbnail.
- * Loaded with a dynamic import the first time an image opens, so chat pages do not pay for it.
- */
-
 export interface ViewerImage {
   src: string;
   name: string;
   /** Where Download points; the image's own source when omitted. */
   downloadUrl?: string;
-  /** The name Download saves as; \
-ame\ when omitted. */
+  /** The name Download saves as; `name` when omitted. */
   fileName?: string;
   alt?: string;
   /** The thumbnail the viewer opens from and closes back into. */

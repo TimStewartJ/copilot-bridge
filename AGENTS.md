@@ -9,7 +9,7 @@ Rules for one area live in `.github/instructions/`. Read the matching file befor
 - `src/packages/**`: `.github/instructions/packages.instructions.md`
 - Tests and test support: `.github/instructions/tests.instructions.md` (also read it before adding tests anywhere: it says which tests are worth writing)
 
-Add a rule here only if it applies across the repository and no check enforces it. Put area rules in the matching instructions file, and the reasoning behind a check next to the check.
+Add a rule here only if it applies across the repository and no check enforces it. Put area rules in the matching instructions file, and the reasoning behind a check in its tests and its one-line comments.
 
 ## Project shape
 
@@ -29,6 +29,13 @@ Add a rule here only if it applies across the repository and no check enforces i
 - Agent shells get a scratch `COPILOT_HOME` (`src/server/agent-shell-env.ts`), so ad-hoc scripts that create a `CopilotClient` stay out of the Bridge's chat list. Never point such a script at the Bridge's own `COPILOT_HOME`.
 - A chat a script starts through the REST API (`POST /api/sessions` or `/api/tasks/:id/session` without the web client's `X-Bridge-Client` header or a browser's `Sec-Fetch-Site`) is a scratch chat: it works and opens by URL, but no list, search or task shows it, and maintenance deletes it after a day idle (`src/server/scratch-sessions.ts`). Start a chat meant for the user with `session_start`.
 - Docs must not copy figures that another file determines: package versions, download or definition sizes, counts, totals worked out from several constants, or benchmark results. Name the file or constant that holds the value instead. A single configured limit can be stated, ideally with its constant named. A measurement kept as evidence says what it was measured on.
+
+## Comments
+
+- A comment is one line of at most 100 columns, counting its indentation and any code before it. No multi-line `/* */` or `/** */` blocks, and no two comments without code between them. Exported functions, types and fields keep the `/** one line */` form so editors show it on hover.
+- Comment only what the code cannot say: a constraint or a trap that someone would otherwise break. Leave out history, incident stories, measurements, and what names and types already say.
+- When a trap needs more than a line to explain, write a test that fails when someone falls into it, name the test after the trap, and point to it from the comment. Longer background goes in the commit message.
+- `npm run test:comment-audit` (in `check:fast`, `check:pr` and CI) enforces the form. Tool directives such as `@ts-expect-error`, `agent-text-audit:` and `/*#__PURE__*/` (listed in `src/server/comment-audit.ts`) may sit next to another comment.
 
 ## Agent output
 

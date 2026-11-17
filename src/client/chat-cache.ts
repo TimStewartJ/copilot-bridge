@@ -3,26 +3,17 @@ import type { ChatEntry, TranscriptAgent } from "./api";
 import { queryKeys } from "./queryClient";
 
 const MAX_CACHED_SESSIONS = 5;
-/**
- * A revisit lands on the newest reply and re-reads everything it paints from the cache, so the
- * cache keeps only this many of the newest entries. Older pages load again on scroll.
- */
+/** Revisits open at the newest reply, so keep only the newest; older pages reload on scroll. */
 const MAX_CACHED_ENTRIES = 200;
 const recentSessionIds: string[] = [];
 
-/**
- * A window of committed transcript entries read straight from `events.jsonl`. Cached windows are
- * always disk-derived, so they can be rendered immediately on revisit and simply replaced by the
- * next disk read. Optimistic and live content is never stored here.
- *
- * The cache holds the very entry objects the view renders, so entries are never changed in place.
- */
+/** Disk-read entries only (no optimistic/live); the view renders these objects, never mutate. */
 export interface ChatHistorySnapshot {
   sessionId: string;
   entries: ChatEntry[];
   firstItemIndex: number;
   fetchedAt: number;
-  /** The session's sub-agents as that read reported them, so a cached step still names its agent. */
+  /** The session's sub-agents from that read, so a cached step still names its agent. */
   agents?: readonly TranscriptAgent[];
 }
 
@@ -94,11 +85,7 @@ export function setCachedChatSnapshot(queryClient: QueryClient, snapshot: ChatHi
   pruneSessions(queryClient);
 }
 
-/**
- * A fresh read returns equal copies of the entries that are already loaded. Keeping the loaded
- * object wherever the two are equal lets that entry's row skip rendering, so a refresh costs what
- * changed and not the size of the window. Entries are matched by their index in the session.
- */
+/** Reuse equal loaded objects so unchanged rows skip rendering; match by session index. */
 export function keepLoadedEntries(
   loaded: ChatEntry[],
   loadedFirstItemIndex: number,
@@ -112,14 +99,7 @@ export function keepLoadedEntries(
   });
 }
 
-/**
- * Replace the loaded window with a freshly read disk window.
- *
- * Committed entries only ever come from one atomic `transformEventsToMessages` pass, so a refresh
- * replaces the overlapping range wholesale. When the reader returns a window that starts after the
- * currently loaded window, the older prefix is kept so pagination is preserved; when it starts at
- * or before the loaded window, the fetched window fully supersedes it.
- */
+/** A window starting after the loaded one keeps the older prefix (pagination); else replaces it. */
 export function replaceHistoryWindow(
   previousEntries: ChatEntry[],
   previousFirstItemIndex: number,

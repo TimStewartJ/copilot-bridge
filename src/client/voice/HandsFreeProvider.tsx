@@ -1,5 +1,4 @@
-// Hands-free lives above the routes so it keeps running while you open a session or task
-// that Helm pointed you to. Helm shows the full dock; everywhere else a small pill.
+// Above the routes, so hands-free keeps running while the user opens what Helm pointed to.
 import { createContext, useContext, type ReactNode } from "react";
 import { useVoiceMode, type VoiceModeController } from "./useVoiceMode";
 

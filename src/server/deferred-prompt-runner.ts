@@ -1,5 +1,4 @@
-// Outbox runner: delivers messages queued for a chat (trigger results and messages, management job
-// results, restart notices), one at a time per chat.
+// Outbox runner: delivers messages queued for a chat, one at a time per chat.
 
 import type { DeferredPrompt, DeferredPromptStore } from "./deferred-prompt-store.js";
 import type { SessionManager } from "./session-manager.js";
@@ -67,7 +66,7 @@ export function createDeferredPromptRunner(
         preflight: async (item) => {
           if (
             isDelivery(item)
-            // A chat message never tried cannot be on disk yet, and a short one ("yes") would match an older copy.
+            // An untried message is not on disk yet; a short one ("yes") could match an older copy.
             && !(isChatMessageDeliveryId(item.id) && item.attempts === 0)
             && await sessionManager.hasPersistedUserMessage?.(item.sessionId, item.prompt)
           ) {
@@ -94,7 +93,7 @@ export function createDeferredPromptRunner(
             // A queued chat message is the person's own; everything else here is a trigger's.
             ...(clientMessageId ? { clientMessageId } : { promptSource: "automation-defer" }),
           });
-          // A false result means the message was cancelled or reactivated while this try ran; that state wins.
+          // False means it was cancelled or reactivated meanwhile; that state wins.
           store.complete(item.id, { claimToken });
         },
         failed: (item, claimToken, error) => {

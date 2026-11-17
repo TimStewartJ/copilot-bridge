@@ -1,7 +1,4 @@
-// Home as Helm's brief: what Helm decided needs Tim on its last look, with one-tap actions; what it
-// handled, proposes and is watching. Talking to Helm is the conversation beside it. The full lists
-// stay one link away (classic Home), and nothing here acts without Tim's click except what he
-// allowed Helm to handle.
+// Helm's brief on Home; nothing here acts without a click unless the user let Helm handle it.
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowRight, Brain, Check, ExternalLink, RefreshCw, RotateCcw, Send, Sparkles } from "lucide-react";

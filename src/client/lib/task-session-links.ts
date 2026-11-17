@@ -2,10 +2,7 @@ import type { Session, Task } from "../api";
 
 type TaskLinks = Pick<Task, "id" | "activeSessionIds">;
 
-/**
- * Whether a session is linked to a task. Tasks list only their active sessions, so an archived
- * session is matched through the links the server reports on the session itself.
- */
+/** Tasks list only active sessions, so archived ones match through their own linkedTaskIds. */
 export function isSessionLinkedToTask(
   task: TaskLinks,
   session: Pick<Session, "sessionId" | "linkedTaskIds">,

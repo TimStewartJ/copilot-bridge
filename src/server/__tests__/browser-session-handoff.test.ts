@@ -82,10 +82,7 @@ interface FakeAgentBrowser {
   calls: Array<{ command: string[]; session: string }>;
 }
 
-/**
- * Stands in for the agent-browser CLI behind `execFile`: a browser that starts, can be streamed
- * and shows `page`, unless `respond` answers a command differently.
- */
+/** Fake agent-browser: starts, streams and shows `page`, unless `respond` answers otherwise. */
 function fakeAgentBrowser(
   respond: (command: string[]) => AgentBrowserReply | undefined = () => undefined,
 ): FakeAgentBrowser {
@@ -195,7 +192,7 @@ async function startSession(
   return started.browserSessionId;
 }
 
-/** The form a handoff call asks. A call that ends without asking fails here instead of leaving the test waiting. */
+/** The form a handoff asks; a call that ends without asking fails here instead of hanging. */
 function askedForm(
   sessionManager: ReturnType<typeof createAskingSessionManager>,
   result: Promise<any>,
@@ -330,8 +327,7 @@ describe("browser_session_handoff", () => {
       expect(browser.calls).toHaveLength(usedBeforeHandoff);
     });
 
-    // The runtime reports the form back to Bridge, which shows it only if it is a valid form and
-    // recognises the handoff by the form's field names.
+    // Bridge shows the form only if valid, and recognises the handoff by its field names.
     it("is a form Bridge accepts, with answers Bridge accepts", async () => {
       const { normalizePendingElicitationRequest, validateElicitationResponse } = await import(
         "../pending-interaction-validation.js"
@@ -566,7 +562,7 @@ describe("browser_session_handoff", () => {
       await result;
     });
 
-    // Every authenticated session, and every one-shot authenticated call, works in the one signed-in browser.
+    // Every authenticated session and one-shot call uses the one signed-in browser.
     it("refuses everything that uses the signed-in browser while the user has it, and leaves public browsers usable", async () => {
       const { form, result, tools, runtime, browser, browserSessionId } = await openHandoff({ context: "authenticated" });
       const sameChat = await startSession(tools, "authenticated");
@@ -656,8 +652,7 @@ describe("browser_session_handoff", () => {
       await expect(again).resolves.toMatchObject({ handoff: "cancelled" });
     });
 
-    // A model can issue several tool calls at once. They reach the broker before the handoff has
-    // asked the user, and wait there for the browser while the handoff makes sure it can be shown.
+    // Parallel tool calls reach the broker before the handoff asks, and wait for the browser there.
     it("lets no call made at the same time reach the browser once the user has been asked", async () => {
       fakeAgentBrowser();
       const { tools, sessionManager } = await loadHandoffTools();
@@ -684,7 +679,7 @@ describe("browser_session_handoff", () => {
       }
     });
 
-    // A browser has one user at a time: of two handoffs called at once, one asks and the other is refused.
+    // One user per browser: of two simultaneous handoffs, one asks and the other is refused.
     it("asks the user once when two handoffs are called at the same time, and refuses the other", async () => {
       fakeAgentBrowser();
       const { tools, sessionManager } = await loadHandoffTools();

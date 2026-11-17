@@ -41,19 +41,18 @@ describe("SessionContextPanel", () => {
     });
     const before = Date.parse("2026-10-29T16:06:11.000Z");
     const after = Date.parse("2026-10-29T16:06:30.000Z");
-    // Mid-turn the step's reading is newest; after the turn the runtime's count is, on the same window.
+    // Mid-turn the step's reading is newest; after the turn the runtime's count is.
     expect(getSummaryMetrics(step, fusionBudget, before, true))
       .toMatchObject({ limit: 272_000, used: 75_000, remaining: 197_000, compactionPercent: undefined });
     expect(getSummaryMetrics(step, fusionBudget, after, true))
       .toMatchObject({ limit: 272_000, used: 74_000, remaining: 198_000, percent: 74_000 / 272_000 * 100 });
     // Before any step has reported, the router's budget is all there is.
     expect(getSummaryMetrics(summary({ tokensUsed: 74_000 }), fusionBudget, after, true)).toMatchObject({ limit: 128_000 });
-    // With the experimental limit the router's budget and every step's window agree, thresholds included.
+    // With the experimental limit, router budget and step windows agree, thresholds included.
     const raised = { ...fusionBudget, limit: 600_000, promptTokenLimit: 600_000, compactionThreshold: 480_000, bufferTokens: 30_000 };
     expect(getSummaryMetrics({ ...step, contextWindow: 600_000 }, raised, after, true))
       .toMatchObject({ limit: 600_000, compactionPercent: 80 });
-    // A step from before the budget changed size (the limit was just raised, or the chat just moved
-    // to Fusion) ran on another window, so the runtime's budget stands until a new step reports.
+    // A step from before the budget changed size ran on another window, so the runtime's stands.
     const changed = "2026-10-29T16:06:20.000Z";
     expect(getSummaryMetrics(step, raised, after, true, changed))
       .toMatchObject({ limit: 600_000, compactionPercent: 80 });

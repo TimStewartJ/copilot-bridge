@@ -41,7 +41,7 @@ interface NewSessionLaunchPanelProps {
   onModelSelectionCommitted?: () => void;
   /** Set when this chat's model, effort or context differ from its tier's. */
   tierChange?: { tierLabel: string; onReset: () => void; onSave: () => void };
-  /** A model A/B test's two tiers, when the chat will start on one of them; choosing a tier opts out. */
+  /** A model A/B test's two tiers the chat will start on; choosing a tier opts out. */
   abTestTiers?: readonly [ModelPresetSlot, ModelPresetSlot];
   /** Shown above the launch options, such as a task's suggested chats. */
   suggestions?: ReactNode;

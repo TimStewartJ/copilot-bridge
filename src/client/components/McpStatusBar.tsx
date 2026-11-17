@@ -21,7 +21,7 @@ interface McpStatusBarProps {
   /** Live SDK counters for the loaded session: messages, model calls, tokens, code changes. */
   sessionUsage?: SessionUsageMetrics | null;
   sessionUsageUpdatedAt?: number;
-  /** The chat is on a routed model (Copilot Fusion), so the meter follows the window its last step used. */
+  /** On a routed model (Copilot Fusion) the meter follows the window its last step used. */
   routedModel?: boolean;
   onAuthenticate?: (serverName: string, options?: { forceReauth?: boolean }) => Promise<McpLoginResponse>;
   onRefresh?: () => Promise<void>;
@@ -29,7 +29,7 @@ interface McpStatusBarProps {
   toolReadiness?: SessionToolReadinessSnapshot;
   statusError?: string;
   statusState: "loading" | "ready" | "error" | "stale";
-  /** What the line is about: the session and the model it runs on. Shown even with nothing to report. */
+  /** The session and its model; shown even with nothing to report. */
   leading?: ReactNode;
   /** Actions that belong to the session, such as opening its plan. */
   actions?: ReactNode;
@@ -154,7 +154,7 @@ export default function McpStatusBar({
             )}
           >
             <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 tabular-nums">
-              {/* A healthy connection count is detail; on a phone it gives way to the model name. */}
+              {/* A healthy count is detail; on a phone it gives way to the model name. */}
               {hasMcpSignal && <span className={cx("items-center gap-1.5", mcpNeedsAttention || !leading ? "flex" : "hidden sm:flex")} title={`${connected} of ${servers.length} MCP servers connected`}>
                 <Plug size={12} className="text-text-faint" />
                 <span>
@@ -177,7 +177,7 @@ export default function McpStatusBar({
                   {toolFailures.length} tool issue{toolFailures.length === 1 ? "" : "s"}
                 </span>
               )}
-              {/* Phone-width chrome makes room for problems first; the figures remain in details. */}
+              {/* Phones show problems first; the figures stay in details. */}
               {hasContextSignal && <span
                 className={cx(
                   metricClass,
@@ -252,7 +252,7 @@ export default function McpStatusBar({
                 <Button size="sm" variant="ghost" onClick={() => void onRefresh()}>Refresh</Button>
               </div>
             )}
-            {/* Loaded tool definitions are the normal case and go unsaid; only loading or failure is news. */}
+            {/* Loaded tools are normal and go unsaid; only loading or failure is news. */}
             {toolReadiness && toolReadiness.state !== "ready" && (
               <div
                 className="mb-2 text-xs text-text-muted"

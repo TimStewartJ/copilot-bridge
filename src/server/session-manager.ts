@@ -1,10 +1,4 @@
-// Coding-agent session manager (currently backed by Copilot via `CopilotBackend`).
-//
-// As of Step 1 of the agent-agnostic roadmap, this file no longer imports
-// the SDK directly. All client/session lifecycle goes through the
-// `AgentBackend` / `AgentSession` interfaces in `./agent-backend`. Bridge
-// tools are exposed through a backend-native tool surface when available,
-// with the in-process Bridge MCP server retained as a fallback/export.
+// Reaches the agent runtime only through ./agent-backend, never the SDK directly.
 
 import { randomUUID } from "node:crypto";
 import { isCanonicalSessionId } from "./outbound-attachments.js";
@@ -347,21 +341,10 @@ function countPendingInteractions(snapshot: PendingInteractionSnapshot): Pending
     shellAuth: snapshot.pendingShellAuths.length,
   };
 }
-/**
- * A question nobody has answered for this long is answered automatically so the turn can continue.
- * Where the number comes from (main-agent questions, 18 August to 2 October 2026): of 303 the
- * user acted on, 295 were reached within 30 minutes and all within an hour. 15 others waited the
- * full hour that applied then, and the user's next action anywhere came more than two hours after
- * 13 of them were asked.
- */
+/** An unanswered question is answered automatically after this, so the turn can continue. */
 export const PENDING_INTERACTION_AUTO_ANSWER_MS = 30 * 60_000;
 
-/**
- * The reply Bridge gives to an agent's own `ask_user` form in the user's place. The form's fields
- * accept a freeform value whatever their type, and a single answered field reaches the model as
- * "User responded: <text>". Undefined for a form with no field to carry the reply and for anything
- * an MCP server asked for, whose answer is never invented.
- */
+/** Bridge's stand-in reply to an ask_user form; never invents answers for MCP server requests. */
 function automaticFormAnswer(
   request: PendingElicitationRequestView,
   reason: AutomaticAnswerReason,
@@ -369,7 +352,7 @@ function automaticFormAnswer(
   return formAnswer(request.requestedSchema?.properties, request.elicitationSource, AUTOMATIC_ANSWERS[reason]);
 }
 
-/** Puts `answer` in the form's first field; undefined for an MCP server's form or one with no field. */
+/** Puts `answer` in the form's first field; undefined for MCP server forms or fieldless ones. */
 function formAnswer(
   properties: Readonly<Record<string, unknown>> | undefined,
   elicitationSource: unknown,
@@ -384,10 +367,7 @@ function formAnswer(
   };
 }
 
-// Graceful shutdown must finish before the launcher's force-kill window
-// (GRACEFUL_EXIT_WAIT = 15s) so the server exits on its own. The overall budget
-// is shared across every phase (session drain, browser teardown, backend stop)
-// so a hung backend can never push the server past the launcher deadline.
+// Shared by all shutdown phases; must stay under the launcher's 15 s force-kill window.
 const GRACEFUL_SHUTDOWN_BUDGET_MS = 13_000;
 const SESSION_ABORT_TIMEOUT_MS = 4_000;
 /** Upper bound an HTTP abort request may wait on the backend before resolving locally. */
@@ -396,29 +376,21 @@ const BACKEND_RECOVERY_RETRY_INITIAL_MS = 5_000;
 const BACKEND_RECOVERY_RETRY_MAX_MS = 60_000;
 /** A replacement that fails to start is retried this many times before recovery blocks. */
 const BACKEND_RECOVERY_MAX_START_RETRIES = 2;
-/**
- * Fencing that could not observe the process table (typically a slow CIM snapshot on a
- * loaded host) proves nothing either way, so recovery keeps retrying it for this long
- * before blocking. The host usually settles within a couple of minutes.
- */
+/** A fence that couldn't read the process table proves nothing; retry this long before blocking. */
 const BACKEND_FENCE_RETRY_WINDOW_MS = 5 * 60_000;
 /** A session is re-sent a continue prompt at most once per window after a backend recovery. */
 const BACKEND_AUTO_RESUME_COOLDOWN_MS = 10 * 60_000;
 const BACKEND_AUTO_RESUME_IDLE_WAIT_MS = 30_000;
-/** A loss record waits this long for the first recovery attempt to settle before it is completed without one. */
+/** A loss record waits this long for the first recovery to settle before closing without one. */
 const BACKEND_LOSS_RECORD_CAP_MS = RUNTIME_FENCE_BUDGET_MS + 60_000;
-/** Defer deliveries are held this long after a backend (re)start so overdue loops do not hit a cold runtime. */
+/** Holds defers this long after a backend (re)start so overdue loops don't hit a cold runtime. */
 const DEFAULT_DEFER_STARTUP_HOLD_MS = 45_000;
 const SESSION_DRAIN_TIMEOUT_MS = 3_000;
 const BROWSER_SHUTDOWN_TIMEOUT_MS = 1_500;
 const BACKEND_STOP_TIMEOUT_MS = 4_000;
 const BACKEND_FORCE_STOP_RESERVE_MS = 1_000;
 const DISCONNECT_TIMEOUT_MS = 5_000;
-/**
- * Read-only session detail RPCs (current model, slash commands, MCP servers) race the
- * session's own work for the CLI process. Past this they answer from persisted state so
- * an HTTP request is never parked behind a resume or a long turn.
- */
+/** Past this, detail RPCs answer from persisted state so HTTP never waits behind a turn. */
 const SESSION_DETAIL_RPC_TIMEOUT_MS = 5_000;
 const SESSION_RETIREMENT_BUDGET_MS = 60_000;
 const SESSION_TOOL_INITIALIZATION_TIMEOUT_MS = SESSION_TOOL_READINESS_TIMEOUT_MS;
@@ -477,7 +449,7 @@ type BackendRecoveryProgress = {
   startRetries: number;
 };
 
-/** The session whose release or resume never finished, when that is why the Bridge replaced the backend. */
+/** The session whose stuck release or resume made the Bridge replace the backend. */
 type BackendLossTrigger = {
   sessionId: string;
   operation: "release" | "resume";
@@ -511,11 +483,7 @@ export class ModelRefreshClientRotationTimeoutError extends Error {
   }
 }
 
-/**
- * The agent backend refused to delete a session, but every piece of local state
- * Bridge owns for it was already removed. Callers should finish their own
- * cleanup and then surface the underlying backend failure.
- */
+/** Backend refused the delete after local state was gone; finish cleanup, then show the cause. */
 export class SessionBackendDeleteError extends Error {
   constructor(readonly sessionId: string, override readonly cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause));
@@ -570,11 +538,7 @@ type ModelMetadataRequest = {
   promise: Promise<ModelMetadataFetchResult>;
 };
 
-/**
- * Outcome of an explicit session model switch. Mirrors the Copilot CLI's model
- * picker: `confirmation_required` means the conversation exceeds the target
- * model's prompt limit and the caller must retry with a compaction decision.
- */
+/** confirmation_required: too big for the target model; retry with a compaction decision. */
 export type SessionModelSwitchResult =
   | {
       status: "applied";
@@ -643,17 +607,14 @@ export interface SessionManagerDeps {
     UnsentMessageStore,
     "recordPending" | "markUndelivered" | "markSending" | "markSendFailed" | "retire" | "forgetSession"
   >;
-  /** Called when a run ends in the ordinary way while a resume the Bridge had put off is still to come. */
+  /** A run ended normally while a resume the Bridge put off is still to come. */
   onPostponedResumeSuperseded?: (sessionId: string) => void;
   /** Markers for commands running in attached shells, so one the Bridge stops can be reported. */
   backgroundCommandStore?: Pick<
     BackgroundCommandStore,
     "syncRunning" | "markSessionStopped" | "listStopped" | "clearStopped" | "forgetSession"
   >;
-  /**
-   * Called after a session was unloaded with commands still running in it. Their loss is already
-   * recorded and goes out with the session's next message; this is the chance to say so sooner.
-   */
+  /** After an unload stopped running commands; their loss is recorded, this can tell sooner. */
   onBackgroundCommandsStopped?(sessionId: string): void;
   cliSessionCatalog?: Pick<CopilotCliSessionCatalog, "hasSession">;
   taskStore: TaskStore;
@@ -667,12 +628,7 @@ export interface SessionManagerDeps {
   docsIndex?: DocsIndex;
   docsStore?: DocsStore;
   browserSessionStore?: BrowserSessionStore;
-  /**
-   * Browser lifecycle owned by SessionManager. Defaults to `noopBrowserLifecycle`
-   * when omitted so unit tests do not accidentally spawn the agent-browser CLI
-   * or scan OS processes. Production callers MUST inject a real lifecycle via
-   * `createSessionManager`, which wires `createBridgeBrowserLifecycle`.
-   */
+  /** No-op default for tests; production must inject the real one (createSessionManager does). */
   browserLifecycle?: BrowserLifecycle;
   config: { sessionMcpServers: Record<string, McpServerConfig>; model?: string };
   builtInMcpServers?: Record<string, McpServerConfig>;
@@ -685,48 +641,27 @@ export interface SessionManagerDeps {
   ): void;
   /** Custom env for the agent backend — use to set COPILOT_HOME for session isolation */
   clientEnv?: Record<string, string | undefined>;
-  /**
-   * Test seam: build an arbitrary AgentBackend. When unset, SessionManager
-   * constructs a real Copilot-backed AgentBackend via `createAgentBackend`.
-   */
+  /** Test seam; defaults to a real Copilot backend from `createAgentBackend`. */
   createBackend?: AgentBackendFactory;
   /** Root of .copilot directory — defaults to homedir()/.copilot */
   copilotHome?: string;
   runtimePaths?: RuntimePaths;
-  /**
-   * Returns the profile of a session that is not a general-purpose chat (for example a Helm
-   * conversation). Consulted on every config build so create, resume and reload agree.
-   */
+  /** Profile of a special chat (Helm); read per config build so create, resume and reload agree. */
   resolveSessionProfile?(sessionId: string): SessionConfigProfile | undefined;
-  /**
-   * Called when a prompt the user authored is accepted for a session, whatever route it
-   * took (chat, steering, hands-free voice, a transcribed recording). Application-generated
-   * prompts are excluded.
-   */
+  /** A user-authored prompt was accepted by any route (chat, steering, voice), not app prompts. */
   onUserPrompt?(sessionId: string): void;
 }
 
 /** Changes what a session is and can do while keeping the manager's lifecycle fields. */
 export interface SessionConfigProfile {
-  /**
-   * Tool names the session must expose once its tools are initialized, given the Bridge tools an
-   * ordinary chat gets.
-   */
+  /** Tools the session must expose once initialized, given an ordinary chat's Bridge tools. */
   expectedToolNames(bridgeToolNames: readonly string[]): readonly string[];
-  /** Prompt choices for the ordinary config the profile starts from; they win over the chat's stored ones. */
+  /** Prompt choices for the profile's base config; they win over the chat's stored ones. */
   configOptions?(): Pick<SessionConfigOptions, "promptRole" | "extraGuidance" | "playbooks">;
   apply<T extends Record<string, unknown>>(config: T): T;
-  /**
-   * Reasoning effort for a turn that did not ask for one. Read at the start of each turn, so
-   * a settings change applies to the next message rather than the next conversation.
-   */
+  /** Effort for a turn that set none; read per turn, so settings changes apply to the next one. */
   defaultTurnReasoningEffort?(): string | undefined;
-  /**
-   * Context a profiled chat gets in front of a user message, in place of the bridge_context block
-   * ordinary chats get. Asked for until this process has delivered it, then again only after the
-   * conversation may have lost it (compaction, undo; `afterLoss` is then true). Changes in between
-   * are not sent, so the conversation stays the same for the prompt cache.
-   */
+  /** Sent once per process, then only after a possible loss, to keep the prompt cache. */
   conversationContext?(sessionId: string, options: { afterLoss: boolean }): string | undefined;
 }
 
@@ -759,10 +694,7 @@ export interface SessionUsageMetrics {
   codeChanges?: AgentUsageCodeChanges;
   /** The runtime's current split of the window, asked for alongside the counters. */
   contextInfo?: AgentContextInfo;
-  /**
-   * ISO time the chat's context budget last changed size through the Bridge: a model switch, or a
-   * new Fusion context limit. A routed chat's step readings from before then describe another window.
-   */
+  /** When the context budget last changed size; older step readings describe another window. */
   budgetChangedAt?: string;
 }
 
@@ -799,12 +731,7 @@ export class SessionHistoryUndoError extends Error {
 }
 
 
-/**
- * Factory that maps AppContext → SessionManagerDeps.
- *
- * Staging preview dynamically imports this from the worktree, so new deps are
- * picked up automatically without touching staging-tools.ts.
- */
+/** Staging preview imports this from the worktree, so new deps need no staging-tools.ts change. */
 export function createSessionManager(ctx: AppContext, opts: CreateSessionManagerOpts): SessionManager {
   const runtimePaths = opts.runtimePaths ?? ctx.runtimePaths;
   const copilotHome = opts.copilotHome ?? ctx.copilotHome ?? runtimePaths?.copilotHome;
@@ -840,7 +767,7 @@ export function createSessionManager(ctx: AppContext, opts: CreateSessionManager
     },
     backgroundCommandStore: ctx.backgroundCommandStore,
     onBackgroundCommandsStopped: (sessionId) => {
-      // A staged preview never starts turns on its own; the notice still goes out with the next message.
+      // A staged preview never starts turns itself; the notice goes out with the next message.
       if (ctx.isStaging || !ctx.backgroundCommandStore || !ctx.deferredPromptStore) return;
       const outcome = queueStoppedCommandWake({
         backgroundCommandStore: ctx.backgroundCommandStore,
@@ -1002,10 +929,7 @@ export class SessionManager {
   private warmSessionPromises = new Map<string, Promise<void>>();
   private slashCommandListCache = new Map<string, AgentSlashCommandInfo[]>();
 
-  // Parent sessions and their tracked background agents form one cache tree.
-  // Parent count, total context weight, and a shared idle TTL bound the MCP
-  // subprocess footprint. Active/resuming parents and running agents protect
-  // their tree; eviction releases the handle and the runtime owns task teardown.
+  // Parents and their agents are one cache tree, bounded by count, weight and a shared idle TTL.
   private maxCachedSessions = SessionManager.resolveMaxCachedSessions();
   private maxCachedContexts = SessionManager.resolvePositiveIntegerEnv(
     "BRIDGE_MAX_CACHED_CONTEXTS",
@@ -1049,11 +973,7 @@ export class SessionManager {
     this.sessionCacheSweepHandle.unref?.();
   }
 
-  /**
-   * Evicts session trees that sat idle for the TTL. "Idle" is only the Bridge's belief, so trees
-   * close to the TTL are checked against their runtime first: a run the Bridge ended early, or a
-   * main agent the runtime woke for a finished background task, is still working.
-   */
+  /** Idle is only the Bridge's guess; trees near the TTL are checked with the runtime first. */
   private sweepIdleSessionTrees(): Promise<void> {
     this.sessionCacheSweep ??= this.keepWorkingSessionTrees()
       .then(() => this.trimSessionCache("session tree idle TTL"))
@@ -1118,7 +1038,7 @@ export class SessionManager {
       cancelPendingInteractions: (sessionId) => this.cancelPendingInteractions(sessionId),
       onRunIdle: (sessionId, at) => {
         this.touchSessionTree(sessionId, at);
-        // The run state clears after the runtime's idle event, so the budget looks again once it has.
+        // The run state clears after the runtime's idle event, so check the budget after that.
         setImmediate(() => this.imageBudget.sessionIdle(sessionId));
       },
       promptDeliveryAbortedMessage: PROMPT_DELIVERY_ABORTED_MESSAGE,
@@ -1188,7 +1108,7 @@ export class SessionManager {
         if (this.shuttingDown) throw new Error(PROMPT_DELIVERY_SHUTDOWN_MESSAGE);
         return this.beginSessionCreationLifetime();
       },
-      // A check that finds no room goes back to the queue; waiting here would hold its chat and a worker slot.
+      // A check without room is requeued; waiting here would hold its chat and a worker slot.
       reserveCapacity: async (sessionConfig) => {
         const reservation = await this.beginSessionCreation(sessionConfig, { waitTimeoutMs: 0 });
         return () => this.endSessionCreation(reservation);
@@ -1345,10 +1265,7 @@ export class SessionManager {
     return this.pendingSessionCreations.get(sessionId) ?? Promise.resolve(undefined);
   }
 
-  /**
-   * Waits, at most `timeoutMs`, for a chat whose creation is under way, so what is read about it
-   * afterwards (its model, its profile) is what it was made with rather than a guess.
-   */
+  /** Waits up to `timeoutMs` for a chat being created, so its model and profile aren't guessed. */
   async waitForSessionCreation(sessionId: string, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (this.isSessionCreationPending(sessionId)) {
@@ -1529,11 +1446,7 @@ export class SessionManager {
     }
   }
 
-  /**
-   * The model A/B test arm for a new chat, when a test runs and nothing else chose the chat's model:
-   * the caller gave no model, effort or context, a scheduled run has no tier of its own, and the chat
-   * has no instructions of its own (Helm's conversations and runs keep their role's model).
-   */
+  /** Only when nothing chose the model: no model/effort/context, schedule tier or profile. */
   private pickModelAbTestArm(
     sessionId: string | undefined,
     options: { model?: string; reasoningEffort?: string; contextTier?: string },
@@ -1552,7 +1465,7 @@ export class SessionManager {
     }
   }
 
-  /** Records the arm a new chat started on and what it runs. A failure here never fails the chat. */
+  /** Records a new chat's A/B arm and what it runs. A failure here never fails the chat. */
   private recordModelAbTestAssignment(
     sessionId: string,
     assignment: { choice: ModelAbTestChoice; source: "chat" | "schedule" },
@@ -1719,7 +1632,7 @@ export class SessionManager {
       const backend = record.owner.backend;
       const owned = () => this.cleanupOwnership.get(session) === record;
       const detail = `session ${sessionId}, lease ${record.owner.lease}, generation ${record.owner.generation}`;
-      // A release that settled as a failure has nothing left to arrive, however far behind the Bridge is.
+      // A release that settled as a failure has nothing left to arrive, however far behind we are.
       const stalled = backend && !record.failed
         ? await this.stillNeedsFencing(backend, `cleanup-stalled: ${detail}`, SESSION_RETIREMENT_BUDGET_MS, owned)
         : owned();
@@ -2114,14 +2027,12 @@ export class SessionManager {
     );
   }
 
-  /** The session's runtime handle is going away, and the session loses the commands still running in it. */
+  /** The runtime handle is going away, and the session loses the commands still running in it. */
   private handleBackgroundCommandsStopped(sessionId: string, commands: RunningBackgroundCommand[]): void {
-    // Nobody is left to tell about a deleted session's commands, and deleteSession drops its markers.
-    // On shutdown the markers stay as they are: the next boot reports whatever they still show running.
+    // Skip deleted sessions; on shutdown the markers stay for the next boot to report.
     if (this.deletingSessions.has(sessionId) || this.shuttingDown || isDisposableDeferWorkerSessionId(sessionId)) return;
     const sid = sessionId.slice(0, 8);
-    // Releasing a handle on a live runtime stops its commands. A runtime that was lost may have
-    // died before anything stopped them, and a command's process outlives that.
+    // A live runtime stops commands on release; a lost one may die first, and processes outlive it.
     const cause: BackgroundCommandStopCause = this.backendTransition ? "runtime-lost" : "unloaded";
     let recorded = 0;
     try {
@@ -2254,19 +2165,7 @@ export class SessionManager {
     this.flushPendingSessionEviction(sessionId);
   }
 
-  /**
-   * Defer a cached-session eviction until the current run fully completes.
-   *
-   * Unlike {@link markCachedSessionForEviction}, this does NOT attempt an
-   * immediate flush. The eviction is queued in {@link pendingSessionEvictions}
-   * and drained by the run controller's `.finally()` hook in `SessionRunner`,
-   * which only fires after `setSessionRunState(sessionId, "idle")`. This
-   * closes a race where a mid-turn MCP status flip (e.g. `connected → not_configured`)
-   * could otherwise drop the cached `AgentSession` while the SDK was still
-   * persisting the in-flight turn's `fc_call_*` items to disk, causing the
-   * next resume to re-write duplicate items (manifesting as upstream
-   * `CAPIError: 400 Duplicate item found`).
-   */
+  /** Waits for run end: evicting mid-turn makes resume rewrite fc_call items (400 Duplicate). */
   private deferMcpStatusSessionEviction(sessionId: string, reason: string): void {
     if (!this.sessionObjects.has(sessionId)) return;
     const alreadyPending = this.pendingSessionEvictions.has(sessionId);
@@ -2306,8 +2205,7 @@ export class SessionManager {
       reserveCachedSession?: boolean;
     } = {},
   ): Promise<SessionResumeLease | null> {
-    // The creation already holds the session's runtime handle. The runtime routes a session's
-    // events and tool requests to the newest handle, so a resume now would take them from it.
+    // Creation holds the runtime handle; a resume now would take its events and tool requests.
     if (this.isSessionCreationPending(sessionId)) {
       throw new Error(`Session ${sessionId} is still being created`);
     }
@@ -2360,11 +2258,7 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Resumes the runtime session of a chat. A chat the Bridge made whose runtime never saved
-   * anything (it was stopped before its first message reached the agent, then dropped by a restart
-   * or eviction) cannot be resumed; it is made again under the same id, as it was launched.
-   */
+  /** A chat the runtime never saved can't resume, so it's recreated under the same id. */
   private async resumeRuntimeSession(
     backend: AgentBackend,
     sessionId: string,
@@ -2387,7 +2281,7 @@ export class SessionManager {
     }
   }
 
-  /** The create config for a chat that can be made again (see `resumeRuntimeSession`), else undefined. */
+  /** The create config for a chat that can be made again (see `resumeRuntimeSession`). */
   private async configToRecreateUnsavedSession(sessionId: string, error: unknown): Promise<any | undefined> {
     const message = error instanceof Error ? error.message : String(error);
     // agent-text-audit: error (agent runtime and file system errors)
@@ -2399,7 +2293,7 @@ export class SessionManager {
       exists(SESSION_LAUNCH_CONTEXT_FILE),
       exists(BRIDGE_SESSION_MODEL_STATE_FILE),
     ]);
-    // Saved history that fails to load is a different problem; a folder the Bridge did not make is not ours.
+    // Failing saved history is another problem; a folder the Bridge did not make is not ours.
     if (hasEvents || !(hasLaunchContext || hasModelState)) return undefined;
     let launch: SessionLaunchContext = {};
     try {
@@ -2536,7 +2430,7 @@ export class SessionManager {
         console.warn(`[sdk] [${sid}] Timed-out session resume cleanup failed:`, error);
       },
       onLateSettled: () => {
-        // While this runtime is being fenced, the barrier is released with everything else it owned.
+        // While this runtime is fenced, the barrier is released with everything else it owned.
         if (this.backendTransition?.owner !== owningBackend) releaseBarrier();
       },
     }).finally(() => {
@@ -2666,20 +2560,11 @@ export class SessionManager {
     return generation;
   }
 
-  /**
-   * Terminal runs leave their interaction requests behind: the Copilot runtime
-   * only drops a pending request when it is answered, so a turn aborted while
-   * `ask_user` waits keeps the request alive and replays it on the next stream
-   * hydration. Clear the derived status synchronously and cancel the
-   * runtime-owned leftovers in the background.
-   */
+  /** Runtime keeps unanswered requests after an abort and replays them; clear now, cancel async. */
   private cancelPendingInteractions(sessionId: string): void {
     // Bridge holds shell prompts itself, so they are answered (cancelled) here and now.
     this.shellAuthRequests.cancelSession(sessionId, "session_ended");
-    // Capture the bus instance and its listing index synchronously: the terminal
-    // event fires immediately after this returns, which completes the bus and
-    // lets the registry hand out a *new* one for the next run. Re-reading the
-    // registry from the async path could cancel the next run's requests.
+    // Read the bus now: once the terminal event lands, the registry may return the next run's bus.
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
     const indexed = bus?.getPendingInteractionIndex();
     const hadPendingInteractions = this.getPendingInteractionCount(sessionId) > 0
@@ -2703,17 +2588,7 @@ export class SessionManager {
     this.pendingInteractionCleanups.set(sessionId, cleanup);
   }
 
-  /**
-   * Cancels the requests captured for the run that just ended, with the same
-   * payloads the Copilot CLI sends when a user dismisses a prompt. Never
-   * rejects: every request is bounded by one shared deadline and failures are
-   * isolated per request so a single unresponsive request cannot strand the
-   * others.
-   *
-   * The synchronously captured listing index is the only source. It is
-   * run-scoped, so it can neither miss a prompt this run raised nor cancel one
-   * belonging to the next — which a late runtime snapshot could.
-   */
+  /** Use only the captured run-scoped index; a later runtime snapshot could hit the next run. */
   private async cancelRuntimePendingInteractions(
     sessionId: string,
     session: AgentSession,
@@ -2752,15 +2627,12 @@ export class SessionManager {
     ]);
   }
 
-  /**
-   * Asks the chat's user a form on the Bridge's own behalf, for a tool that needs a person. It is
-   * shown, answered, cancelled and answered automatically like the agent's own questions.
-   */
   /** False for a session nobody can answer, such as a background worker. */
   canRequestElicitation(sessionId: string): boolean {
     return typeof this.sessionObjects.get(sessionId)?.requestElicitation === "function";
   }
 
+  /** Asks the chat's user a form for a Bridge tool; handled like the agent's own questions. */
   requestElicitation(
     sessionId: string,
     request: { message: string; requestedSchema: unknown },
@@ -2772,12 +2644,7 @@ export class SessionManager {
     return session.requestElicitation(request);
   }
 
-  /**
-   * Answers questions nobody has answered for PENDING_INTERACTION_AUTO_ANSWER_MS, the way the
-   * Copilot CLI answers `ask_user` in autopilot, so an unattended turn continues instead of waiting
-   * forever. The run watchdog calls this on every tick while an interaction is pending. Never
-   * rejects: a failed answer is retried on the next tick.
-   */
+  /** Auto-answers overdue questions like CLI autopilot; never rejects, retried next tick. */
   private async autoAnswerOverdueInteractions(sessionId: string): Promise<void> {
     const session = this.sessionObjects.get(sessionId);
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
@@ -2850,12 +2717,7 @@ export class SessionManager {
     void this.reconcilePendingInteractionCounts(sessionId, session);
   }
 
-  /**
-   * Answers a question in the user's place before anyone is shown it, for a chat in Autopilot.
-   * Returns undefined for a question Bridge never answers itself (see automaticFormAnswer), which
-   * the caller then shows as usual. Otherwise resolves true once the runtime has taken the reply
-   * and false when it has not. Never rejects.
-   */
+  /** Autopilot reply; undefined if Bridge won't answer it, else whether the runtime took it. */
   private answerQuestionUnshown(
     sessionId: string,
     question: PendingQuestion,
@@ -2879,12 +2741,7 @@ export class SessionManager {
     return this.sendUnshownReply(sessionId, question.kind, requestId, reason, action, respond);
   }
 
-  /**
-   * Replies to a question Bridge received but cannot show, because the request breaks one of its
-   * limits, so the runtime does not wait for an answer that can never come. The agent's own form
-   * gets the problem as its answer so it can ask again; an MCP server's form is cancelled.
-   * Undefined when the request carries no id to reply to. Never rejects.
-   */
+  /** Answers a question too invalid to show, so the runtime stops waiting; undefined without id. */
   private answerUnshowableQuestion(
     sessionId: string,
     kind: PendingQuestion["kind"],
@@ -2966,27 +2823,12 @@ export class SessionManager {
 
   private busPendingInteractionIndex(sessionId: string): PendingInteractionSnapshot {
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
-    // A completed run has nothing in flight. Terminal cleanup captures the ids
-    // it needs to cancel *before* the terminal event lands, so refusing to serve
-    // a completed bus here cannot strand a request — it only stops a run that
-    // already ended from resurrecting its prompt into a reconnect snapshot.
+    // A completed run must not revive prompts; terminal cleanup already took the ids it cancels.
     if (!bus || bus.complete) return emptyPendingInteractions();
     return bus.getPendingInteractionIndex();
   }
 
-  /**
-   * Pending `ask_user` / elicitation listings come exclusively from Bridge's
-   * own event-derived index.
-   *
-   * The Copilot runtime owns the requests but exposes no wire method that
-   * enumerates them: `session.permissions.pendingRequests` answers with
-   * permission prompts only (`PendingPermissionRequestList` carries a single
-   * `items` field). Bridge therefore indexes the runtime's own request ids off
-   * its `*.requested` / `*.completed` events, which `session-runner` normalizes
-   * per event at ingest. See the installed-SDK contract test in
-   * `copilot-runtime-contract.test.ts`, which fails if a future SDK grows a real
-   * listing method and this decision needs revisiting.
-   */
+  /** No runtime method lists these (pendingRequests is permissions only); see contract test. */
   private listPendingUserInputViews(sessionId: string): PendingUserInputRequestView[] {
     return this.busPendingInteractionIndex(sessionId).pendingUserInputs;
   }
@@ -2995,40 +2837,21 @@ export class SessionManager {
     return this.busPendingInteractionIndex(sessionId).pendingElicitations;
   }
 
-  /**
-   * Re-derives the pending counts from the listing index.
-   *
-   * Deliberately resumes on a later microtask: callers fire this from event
-   * handlers that have already emitted an optimistic status update, and that
-   * update must be observable before the reconciled counts land. The generation
-   * and session guards then drop a reconcile that a newer read has superseded.
-   */
   private async reconcilePendingInteractionCounts(
     sessionId: string,
     session: AgentSession,
   ): Promise<void> {
     const generation = this.nextPendingInteractionReconcileGeneration(sessionId);
-    // Resume on a later microtask so bursts of `*.requested` / `*.completed`
-    // events coalesce into a single count write, and so a reconcile started
-    // before a newer read can still be invalidated by the generation guard.
-    // This is scheduling policy, not a correctness requirement: the optimistic
-    // status update callers emit is already synchronous.
+    // Later microtask so event bursts coalesce and a newer read can supersede this.
     await Promise.resolve();
     if (this.sessionObjects.get(sessionId) !== session) return;
     if (this.pendingInteractionReconcileGeneration.get(sessionId) !== generation) return;
     this.setPendingInteractionCounts(sessionId, countPendingInteractions(this.busPendingInteractionIndex(sessionId)));
   }
 
-  /**
-   * Settles the pending interactions for a session and reports what is still in
-   * flight. Reconnect hydration awaits this so a terminal cleanup that is still
-   * draining cannot leave a resolved prompt on screen.
-   */
+  /** Waits for terminal cleanup so reconnect never shows an already-resolved prompt. */
   async hydratePendingInteractions(sessionId: string): Promise<PendingInteractionSnapshot> {
-    // Terminal cleanup is authoritative for the run that just ended, so let it
-    // settle before reporting what is still pending. A run that terminates
-    // *while* we wait installs a new cleanup, so drain until none is
-    // outstanding rather than awaiting only the first.
+    // Drain all cleanups: a run ending while we wait installs a new one.
     await this.settlePendingInteractionCleanups(sessionId);
     if (!this.sessionObjects.has(sessionId)) {
       return emptyPendingInteractions();
@@ -3042,11 +2865,7 @@ export class SessionManager {
     return snapshot;
   }
 
-  /**
-   * Drains outstanding terminal cleanups. Each is individually deadline-bounded,
-   * and the pass count caps the total wait so a session that keeps ending runs
-   * cannot stall a reconnect indefinitely.
-   */
+  /** Drains terminal cleanups, each bounded; a pass cap keeps a reconnect from stalling. */
   private async settlePendingInteractionCleanups(sessionId: string): Promise<void> {
     for (let pass = 0; pass < PENDING_INTERACTION_CLEANUP_DRAIN_PASSES; pass++) {
       const cleanup = this.pendingInteractionCleanups.get(sessionId);
@@ -3373,12 +3192,7 @@ export class SessionManager {
     session: AgentSession,
     sessionConfig: { mcpServers?: Record<string, McpServerConfig> },
   ): Promise<never> {
-    // The rejected session was never cached, so it has no capacity profile and
-    // cleanup ownership would otherwise account for it with zero local MCPs —
-    // under-counting retained capacity while its disconnect is still in flight
-    // (and until fencing, if its release is uncertain).
-    // Record the profile the creation reservation was sized from before
-    // disposal so cleanup carries the same weight the reservation did.
+    // Never cached, so record its profile or cleanup counts it with zero local MCPs.
     this.trackSessionCapacityProfile(session, sessionConfig);
     try {
       await this.disposeSession(session.sessionId, session, "rejecting mismatched created session");
@@ -3403,10 +3217,7 @@ export class SessionManager {
     return { backend, generation: this.backendGeneration, lease: randomUUID() };
   }
 
-  /**
-   * A throwaway model session for Bridge's own quick prompts: no tools, hidden from session lists
-   * like title helpers, never kept, and swept at startup if a crash leaks it. dispose() removes it.
-   */
+  /** Throwaway, tool-less, hidden session for Bridge's quick prompts; startup sweeps leaks. */
   async createHelperSession(config: AgentSessionConfig): Promise<{ session: AgentSession; dispose(): Promise<void> }> {
     return this.createHelperSessionOn(await this.getBackendAfterRotation(), config);
   }
@@ -3516,11 +3327,7 @@ export class SessionManager {
     return fence.observation;
   }
 
-  /**
-   * Forget a fence observation that proved nothing so the next recovery attempt
-   * observes a fresh one. A still-running operation keeps its own deadline and is
-   * joined by the next observation; it is forgotten only once it has failed.
-   */
+  /** Drop an inconclusive fence; a still-running one is joined by the next observation. */
   private resetBackendFenceAttempt(backend: AgentBackend): void {
     const fence = this.backendFences.get(backend);
     if (!fence || fence.confirmed) return;
@@ -3575,15 +3382,7 @@ export class SessionManager {
     return this.getBackend();
   }
 
-  // ── Backend connection lifecycle ──────────────────────────────────
-  //
-  // The SDK only flips `client.state` when its JSON-RPC connection drops; it
-  // never tells anyone, never kills the runtime child, and every pending or
-  // future RPC then hangs forever. The backend wrapper surfaces the loss via
-  // onDisconnect; the manager turns it into: fail in-flight runs fast, drop
-  // every cached handle (they belong to a dead process), kill the orphan,
-  // start a replacement, and re-send a continue prompt to interrupted
-  // interactive turns.
+  // On a dropped link the SDK hangs every RPC and keeps the child; onDisconnect drives recovery.
 
   private attachBackendLifecycle(backend: AgentBackend): void {
     this.backendDisconnectUnsubscribe?.();
@@ -3630,11 +3429,6 @@ export class SessionManager {
     };
   }
 
-  /**
-   * Whether same-session defer deliveries may be attempted right now. Holds
-   * for a grace period after every backend (re)start so overdue loops do not
-   * fire into a cold runtime whose MCP servers are still coming up.
-   */
   getDeferDeliveryReadiness(): { ready: boolean; reason?: string; retryAfterMs?: number } {
     if (this.shuttingDown) return { ready: false, reason: "shutting down" };
     const unavailable = this.getBackendUnavailableReason();
@@ -3652,7 +3446,7 @@ export class SessionManager {
     return { ready: true };
   }
 
-  /** Ask the backend whether its RPC channel still answers; a failed probe triggers disconnect recovery. */
+  /** Pings the backend RPC channel; a failed probe triggers disconnect recovery. */
   async probeBackendHealth(reason: string): Promise<boolean> {
     const backend = this.backend;
     if (!backend) return false;
@@ -3664,35 +3458,20 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Catches the Bridge up with the runtime. Replies arrive in order and the SDK hands over one per
-   * event-loop turn, so once a ping sent now is answered, everything the runtime wrote before that
-   * answer has been handled. An answer within the ping's own limit means the Bridge was not behind.
-   * When the ping times out the probe takes over: "was-behind" when it reports the runtime
-   * answering, "lost" otherwise. Lost means the probe declared a silent runtime lost, about 23
-   * seconds in, which starts recovery, or the runtime was already replaced or stopping. A probe
-   * already in flight may be answered by an earlier ping, which proves less; the extra budget in
-   * `stillNeedsFencing` covers that once.
-   */
+  /** Replies come in order, so an answered ping proves earlier output was handled; else probe. */
   private async catchUpWithRuntime(backend: AgentBackend, reason: string): Promise<"caught-up" | "was-behind" | "lost"> {
     const ping = await Promise.resolve(backend.diagnosticPing?.() ?? "responsive").catch(() => "failed");
-    // A ping that fails outright or cannot be sent says nothing about lag; like an answer, it leaves the caller's check to decide.
+    // A ping that fails or can't be sent says nothing about lag; the caller's check decides.
     if (ping !== "timeout") return "caught-up";
     return backend === this.backend && await this.probeBackendHealth(reason) ? "was-behind" : "lost";
   }
 
-  /**
-   * The one rule for replacing a runtime that reported no failure: whether what the Bridge waited
-   * `budgetMs` for still needs it, asked once the Bridge has caught up. The Bridge's own clock
-   * cannot tell, because a Bridge with a busy main thread is the late one. A caller acts one ping
-   * after its deadline when the Bridge was not behind.
-   */
+  /** Decide after catching up: a busy Bridge is often the late one, so its clock can't tell. */
   private async stillNeedsFencing(backend: AgentBackend, reason: string, budgetMs: number, needed: () => boolean): Promise<boolean> {
     // A recovery that has begun fences this runtime without the caller.
     const worthAsking = () => needed() && backend === this.backend && !this.backendTransition;
     if (worthAsking() && await this.catchUpWithRuntime(backend, reason) === "was-behind") {
-      // A later step of a multi-request operation may itself have waited on the Bridge and only
-      // gone out now, so the wait gets one more budget, once.
+      // A later step may have waited on the Bridge and only gone out now: one more budget, once.
       await new Promise<void>((resolve) => { setTimeout(resolve, budgetMs).unref?.(); });
       if (worthAsking()) await this.catchUpWithRuntime(backend, reason);
     }
@@ -3749,9 +3528,7 @@ export class SessionManager {
       + `Failing ${this.activeRunControllers.size} in-flight run(s) and dropping ${cachedSessionIds.length} cached session(s).`,
     );
 
-    // Nothing will answer an abort from a backend that is dead or about to be killed: fail every
-    // in-flight run locally. Quiet defer turns refire on their own, and a session is re-sent a
-    // continue prompt at most once per cooldown window so a backend that dies on the same prompt cannot loop.
+    // A dead backend can't answer aborts, so fail runs locally; resumes are cooldown-limited.
     const interrupted = this.getActiveRuns();
     const resumable: InterruptedRun[] = [];
     const interruptedRuns: BackendLossRecord["interruptedRuns"] = [];
@@ -3802,10 +3579,7 @@ export class SessionManager {
     void this.recoverBackendAfterDisconnect(backend, resumable, 0);
   }
 
-  /**
-   * Starts the durable record of a loss and returns its file name. Called before recovery begins,
-   * while the lost backend can still be asked whether it answers. Recording never affects recovery.
-   */
+  /** Opens the durable loss record before recovery, while the lost backend can still be asked. */
   private openBackendLossRecord(
     backend: AgentBackend,
     info: AgentBackendDisconnect,
@@ -3931,11 +3705,7 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Forget every cached session handle without talking to the backend: the
-   * runtime that owned them has been fenced. Never call this on transport
-   * loss alone: an RPC channel closing says nothing about remote ownership.
-   */
+  /** Only after the runtime is fenced; a closed RPC channel says nothing about ownership. */
   private dropCachedSessionsForLostBackend(): Promise<void> {
     return this.enqueueCache("backend-lost", undefined, () => {
       let dropped = 0;
@@ -4058,7 +3828,7 @@ export class SessionManager {
     return lastAt !== undefined && Date.now() - lastAt < BACKEND_AUTO_RESUME_COOLDOWN_MS ? "cooldown" : undefined;
   }
 
-  /** Re-send a continue prompt to interactive sessions whose accepted turn was cut off by the disconnect. */
+  /** Re-sends a continue prompt to interactive runs the disconnect cut off after acceptance. */
   private async autoResumeInterruptedRuns(resumable: InterruptedRun[]): Promise<number> {
     let resumed = 0;
     for (const run of resumable) {
@@ -4091,7 +3861,7 @@ export class SessionManager {
     return resumed;
   }
 
-  /** `beforeRetire` runs on the old runtime once the rotation holds new work and before it stops. */
+  /** `beforeRetire` runs on the old runtime once rotation holds new work, before it stops. */
   private async rotateBackendForModelRefresh(beforeRetire?: (backend: AgentBackend) => Promise<void>): Promise<AgentBackend> {
     if (this.backendRotation) {
       return this.backendRotation;
@@ -4114,8 +3884,7 @@ export class SessionManager {
     beforeRetire?: (backend: AgentBackend) => Promise<void>,
   ): Promise<AgentBackend> {
     if (this.backendRotation) return this.backendRotation;
-    // Publish the join promise before eviction, but let those handles release
-    // normally until the backend fence takes ownership.
+    // Publish the join promise before eviction; handles release normally until the fence.
     const rotation = Promise.resolve().then(async () => {
       if (reason === "model-refresh") await this.evictAllCachedSessions();
       // A failure here leaves the old runtime in place, as if no rotation had started.
@@ -4354,13 +4123,7 @@ export class SessionManager {
     return { accounts, fixedToken: this.usesFixedCopilotToken() };
   }
 
-  /**
-   * Makes another signed-in account the one every new chat runs on. The runtime saves the choice
-   * itself but keeps reporting the old account until it restarts, so the switch runs inside a
-   * model-refresh rotation: once the rotation holds new work, a helper session on the old runtime
-   * switches, then the runtime restarts onto whatever account it saved. Like a model refresh it refuses while a
-   * chat is running, so running chats keep their account.
-   */
+  /** Runtime reports the old account until restart, so the switch runs inside a rotation. */
   async switchCopilotAccount(accountId: string): Promise<CopilotAccountsStatus> {
     const t0 = Date.now();
     if (this.usesFixedCopilotToken()) {
@@ -4372,8 +4135,7 @@ export class SessionManager {
     if (target.active) return before;
     // A rotation already under way would be joined instead of carrying the switch.
     while (this.backendRotation) await this.backendRotation.catch(() => undefined);
-    // The runtime restarts whatever the switch did: a switch that failed or ran out of time may
-    // still have saved the account, and only stopping the runtime ends it and its helper session.
+    // Restart regardless: a failed switch may have saved the account, and only a stop ends it.
     let switchError: unknown;
     try {
       await this.rotateBackendForModelRefresh(async (backend) => {
@@ -4404,17 +4166,11 @@ export class SessionManager {
       }
       await helper.session.switchAccount(accountId);
     } finally {
-      // The runtime stops next, which ends the helper anyway; a stuck detach must not hold the restart.
-      // A helper left on disk is swept at the next startup like any disposable session.
+      // The runtime stop ends the helper anyway, and startup sweeps leftovers; don't let it block.
       await settleByDeadline(() => helper.dispose(), createDeadline(ACCOUNT_SWITCH_HELPER_DISPOSE_MS));
     }
   }
 
-  /**
-   * ISO timestamp of when the current agent backend (SDK/CLI client) object was
-   * created — either at startup or the last successful model-refresh rotation.
-   * Returns null when no usable backend is currently active.
-   */
   getBackendCreatedAt(): string | null {
     return this.backendCreatedAtMs == null
       ? null
@@ -4450,16 +4206,12 @@ export class SessionManager {
     };
   }
 
-  /**
-   * Sessions that have a folder under session-state, read from workspace.yaml instead of SDK RPC.
-   * Not cached: the session list (session-list.ts) is its one caller and owns the cache. Anything
-   * that asks about particular sessions uses readSessionsFromDisk.
-   */
+  /** Uncached: session-list.ts owns the cache. For specific sessions use readSessionsFromDisk. */
   listSessionsFromDisk(options: { includeArchived?: boolean; skip?: ReadonlySet<string> } = {}): Promise<any[]> {
     return listSessionsFromDiskWithDeps(this.sessionListReaderDeps(), options);
   }
 
-  /** The given sessions as their folders describe them; a session whose folder is gone is left out. */
+  /** The given sessions as their folders describe them; gone folders are left out. */
   readSessionsFromDisk(sessionIds: readonly string[], options: SessionsFromDiskOptions = {}): Promise<any[]> {
     return readSessionsFromDiskWithDeps(this.sessionListReaderDeps(), sessionIds, options);
   }
@@ -4549,12 +4301,7 @@ export class SessionManager {
     return cachedSession;
   }
 
-  /**
-   * A routed model (Copilot Fusion) holds a level change until the chat's next user turn and keeps
-   * it only in memory, so a chat closed or restarted before that turn resumes on its old level.
-   * Stages the level the Bridge last chose again when the chat has had no turn and no model change
-   * since that choice. Never fails the resume.
-   */
+  /** Fusion keeps a staged level only in memory until the next turn, so re-stage it on resume. */
   private async restoreUnclaimedLevel(sessionId: string, session: AgentSession): Promise<void> {
     const chosen = this.readPersistedSessionModelState(sessionId);
     const chosenAt = chosen.updatedAt ? Date.parse(chosen.updatedAt) : Number.NaN;
@@ -4574,7 +4321,7 @@ export class SessionManager {
     }
   }
 
-  /** A new session handle may come with a different Fusion context limit (`session-context-budget.ts`). */
+  /** A new handle may bring another Fusion context limit (`session-context-budget.ts`). */
   private noteFusionContextLimit(sessionId: string, sessionConfig: PromptFingerprintConfig | undefined): void {
     if (!sessionConfig) return;
     const requested = (sessionConfig as { fusionContextTokens?: unknown }).fusionContextTokens;
@@ -4667,9 +4414,7 @@ export class SessionManager {
     const session = this.sessionObjects.get(sessionId);
     if (session) {
       const startingSnapshot = cached;
-      // Bounded for the detail endpoint: a session still initializing tools returns the
-      // partial snapshot now and the client polls again, instead of waiting out the full
-      // tool-initialization budget on the request.
+      // Bounded: a session still initializing tools returns a partial snapshot; the client polls.
       const initOutcome = await settleByDeadline(
         () => this.waitForSessionToolInitialization(sessionId, session),
         createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS),
@@ -4699,8 +4444,7 @@ export class SessionManager {
         const probed = stampMcpStatusSnapshot({ servers: normalizeMcpServerStatuses(result.servers), complete: true }, sessionId, "probe");
         const snapshot = {
           ...probed,
-          // Preserve newer resolved changes, but do not let a repeated startup
-          // placeholder discard a live connection probe.
+          // Keep newer changes, but a repeated startup placeholder must not drop a live probe.
           servers: concurrentUpdates
             ? mergeMcpServerStatuses(probed.servers, concurrentUpdates.servers.filter((server) =>
               !isPending(server) || !probed.servers.some((observed) => observed.name === server.name)))
@@ -4990,7 +4734,7 @@ export class SessionManager {
         spanName: "session.create",
         logMessage: (sessionId, duration) => `[sdk] Created session ${sessionId} (${duration}ms)`,
         cleanupLabel: "session",
-        // Also marks the chat as made by the Bridge, which lets a lost runtime session be made again.
+        // Also marks the chat Bridge-made, so a lost runtime session can be made again.
         launchContext: {},
         onCreateStarting: options.onCreateStarting,
       });
@@ -5120,10 +4864,7 @@ export class SessionManager {
         });
       }
 
-      // Locate the boundary on disk: events.jsonl is the persisted source of
-      // truth and streaming it keeps memory bounded regardless of transcript
-      // size. The CLI's `eventsRemoved` stays authoritative; the disk count is
-      // only the cross-check below.
+      // Stream events.jsonl to bound memory; the CLI's eventsRemoved wins, this only cross-checks.
       const eventsPath = this.getSessionEventsPath(sessionId);
       const remainingActivity = createVisibleActivityTracker(sessionId);
       let boundary: Awaited<ReturnType<typeof findSessionEventIndex>>;
@@ -5395,10 +5136,7 @@ export class SessionManager {
     this.flushPendingSessionEviction(sessionId);
   }
 
-  // Abort an in-progress session turn. Shutdown callers pass their shared
-  // absolute deadline so a hung SDK abort is finalized locally and cannot
-  // block the remainder of process teardown. Every other caller gets a
-  // bounded default so an HTTP abort never waits on a dead backend channel.
+  // Bounded so a hung SDK abort never blocks teardown or an HTTP request.
   async abortSession(
     sessionId: string,
     deadline: Deadline = createDeadline(ABORT_REQUEST_TIMEOUT_MS),
@@ -5425,8 +5163,7 @@ export class SessionManager {
       return true;
     }
 
-    // Nothing reached the runtime yet, so there is no turn to stop: the run's own check before it
-    // sends keeps the prompt from going out, and the chat is free at once.
+    // Nothing reached the runtime: the pre-send check stops the prompt and the chat is free now.
     if (runController.isBeforeSend()) {
       console.log(`[sdk] [${sessionId.slice(0, 8)}] 🛑 Stopped before the prompt was sent`);
       const assistantSourceEventId = getAbortAssistantSourceEventId();
@@ -5481,11 +5218,7 @@ export class SessionManager {
     return true;
   }
 
-  /**
-   * Save blob attachments to the session's files/ directory and convert
-   * non-image attachments to SDK `file` type (path-based) so the agent
-   * can access them with its tools. Images stay as `blob` for inline viewing.
-   */
+  /** Non-image attachments go to the agent as file paths; images stay inline blobs. */
   private persistAndRouteAttachments(
     sessionId: string,
     attachments?: StartWorkAttachment[],
@@ -5510,22 +5243,17 @@ export class SessionManager {
     this.noteUserPrompt(sessionId, options);
   }
 
-  /** Fills in what the session's profile wants for a turn that didn't say (Helm: effort for typed turns). */
+  /** Fills in what the profile wants for a turn that didn't say (Helm: effort for typed turns). */
   private withTurnDefaults(sessionId: string, options?: StartWorkOptions): StartWorkOptions | undefined {
     if (options?.reasoningEffort) return options;
     const reasoningEffort = this.deps.resolveSessionProfile?.(sessionId)?.defaultTurnReasoningEffort?.();
     return reasoningEffort ? { ...options, reasoningEffort } : options;
   }
 
-  /** The effort each live session was last switched to for a turn, so an unchanged mode costs no RPC. */
+  /** Last effort applied per live session, so an unchanged one costs no RPC. */
   private readonly appliedTurnEfforts = new WeakMap<AgentSession, string>();
 
-  /**
-   * Switches a live session to the reasoning effort a turn asked for, keeping its model and
-   * context tier. Runs inside the turn just before the prompt is sent, which is the one moment
-   * every route (chat, transcribed recordings, hands-free) has in common. A level the model
-   * lacks falls back to the nearest one below it. Never fails the turn: effort is a preference.
-   */
+  /** Runs just before send, the one point all routes share; never fails the turn. */
   private async applyTurnReasoningEffort(sessionId: string, session: AgentSession, requested: string): Promise<void> {
     if (this.appliedTurnEfforts.get(session) === requested) return;
     const startedAt = Date.now();
@@ -5579,12 +5307,7 @@ export class SessionManager {
     return this.triggerWorker.tryAcquire();
   }
 
-  /**
-   * Why deferred work cannot get a Copilot context right now, or undefined when it can.
-   * A check always needs a new context (no sessionId); a message needs one only when its chat is not loaded.
-   * Weights are not known before the session config is built, so this asks for the smallest session.
-   * Reserves nothing.
-   */
+  /** Undefined when a context is free; probes the smallest session and reserves nothing. */
   getSessionCapacityWait(sessionId?: string): string | undefined {
     if (sessionId && this.sessionObjects.has(sessionId)) return undefined;
     try {
@@ -5641,16 +5364,11 @@ export class SessionManager {
     };
     await this.sessionRunner.steerSession(sessionId, prompt, attachments, clientMessageId);
     this.noteUserPrompt(sessionId);
-    // After the send, so the runtime already holds the message when ask_user returns and gives it
-    // to the agent before its next step.
+    // After the send, so the runtime has the message when ask_user returns to the agent.
     if (openQuestions) await this.skipOpenQuestions(sessionId, openQuestions);
   }
 
-  /**
-   * Answers questions the user set aside by sending a message, telling the agent their message
-   * follows. An MCP server's form is cancelled instead, since its answer is never invented.
-   * Never rejects: a question that cannot be answered stays open for the user.
-   */
+  /** MCP forms are cancelled, never answered with invented input. Never rejects. */
   private async skipOpenQuestions(sessionId: string, open: PendingInteractionSnapshot): Promise<void> {
     if (open.pendingUserInputs.length === 0 && open.pendingElicitations.length === 0) return;
     const session = this.sessionObjects.get(sessionId);
@@ -5725,11 +5443,7 @@ export class SessionManager {
     return this.sessionRunner.doWork(sessionId, prompt, bus, runController, attachments, options);
   }
 
-  /**
-   * Read messages directly from events.jsonl on disk — no SDK resume needed.
-   * Returns messages instantly for the fast-load path.
-   * Async to avoid blocking the event loop.
-   */
+  /** Reads messages from events.jsonl without an SDK resume, for the fast-load path. */
   async readMessagesFromDisk(
     sessionId: string,
     opts?: { limit?: number; before?: number },
@@ -5753,10 +5467,7 @@ export class SessionManager {
     return this.sessionRunner.waitForWatchdogIdle(sessionId);
   }
 
-  /**
-   * Warm a session by resuming it in the background.
-   * Returns a promise that resolves when the session is ready for interaction.
-   */
+  /** Resumes the session in the background; resolves once it is ready. */
   async warmSession(sessionId: string, options: SessionWarmOptions = {}): Promise<void> {
     if (this.deletingSessions.has(sessionId)) {
       throw new Error("Session is being deleted");
@@ -5834,7 +5545,7 @@ export class SessionManager {
     return this.sessionObjects.has(sessionId);
   }
 
-  /** Sessions whose creation has handed out their id and not finished: the runtime may not have made their folder yet. */
+  /** Sessions with an id handed out but creation unfinished; their folder may not exist yet. */
   listPendingSessionCreationIds(): string[] {
     return [...this.pendingSessionCreations.keys()];
   }
@@ -5902,10 +5613,7 @@ export class SessionManager {
         console.warn(`[sdk] Failed to remove session ${sessionId} from CLI catalog:`, err);
         throw err;
       }
-      // Local state is fully removed at this point. Signal that explicitly so
-      // callers that own additional Bridge-side state (session context, defers,
-      // task links) can still clean it up instead of orphaning those rows
-      // forever behind a backend-only failure.
+      // Local state is gone; still throw so callers clean up task links, defers and context rows.
       if (sdkDeleteError) throw new SessionBackendDeleteError(sessionId, sdkDeleteError);
 
       console.log(`[sdk] Deleted session ${sessionId}`);
@@ -5941,21 +5649,10 @@ export class SessionManager {
     }, () => this.getMcpStatus(sessionId));
   }
 
-  /**
-   * What a chat has already been told through bridge_context sections, by section hash. The
-   * generation changes whenever the conversation may have lost a delivered block (compaction,
-   * truncation, undo), so a send prepared before that point cannot mark it delivered. A cold
-   * resume keeps the ledger: the conversation still holds the blocks, and compaction only runs
-   * during turns, whose events the runner routes here. The ledger lives in memory, so the first
-   * message after a Bridge restart resends every section once.
-   */
+  /** Context hashes sent per chat; bump generation when a block may be lost (compact, undo). */
   private readonly deliveredTurnContext = new Map<string, { generation: number; hashes: Map<BridgeContextSectionName, string> }>();
 
-  /**
-   * What goes in front of this user message: a one-time notice about background commands the
-   * session lost, then the bridge_context block if anything in it changed. Both travel with the
-   * message instead of the system prompt, so neither disturbs the cached prompt prefix.
-   */
+  /** Sent with the message, not the system prompt, so the cached prompt prefix stays stable. */
   prepareTurnContext(sessionId: string): { block?: string; commit(): void } {
     const context = this.prepareBridgeContext(sessionId);
     const store = this.deps.backgroundCommandStore;
@@ -6039,7 +5736,7 @@ export class SessionManager {
     };
   }
 
-  /** See image-budget.ts: the budget's pause runs through these, so it cannot race other work on the session. */
+  /** The image budget's pause runs through these, so it cannot race other work on the session. */
   private createImageBudget(): ImageBudgetController {
     return new ImageBudgetController({
       getSettings: () => this.deps.settingsStore?.getSettings().imageBudget,
@@ -6103,13 +5800,13 @@ export class SessionManager {
     };
   }
 
-  /** The conversation may no longer contain the last block, so the next message resends everything. */
+  /** The conversation may lack the last block, so the next message resends everything. */
   resetTurnContext(sessionId: string): void {
     const current = this.deliveredTurnContext.get(sessionId);
     this.deliveredTurnContext.set(sessionId, { generation: (current?.generation ?? 0) + 1, hashes: emptyBridgeContextHashes() });
   }
 
-  /** The playbook a chat follows and who chose it. Undefined for profiled chats (Helm), which do not use playbooks. */
+  /** The chat's playbook and who chose it; undefined for profiled chats (Helm). */
   getSessionPlaybook(sessionId: string): SessionPlaybookView | undefined {
     if (this.deps.resolveSessionProfile?.(sessionId)) return undefined;
     const resolved = resolveSessionPlaybook(
@@ -6119,10 +5816,7 @@ export class SessionManager {
     return toSessionPlaybookView(resolved, (name) => this.deps.skillCatalog?.findPlaybook(name)?.label);
   }
 
-  /**
-   * Sets or clears a chat's playbook. It reaches the agent in the next message's bridge_context
-   * block, so the cached conversation is kept. Clearing returns the chat to its task's pin.
-   */
+  /** Sets or clears a chat's playbook; it reaches the agent next message, so the cache is kept. */
   async setSessionPlaybook(
     sessionId: string,
     playbook: string | null,
@@ -6155,10 +5849,7 @@ export class SessionManager {
     return view;
   }
 
-  /**
-   * What a previous scheduled run left for the next one: its final report once the run finished
-   * (the last main-agent reply without tool requests, followed by the end of that turn).
-   */
+  /** A finished scheduled run's report: its last main-agent reply without tool requests. */
   async readPreviousRunReport(sessionId: string): Promise<PreviousRunReport | undefined> {
     if (this.isSessionBusy(sessionId) || this.pendingSessionCreations.has(sessionId)) return { status: "running" };
     const isMainReply = (event: unknown): event is { type: string; timestamp?: string; data: { content: string } } => {
@@ -6202,11 +5893,7 @@ export class SessionManager {
       || this.runStateController.isSessionBusy(sessionId);
   }
 
-  /**
-   * Busy only on the way to being free: a run that already ended (stopped) is still letting go of
-   * the session, or the session is loading with no run in it. A message sent now can neither steer
-   * nor start, but can start as soon as that finishes.
-   */
+  /** Busy but about to free up: a message can't steer or start now, but can start soon. */
   isSessionSettling(sessionId: string): boolean {
     if (!this.isSessionBusy(sessionId) || this.sessionHolds.has(sessionId)) return false;
     if (this.runStateController.getSessionRunState(sessionId) === "stalled") return false;
@@ -6215,10 +5902,7 @@ export class SessionManager {
     return !this.runStateController.isSessionBusy(sessionId);
   }
 
-  /**
-   * Waits while the session is settling (see `isSessionSettling`). True when it is no longer
-   * settling, which does not promise it is free: another message may have started a run meanwhile.
-   */
+  /** Waits out `isSessionSettling`; true means settled, not free (a new run may have started). */
   async waitWhileSessionSettles(sessionId: string, timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (this.isSessionSettling(sessionId)) {
@@ -6248,18 +5932,18 @@ export class SessionManager {
     for (const wake of [...waiters]) wake();
   }
 
-  /** Whether a run of the session is in flight. Loading the session and Bridge's own holds on it do not count. */
+  /** Whether a run is in flight; loading and Bridge's own holds do not count. */
   hasRunInFlight(sessionId: string): boolean {
     return this.runStateController.isSessionBusy(sessionId);
   }
 
-  /** Returns user-visible agent work state, excluding passive session lifecycle operations such as warmup. */
+  /** User-visible agent work state; passive lifecycle work such as warmup is excluded. */
   getSessionRunState(sessionId: string): SessionRunState {
     if (this.sessionHolds.has(sessionId)) return "busy";
     return this.runStateController.getSessionRunState(sessionId);
   }
 
-  /** Why Bridge is holding the session outside a run (see session-holds.ts); undefined when it is not held. */
+  /** Why Bridge holds the session outside a run (session-holds.ts); undefined when not held. */
   getSessionHold(sessionId: string): SessionHoldReason | undefined {
     return this.sessionHolds.get(sessionId);
   }
@@ -6268,10 +5952,7 @@ export class SessionManager {
     return this.sessionHolds.subscribe(sessionId, listener);
   }
 
-  /**
-   * Ends a hold. `resume` runs before watchers hear about it, so a stream waiting on the hold
-   * finds the turn the holder starts (an image-budget continuation) instead of reporting the session finished.
-   */
+  /** `resume` runs first, so a stream waiting on the hold finds the holder's turn, not an end. */
   private endSessionHold(sessionId: string, resume?: () => void): void {
     const ended = this.sessionHolds.end(sessionId);
     resume?.();
@@ -6282,24 +5963,17 @@ export class SessionManager {
     return this.runStateController.isSessionStalled(sessionId);
   }
 
-  /** The CLI mode a loaded session's runs use; undefined when the session is not loaded or unknown. */
+  /** A loaded session's CLI mode; undefined when not loaded or unknown. */
   getSessionAgentMode(sessionId: string): SendMode | undefined {
     return this.sessionRunner.getSessionAgentMode(sessionId);
   }
 
-  /**
-   * Pure synchronous counts projection for the session-list DTO. Carries a
-   * `source` so callers never present stale data as live truth.
-   */
+  /** Counts for the session-list DTO, with a `source` so stale data never passes as live. */
   getBackgroundAgentsSummary(sessionId: string): BackgroundAgentsSummary {
     return this.agentRegistry.getSummary(sessionId);
   }
 
-  /**
-   * Cached work evidence only: no SDK calls, process inspection or disk reads. Counts what the agent
-   * registry last saw in a loaded chat. A chat it never checked has no work: starting an agent or
-   * command triggers a check. Unloading a chat stops its agents and commands.
-   */
+  /** Cached only, no SDK/process/disk reads; an unchecked or unloaded chat reports no work. */
   getSessionContinuationState(sessionId: string): {
     runningAgentCount: number;
     runningCommandCount: number;
@@ -6403,11 +6077,6 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Authoritative per-session agent snapshot for the detail endpoint. Triggers
-   * a live refresh from the cached SDK session when one exists, then returns the
-   * freshest cached projection (or `unknown` when nothing is available).
-   */
   async listSessionAgents(sessionId: string): Promise<{
     tasks: SessionAgentTask[];
     source: AgentCountsSource;
@@ -6417,10 +6086,7 @@ export class SessionManager {
     return this.agentRegistry.getSnapshot(sessionId);
   }
 
-  /**
-   * Request cancellation of a background agent task. Returns `undefined` when no
-   * live session is cached or the backend lacks the cancellation RPC.
-   */
+  /** Cancels a background agent; undefined without a cached session or the cancellation RPC. */
   async cancelSessionAgent(
     sessionId: string,
     agentId: string,
@@ -6432,11 +6098,7 @@ export class SessionManager {
     return result;
   }
 
-  /**
-   * Take a background agent that is not working off the runtime's list, ending it first when it
-   * waits for a follow-up. Unlike cancellation this frees the agent's place among the live
-   * contexts, and the agent cannot be sent another message afterwards.
-   */
+  /** Unlike cancel, frees the agent's live-context slot; it cannot be messaged afterwards. */
   async dismissSessionAgent(sessionId: string, agentId: string): Promise<AgentDismissResult> {
     const result = await this.agentRegistry.dismissTask(sessionId, agentId);
     console.log(
@@ -6465,19 +6127,12 @@ export class SessionManager {
     ]));
   }
 
-  /**
-   * Counts work that must settle before restart cutover. Session creation is
-   * intentionally excluded from getActiveSessions() so passive background
-   * creation does not appear as user-visible agent activity.
-   */
+  /** Work to settle before restart cutover; getActiveSessions() leaves out creation on purpose. */
   getLifecycleBlockingSessionCount(): number {
     return this.getProtectedSessionTreeIds().size + this.inFlightSessionCreations.size;
   }
 
-  /**
-   * The sessions a restart is waiting for: those with a run, resume or hold in flight, and those
-   * kept loaded for a running background agent or a recently started background command.
-   */
+  /** Sessions a restart waits for: runs, resumes, holds, running agents and recent commands. */
   getLifecycleBlockingSessionIds(): string[] {
     return [...this.getProtectedSessionTreeIds()];
   }
@@ -6536,10 +6191,7 @@ export class SessionManager {
     };
   }
 
-  /**
-   * Unloads one cached session unless a turn, a hold, a running agent or a protected command
-   * needs it loaded. Resolves true when the session was unloaded and its runtime handle released.
-   */
+  /** Unloads a cached session unless work needs it; true once unloaded and its handle released. */
   async unloadIdleSession(sessionId: string, reason: string): Promise<boolean> {
     const cleanup = await this.enqueueCache("evict", sessionId, () => {
       if (this.getProtectedSessionTreeIds().has(sessionId)) return undefined;
@@ -6548,19 +6200,7 @@ export class SessionManager {
     return cleanup ? await cleanup : false;
   }
 
-  /**
-   * Explicitly switch the model for a single session.
-   *
-   * Reuses the cached session object when available; otherwise resumes with
-   * forResume:true (no model/reasoningEffort in config) so the SDK loads
-   * the session's own persisted model state before we apply the new model.
-   * Rejects busy sessions to avoid racing with an in-progress turn.
-   *
-   * Follows the Copilot CLI handshake: without a compaction decision the runtime
-   * reports `confirmation_required` for a conversation that exceeds the target
-   * model's prompt limit, and nothing changes. Retrying with `compact` compacts
-   * the conversation on the current model and then switches.
-   */
+  /** Resume with forResume:true so persisted model state loads; oversize chats need `compact`. */
   async setSessionModel(
     sessionId: string,
     model: string,
@@ -6617,8 +6257,7 @@ export class SessionManager {
           };
       const selectedModelMetadata = modelMetadata?.find((candidate) => candidate.id === model);
       const usesDynamicSelection = modelUsesDynamicSelection(selectedModelMetadata);
-      // A routed model's effort levels are its own tiers (Copilot Fusion's), so an effort carries
-      // over only between two routed or two ordinary models, and a routed model keeps only its own.
+      // Routed models' efforts are their own tiers: effort carries over only between like models.
       const sourceModel = currentBeforeSwitch?.modelId ?? fallbackState?.model;
       const sourceIsRouted = modelUsesDynamicSelection(modelMetadata?.find((candidate) => candidate.id === sourceModel));
       const carriedReasoningEffort = sourceModel === model || sourceIsRouted === usesDynamicSelection
@@ -6684,7 +6323,7 @@ export class SessionManager {
         : effectiveReasoningEffort;
       const liveContextTier = normalizeCopilotContextTier(currentAfterSwitch?.contextTier)
         ?? (liveModel === model ? selectedTier : undefined);
-      // Another model runs in another window; a Fusion level or an effort leaves the budget as it was.
+      // Another model runs in another window; a Fusion level or an effort leaves the budget alone.
       if (liveModel !== sourceModel) {
         try {
           recordModelChange(this.getSessionStateDir(sessionId), new Date());
@@ -6723,22 +6362,12 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Return the current model / reasoning effort for a session on demand.
-   *
-   * - For active (cached) sessions, calls rpc.model.getCurrent() for the live
-   *   model, reasoning effort, and context tier snapshot.
-   * - For inactive sessions (not in cache), falls back entirely to events.jsonl.
-   * - Returns source='live' when the live RPC was used, 'events' when only the
-   *   event log was used, or 'unknown' if neither had useful data.
-   */
   async getSessionModelState(
     sessionId: string,
   ): Promise<{ model?: string; reasoningEffort?: string; contextTier?: CopilotContextTier; source: "live" | "events" | "unknown" }> {
     const cached = this.sessionObjects.get(sessionId);
     if (cached) {
-      // A session mid-resume or mid-turn can hold this RPC for a long time; the detail
-      // endpoint must answer promptly from persisted state instead of hanging the UI.
+      // This RPC can hang mid-resume or mid-turn; answer from persisted state instead.
       const outcome = await settleByDeadline(
         () => cached.getCurrentModel(),
         createDeadline(SESSION_DETAIL_RPC_TIMEOUT_MS),
@@ -6793,10 +6422,7 @@ export class SessionManager {
     return activity.every((state) => state?.processing === false);
   }
 
-  /**
-   * Refuse new work from this tick on. A restart stops the server only while it is idle, so the
-   * idle check and this refusal have to land together; the rest of shutdown runs behind awaits.
-   */
+  /** Refuses new work from this tick, so it lands with the restart's idle check. */
   stopAdmittingWork(): void {
     this.shuttingDown = true;
   }
@@ -6805,7 +6431,7 @@ export class SessionManager {
     deadline: Deadline = createDeadline(GRACEFUL_SHUTDOWN_BUDGET_MS),
   ): Promise<void> {
     this.shuttingDown = true;
-    // A check that fails as "Bridge is restarting" is requeued without costing its defer an attempt.
+    // A check failing with "Bridge is restarting" is requeued without using a defer attempt.
     this.triggerWorker.abortAll();
     this.stopSessionCacheSweep();
     this.backendDisconnectUnsubscribe?.();
@@ -6831,8 +6457,7 @@ export class SessionManager {
         }),
       );
 
-      // A timed-out SDK abort is locally finalized by abortSession. Give the
-      // normal run finally-blocks a bounded opportunity to release resources.
+      // abortSession finalizes timed-out aborts; give run finally-blocks bounded time to clean up.
       const drainDeadline = capDeadline(deadline, SESSION_DRAIN_TIMEOUT_MS);
       let activeCount = this.getActiveSessions().length;
       while (activeCount > 0 && remainingMs(drainDeadline) > 0) {

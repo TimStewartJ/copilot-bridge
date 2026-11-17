@@ -7,11 +7,7 @@ import {
   savePendingVoiceRecording,
 } from "./voice-recording-store";
 
-/**
- * Minimal IndexedDB stand-in. It exists to exercise the real IndexedDB code path — in particular
- * that writes resolve on transaction commit rather than on request success — without adding a
- * dependency. It only models the surface the store actually uses.
- */
+/** Minimal IndexedDB fake; keeps request success and commit apart so writes must await commit. */
 interface FakeRequest {
   result: unknown;
   error: unknown;
@@ -21,7 +17,7 @@ interface FakeRequest {
 
 class FakeIndexedDb {
   readonly data = new Map<string, Map<string, unknown>>();
-  /** Commit is deferred by an extra macrotask so request-success and commit are observably distinct. */
+  /** Commit waits an extra macrotask so request success and commit are distinct. */
   commitObserved: { requestsSettled: number; commits: number } = { requestsSettled: 0, commits: 0 };
   failNextTransaction = false;
   private writeLock: Promise<void> = Promise.resolve();

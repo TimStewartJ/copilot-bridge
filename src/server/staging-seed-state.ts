@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 
-/** Only for a freshly copied preview database, inside the required seed transaction. Never a boot hook. */
+/** Only for a fresh preview database copy, inside the seed transaction; never a boot hook. */
 export function isolateStagingRuntimeState(db: DatabaseSync): Record<string, number> {
   if (!db.isTransaction) throw new Error("Staging runtime isolation requires the seed transaction");
   const hasTable = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
@@ -8,8 +8,7 @@ export function isolateStagingRuntimeState(db: DatabaseSync): Record<string, num
   const reason = "Isolated staging copy: production automatic work is not resumed.";
   const changed: Record<string, number> = {};
   changed.schedules = Number(db.prepare("UPDATE schedules SET enabled=0 WHERE enabled<>0").run().changes);
-  // A production database from before triggers has no triggers table yet: the preview's own
-  // migration then moves the schedules and defers isolated above, already stopped.
+  // Without a triggers table, the preview's migration later moves the already-stopped schedules.
   if (hasTable("triggers")) {
     // Task triggers stay visible but paused; chat triggers would wake production chats' copies.
     changed.taskTriggers = Number(db.prepare(`UPDATE triggers SET status='paused',runNow=0,claimToken=NULL,leaseExpiresAt=NULL,updatedAt=?

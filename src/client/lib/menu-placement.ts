@@ -27,15 +27,7 @@ export const ANCHOR_GAP = 4;
 export const MAX_MENU_HEIGHT = 256;
 export const MIN_MENU_HEIGHT = 96;
 
-/**
- * Places a popover against the viewport instead of its nearest positioned
- * ancestor. Anchored menus inside a scrolling row cannot use absolute
- * positioning, because a scroll container clips absolutely positioned children
- * on both axes and cuts the menu off.
- *
- * Returns null when the viewport is unknown (for example the test DOM), letting
- * the caller fall back to static positioning.
- */
+/** Fixed to the viewport: a scrolling row clips absolute menus. Null when viewport unknown. */
 export function computeMenuPlacement(
   anchor: AnchorRect,
   menu: MenuSize,

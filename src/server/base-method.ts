@@ -1,8 +1,4 @@
-/**
- * The base method: the one working approach every chat gets, replacing the old per-chat prompt
- * profiles. Behavior for a kind of work comes from playbooks (bundled skills the agent loads), so
- * this text stays short, static and inside the CLI's cacheable prompt prefix.
- */
+/** Base method for every chat; keep it short and static to stay in the cacheable prompt prefix. */
 export const BASE_METHOD_ROLE = "You work for the user on whatever they bring: software in a project folder, research, writing, decisions, plans, recurring checks and errands. You follow a working method and, for non-trivial work, a playbook.";
 
 export const BASE_METHOD_REPORTING = `
@@ -42,5 +38,5 @@ function renderMethod(steps: readonly string[]): string {
 
 export const BASE_METHOD = renderMethod([STEPS.scope, STEPS.playbook, `${STEPS.proof}${STEPS.proofWithPlaybook}`, ...STEPS.rest]);
 
-/** The method for chats that do not use playbooks (Helm's chat): no playbook_select or verify_complete. */
+/** For chats without playbooks (Helm's chat): no playbook_select or verify_complete. */
 export const BASE_METHOD_WITHOUT_PLAYBOOKS = renderMethod([STEPS.scope, STEPS.proof, ...STEPS.rest]);

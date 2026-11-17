@@ -213,11 +213,7 @@ export function CopilotQuotaCard({ className = "", compact = false }: { classNam
   );
 }
 
-/**
- * One track, two fills: quota used, drawn over how much of the month has gone by. Usage that runs ahead
- * covers the month fill, so a marker keeps the month readable. The layers share one grid cell, which
- * leaves positioning of the track itself to the caller.
- */
+/** Quota used over month elapsed; a marker keeps the month visible when usage runs ahead. */
 function QuotaPaceBar({
   usedPercent,
   monthPercent,
@@ -551,11 +547,7 @@ interface QuotaPeriod {
 const DAY_MS = 86_400_000;
 const MAX_PERIOD_MS = 32 * DAY_MS;
 
-/**
- * The quota period ends at the reported reset, which is midnight UTC on the 1st and so lands hours before
- * local month end west of UTC. Without a usable reset time, fall back to the local calendar month measured
- * in wall-clock time so DST changes do not skew it.
- */
+/** Ends at the UTC reset (before local month end in the west); else local month, DST-safe. */
 function getQuotaPeriod(snapshot: CopilotQuotaStatus["primary"], now: Date): QuotaPeriod {
   const resetMs = snapshot?.resetAt ? new Date(snapshot.resetAt).getTime() : Number.NaN;
   const nowMs = now.getTime();

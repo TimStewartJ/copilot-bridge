@@ -1,6 +1,4 @@
-// The profiles of the public browsers: `browser-public/slot-N` folders that outlive the browsers
-// started on them, so cookies and passed checks carry over from one use to the next. A profile
-// is leased to one browser at a time.
+// Public profiles (browser-public/slot-N) persist cookies across uses; one browser at a time.
 
 import { createHash } from "node:crypto";
 import { mkdir, readdir, stat } from "node:fs/promises";
@@ -22,10 +20,7 @@ export interface PublicProfilePoolOptions {
   getBrowserLaunchConfig: () => BrowserLaunchConfig;
   shutdownTarget: (target: BrowserTarget) => Promise<Parameters<typeof browserIsGone>[0]>;
   removeProfile: (profileDir: string) => Promise<void>;
-  /**
-   * Waits between attempts to remove a profile. A browser that had to be killed can keep files
-   * of its profile open for a moment after its processes are gone.
-   */
+  /** Retry delays for removing a profile: a killed browser can hold its files open briefly. */
   removeRetryDelaysMs?: readonly number[];
 }
 
@@ -64,10 +59,7 @@ export class PublicProfilePool {
     this.removeRetryDelaysMs = options.removeRetryDelaysMs ?? REMOVE_RETRY_DELAYS_MS;
   }
 
-  /**
-   * Leases the lowest free profile, so one profile takes most of the traffic and stays the
-   * warmest. With `unused`, only one that does not exist yet.
-   */
+  /** Leases the lowest free profile so one stays warmest; with `unused`, only a new one. */
   async lease(options: { unused?: boolean } = {}): Promise<PublicProfile> {
     await this.sweep();
     const existing = new Set(await this.list());
@@ -95,16 +87,12 @@ export class PublicProfilePool {
     this.leased.delete(slot);
   }
 
-  /** The browser on the profile may not have closed, so it is checked for one before its next use. */
+  /** The profile's browser may not have closed, so it is checked for one before its next use. */
   markUnclean(slot: number): void {
     this.verified.delete(slot);
   }
 
-  /**
-   * Removes the folder of a profile no browser is using. False when one is, or when a leftover
-   * browser on it could not be closed. With `retry` false the removal is tried once, for a
-   * caller that has someone waiting.
-   */
+  /** Deletes an idle profile's folder; false if in use or its leftover browser won't close. */
   async removeIfIdle(slot: number, options: { retry?: boolean } = {}): Promise<boolean> {
     if (this.leased.has(slot)) return false;
     // Held while it is removed, so no browser is started on a profile that is going away.
@@ -165,11 +153,7 @@ export class PublicProfilePool {
     };
   }
 
-  /**
-   * Makes sure no browser is running on a profile before it is used or removed: one can be left
-   * from a server that was killed or from a cleanup that failed. False when one is still there
-   * afterwards.
-   */
+  /** Ensures no leftover browser runs on the profile before use or removal; false if one does. */
   private async verify(slot: number, target: BrowserTarget): Promise<boolean> {
     if (this.verified.has(slot)) return true;
     if (!browserIsGone(await this.options.shutdownTarget(target))) return false;
@@ -189,10 +173,7 @@ export class PublicProfilePool {
     }
   }
 
-  /**
-   * Removes profiles nothing has used for a long time, and the old throwaway ones. It runs in
-   * front of a lease, so a folder that will not go is left for the next sweep.
-   */
+  /** Removes long-unused and old throwaway profiles; a stuck folder waits for the next sweep. */
   private async sweep(now = Date.now()): Promise<void> {
     if (now < this.nextSweepAt) return;
     this.nextSweepAt = now + SWEEP_INTERVAL_MS;

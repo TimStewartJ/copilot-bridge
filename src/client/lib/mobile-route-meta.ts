@@ -3,7 +3,7 @@ import { isDashboardRoutePath } from "./dashboard-routes";
 
 export type MobileNavTab = "home" | "work" | "helm" | "docs" | "settings";
 
-/** The Work tab holds the task list and the quick chats; a segment says which of the two a route belongs to. */
+/** Which half of the Work tab (task list or quick chats) a route belongs to. */
 export type MobileWorkSegment = "tasks" | "chats";
 
 export type MobileRouteKind =
@@ -56,11 +56,7 @@ export interface MobileWorkTabTarget {
   replace: boolean;
 }
 
-/**
- * Where a tap on the Work tab leads. On one of its two lists the tap flips to the other, which keeps the
- * switch within thumb reach. From inside a task it leads back to the task list, and from any other tab it
- * reopens the list that was showing last.
- */
+/** On its own list the Work tab flips Tasks/Chats; elsewhere it opens the current or last list. */
 export function resolveMobileWorkTabTarget(
   current: Pick<MobileRouteMeta, "isRoot" | "workSegment">,
   lastSegment: MobileWorkSegment,
@@ -140,7 +136,7 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
     });
   }
 
-  // Helm's conversation has its own tab on a phone; What Helm knows opens from it and draws its own header.
+  // Helm has its own phone tab; What Helm knows opens from it and draws its own header.
   if (normalizedPath === "/helm" || normalizedPath === "/helm/memory") {
     return buildMeta({
       route: "helm",
@@ -259,8 +255,7 @@ export function getMobileRouteMeta(pathname: string, search = ""): MobileRouteMe
       route: isDocsRoot ? "docs-root" : "docs-detail",
       activeTab: "docs",
       showBottomNav: true,
-      // The Docs view draws its own top bar (back, title, contents, actions) on every screen
-      // size, so the shared detail header would only stack a second bar above it.
+      // The Docs view draws its own top bar on every screen size; don't stack a second one.
       showSharedHeader: false,
       isRoot: isDocsRoot,
       isDetail: !isDocsRoot,

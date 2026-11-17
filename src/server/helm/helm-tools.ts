@@ -1,6 +1,3 @@
-// Tools Helm uses to orchestrate Bridge: sessions, unread replies, questions waiting on the
-// user, dispatching work to stronger models, and housekeeping. The same tools serve typed
-// chat and hands-free voice, so both modes behave identically.
 import type { AppContext } from "../app-context.js";
 import { defineBridgeTool, type BridgeToolInvocation } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
@@ -57,15 +54,7 @@ export const HELM_TOOL_NAMES = [
   "refresh_brief",
 ] as const;
 
-/**
- * Bridge tools Helm may use besides its own: everything for day-to-day management of tasks,
- * triggers, docs and checklist items. Helm never edits code, browses, or deploys, so tools that
- * do real work stay with worker sessions.
- *
- * Every tool's schema rides along on every turn, and Helm is meant to answer quickly (out loud,
- * in hands-free), so the surface stops at orchestration. Left out on purpose:
- * - Docs backup administration and collection schema changes.
- */
+/** Every schema rides on every turn and Helm must answer fast, so only orchestration tools. */
 const HELM_BRIDGE_TOOL_PREFIXES = ["task_", "tag_", "action_", "trigger_", "docs_"];
 const HELM_BRIDGE_TOOL_NAMES = new Set(["session_rename", "publish_visual"]);
 const HELM_BRIDGE_TOOL_EXCLUDED_PREFIXES = ["docs_snapshot_"];
@@ -107,7 +96,7 @@ function normalizeTitle(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
 }
 
-// agent-text-audit: search (Helm's lookups drop these words from a query; nothing is judged by them)
+// agent-text-audit: search (stopwords dropped from Helm's lookup queries; nothing judged by them)
 const REFERENCE_STOPWORDS = new Set([
   "the", "a", "an", "my", "that", "this", "those", "these", "one", "session", "sessions", "chat", "chats",
   "thread", "about", "on", "for", "with", "in", "of", "to", "and", "or", "please", "it",
@@ -204,11 +193,7 @@ type TranscriptEntry = {
   toolCall?: { name?: string; startedAt?: string; completedAt?: string };
 };
 
-/**
- * What a running session is doing, from its transcript since the last prompt: how long it has been at
- * it, its last few tool steps (the one still running marked), and the heading of its latest thinking.
- * A busy session that has not written any text yet otherwise reads as "no reply" (24 Sep 2026).
- */
+/** A running session's progress since its prompt, so a busy one with no text isn't "no reply". */
 export function describeProgress(entries: readonly TranscriptEntry[], now = Date.now()) {
   let start = entries.length;
   for (let index = entries.length - 1; index >= 0; index--) {
@@ -321,8 +306,7 @@ export function createHelmToolDefinitions(
         const now = Date.now();
         const sessions = await facade.listSessions();
         const { waiting, running, unread } = partitionSessions(sessions);
-        // The same "last activity" the task rail shows: the newest of the task's own changes and
-        // its sessions' activity. Without it, a recency question costs one task_get_info per task.
+        // The task rail's "last activity": newest of the task's changes and its sessions' activity.
         const sessionActivity = new Map<string, number>();
         for (const session of sessions) {
           const time = Date.parse(session.lastActivityAt ?? "");
@@ -387,8 +371,7 @@ export function createHelmToolDefinitions(
           result = await ctx.searchIndex.search({ ...request, q: topicQuery, anyWord: true });
           matchedAnyWord = true;
         }
-        // Chats and notes matching every word, or archived tasks that do, must not hide a live task
-        // that matches only some, often by its title ("Bridge calendar feature" for "Copilot Bridge").
+        // Full matches in chats, notes or archived tasks must not hide a partly matching live task.
         let tasksMatchedAnyWord = false;
         if (!matchedAnyWord && result.tasks.items.every((task) => task.archived) && (kind === "all" || kind === "task") && topic.length > 1) {
           const tasks = (await ctx.searchIndex.search({ ...request, q: topicQuery, kind: "task", anyWord: true })).tasks;
@@ -755,7 +738,7 @@ export function createHelmToolDefinitions(
         const rows = new Map(live.map((entry) => [entry.row.id, entry.row]));
         const names = thinker.sourceNames([...(view.run?.fromSources ?? []), ...memory.flatMap((entry) => entry.fromSources)]);
         const from = (ids: readonly string[]) => [...new Set(ids.map((id) => names[id] ?? id))];
-        // An entry shaped by an outside source (such as email) says so, so it is weighed as information.
+        // Entries shaped by an outside source (such as email) name it, to be weighed as such.
         const entry = (item: (typeof memory)[number]) => item.fromSources.length ? { text: item.text, from: from(item.fromSources) } : item.text;
         const active = (kind: string) => memory.filter((item) => item.kind === kind && item.status === "active");
         const picture = memory.find((item) => item.kind === "picture");
@@ -883,7 +866,7 @@ export function createHelmToolDefinitions(
       ...definition,
       handler: async (args, extra) => {
         const result = await definition.handler(args, extra);
-        // A page of notes is already bounded, and its nextOffset only works if the page stays whole.
+        // A notes page is already bounded, and its nextOffset only works if the page stays whole.
         return (definition.name === "task_get_info" && args.notesSource ? result : boundToolResult(result)) as Awaited<ReturnType<BridgeToolDefinition["handler"]>>;
       },
     }))
@@ -915,7 +898,7 @@ function liveAttentionSafe(ctx: AppContext): LiveTaskAttention[] {
   }
 }
 
-/** This Bridge's tasks that wait on the user right now, from their live fields: the floor for "what needs me". */
+/** Local tasks waiting on the user now, from live fields: the floor for "what needs me". */
 function liveOnYou(entries: LiveTaskAttention[]): Record<string, unknown> {
   if (entries.length === 0) return {};
   const onYou = entries.filter((entry) => entry.attention.onTim);

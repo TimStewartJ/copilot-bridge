@@ -161,7 +161,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
   const currentParams = params.toString();
   const requestKey = JSON.stringify({ query, scope, kind, taskId, sessionId, offset, dateRange, retryRevision });
   const visibleResponse = responseKey === requestKey ? response : null;
-  // With nothing typed, the results are the unread chats. Tasks, docs and one chat's messages have none to list.
+  // With nothing typed, the results are the unread chats (tasks, docs and one chat have none).
   const listsUnreadChats = !query.trim() && !hasDateRange && scope !== "session" && (kind === "all" || kind === "chat") && isUnread !== undefined;
   const unreadChats = useMemo(() => (listsUnreadChats
     ? listUnreadSessions({ sessions, tasks, isUnread, activeSessionId, taskId: scope === "task" ? taskId ?? "" : undefined })
@@ -283,7 +283,7 @@ export default function SearchView({ tasks = [], sessions = [], isUnread, active
     else navigate(returnTo, { replace: true });
   };
 
-  // Arrow keys walk the result rows from the query field (not the date fields, which use them), so a result opens without tabbing past the source controls.
+  // Arrows from the query field (not date fields, which use them) walk results past the controls.
   const moveResultFocus = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     if (event.defaultPrevented || event.nativeEvent?.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;

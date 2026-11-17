@@ -1,5 +1,4 @@
-// CopilotAgentSession.requestElicitation: a form the Bridge asks the user from inside a tool.
-// The adapter's other tests are in src/server/agent-backend/__tests__/copilot-backend.test.ts.
+// CopilotAgentSession.requestElicitation; the adapter's other tests are in copilot-backend.test.ts.
 
 import { describe, expect, it, vi } from "vitest";
 import { CopilotBackend } from "../agent-backend/copilot-backend.js";

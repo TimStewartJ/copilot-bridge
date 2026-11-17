@@ -21,11 +21,11 @@ export interface SessionModelUsage {
 export interface SessionModelMoveRequest {
   fromModel: string;
   toModel: string;
-  /** Applied to every moved chat. Omitted: each chat keeps its effort, or the nearest one the new model supports. */
+  /** Omitted: each chat keeps its effort, or the nearest one the new model supports. */
   reasoningEffort?: string;
-  /** Applied to every moved chat. Omitted: a chat keeps a window as large as it has when the new model offers one. */
+  /** Omitted: a chat keeps as large a window as it has, if the new model offers one. */
   contextTier?: CopilotContextTier;
-  /** Compact a conversation that does not fit the new model, then move it. Off: such a chat is left as it is. */
+  /** Compact a chat too big for the new model, then move it; off leaves such a chat alone. */
   compact?: boolean;
   /** Limits the move to these chats, for example to put back the chats an earlier move changed. */
   sessionIds?: string[];
@@ -51,14 +51,7 @@ export interface SessionModelMovePlan {
 
 export const SESSION_MODEL_MOVE_OUTCOMES = ["moved", "busy", "needs-compaction", "changed", "failed"] as const;
 
-/**
- * What happened to one chat:
- * - `moved`: it is on the new model.
- * - `busy`: a turn or another operation was in flight, so it was left alone.
- * - `needs-compaction`: its conversation does not fit the new model and compaction was not asked for.
- * - `changed`: it was no longer on the old model when its turn came.
- * - `failed`: the switch raised an error or the runtime did not apply it.
- */
+/** busy: mid-turn, left alone; needs-compaction: too big, not asked; changed: off the old model. */
 export type SessionModelMoveOutcome = typeof SESSION_MODEL_MOVE_OUTCOMES[number];
 
 export interface SessionModelMoveResult {
@@ -71,12 +64,7 @@ export interface SessionModelMoveResult {
   previousContextTier?: CopilotContextTier;
 }
 
-/**
- * - `running`: chats are still being switched, one at a time.
- * - `completed`: every chat had its turn.
- * - `cancelled`: stopped on request; the rest were not touched.
- * - `stopped`: gave up after several chats in a row failed; the rest were not touched.
- */
+/** cancelled: on request; stopped: after repeated failures; both leave the rest untouched. */
 export type SessionModelMoveStatus = "running" | "completed" | "cancelled" | "stopped";
 
 export interface SessionModelMoveJob {

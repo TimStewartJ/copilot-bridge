@@ -5,7 +5,7 @@ import { dbFieldLabel, formatDocDate, visibleDbFields, type DbField, type EntryF
 import { cx, DocsField, DocsInput, DocsSelect } from "./docs-ui";
 import { DS } from "../../design/tokens";
 
-/** Select options are labels the user defined, so they use identity colours, never state colours. */
+/** Select options are user-defined labels, so they use identity colours, never state colours. */
 const SELECT_TONES = [
   "bg-identity-blue/12 text-identity-blue-text",
   "bg-identity-emerald/12 text-identity-emerald-text",

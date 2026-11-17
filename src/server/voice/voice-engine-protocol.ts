@@ -12,7 +12,7 @@ export interface VoiceEngineInitOptions {
   audioRetentionSeconds: number;
 }
 
-/** Model groups the engine loads on demand: speech recognition, end-of-turn detection and the voice. */
+/** Model groups the engine loads on demand: recognition, end-of-turn detection and the voice. */
 export type VoiceEngineCapability = "asr" | "turn" | "tts";
 
 export const VOICE_ENGINE_CAPABILITIES: readonly VoiceEngineCapability[] = ["asr", "turn", "tts"];
@@ -55,7 +55,7 @@ export interface VoiceClipTranscription {
   chunks: number;
   /** Where each recognizer chunk sat in the recording and how many words it returned. */
   chunkDetails?: VoiceClipChunk[];
-  /** How well the words cover the detected speech; null when the recognizer gave no usable timing. */
+  /** How well the words cover the speech; null when the recognizer gave no usable timing. */
   coverage: SpeechCoverage | null;
   /** The engine process's highest resident memory so far, in bytes. */
   peakMemoryBytes?: number;

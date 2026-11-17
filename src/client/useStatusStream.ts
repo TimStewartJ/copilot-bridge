@@ -40,12 +40,7 @@ export type StatusEvent =
 
 type StatusHandler = (event: StatusEvent) => void;
 
-/**
- * Persistent SSE connection to /api/status-stream.
- * Uses native EventSource for automatic reconnection.
- * Fires a synthetic "status:connected" event on each (re)connection
- * so consumers can clear stale state.
- */
+/** Fires a synthetic status:connected on each (re)connect so consumers can clear stale state. */
 export function useStatusStream(onEvent: StatusHandler): void {
   const handlerRef = useRef(onEvent);
   handlerRef.current = onEvent;

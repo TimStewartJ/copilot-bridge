@@ -468,7 +468,7 @@ describe("VoiceConversation", () => {
     const ctx = setup();
     const onSpoken = vi.fn();
     ctx.conversation.say({ key: "end:r1", text: "Done, the tests pass.", kind: "readback", onSpoken });
-    // Talking before its audio arrives holds it; a real request replaces it, so it waits for the next gap.
+    // Talking before its audio holds it; a real request replaces it, so it waits for the next gap.
     ctx.conversation.onVad(true, ctx.audio(100));
     ctx.engine.transcripts.push("also check the deploy");
     ctx.conversation.onVad(false, ctx.audio(900));

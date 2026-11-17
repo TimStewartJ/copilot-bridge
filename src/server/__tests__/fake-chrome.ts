@@ -9,10 +9,7 @@ interface CdpRequest {
   sessionId?: string;
 }
 
-/**
- * Stands in for Chrome's DevTools endpoint: one tab (session `page`) with one frame of another
- * site in it (session `frame`).
- */
+/** Fake Chrome DevTools endpoint: one tab (session `page`) with a cross-site frame (`frame`). */
 export class FakeChrome {
   readonly server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   readonly requests: CdpRequest[] = [];
@@ -36,7 +33,7 @@ export class FakeChrome {
           return;
         }
         if (request.method === "Target.setAutoAttach") {
-          // Asked of the browser, Chrome attaches the client to its tabs; asked of a tab, to its frames.
+          // On the browser this attaches tabs; on a tab, its frames.
           if (!request.sessionId) this.event("Target.attachedToTarget", { sessionId: "page", targetInfo: { type: "page" } });
           else if (request.sessionId === "page") this.event("Target.attachedToTarget", { sessionId: "frame", targetInfo: { type: "iframe" } }, "page");
         }

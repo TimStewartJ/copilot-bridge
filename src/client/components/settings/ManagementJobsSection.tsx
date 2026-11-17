@@ -43,10 +43,7 @@ const ACTIVE_JOB_FILTERS: ManagementJobFilters = { statuses: ["queued", "running
 type JobTypeFilter = "all" | ManagementJobType;
 type JobStatusFilter = "all" | ManagementJobStatus;
 
-/**
- * Launcher-supervised jobs: self-update, staging preview and deploy. Queued and running jobs are
- * always shown; history is one line per job and opens beneath the row that was chosen.
- */
+/** Launcher jobs (self-update, preview, deploy); active ones always show, history one line each. */
 export function ManagementJobsSection({ refreshSignal = 0, open = false }: { refreshSignal?: number; open?: boolean }) {
   const [typeFilter, setTypeFilter] = useState<JobTypeFilter>("all");
   const [statusFilter, setStatusFilter] = useState<JobStatusFilter>("all");

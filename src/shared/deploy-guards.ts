@@ -1,8 +1,8 @@
-/** Checks staging_deploy runs on the commits it is about to merge and push; see src/server/deploy-guards.ts. */
+/** Checks staging_deploy runs on commits it will push; see src/server/deploy-guards.ts. */
 export interface DeployGuardSettings {
-  /** Author and committer emails that block a deploy, matched case-insensitively; `*` matches any run of characters. */
+  /** Author and committer emails that block a deploy, case-insensitive; `*` matches any run. */
   blockedEmailPatterns?: string[];
-  /** Absolute path to a local text file with one blocked term per line; `#` starts a comment line. */
+  /** Absolute path to a text file with one blocked term per line; `#` starts a comment line. */
   denylistFile?: string;
 }
 

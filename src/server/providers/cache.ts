@@ -1,6 +1,4 @@
-// Shared enrichment cache for work tracking providers.
-// Entries stay fresh for a while, then remain servable as stale data so a provider can keep
-// showing the last known metadata while an upstream API is failing transiently.
+// Entries stay fresh briefly, then serve stale while the upstream API fails transiently.
 
 const FRESH_MS = 60_000;
 const STALE_MS = 24 * 60 * 60_000;
@@ -12,9 +10,9 @@ interface CacheEntry<T> {
 }
 
 export interface ProviderCache<T> {
-  /** Returns fresh data, or stale data when `allowStale` is set and the entry is still within the stale window. */
+  /** Fresh data, or stale data within the stale window when `allowStale` is set. */
   read(key: string, now: number, allowStale?: boolean): T | null;
-  /** `freshMs` keeps data that rarely changes, such as a completed pull request, fresh for longer. */
+  /** `freshMs` keeps rarely changing data (a completed pull request) fresh for longer. */
   write(key: string, data: T, now: number, freshMs?: number): void;
   /** Makes every entry due for a refresh while keeping it as the fallback for a failed one. */
   expire(): void;

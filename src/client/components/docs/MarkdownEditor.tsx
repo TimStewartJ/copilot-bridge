@@ -62,10 +62,7 @@ const TOOLBAR_GROUPS: ToolbarItem[][] = [
 // agent-text-audit: format (browser user agent)
 const IS_MAC = typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.userAgent);
 
-/**
- * Applies an edit through the browser's own editing commands so Ctrl+Z steps back through
- * toolbar actions exactly like typed text. Falls back to a direct write where that is missing.
- */
+/** Edits via browser editing commands so Ctrl+Z undoes toolbar actions; else writes directly. */
 function commitEdit(textarea: HTMLTextAreaElement, next: TextEdit, onChange: (value: string) => void): void {
   const change = computeTextChange(textarea.value, next.value);
   if (change.start !== change.end || change.insert) {
@@ -194,8 +191,7 @@ export default function MarkdownEditor({
         {toolbarEnd && <div className="ml-auto flex shrink-0 items-center pl-2">{toolbarEnd}</div>}
       </div>
 
-      {/* The hidden replica sizes the grid cell, so the textarea grows with its text and the
-          page scrolls as one document, with no measuring and no scroll jumps while typing. */}
+      {/* A hidden replica sizes the cell: the textarea grows with no measuring or scroll jumps. */}
       <div className={cx("grid min-w-0", minHeightClassName)}>
         <div aria-hidden="true" className={cx(sharedText, "invisible")}>{`${value}\n`}</div>
         <textarea

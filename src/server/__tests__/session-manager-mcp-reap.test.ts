@@ -382,7 +382,7 @@ describe("SessionManager retirement fencing", () => {
       return { promise, resolve };
     }
 
-    /** A cached session whose release stays open until `finish()`, already past the 5 s quarantine. */
+    /** A cached session whose release stays open until `finish()`, past the 5 s quarantine. */
     async function stalledRelease(manager: any) {
       const release = gate<void>();
       const session = makeAgentSessionStub({ disconnect: vi.fn(() => release.promise) });
@@ -439,7 +439,7 @@ describe("SessionManager retirement fencing", () => {
       const { manager } = createManager();
       const { backend } = runtime(manager);
       const diagnosticPing = vi.fn(async () => "timeout");
-      // Healthy at once, like a probe that was already in flight and is answered by an earlier ping.
+      // Healthy at once, like an in-flight probe answered by an earlier ping.
       const probeHealth = vi.fn(async () => true);
       Object.assign(backend, { diagnosticPing, probeHealth });
       await stalledRelease(manager);
@@ -1317,8 +1317,7 @@ describe("SessionManager bounded session lifecycle", () => {
       },
     };
 
-    // The backend hands back a different session ID than requested, and its
-    // disconnect never settles, so cleanup ownership stays pending.
+    // The backend returns another session ID and disconnect never settles: cleanup stays pending.
     const rejected = makeAgentSessionStub({
       sessionId: "backend-chose-this",
       disconnect: vi.fn(() => new Promise<void>(() => {})),
@@ -1336,9 +1335,7 @@ describe("SessionManager bounded session lifecycle", () => {
     });
 
     const state = manager.getSessionCacheState();
-    // One context plus one local MCP (the remote server never counts):
-    // 1 + 1 * 0.25 = 1.25 retained units, not the bare 1.0 an empty profile
-    // would have produced.
+    // One context plus one local MCP (remote never counts): 1 + 0.25, not an empty profile's 1.0.
     expect(state.retainedLocalMcpInstances).toBe(1);
     expect(state.retainedCapacityUnits).toBe(1.25);
   });
@@ -1381,7 +1378,7 @@ describe("SessionManager bounded session lifecycle", () => {
 
     const lease = await manager.beginSessionResume("resuming-chat", {});
     const full = "All 1 live Copilot contexts are currently in use.";
-    // A check needs a context of its own, and so does a message for a chat that would have to be loaded.
+    // A check needs its own context, and so does a message for a chat that must be loaded.
     expect(manager.getSessionCapacityWait()).toContain(full);
     expect(manager.getSessionCapacityWait("unloaded-chat")).toContain(full);
     // A message for a chat that is already loaded needs none.
@@ -1396,7 +1393,7 @@ describe("SessionManager bounded session lifecycle", () => {
     manager.maxCachedContexts = 1;
     const lease = await manager.beginSessionResume("resuming-chat", {});
 
-    // The configured wait (30 s by default) is for chats a person is waiting on. A check goes back to its queue.
+    // The configured wait is for chats a person waits on; a check goes back to its queue.
     expect(manager.sessionCapacityWaitTimeoutMs).toBeGreaterThan(0);
     await expect(manager.triggerWorker.deps.reserveCapacity({}))
       .rejects.toBeInstanceOf(SessionCapacityError);

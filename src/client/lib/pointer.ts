@@ -17,12 +17,7 @@ export function hasFinePointer(): boolean {
   return matchesMedia("(pointer: fine)", true);
 }
 
-/**
- * Best-effort detection for an open on-screen keyboard. Browsers do not expose
- * hardware-keyboard presence, so a coarse pointer plus a substantially reduced visual
- * viewport are useful signals, not proof of hardware-keyboard presence. Reported
- * overlay-keyboard geometry takes precedence; missing viewport data stays conservative.
- */
+/** Heuristic: virtualKeyboard rect, else coarse pointer plus a shrunk visual viewport. */
 export function usesSoftKeyboard(): boolean {
   const keyboardHeight = typeof window === "undefined"
     ? undefined

@@ -9,10 +9,7 @@ export interface UnattendedRun {
   origins: Array<"defer" | "schedule">;
 }
 
-/**
- * Chats where automated turns ran while nobody was watching. A chat leaves the list when the user
- * writes in it (which includes asking for a review) or dismisses it.
- */
+/** Chats where automated turns ran unwatched; the user writing or dismissing removes one. */
 export function createUnattendedRunStore(db: DatabaseSync) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS unattended_runs (

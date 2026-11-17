@@ -20,7 +20,7 @@ describe("buildHelmTaskIndex", () => {
         ["t-trip", { text: "Waiting on hotel reply.", from: ["Mail"] }],
         ["t-old", { text: "Done." }],
       ]),
-      // A session's activity counts as the task's: the trip chat is newer than the Bridge task's own change.
+      // A session's activity counts as the task's: the trip chat is newer than the task's change.
       lastActivity: new Map([["t-trip", Date.parse("2026-11-01T00:00:00.000Z")]]),
     });
     expect(index?.split("\n").slice(4)).toEqual([

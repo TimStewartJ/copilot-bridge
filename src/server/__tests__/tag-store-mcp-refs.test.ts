@@ -64,11 +64,11 @@ describe("tag-store MCP server references", () => {
     tagStore.addTagMcpServerRef(otherTag.id, server.id);
     expect(serverRefCount(server.id)).toBe(2);
 
-    // Delete only the parent row — no tag-store helper. SQLite ON DELETE CASCADE owns child cleanup.
+    // Delete only the parent row: SQLite ON DELETE CASCADE owns child cleanup.
     mcpStore.deleteMcpServer(server.id);
 
     expect(mcpStore.getMcpServer(server.id)).toBeUndefined();
-    // Raw junction rows for the deleted server are gone (cascade), not merely hidden by the registry JOIN.
+    // The deleted server's junction rows are gone, not merely hidden by the registry JOIN.
     expect(serverRefCount(server.id)).toBe(0);
     mcpStore.deleteMcpServer("missing-server");
     // Refs to other servers survive.

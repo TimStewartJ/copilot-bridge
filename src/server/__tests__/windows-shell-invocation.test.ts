@@ -10,8 +10,7 @@ function written(argument: string): string | undefined {
   return line?.slice("\"launcher ".length, -1);
 }
 
-// What the shell and a real launcher script make of these is tested on Windows itself, in
-// windows-shell-argument.native.test.ts. This pins the text, which every host can check.
+// This pins the text; how the real shell reads it is tested in windows-shell-argument.native.
 describe("windowsShellInvocation", () => {
   it("starts the system's own command shell with its settings fixed and the whole command as one quoted line", () => {
     expect(windowsShellInvocation("agent-browser", ["open", "https://duck.com/?q=a&ia=web"], ENV)).toEqual({

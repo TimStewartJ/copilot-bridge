@@ -3,24 +3,18 @@ import type { UnsentMessageView } from "../../../shared/unsent-message.js";
 import { getLatestEntryActivityTimestamp } from "../../chat-cache";
 import type { LivePendingUserMessage } from "../../useSessionStream";
 
-/**
- * A message this page sent, from the moment Send is pressed until loaded history holds it.
- * `delivery` undefined means the server accepted it.
- */
+/** A message sent from this page until history holds it; no `delivery` means accepted. */
 export interface PendingSend {
   /** The browser's clientMessageId for this send. */
   id: string;
   content: string;
   attachments?: Attachment[];
   delivery?: ChatMessageDelivery;
-  /**
-   * Copied from the send's live copy, so the send can still be matched to history after the live
-   * list has been replaced.
-   */
+  /** From the live copy, so the send still matches history after the live list is replaced. */
   messageId?: string;
   sourceEventId?: string;
   timestamp?: string;
-  /** This send is a not-sent message sent again; that message stays hidden while this one is around. */
+  /** Resends a not-sent message, which stays hidden while this one is around. */
   resendOf?: string;
 }
 
@@ -29,10 +23,7 @@ export interface UserMessageHistory {
   clientMessageIds: ReadonlySet<string>;
   messageIds: ReadonlySet<string>;
   sourceEventIds: ReadonlySet<string>;
-  /**
-   * Newest activity in loaded history (NaN when there is none). Loaded history is a suffix of the
-   * saved transcript, so anything at or before this time is saved even when it is not loaded.
-   */
+  /** Newest loaded activity (NaN if none); loaded history is a suffix, so older is saved. */
   watermarkMs: number;
 }
 
@@ -47,11 +38,7 @@ export interface UserMessageMerge {
   settledIds: ReadonlySet<string>;
 }
 
-/**
- * True when `timestamp` is at or before the newest committed entry, meaning disk already carries
- * this item even if the loaded window does not reach it. Items with no timestamp are treated as
- * uncommitted, since an accepted-but-unpersisted prompt has none yet.
- */
+/** No timestamp means not on disk: an accepted prompt has none until it is saved. */
 export function isAtOrBeforeWatermark(timestamp: string | undefined, watermarkMs: number): boolean {
   if (!timestamp || !Number.isFinite(watermarkMs)) return false;
   const itemMs = Date.parse(timestamp);
@@ -62,10 +49,7 @@ function isUserMessageEntry(entry: ChatEntry): entry is ChatMessage & { type?: "
   return (!entry.type || entry.type === "message") && entry.role === "user";
 }
 
-/**
- * `unsent` are messages the agent never got that the chat keeps: they settle their live copies and
- * this page's sends like saved ones, but say nothing about how far saved history reaches.
- */
+/** `unsent` messages settle live copies and sends like saved ones but don't move the watermark. */
 export function indexUserMessageHistory(
   entries: ChatEntry[],
   unsent: readonly UnsentMessageView[] = [],
@@ -104,10 +88,7 @@ function isSavedSend(send: PendingSend, history: UserMessageHistory): boolean {
     || isAtOrBeforeWatermark(send.timestamp, history.watermarkMs);
 }
 
-/**
- * Copies what each send's live copy knows (its saved ids and time) onto the send. Only fills in
- * missing fields, and returns `placeholders` itself when nothing was learned.
- */
+/** Fills sends' missing ids and time from live copies; returns `placeholders` if unchanged. */
 export function learnFromLive(
   placeholders: PendingSend[],
   live: readonly LivePendingUserMessage[],
@@ -131,12 +112,7 @@ export function learnFromLive(
   return changed ? next : placeholders;
 }
 
-/**
- * Decides which user-message bubbles the live overlay shows. Each message is matched to history by
- * id: the browser's clientMessageId, the runtime's messageId, or the saved event id, with the
- * history watermark for saved messages above the loaded window. A message history holds renders
- * from history only; otherwise its live copy renders, or else this page's placeholder.
- */
+/** Match by id or watermark; history wins, then the live copy, then the placeholder. */
 export function mergeUserMessages({ history, live, placeholders }: {
   history: UserMessageHistory;
   live: readonly LivePendingUserMessage[];
@@ -194,7 +170,7 @@ export function settlePendingSends(
   return settledIds.size === 0 ? learned : learned.filter((send) => !settledIds.has(send.id));
 }
 
-/** When an entry happened, for placing a not-sent message among them; undefined when it has no time. */
+/** When an entry happened, to place a not-sent message among them; NaN when it has no time. */
 function entryStartTimestamp(entry: ChatEntry): number {
   const at = entry.type === "tool"
     ? entry.toolCall.startedAt ?? entry.toolCall.completedAt
@@ -217,11 +193,7 @@ export function unsentMessageEntry(message: UnsentMessageView): UserMessageEntry
   };
 }
 
-/**
- * Puts the messages the agent never got where they were sent: before the first saved entry that
- * happened after them, or after all of saved history. One older than everything loaded is left for
- * the older page it belongs to (`hasOlder`). `hidden` are ids being resent or discarded.
- */
+/** hidden: ids being resent or discarded. */
 export function placeUnsentMessages(
   entries: ChatEntry[],
   unsent: readonly UnsentMessageView[],

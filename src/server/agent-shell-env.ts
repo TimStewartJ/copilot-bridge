@@ -1,13 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-/**
- * The Copilot CLI hands its own environment to the shells it starts for an agent, and that
- * environment's COPILOT_HOME is the Bridge's session store. A script an agent runs that creates a
- * CopilotClient would then write chats into that store, where the chat list shows them. The CLI
- * sources these scripts before every shell command, so agent shells get a scratch Copilot home
- * instead. A command that sets COPILOT_HOME itself still wins.
- */
+/** Agent shells get a scratch COPILOT_HOME so scripts' chats stay out of the Bridge's store. */
 export interface AgentShellInitScript {
   path: string;
   shell: "bash" | "powershell";

@@ -1,11 +1,4 @@
-/**
- * Recurring storage maintenance.
- *
- * The append-heavy tables (`telemetry_spans`, `management_jobs`) and Bridge's
- * on-disk log artifacts were only pruned during `main()`. This process is
- * long-lived, so a startup-only sweep means an instance that stays up for months
- * never prunes again and those stores grow without bound between restarts.
- */
+/** Periodic pruning; a startup-only sweep never runs again on a months-long uptime. */
 
 export interface StorageMaintenanceOptions {
   /** Prune telemetry spans older than the retention window. */

@@ -1,6 +1,6 @@
 /** Counts-only evidence of work that can advance a task without another user message. */
 export interface TaskActivity {
-  /** All sources needed to infer absence were available; positive counts can still prove continuation. */
+  /** All sources needed to infer absence were read; positive counts still prove continuation. */
   known: boolean;
   /** Missing conversation records can hide an input request, even when future work is known. */
   sessionIndexKnown: boolean;
@@ -33,7 +33,7 @@ export interface TaskAttentionInput {
   activity?: TaskActivity;
 }
 
-/** Attention is independent of read markers: reading a result does not remove an idle task's review cue. */
+/** Independent of read markers: reading a result does not clear an idle task's review cue. */
 export function deriveTaskAttention(input: TaskAttentionInput, now = Date.now()): TaskAttentionKind | null {
   const revisit = input.nextTouchAt ? Date.parse(input.nextTouchAt) : null;
   const revisitDue = revisit !== null && Number.isFinite(revisit) && revisit <= now;
@@ -45,7 +45,7 @@ export function deriveTaskAttention(input: TaskAttentionInput, now = Date.now())
   if (input.stalled) return "stalled";
   if (input.deferred) return null;
   if (revisit !== null && !Number.isFinite(revisit)) return "unavailable";
-  // A saved wait alone stays marked: nothing will bring the task back unless a date or a check is set.
+  // A saved wait alone stays marked: without a date or a check nothing brings the task back.
   if (input.liveWorkCount > 0 || revisit !== null) return null;
   const activity = input.activity;
   if (!activity) return "unavailable";

@@ -1,8 +1,4 @@
-// Helm: Bridge's orchestration manager. One conversation you can type to like any chat or
-// talk to hands-free, inside the normal app layout. The chat view, composer, drafts, chat mic,
-// model switcher and hands-free switch are the same ones every chat uses; Helm adds the header and
-// the conversation lifecycle (new, resume, keep, delete). On a phone the header keeps New beside
-// the menu; the other controls, the status line and Helm's links open from the menu.
+// Helm reuses the normal chat view and composer, adding only its header and lifecycle.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -78,7 +74,7 @@ export interface HelmViewProps {
   sessionReloadSignals: Record<string, number>;
   sessionBusySignals: Record<string, number>;
   sessionHistorySignals: Record<string, number>;
-  /** How far the conversation shown has been rendered, so having it on screen marks Helm's reply read. */
+  /** How far the shown conversation has rendered, so seeing it marks Helm's reply read. */
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;
 }
 
@@ -282,7 +278,7 @@ export default function HelmView({
   const creatingRef = useRef<Promise<HelmConversation> | null>(null);
   const phone = useIsMobile();
   const [menuOpen, setMenuOpen] = useState(false);
-  // While the phone menu is open, the chat's status line (model, tools, context) is drawn inside it.
+  // While the phone menu is open, the chat's status line is drawn inside it.
   const [statusLineTarget, setStatusLineTarget] = useState<HTMLElement | null>(null);
   const [statusLineProblem, setStatusLineProblem] = useState(false);
 
@@ -415,8 +411,7 @@ export default function HelmView({
   ): Promise<void> => {
     const sentDraft = readDraft(HELM_DRAFT_COMPOSER_KEY);
     const newSessionId = await ensureConversation();
-    // The conversation owns the message now. Waiting for delivery would show it in a fresh Helm
-    // started meanwhile, then wipe what was typed there.
+    // Release now: waiting for delivery would wipe text typed in a fresh Helm started meanwhile.
     releaseDraft(HELM_DRAFT_COMPOSER_KEY, sentDraft);
     try {
       await sendMaterializedFirstPrompt({ sessionId: newSessionId, prompt, attachments, mode, clientMessageId });
@@ -443,9 +438,9 @@ export default function HelmView({
     }
   }, [ensureConversation, handleMessageSent]);
 
-  /** A recording made before any conversation exists still belongs to Helm, not to a new quick chat. */
+  /** A recording made before any conversation exists still belongs to Helm, not a quick chat. */
   const handleSubmitVoiceCapture = useCallback(async (capture: VoiceCaptureSubmission) => {
-    // A transcript headed for the composer stays with what is there; sending that starts the conversation.
+    // A transcript for the composer stays there; sending it starts the conversation.
     if (capture.submitMode === "insert") return startBackgroundVoiceJob(capture);
     const target = await ensureConversation();
     return startBackgroundVoiceJob({ ...capture, composerKey: target });
@@ -562,8 +557,7 @@ export default function HelmView({
         </div>
       )}
       <ChatView
-        // No `key`: the view has to survive the draft → conversation handoff so a first message
-        // that is still being delivered is not dropped by a remount.
+        // No `key`: a remount at the draft → conversation handoff would drop a first message.
         composerKey={composerKey}
         sessionId={sessionId}
         sessionModelSummary={sessionId ? (

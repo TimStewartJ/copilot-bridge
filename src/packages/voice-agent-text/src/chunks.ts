@@ -8,7 +8,7 @@ export interface SpeechChunkResult {
 }
 
 export interface SpeechChunkOptions {
-  /** True while nothing of this reply has been spoken yet: the first piece is cut short so audio starts sooner. */
+  /** True until something of this reply is spoken: the first piece is cut short to start sooner. */
   firstChunk: boolean;
   /** The reply has ended: emit whatever is left, even without sentence-ending punctuation. */
   flush?: boolean;
@@ -41,10 +41,7 @@ function splitLongChunk(chunk: string): string[] {
   return [split[0], ...splitLongChunk(split[1])];
 }
 
-/**
- * Pulls speakable chunks out of streamed assistant text. The first chunk of a reply is
- * split at an early clause boundary so audio can start before the full sentence arrives.
- */
+/** Pulls speakable chunks from streamed text; the first splits early so audio starts sooner. */
 export function takeSpeechChunks(buffer: string, options: SpeechChunkOptions): SpeechChunkResult {
   const sentences: string[] = [];
   let start = 0;

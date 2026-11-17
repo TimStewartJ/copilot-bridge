@@ -9,7 +9,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    // The provider runs `az` through the process host, which calls exec(command, options, callback).
+    // The provider runs `az` via the process host, which calls exec(command, options, callback).
     exec: (
       cmd: string,
       options: { encoding?: string; timeout?: number },
@@ -531,8 +531,7 @@ describe("AdoProvider", () => {
       }),
     ]);
 
-    // The route that lists a pull request's work items takes the repository's GUID. Without one,
-    // no work items are reported and ADO is not sent a request it would reject.
+    // Listing a PR's work items needs the repository GUID; without it, send no doomed request.
     await expect(provider.fetchPullRequestWorkItems([nameOnly])).resolves.toEqual({ links: [], warnings: [] });
     expect(fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.includes("/repositories/"))).toEqual([]);
   });
@@ -706,8 +705,7 @@ describe("AdoProvider", () => {
     vi.advanceTimersByTime(61_000);
     await provider.fetchPullRequests(prs);
     await provider.fetchWorkItems(["10"]);
-    // An abandoned pull request can be reactivated and closed work reopened, so each is asked
-    // about again. Only the completed pull request is not.
+    // Abandoned PRs and closed work can reopen, so they are asked again; completed PRs are not.
     expect(asked()).toEqual(["1", "2", "2", "3", "3", "work item", "work item"]);
 
     vi.advanceTimersByTime(6 * 60 * 60_000);

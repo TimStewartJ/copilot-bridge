@@ -94,7 +94,7 @@ describe("ModelsSection", () => {
       modelPresets: expect.objectContaining({ preset3: { model: "claude-opus-5.5", reasoningEffort: "low" } }),
     }));
 
-    // A new model keeps the effort only when it offers it: Deep's high is on Luna, Fast's max is not on Opus.
+    // A new model keeps the effort only if offered: Luna has Deep's high, Opus lacks Fast's max.
     await harness.act(() => getReactProps(select(harness!.dom.container, "tier-preset3-model"))!.onChange({ target: { value: "gpt-6-luna" } }));
     expect(setDraft.mock.lastCall?.[0].modelPresets.preset3).toEqual({ model: "gpt-6-luna", reasoningEffort: "high" });
   });
@@ -129,7 +129,7 @@ describe("ModelsSection", () => {
     await harness.act(() => getReactProps(button(helm, "Standard"))!.onClick());
     expect(setDraft).toHaveBeenLastCalledWith(expect.objectContaining({ modelRoles: { helm: { tier: "preset2" } } }));
 
-    // Reviewers offer the chat's own model instead of a model of their own; rubber-duck is described, not set.
+    // Reviewers offer the chat's model, not one of their own; rubber-duck is described, not set.
     const reviewers = group(harness.dom.container, "Reviewers and delegated work runs on");
     expect(findAllByTag(reviewers, "button").map((element) => element.textContent)).toEqual(["Fast", "Standard", "Deep", "Same as chat"]);
     expect(harness.dom.container.textContent).toContain("Standard (GPT-6.1 Sol) in Claude chats, Deep (Claude Opus 5.5) in GPT chats");

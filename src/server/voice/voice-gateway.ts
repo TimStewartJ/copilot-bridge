@@ -1,7 +1,4 @@
-// Hands-free gateway: owns voice conversations and bridges browser transports (WebSocket, or
-// HTTP POST + SSE through proxies that block upgrades) to the shared speech engine. Each
-// conversation speaks for one chat (any chat, Helm's included) through the hands-free layer; the
-// chat holds all the context.
+// Hands-free gateway: voice over WebSocket, or POST+SSE through proxies that block upgrades.
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -230,8 +227,7 @@ class ConversationSession implements VoiceClientSink {
       transport: transport.kind,
       settings: this.settings,
       state: this.conversation.state,
-      // An HTTP client (the phone app) that reconnects mid-reply is sent the parts it has not started
-      // playing again. The web page keeps its own scheduled audio across reconnects, so it is not.
+      // Only HTTP clients get unplayed audio again; the web page keeps its own across reconnects.
       ...(transport.kind === "http" ? { resendsAudio: true } : {}),
     });
     const engineStatus = this.gateway.engine.status;
@@ -292,10 +288,7 @@ class ConversationSession implements VoiceClientSink {
     }
   }
 
-  /**
-   * A message typed while hands-free is on (Tether's text box): sent to the chat as it is, and its
-   * reply read back. Resolves once the message has reached the chat (or is known not to have).
-   */
+  /** Sends typed text as is and reads the reply; resolves once it reached the chat or failed to. */
   submitTypedText(text: string, clientMessageId?: string): Promise<TypedTextDelivery> | undefined {
     if (!this.started || this.disposed) return undefined;
     return new Promise((resolve) => {
@@ -427,7 +420,7 @@ class ConversationSession implements VoiceClientSink {
     this.unsubscribeEngine?.();
     this.unbindHandsFree?.();
     this.gateway.noteEnded(this.sessionId, reason, this.conversation.lastReply());
-    // Leaving hands-free must not cut off a reply: detach first so the session keeps writing it into the chat.
+    // Detach first so a reply in progress keeps being written into the chat.
     this.agent.detach();
     this.conversation.dispose();
     this.gateway.engine.closeStream(this.streamId);
@@ -553,14 +546,10 @@ export interface VoiceGatewayOptions {
   runtime: Pick<VoiceRuntime, "paths" | "engine" | "installer">;
 }
 
-/** A hands-free connection that starts again within this long of the last one gets a resume note. */
+/** Hands-free started again within this long of the last connection gets a resume note. */
 const RESUME_NOTE_WINDOW_MS = 5 * 60_000;
 
-/**
- * What the hands-free layer is told when hands-free comes back right after it ended, most often
- * because a phone's connection dropped mid-reply (24 Sep 2026: "What's the most recent message you
- * heard from me?", "I missed it, can you say it again?"), so it can tell such a question is "repeat".
- */
+/** Sent after a quick reconnect (often a dropped phone) so "say that again" routes to repeat. */
 export function buildResumeNote(sinceMs: number, reply: { text: string; finished: boolean } | undefined): string {
   const seconds = Math.max(1, Math.round(sinceMs / 1000));
   const gap = seconds < 90 ? `${seconds} seconds` : `${Math.round(seconds / 60)} minutes`;
@@ -625,10 +614,7 @@ export class VoiceGateway {
     };
   }
 
-  /**
-   * Changes how the chat mic works. A model that is not on disk yet is installed first, beside the
-   * one in use, and takes over only once it is verified. Resolves as soon as the change is underway.
-   */
+  /** A model not on disk is installed beside the current one and takes over once verified. */
   updateChatMic(patch: ChatMicSettings): void {
     const { speechModel, ...rest } = patch;
     const save = (changes: ChatMicSettings) => {
@@ -636,7 +622,7 @@ export class VoiceGateway {
     };
     if (Object.keys(rest).length > 0) save(rest);
     if (!speechModel) return;
-    // An install that finishes later would otherwise overwrite this choice with the one it was started for.
+    // Otherwise an install finishing later would overwrite this choice with its own model.
     if (this.installer.getStatus().installing) throw new Error("Wait for the current download to finish.");
     const applyModel = () => {
       save({ speechModel });
@@ -653,10 +639,7 @@ export class VoiceGateway {
     });
   }
 
-  /**
-   * Starts hands-free for a chat. One voice conversation speaks for a chat at a time: starting
-   * another for the same chat takes over from the first. Conversations for other chats are left alone.
-   */
+  /** Starts hands-free for a chat; a second one for the same chat takes over from the first. */
   async createConversation(sessionId: string, settings: unknown): Promise<{ conversationId: string; token: string }> {
     const [session] = await this.ctx.sessionManager.readSessionsFromDisk([sessionId], { includeArchived: true });
     if (!session && !this.helm.isHelmSession(sessionId)) throw new VoiceConversationNotFoundError();
@@ -744,7 +727,7 @@ export class VoiceGateway {
     return true;
   }
 
-  /** Ends every conversation. The shared speech engine is stopped by its owner after other users finish. */
+  /** Ends every conversation; the shared speech engine's owner stops it. */
   async shutdown(): Promise<void> {
     await Promise.allSettled([...this.conversations.values()].map((session) => session.end("server shutting down")));
     this.wss.close();

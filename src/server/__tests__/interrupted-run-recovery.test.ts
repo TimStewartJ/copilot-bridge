@@ -173,7 +173,7 @@ describe("queueBootRecoveryPrompts", () => {
   });
   const recoveryPrompts = (sessionId: string) => prompts.listForSession(sessionId)
     .filter((prompt) => prompt.prompt === RESTART_RECOVERY_CONTINUE_PROMPT);
-  /** The server delivered the prompt, the resumed run was accepted, and then the server went down. */
+  /** The prompt was delivered and the resumed run accepted, then the server went down. */
   const deliverAndCutOff = (sessionId: string) => {
     for (const prompt of recoveryPrompts(sessionId)) {
       if (prompt.status === "pending") prompts.complete(prompt.id);

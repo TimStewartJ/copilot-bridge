@@ -67,7 +67,7 @@ function count(value: number, noun: string): string {
   return `${value} ${noun}${value === 1 ? "" : "s"}`;
 }
 
-/** "Google Chrome 154.0.8037.97": the kind in plain words, then the number the executable reports. */
+/** "Google Chrome 154.0.8037.97": the kind in words, then the version the executable reports. */
 function describeBrowserBuild(browser: BrowserBuildDiagnostics): string {
   if (browser.kind === "unknown") return browser.version ?? BROWSER_KIND_LABEL.unknown;
   const number = browser.version?.match(/\d+(?:\.\d+)+/)?.[0];

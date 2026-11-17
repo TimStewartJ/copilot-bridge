@@ -157,18 +157,14 @@ export function getBridgeBrowserTarget(
   };
 }
 
-/** Where agent-browser keeps the socket, port and pid files of its daemons (its `get_socket_dir`). */
+/** Where agent-browser keeps its daemons' socket, port and pid files (its `get_socket_dir`). */
 function daemonStateDirectory(env: NodeJS.ProcessEnv): string {
   if (env.AGENT_BROWSER_SOCKET_DIR) return env.AGENT_BROWSER_SOCKET_DIR;
   if (env.XDG_RUNTIME_DIR) return join(env.XDG_RUNTIME_DIR, "agent-browser");
   return join(homedir(), ".agent-browser");
 }
 
-/**
- * Removes the state files of a daemon that was killed. A daemon removes them itself when it
- * exits, and agent-browser clears them for a session name that is used again, which the name of
- * a target the Bridge closes after each use may not be for a long time.
- */
+/** agent-browser clears state files only on name reuse, which closed targets may never see. */
 async function removeDaemonStateFiles(sessionName: string, env: NodeJS.ProcessEnv): Promise<void> {
   const directory = daemonStateDirectory(env);
   try {
@@ -358,11 +354,7 @@ function isAgentBrowserProcess(processInfo: BrowserProcessInfo): boolean {
     .some((value) => normalizedPathBasename(stripWrappingQuotes(value)).toLowerCase().startsWith("agent-browser"));
 }
 
-/**
- * The agent-browser daemons that started the given browser processes: a daemon is the parent
- * of its browser's main process. The command-line clients share the daemon's executable name
- * but never have a browser as a child.
- */
+/** A daemon parents its browser's main process; CLI clients share its name but never do. */
 function findOwningDaemons(
   allProcesses: readonly BrowserProcessInfo[],
   browserProcesses: readonly BrowserProcessInfo[],
@@ -372,8 +364,7 @@ function findOwningDaemons(
   for (const child of browserProcesses) {
     const parent = child.parentPid === undefined ? undefined : byPid.get(child.parentPid);
     if (!parent || !isAgentBrowserProcess(parent)) continue;
-    // Windows never updates a child's parent id and reuses ids, so the id can name an unrelated,
-    // younger process. POSIX hands orphans to another parent instead.
+    // Windows keeps stale parent ids and reuses them, so the parent must be older than the child.
     if (platform() === "win32"
       && !(parent.createdAtMs !== undefined && child.createdAtMs !== undefined && parent.createdAtMs <= child.createdAtMs)) {
       continue;
@@ -604,8 +595,7 @@ function agentBrowserJsonOutput(command: BrowserCommand, envelope: AgentBrowserJ
   }
   if (typeof data.message === "string") return data.message;
   if (typeof data.state === "string") return data.state;
-  // Any other command answers in a shape of its own. `eval` reports the page it ran on even
-  // when the script produced nothing.
+  // Other commands answer in their own shape; `eval` reports its page even with no script result.
   const { lifecycle: _lifecycle, ...rest } = data;
   return command[0] === "eval" || Object.keys(rest).length === 0 ? "" : JSON.stringify(rest);
 }
@@ -621,10 +611,7 @@ function parseAgentBrowserEnvelope(stdout: string): AgentBrowserJsonEnvelope | n
   }
 }
 
-/**
- * The CLI client can print its JSON result without exiting promptly, so the command completes
- * as soon as stdout holds a complete JSON value and the lingering client is killed.
- */
+/** The CLI may linger after printing JSON: finish once stdout holds a whole value, then kill it. */
 async function runAgentBrowserJsonCommand(
   command: BrowserCommand,
   timeout: number,
@@ -681,11 +668,7 @@ async function runAgentBrowserJsonCommand(
   };
 }
 
-/**
- * Saves a login in agent-browser's vault under a name. The password is written to the command's
- * input, so it is in no argument list, process listing or error message; agent-browser never
- * prints it either.
- */
+/** The password goes over stdin, so no argument list, process listing or error shows it. */
 export async function saveAgentBrowserLogin(
   name: string,
   login: { url: string; username: string; password: string },
@@ -751,10 +734,7 @@ export async function run(
   }
 }
 
-/**
- * The program and arguments that run agent-browser with these arguments. Undefined when it only
- * starts through the Windows command shell and they cannot be passed through it.
- */
+/** How to run agent-browser with these args; undefined when the Windows shell can't pass them. */
 function agentBrowserInvocation(args: string[]): { file: string; args: string[]; verbatim?: true } | undefined {
   const command = getAgentBrowserCommand();
   return command.shell ? windowsShellInvocation(command.file, args) : { file: command.file, args };
@@ -779,16 +759,11 @@ export function getAgentBrowserVersion(): Promise<string | undefined> {
   return value;
 }
 
-/**
- * What to do about a failure the user can fix, for the message an agent or the diagnostics page
- * shows. Undefined when the output says nothing more useful than itself.
- */
+/** Advice for a failure the user can fix, or undefined when the output says it all. */
 export function browserFailureAdvice(output: string): string | undefined {
   if (failureCode(output) === "transport.timeout"
     || /^(?:CDP command timed out:|agent-browser command timed out after )/.test(output)) {
-    // agent-browser's own dismissal of alerts and "Leave this site?" prompts can fail without a trace (on
-    // Windows its helper stops before it answers), and `dialog status` then reports no dialog. An open
-    // prompt pauses the page, so the reads an agent reaches for next hang as well.
+    // agent-browser's dialog dismissal can fail silently, and an open prompt hangs later reads.
     return "The local browser command timed out. After a click or navigation, a page alert or \"Leave this site?\" "
       + `prompt can cause this. It pauses the page, so reading it (url, title, snapshot, capture) hangs for up to ${DEFAULT_TIMEOUT / 1000} `
       + "seconds each, and `dialog status` does not always show it. Run `dialog accept` first, in a call with "
@@ -839,11 +814,7 @@ function isAlreadyGone(error: unknown): boolean {
 // One look after the first round of kills, for processes that appeared in the meantime.
 const DISPOSABLE_PROFILE_KILL_PASSES = 2;
 
-/**
- * Kills the browser processes of a profile. With `stopDaemons`, the agent-browser daemon that
- * owns them is killed first and the profile is looked at once more: a daemon whose browser
- * dies under a command it is still serving starts a new browser on the same profile.
- */
+/** `stopDaemons` kills the daemon first and looks again: it restarts a browser that dies. */
 async function killProfileBoundBrowserProcesses(
   profileDir: string,
   metadata: Record<string, unknown>,
@@ -1003,20 +974,14 @@ function buildBrowserShutdownResult(
   };
 }
 
-/**
- * Whether a shutdown left no browser on the profile. Without a process list, only the daemon's
- * own word that it closed the browser says so.
- */
+/** Whether shutdown left no browser; without a process list, only the daemon's close says so. */
 export function browserIsGone(
   shutdown: Pick<BrowserShutdownResult, "remainingPids"> & Partial<Pick<BrowserShutdownResult, "closeOk" | "processListFailed">>,
 ): boolean {
   return shutdown.remainingPids.length === 0 && !(shutdown.processListFailed && shutdown.closeOk === false);
 }
 
-/**
- * Run an agent-browser command using a bridge-owned session.
- * On Chrome launch failure, clears stale dead locks or kills a live wedged Chrome once and retries.
- */
+/** Runs agent-browser on a Bridge session; a failed launch clears stuck Chrome and retries once. */
 export async function ab(
   command: BrowserCommand,
   timeout = DEFAULT_TIMEOUT,

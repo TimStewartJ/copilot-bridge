@@ -40,8 +40,7 @@ export default memo(function ReasoningStep({ entry }: ReasoningStepProps) {
       </span>
       <div className="min-w-0 flex-1">
         {streaming ? (
-          // Still arriving: plain text is cheap to repaint many times a second, and half-written
-          // markdown would flicker between readings. It is formatted once it is complete.
+          // Plain text while streaming: cheap to repaint, and half-written markdown would flicker.
           <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-text-muted" aria-busy="true">
             {entry.content}
           </div>

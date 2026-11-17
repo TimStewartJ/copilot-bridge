@@ -9,7 +9,7 @@ import {
 } from "./restart-state.js";
 
 export type RestartValidationMode = "deploy" | "operational";
-/** A launcher from before restart-when-idle only picks up a newer release candidate for this source. */
+/** Launchers before restart-when-idle pick up a newer release candidate only for this source. */
 export const DEPLOY_RESTART_SOURCE = "staging_deploy_batch";
 
 export interface RestartReleaseCandidate {
@@ -153,11 +153,7 @@ export interface RestartRequest {
   releaseCandidate?: RestartReleaseCandidate;
 }
 
-/**
- * On Windows, removing the temp hard link after publishing makes a scanner hold the signal open
- * against deletion, measured at 12 to 30+ seconds. Replacing it in that window fails with EPERM, and a
- * deploy whose restart cannot be requested fails its whole batch, so wait out a hold of up to a minute.
- */
+/** Windows scanners hold the signal 12-30+ s; a failed publish fails the whole deploy batch. */
 const RESTART_SIGNAL_PUBLISH_RETRY_DELAYS_MS: readonly number[] = [
   25, 50, 100, 250, 500, ...Array.from({ length: 59 }, () => 1_000),
 ];
@@ -184,7 +180,7 @@ export async function requestRestart(dataDir: string, request: RestartRequest): 
       if (request.releaseCandidate) {
         await publish(() => rename(tempFile, signalFile));
       } else {
-        // Create, never overwrite: an operational request racing a deploy must not erase its candidate.
+        // Never overwrite: an operational request racing a deploy must not erase its candidate.
         await publish(() => link(tempFile, signalFile));
       }
       return signal;
@@ -196,7 +192,7 @@ export async function requestRestart(dataDir: string, request: RestartRequest): 
   }
 }
 
-/** Reads control files asynchronously: the launcher may be writing them while the server answers. */
+/** Reads control files async: the launcher may be writing them while the server answers. */
 export async function readPendingRestartSignal(dataDir: string): Promise<RestartSignal | null> {
   for (const name of [RESTART_SIGNAL_FILE_NAME, RESTART_IN_PROGRESS_FILE_NAME]) {
     try {

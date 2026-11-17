@@ -1,10 +1,4 @@
-/**
- * Identity colours: the colour a user picks for a group or a tag. Each name maps to a themed
- * `identity-*` variable in index.css, so both themes keep their contrast. These mark identity beside
- * a name and are never used for state.
- *
- * Every class is written out in full because Tailwind finds classes by scanning source text.
- */
+/** Identity only, never state. Write classes in full: Tailwind finds them by scanning source. */
 
 export const IDENTITY_COLORS = [
   "blue", "purple", "amber", "rose", "cyan", "orange", "slate", "emerald", "indigo", "pink",

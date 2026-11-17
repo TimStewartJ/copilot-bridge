@@ -1,6 +1,4 @@
-// Which browser message id each saved user message was sent as, so history can name the
-// optimistic chat message a saved one replaces. The runtime's message id is the join key: it is
-// returned by `session.send` and saved on the `user.message` event.
+// Maps runtime message id to browser message id so history can replace optimistic messages.
 
 import type { DatabaseSync } from "./db.js";
 
@@ -53,11 +51,7 @@ export function createChatMessageIdStore(db: DatabaseSync) {
 
 export type ChatMessageIdStore = ReturnType<typeof createChatMessageIdStore>;
 
-/**
- * Adds `clientMessageId` to the user messages in a history page whose runtime message id has one,
- * with a single lookup for the page. Annotated entries are copies; the rest are returned as is.
- * A failed lookup leaves the page unannotated rather than failing the read.
- */
+/** One lookup per page; annotated entries are copies; a failed lookup returns the page as is. */
 export function annotateClientMessageIds<T extends ClientMessageIdAnnotatable>(
   store: Pick<ChatMessageIdStore, "getClientMessageIds"> | undefined,
   sessionId: string,

@@ -20,7 +20,7 @@ import {
 
 export interface DocsMarkdownProps {
   markdown: string;
-  /** Headings extracted from this exact markdown string; rendered headings take their ids from it. */
+  /** Headings extracted from this exact markdown; rendered headings take their ids from it. */
   headings: DocHeading[];
   /** Location the markdown belongs to, used to resolve relative links. Null disables that. */
   currentPath: string | null;
@@ -41,8 +41,7 @@ type AnchorProps = ComponentPropsWithoutRef<"a"> & { node?: unknown };
 type TableProps = ComponentPropsWithoutRef<"table"> & { node?: unknown };
 type ImageProps = ComponentPropsWithoutRef<"img"> & { node?: unknown };
 
-// No remark-breaks here on purpose: docs are hard-wrapped, so newlines inside a paragraph are
-// spaces. remarkLabelBreaks restores line breaks for "**Label:** value" blocks only.
+// No remark-breaks: docs are hard-wrapped; remarkLabelBreaks keeps breaks for "**Label:**" lines.
 const REMARK_PLUGINS = [remarkGfm, remarkWikilink, remarkLabelBreaks];
 
 function wikiUrlTransform(url: string): string {

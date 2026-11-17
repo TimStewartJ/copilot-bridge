@@ -66,7 +66,7 @@ describe("restart requests", () => {
     const dir = makeTestDir("restart-eperm");
     __setRestartStateFsRetrySleepForTests(() => Promise.resolve());
     const initial = await requestRestart(dir, { validationMode: "operational", source: "self_restart" });
-    // Longer than the restart-state retry budget: the hold measured on Windows lasts tens of seconds.
+    // Longer than the retry budget: a Windows hold can last tens of seconds.
     for (let attempt = 0; attempt < 10; attempt++) {
       vi.mocked(rename).mockRejectedValueOnce(Object.assign(new Error("signal held open"), { code: "EPERM" }));
     }

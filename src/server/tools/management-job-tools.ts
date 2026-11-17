@@ -114,10 +114,7 @@ function getManagementJobContract(job: ManagementJob, dataDir?: string, sessionI
   };
 }
 
-/**
- * Where the job's result stands for the session that queued it. When that session reads a final
- * status here, the result it would otherwise be sent is withdrawn: it already has it.
- */
+// Reading a final status here withdraws the result message the queuing session would get.
 function describeResultDelivery(
   ctx: AppContext,
   job: ManagementJob,

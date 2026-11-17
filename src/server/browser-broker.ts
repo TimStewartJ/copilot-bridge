@@ -49,7 +49,7 @@ export interface BrowserBrokerLease {
   browserTarget: BrowserTarget;
   /** The public profile the lease holds until it is disposed. Public leases only. */
   publicSlot?: number;
-  /** The public profile did not exist before this lease, so nothing in it can be in a browser's way. */
+  /** The public profile is new to this lease, so nothing in it can block a browser. */
   publicProfileIsNew?: boolean;
 }
 
@@ -63,7 +63,7 @@ export interface BrowserBrokerOperationOptions {
   browserOpId: string;
   metadata?: Record<string, unknown>;
   skipReadiness?: boolean;
-  /** Part of what a person is doing in a held browser (see holdTarget), so it runs during the hold. */
+  /** Part of a person's work in a held browser (see holdTarget), so it runs during the hold. */
   duringHold?: boolean;
 }
 
@@ -80,10 +80,7 @@ export interface BrowserBrokerOptions {
   copilotHome: string;
   telemetryStore?: TelemetryStore;
   getBrowserLaunchConfig?: () => BrowserLaunchConfig;
-  /**
-   * Lets the signed-in browser close by itself after this long without a command. For a Bridge
-   * that can be killed with no later process to take its browser over, such as a preview.
-   */
+  /** Idle close for the signed-in browser, for a Bridge nothing takes over (such as a preview). */
   authenticatedIdleTimeoutMs?: number;
   publicConcurrency?: number;
   runCommand?: (
@@ -115,12 +112,7 @@ const READINESS_TIMEOUT_MS = 45_000;
 const READINESS_RETRY_DELAYS_MS = [250, 750, 1_500] as const;
 /** How long a browser_session handle may go unused before the Bridge closes it. */
 export const BROWSER_SESSION_IDLE_TIMEOUT_MS = 30 * 60_000;
-/**
- * How long the daemon of a public browser may go without a command before it closes the
- * browser and exits by itself. This is the backstop for a browser the Bridge failed to close
- * or lost track of (a server that was killed, a cleanup that missed a process), so it is
- * longer than the Bridge's own limit.
- */
+/** Backstop for browsers the Bridge lost track of, so longer than the Bridge's own limit. */
 export const PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS = BROWSER_SESSION_IDLE_TIMEOUT_MS + 15 * 60_000;
 
 function delay(ms: number): Promise<void> {
@@ -223,10 +215,7 @@ export class BrowserBroker {
     this.authenticatedServiceChecks.set(check.service, { ...check });
   }
 
-  /**
-   * Runs one operation in a browser that is closed again afterwards. A public browser keeps its
-   * profile for the next operation.
-   */
+  /** Runs one operation in a browser closed afterwards; a public one keeps its profile. */
   async withEphemeralContext<T>(
     context: BrowserContext,
     options: BrowserBrokerOperationOptions,
@@ -244,13 +233,11 @@ export class BrowserBroker {
       if (first.ok) return first.value;
       if (!(first.failure instanceof BrowserUnavailableError)) throw first.failure;
       if (first.profileIsNew) {
-        // Nothing was in the profile, so the host cannot start browsers. The folder goes again,
-        // or every failed call would leave one behind.
+        // The host cannot start browsers; drop the folder or every failed call leaves one.
         await this.discardPublicProfile(first.slot, options);
         throw first.failure;
       }
-      // On a profile that has never been used, the same failure is the host's and a start is
-      // the proof that the first profile was what stood in the way.
+      // Retry on an unused profile: failing again blames the host, starting blames the old profile.
       const second = await this.runEphemeralPublic(options, fn, true);
       const startedOnUnused = second.ok || !(second.failure instanceof BrowserUnavailableError);
       await this.discardPublicProfile(startedOnUnused ? first.slot : second.slot, options);
@@ -284,10 +271,7 @@ export class BrowserBroker {
         metadata: options.metadata,
       });
     } catch (cleanupError) {
-      // The operation's own outcome stands: its caller can do nothing about a browser left
-      // behind. Nobody will try this cleanup again, so the profile is given up; it is checked
-      // for the leftover before its next use, and the daemon's idle limit closes a browser
-      // nobody uses.
+      // The operation's outcome stands; drop the profile, it's checked before reuse and idles out.
       this.publicProfiles.release(slot);
       console.error(
         `[browser] Public browser cleanup failed after the operation ${outcome.ok ? "succeeded" : "failed"}:`,
@@ -297,7 +281,7 @@ export class BrowserBroker {
     return outcome;
   }
 
-  /** Removes a public profile no browser should start on again, unless something took it meanwhile. */
+  /** Removes a public profile no browser should start on again, unless it was taken meanwhile. */
   private async discardPublicProfile(slot: number, options: BrowserBrokerOperationOptions): Promise<void> {
     let removed = false;
     try {
@@ -316,10 +300,7 @@ export class BrowserBroker {
     });
   }
 
-  /**
-   * A browser target to keep across several operations. A public one holds a profile of its own
-   * until disposeSessionTarget.
-   */
+  /** A target kept across operations; a public one holds its own profile until disposed. */
   async createSessionTarget(
     context: BrowserContext,
     options: { unused?: boolean } = {},
@@ -340,11 +321,7 @@ export class BrowserBroker {
     };
   }
 
-  /**
-   * Closes a session target's browser and frees its profile. Throws when the browser could not
-   * be closed cleanly: the profile then stays with the caller, who can try again, and is checked
-   * for a leftover browser before its next use.
-   */
+  /** Throws if the browser won't close cleanly; the caller keeps the profile and may retry. */
   async disposeSessionTarget(
     lease: BrowserBrokerLease,
     options: BrowserBrokerOperationOptions,
@@ -388,11 +365,7 @@ export class BrowserBroker {
     }
   }
 
-  /**
-   * Gives a browser to a person until the returned function is called. Other operations on it
-   * fail meanwhile instead of navigating away under them or waiting for as long as they take.
-   * Throws when someone already has it.
-   */
+  /** Lends the browser to a person until the returned fn runs; others fail fast. Throws if held. */
   holdTarget(lease: BrowserBrokerLease, purpose: string): () => void {
     const sessionName = lease.browserTarget.sessionName;
     this.assertNotHeld(lease, {});
@@ -408,11 +381,7 @@ export class BrowserBroker {
     };
   }
 
-  /**
-   * Calls `take` the moment the user's current hold on a browser is given up, before anything
-   * else can have the browser: for a second reason to keep it for the user that outlasts the
-   * first. The returned function withdraws the request.
-   */
+  /** Runs `take` as the current hold ends, before anything else can have the browser. */
   afterHold(lease: BrowserBrokerLease, take: () => void): () => void {
     const sessionName = lease.browserTarget.sessionName;
     const waiting = this.holdSuccessors.get(sessionName) ?? new Set<() => void>();
@@ -473,8 +442,7 @@ export class BrowserBroker {
   ): Promise<T> {
     const releaseTarget = await this.acquireTarget(lease.browserTarget.sessionName);
     try {
-      // Checked once the target is this operation's: the browser may have been given to the
-      // user while it waited for an earlier operation to finish. Says nothing about its health.
+      // Checked after taking the target: it may have been handed to the user while this waited.
       this.assertNotHeld(lease, options);
     } catch (error) {
       releaseTarget();
@@ -505,7 +473,7 @@ export class BrowserBroker {
     }
   }
 
-  /** Starts a browser of the context and reports its health. `inBrowser` runs in it once it is up. */
+  /** Starts a browser of the context and reports its health; `inBrowser` runs once it is up. */
   async probe(
     context: BrowserContext,
     inBrowser: (lease: BrowserBrokerLease) => Promise<unknown> = async () => undefined,
@@ -577,8 +545,7 @@ export class BrowserBroker {
           ...options.metadata,
         },
       };
-      // URL and title evaluate page JavaScript. A modal pauses it, including the readiness
-      // check that would otherwise keep the caller from reaching the dialog or tab controls.
+      // Not URL or title: they run page JS, which a modal pauses, locking the caller out of it.
       const first = await this.runCommand(["tab", "list"], READINESS_TIMEOUT_MS, commandOptions);
       if (!first.ok) {
         lastOutput = first.output;

@@ -1,6 +1,3 @@
-// Instructions for Helm's look over every Bridge, which writes the brief on Home. It proposes; it
-// never acts. Its only output is one helm_publish call.
-
 export function buildThinkerSystemPrompt(options: { timeZone: string; bridges: Array<{ id: string; label: string }>; autonomy: "propose" | "routine"; hasSources?: boolean }): string {
   return [
     "You are Helm, the chief of staff built into Tim's Copilot Bridge. This is one of your scheduled looks over everything; what you publish becomes the brief on Home, and Tim also talks to you directly in the Helm chat, which starts from the memory you keep here.",

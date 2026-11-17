@@ -22,14 +22,11 @@ import {
 import { isCanonicalSessionId } from "./outbound-attachments.js";
 import type { SessionModelSwitchResult } from "./session-manager.js";
 
-/** Event-log reads for a few hundred chats take seconds; more readers would crowd other file I/O. */
+/** Reading hundreds of event logs takes seconds; more readers would crowd other file I/O. */
 const SCAN_CONCURRENCY = 8;
-/**
- * A count is reused this long, so the form that shows it, a dry run and the move that follows read
- * the chats once. A stale entry is harmless: each chat's model is read again right before its switch.
- */
+/** Form, dry run and move share one read; stale is fine, as each switch re-reads the model. */
 const USAGE_CACHE_MS = 60_000;
-/** A dead runtime or a full session cache fails every chat the same way; stop instead of trying them all. */
+/** A dead runtime or full session cache fails every chat alike; stop instead of trying them all. */
 const MAX_CONSECUTIVE_FAILURES = 3;
 /** Moving chats to the model they are on only makes sense to change their effort or context. */
 const SAME_MODEL_ERROR = "fromModel and toModel must differ unless reasoningEffort or contextTier is given";
@@ -53,7 +50,7 @@ export interface SessionModelMoverDeps {
     contextTier?: CopilotContextTier,
     options?: { compactionDecision?: "compact" },
   ): Promise<SessionModelSwitchResult>;
-  /** Unloads a chat the move had to load, so a long move does not leave every chat's processes running. */
+  /** Unloads a chat the move loaded, so long moves don't leave every chat's processes running. */
   unloadSession(sessionId: string): Promise<unknown>;
   listModels(): Promise<readonly CopilotModelContextMetadata[]>;
   now?: () => number;
@@ -82,11 +79,7 @@ interface ScannedSession extends SessionModelMoveCandidate {
   model?: string;
 }
 
-/**
- * The effort a chat gets on the new model: the one asked for, otherwise its own when the new model
- * supports it, otherwise the nearest the new model has. Undefined leaves the choice to the switch,
- * which carries the chat's effort over.
- */
+/** Undefined lets the switch carry the chat's own effort over. */
 export function resolveMoveReasoningEffort(
   requested: string | undefined,
   current: string | undefined,
@@ -97,11 +90,7 @@ export function resolveMoveReasoningEffort(
   return resolveSupportedReasoningEffort(current, target.supportedReasoningEfforts);
 }
 
-/**
- * The context a chat gets on the new model: the one asked for, otherwise long context when the new
- * model offers it and the chat's window now is larger than the new model's standard one. A model
- * whose only window is 1M counts as large, so moving off it does not shrink the chat to 200K.
- */
+/** Long context when the chat's window exceeds the target's standard one; 1M-only counts. */
 export function resolveMoveContextTier(
   requested: CopilotContextTier | undefined,
   current: CopilotContextTier | undefined,
@@ -308,7 +297,7 @@ export function createSessionModelMover(deps: SessionModelMoverDeps) {
     };
     const reasoningEffort = resolveMoveReasoningEffort(active.reasoningEffort, state.reasoningEffort, target);
     const contextTier = resolveMoveContextTier(active.contextTier, state.contextTier, source, target);
-    // A move to the same model that would change nothing for this chat: it already has what was asked.
+    // A same-model move that changes nothing here: the chat already has what was asked.
     if (
       active.fromModel === active.toModel
       && (reasoningEffort === undefined || reasoningEffort === state.reasoningEffort)

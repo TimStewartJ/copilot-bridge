@@ -1,8 +1,5 @@
 // agent-text-audit-file: tool-output (npm output)
-// Fetches pinned npm packages with the machine's own npm client. A host that blocks the public
-// registry in favour of an internal feed only serves tarballs to a real npm client, and npm
-// already carries the registry, credentials, proxy and CA settings that installed Bridge
-// itself. The installer checks every tarball against a pinned integrity afterwards.
+// Uses the machine's npm so internal feeds, credentials, proxy and CA settings work.
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveNpmInvocation, type NpmInvocation } from "../platform.js";
@@ -45,7 +42,7 @@ export const runCommand: RunCommand = async (command, args, options) => {
 };
 
 export interface NpmClient {
-  /** Fetches the published tarball for `name@version` into an emptied `directory` and returns its path. */
+  /** Fetches the tarball for `name@version` into an emptied `directory`; returns its path. */
   pack(spec: string, directory: string): Promise<string>;
 }
 
@@ -81,9 +78,7 @@ export function createNpmClient(options: {
       if (!invocation) throw new CommandError("npm not found", { missing: true, timedOut: false, stderr: "" });
       await rm(directory, { recursive: true, force: true });
       await mkdir(directory, { recursive: true });
-      // For a registry spec npm writes the published tarball unchanged, so its bytes still
-      // match the pinned integrity. It runs in the target directory because older npm
-      // versions have no --pack-destination.
+      // Runs in the target directory: older npm versions have no --pack-destination.
       await run(
         invocation.command,
         [...invocation.args, "pack", spec, "--ignore-scripts", "--loglevel=error", "--no-update-notifier"],

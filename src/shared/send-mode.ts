@@ -8,10 +8,7 @@ export function isSendMode(value: unknown): value is SendMode {
   return value === "interactive" || value === "autopilot";
 }
 
-/**
- * Reads a Copilot CLI agent mode as a send mode. Plan and shell modes are not autopilot, so they
- * count as interactive; anything unrecognised is unknown.
- */
+/** Reads a CLI agent mode; plan and shell count as interactive, anything else is undefined. */
 export function toSendMode(value: unknown): SendMode | undefined {
   if (value === "autopilot") return "autopilot";
   if (value === "interactive" || value === "plan" || value === "shell") return "interactive";

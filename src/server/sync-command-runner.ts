@@ -1,6 +1,4 @@
-// Synchronous command runner for the launcher only. The launcher is a supervisor whose event
-// loop serves no requests, so blocking on a build or install step is acceptable there. The server
-// runtime must never import this module: it starts processes through the process host.
+// Launcher only, where blocking is fine; server code starts processes via the process host.
 
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { randomBytes } from "node:crypto";

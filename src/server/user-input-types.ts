@@ -1,31 +1,20 @@
-/**
- * Shared transport types for native Copilot user-input events and responses.
- *
- * These types intentionally model the SDK's ask_user flow, not elicitation forms.
- */
+// Transport types for the SDK's ask_user flow, not elicitation forms.
 
 export type UserInputRequestId = string;
 export type UserInputChoice = string;
 
 export interface NativeUserInputRequest {
   question: string;
-  /**
-   * Optional predefined answers. Validation should reject empty choices and
-   * duplicate choices after trimming so answer matching is unambiguous.
-   */
+  /** Predefined answers; reject empty or duplicate (trimmed) ones so matching is unambiguous. */
   choices?: UserInputChoice[];
   /** Defaults to true when omitted by the SDK request. */
   allowFreeform?: boolean;
 }
 
 export interface NativeUserInputResponse {
-  /** The selected choice or freeform answer. Validation should reject empty answers after trimming. */
+  /** The chosen or freeform answer; reject it when empty after trimming. */
   answer: string;
-  /**
-   * True only when the answer was typed freeform. Freeform answers are valid only
-   * when the pending request allows freeform input. Choice answers are valid only
-   * when choices exist and the answer matches exactly one normalized choice.
-   */
+  /** True only for a typed answer, valid only when the request allows freeform. */
   wasFreeform: boolean;
 }
 

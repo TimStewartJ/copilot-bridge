@@ -43,8 +43,7 @@ installApiRouteTestHooks();
 
 const REASONING_PRICING_ASSUMPTION = "reasoning_tokens_included_in_output" as const;
 
-// Builds a priceable SDK model whose token prices (cents-per-batch, batchSize 1M)
-// convert to round USD-per-1M rates.
+// A priceable SDK model whose cents-per-batch prices (batchSize 1M) give round USD-per-1M rates.
 function sdkPriceableModel(
   id: string,
   rates: { input: number; output: number; cache: number },
@@ -132,7 +131,7 @@ function writeUsageShutdown(copilotHome: string, timestamp: string, modelMetrics
 }
 
 describe("Copilot usage routes", () => {
-  // Metering arithmetic is covered in copilot-usage.test.ts; this checks the unattributed bucket is serialized at each level.
+  // Checks the unattributed bucket is serialized at each level; math is in copilot-usage.test.ts.
   it("GET /api/copilot-usage serializes authoritative metering and its unattributed bucket", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeCopilotUsageEvents(copilotHome, "usage-session", [
@@ -415,7 +414,7 @@ describe("Copilot usage routes", () => {
     usageDb.close();
   });
 
-  // Name-based price resolution is covered in copilot-usage.test.ts; this checks listModels wiring, toJSON-only SDK objects and field sanitizing.
+  // Checks listModels wiring, toJSON-only SDK objects and field sanitizing.
   it("GET /api/copilot-usage resolves SDK model objects through their serialized metadata", async () => {
     const copilotHome = createCopilotUsageTestHome();
     writeUsageShutdown(copilotHome, "2026-05-01T13:30:00.000Z", {
@@ -609,11 +608,9 @@ describe("Copilot usage range filtering", () => {
     return new Date(year, monthIndex, day, 9, 0, 0).toISOString();
   }
 
-  // Window arithmetic is covered in copilot-usage.test.ts; this checks the range query reaches the summary and is echoed back.
+  // Checks the range query reaches the summary and is echoed back.
   it("GET /api/copilot-usage?range= narrows totals to the requested window", async () => {
-    // Freeze only the calendar. The usage index yields with setImmediate, so
-    // faking every timer left the background scan progressing only as fast as
-    // waitFor's real-time polling advanced the fake clock.
+    // Fake only Date: the usage index yields with setImmediate, which fake timers would stall.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
     try {

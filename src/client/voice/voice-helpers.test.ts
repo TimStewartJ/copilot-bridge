@@ -150,7 +150,7 @@ describe("voice view model", () => {
     state = reduceVoiceEvent(state, { type: "assistant_chunk", genId: 1, chunkId: 1, text: "Two sessions finished." });
     state = reduceVoiceEvent(state, { type: "user", turnId: 2, text: "um", handled: "ignored" });
     expect(state.caption).toEqual({ speaker: "assistant", text: "Two sessions finished." });
-    // Heard but not meant for the chat: listed so it can still be sent, without replacing the caption.
+    // Heard but not for the chat: listed so it can still be sent, caption unchanged.
     state = reduceVoiceEvent(state, { type: "user", turnId: 3, text: "put it over there", handled: "not_sent" });
     expect(state.notSent).toEqual([{ turnId: 3, text: "put it over there" }]);
     expect(state.caption).toEqual({ speaker: "assistant", text: "Two sessions finished." });

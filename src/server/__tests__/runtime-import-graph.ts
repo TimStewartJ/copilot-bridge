@@ -2,8 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Reads the imports of the Bridge's own TypeScript sources, for structural guards that must see
-// every module a runtime entry point can load.
+// Import graph of the Bridge's sources, for guards that must see every module an entry can load.
 
 export const SERVER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const SRC_DIR = resolve(SERVER_DIR, "..");
@@ -15,7 +14,7 @@ const REQUIRE_CALL = /\brequire\(\s*["']([^"']+)["']\s*\)/g;
 
 export interface ModuleImport {
   specifier: string;
-  /** Names imported as values. "*" means the whole module (namespace, default, dynamic, require). */
+  /** Names imported as values; "*" is the whole module (namespace, default, dynamic, require). */
   valueNames: string[];
 }
 
@@ -52,7 +51,7 @@ function resolveModule(fromFile: string, specifier: string): string | null {
   return null;
 }
 
-/** Every source module reachable from `entryPoints` through value imports, with the imports each one makes. */
+/** Every module reachable from `entryPoints` via value imports, with each one's imports. */
 export function walkImportGraph(entryPoints: string[]): Map<string, ModuleImport[]> {
   const graph = new Map<string, ModuleImport[]>();
   const pending = [...entryPoints];

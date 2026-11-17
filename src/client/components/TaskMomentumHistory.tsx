@@ -96,11 +96,6 @@ function MomentumEventRow({ event, onSelectSession }: { event: TaskMomentumEvent
   );
 }
 
-/**
- * Who changed a task's "where things stand" fields and when. One closed line with the latest
- * change; it opens to the recent history. Standalone mode wraps it in its own group for archived
- * tasks, whose momentum editor is hidden.
- */
 export default function TaskMomentumHistory({
   taskId,
   onSelectSession,

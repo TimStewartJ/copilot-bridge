@@ -179,7 +179,7 @@ function AppShell() {
   const homeSearch = new URLSearchParams(location.search);
   const isHelmBriefRoute = (location.pathname === "/" || location.pathname === "/dashboard/home")
     && homeSearch.get("view") !== "classic" && !homeSearch.has("section");
-  // Wide screens show the Helm conversation beside the brief on Home, so the hands-free dock isn't needed there either.
+  // Wide Home shows the Helm conversation beside the brief, so no hands-free dock there either.
   const helmTalkVisible = isHelmRoute || (isHelmBriefRoute && helmPageWide);
   const helmBriefVisible = isHelmBriefRoute || (isHelmRoute && helmPageWide);
   const { hasAttention, hasAttentionRef } = usePageAttention();
@@ -262,7 +262,7 @@ function AppShell() {
     maxWidth: 480,
   });
   const viewportWidth = useViewportWidth();
-  // The chat beside the panel keeps a usable width, even when a wide panel was saved on a bigger screen.
+  // The chat keeps a usable width even if a wide panel was saved on a bigger screen.
   const taskPanelMaxWidth = Math.max(
     taskPanelPane.minWidth,
     Math.min(taskPanelPane.maxWidth, viewportWidth - (railExpanded ? 224 : 56) - 420),
@@ -296,10 +296,9 @@ function AppShell() {
   const [restartReloadHeld, setRestartReloadHeld] = useState(false);
   useFavicon(settings?.favicon);
 
-  // Refetches that server events start: a burst of events costs two requests per query, not one each.
+  // A burst of server events costs two refetches per query, not one per event.
   const eventQueries = useMemo(() => createCoalescedInvalidator(queryClient), [queryClient]);
-  // Buffer task:changed SSE invalidations during optimistic task mutations so
-  // concurrent server-side checklist changes are flushed instead of dropped.
+  // Buffers task:changed during optimistic task edits so server checklist changes are not dropped.
   const taskChangeInvalidator = useMemo(
     () => createDeferredTaskChangeInvalidator(eventQueries),
     [eventQueries],
@@ -363,11 +362,10 @@ function AppShell() {
   }, [location.pathname, location.search, location.hash, searchOpen, navigate]);
 
   const { isUnread, markRead, markUnread, unreadCount, applyServerState, hydrated: readStateHydrated, error: readStateError } = useReadState();
-  // Search lists unread chats only once it can tell: before that, every chat or none would look unread.
+  // Until read state and lists load, every chat or none would look unread, so search waits.
   const unreadChatsKnown = readStateHydrated && !activeSessionsPending && !activeSessionsUnavailable && tasksQuery.data !== undefined;
   const bridgeReferenceContext = useMemo(() => ({ isUnread }), [isUnread]);
-  // Helm conversations are not in the session lists, so their drafts need their own protection
-  // from draft cleanup. Until Helm's state is known, nothing is pruned.
+  // Helm chats are not in the session lists; keep their drafts, and prune none until Helm loads.
   const helmStateQuery = useHelmStateQuery();
   const helmDraftKeys = useMemo(() => {
     const helmState = helmStateQuery.data;
@@ -411,7 +409,7 @@ function AppShell() {
       return { ...prev, [sessionId]: normalizedReadThrough };
     });
   }, []);
-  // The chat the reader marked unread while reading it. It stays unread until they leave it or send in it.
+  // A chat marked unread while open stays unread until the reader leaves it or sends in it.
   const heldUnreadSessionIdRef = useRef<string | null>(null);
   const markReadThroughRendered = useCallback((sessionId: string) => {
     if (heldUnreadSessionIdRef.current === sessionId) return;
@@ -477,7 +475,7 @@ function AppShell() {
     });
   }, []);
 
-  // Helper to invalidate session/task/group queries. Nobody awaits the active list, so it shares the event refetches.
+  // Nobody awaits the active list, so it shares the event refetches.
   const invalidateSessions = useCallback(() =>
     eventQueries.invalidateQueries({ queryKey: queryKeys.sessions({ includeArchived: false }), exact: true }), [eventQueries]);
   // Sending in a chat means the reader is back in it, so a held unread mark is released.
@@ -601,8 +599,7 @@ function AppShell() {
         refetch(queryKeys.managementJobsRoot, TASK_OVERVIEW_KEY);
         break;
       case "docs:changed":
-        // An agent (or another tab) wrote docs; refresh whatever the Docs view has open. A bulk
-        // write sends one event per page, which the shared refetches turn into two refreshes.
+        // A bulk write sends one event per page; the shared refetches turn that into two.
         refetch(queryKeys.docsRoot, ["related-docs"]);
         break;
       case "skills:changed":
@@ -684,8 +681,7 @@ function AppShell() {
     setLastViewedSession(activeTaskId, activeSessionId);
   }, [activeSessionId, activeTaskId]);
 
-  // The chat Tim is reading: the open chat, or Helm's conversation while it is on screen beside or
-  // instead of the brief (Helm's conversations have no chat route of their own).
+  // The open chat, or Helm's conversation while on screen (it has no chat route of its own).
   const readingSessionId = activeSessionId ?? (helmTalkVisible ? helmStateQuery.data?.current?.sessionId ?? null : null);
   const readingSessionIdRef = useRef(readingSessionId);
   readingSessionIdRef.current = readingSessionId;
@@ -694,8 +690,7 @@ function AppShell() {
     markUnread(sessionId);
   }, [markUnread]);
 
-  // Background tabs should not clear unread state just because they still
-  // have the session selected.
+  // Background tabs must not clear unread state just because the session is still selected.
   useEffect(() => {
     const previousSessionId = previousReadingSessionIdRef.current;
     if (
@@ -793,7 +788,7 @@ function AppShell() {
     if (!unseenBriefRunId || unseenBriefRunId !== loadedBriefRunId || !helmBriefVisible || !pageHasAttention) return;
     let cancelled = false;
     let timer: number | undefined;
-    // The status is fetched again rather than taken from the reply, which may be older than a newer brief.
+    // Refetch the status: the reply may be older than a newer brief.
     const attempt = (delayMs: number) => {
       timer = window.setTimeout(() => {
         if (!hasAttentionRef.current || searchOpenRef.current) return;
@@ -864,9 +859,7 @@ function AppShell() {
   const mobileHomeMark = homeMarkFor(briefSignals);
   const mobileHelmMark = homeMarkFor(chatSignals);
 
-  // ── Browser tab title ────────────────────────────────────────
-  // DocsView publishes its resolved page title upward; everything else is
-  // derived from the route plus the task/session it points at.
+  // ── Browser tab title: DocsView reports its page title; the rest comes from the route ──
   const [docTitle, setDocTitle] = useState<string | null>(null);
   const activeSessionForTitle = activeSessionId
     ? sessions.find((s) => s.sessionId === activeSessionId)
@@ -898,7 +891,7 @@ function AppShell() {
       : globalSessions;
     const visible = scopedSessions.filter((s) => !s.archived && !archivingIds.has(s.sessionId) && s.sessionId !== removedId);
     if (visible.length === 0) return null;
-    // Find position of removed session in original list, pick the next one (below), else previous (above)
+    // Prefer the session below the removed one, else the one above.
     const allVisible = scopedSessions.filter((s) => !s.archived && !archivingIds.has(s.sessionId));
     const idx = allVisible.findIndex((s) => s.sessionId === removedId);
     if (idx >= 0 && idx < allVisible.length - 1) return allVisible[idx + 1].sessionId;
@@ -1009,7 +1002,7 @@ function AppShell() {
     }
   };
 
-  // Switching lists inside the Work tab replaces the entry, so Back leaves the tab instead of replaying toggles.
+  // Work tab list switches replace history, so Back leaves the tab instead of replaying toggles.
   const handleSelectMobileWorkSegment = useCallback((segment: MobileWorkSegment, replace = true) => {
     navigate(segment === "chats" ? "/chats" : "/", { replace });
   }, [navigate]);
@@ -1148,7 +1141,7 @@ function AppShell() {
     return newSessionId;
   }, [cleanupRejectedFirstSendSession, materializeSession, navigate, restoreDraft]);
 
-  // Helm's route names no chat, so a recording's recovery has to be told whose composer is on screen.
+  // Helm's route names no chat, so recording recovery is told whose composer is on screen.
   const voiceComposerKey = helmTalkVisible
     ? helmStateQuery.data?.current?.sessionId ?? HELM_DRAFT_COMPOSER_KEY
     : activeComposerKey;
@@ -1184,7 +1177,7 @@ function AppShell() {
       }
       const { jobId } = settled;
       if (jobId && isHeldNoticeClosed(jobId)) return;
-      // Whoever left this chat is waiting for a reply that will not come until they check the words.
+      // No reply comes until the user checks the words, so tell them.
       showToast({
         id: heldToastId,
         ...(jobId ? { onClosed: () => rememberHeldNoticeClosed(jobId) } : {}),
@@ -1198,7 +1191,7 @@ function AppShell() {
           icon: "open",
           onAction: () => {
             dismissToast(heldToastId);
-            // Read now: the app may have raised this before tasks loaded, and a dictation into a task chat names no task.
+            // Read now: tasks may have loaded since, and a task chat's dictation names no task.
             const links = sessionLinksRef.current;
             const session = links.sessions.find((entry) => entry.sessionId === settled.sessionId);
             navigateToSession(settled.sessionId, settled.taskId ?? findTaskForSession(links.tasks, settled.sessionId, session)?.id);
@@ -1208,11 +1201,7 @@ function AppShell() {
     },
   });
 
-  /**
-   * Drops every piece of client-side state keyed to a composer that is going away for good.
-   * Session deletion has more than one entry point, so all per-composer stores are retired here
-   * to keep them from drifting apart.
-   */
+  /** Clear every per-composer store here; session deletion has several entry points. */
   const retireComposer = useCallback((sessionId: string) => {
     clearDraft(sessionId);
     discardVoiceRecording(sessionId);
@@ -1293,9 +1282,6 @@ function AppShell() {
     }
   };
 
-  // Deleting a task used to silently orphan its linked sessions. The dialog
-  // makes the caller choose, and the server refuses a disposition-less delete
-  // whenever sessions are linked, so no entry point can skip the decision.
   const [pendingTaskDeletion, setPendingTaskDeletion] = useState<{
     task: Task;
     preview?: TaskDeletionPreview;
@@ -1319,8 +1305,7 @@ function AppShell() {
     await Promise.all([invalidateTasks(), invalidateAllSessionQueries()]);
   }, [navigate, invalidateTasks, invalidateAllSessionQueries]);
 
-  // A delete that outlived its HTTP response still finishes server-side; the
-  // poll noticing the task is gone stands in for the reply that never arrived.
+  // A delete can outlive its HTTP reply; the poll seeing the task gone stands in for that reply.
   useEffect(() => {
     const taskId = pendingTaskDeletion?.task.id;
     if (!taskId || !deletionProgress.taskGone) return;
@@ -1334,8 +1319,7 @@ function AppShell() {
     if (!task) return;
     if (quietTaskDeletionsRef.current.has(taskId)) return;
 
-    // A task made by mistake and never used is deleted without the dialog. An
-    // unsent message counts as use; the server checks everything else.
+    // An unused task skips the dialog; an unsent message counts as use, the server checks the rest.
     const draftKey = getDraftComposerKey(taskId);
     const unsent = getDraft(draftKey);
     const hasUnsentMessage = Boolean(unsent?.text.trim() || unsent?.attachments?.length);
@@ -1387,9 +1371,7 @@ function AppShell() {
       const apiError = err instanceof ApiError ? err : undefined;
       const details = apiError?.details as TaskDeletionErrorBody | undefined;
       const message = details?.message ?? (err instanceof Error ? err.message : String(err));
-      // A transport failure (or a run already in flight) does not mean the
-      // server stopped working, so keep polling instead of going idle. The task
-      // always survives a failed disposition, so retrying from here is safe.
+      // A lost response or run in flight may still be deleting: keep polling. Retry is safe.
       const stillRunning = apiError === undefined || details?.error === "deletion_in_progress";
       setPendingTaskDeletion((prev) => prev && prev.task.id === taskId
         ? {
@@ -1499,9 +1481,7 @@ function AppShell() {
     }
   }, [dismissTaskCompletionFeedback, dismissToast, handleUpdateTask, showToast]);
 
-  // `handleUpdateTask` is recreated every render, so route the undo through a ref
-  // to keep the toast effect keyed purely on newly completed tasks. Without this
-  // the effect re-fires each render and keeps resetting the auto-dismiss timer.
+  // handleUpdateTask changes every render; a ref keeps the toast effect from resetting its timer.
   const undoTaskCompletionRef = useRef(handleUndoTaskCompletion);
   useEffect(() => {
     undoTaskCompletionRef.current = handleUndoTaskCompletion;
@@ -1840,9 +1820,7 @@ function AppShell() {
     }
   }, [activeSessionId, activeTaskId, selectedTask, sessions, globalSessions, navigate, markRead, retireComposer, patchSessionsInCache, trackArchiveTransitions, invalidateAllSessionQueries, invalidateTasks]);
 
-  // ── Mobile: detect breakpoint ─────────────────────────────────
-  // On mobile (< md / 768px), we show stacked full-screen views.
-  // The route determines which level of the hierarchy is visible.
+  // ── Mobile (< md): stacked full-screen views; the route picks the level shown ──
 
   const isMobileRoute = {
     dashboard: mobileRouteMeta.route === "dashboard",
@@ -1972,9 +1950,7 @@ function AppShell() {
         onRailTabChange={handleRailTabChange}
       />
 
-      {/* ── Task Panel / Mobile Task List ─────────────────── */}
-      {/* Desktop: visible for active task sessions and the non-duplicative task overview. */}
-      {/* Mobile: show task list at / only */}
+      {/* ── Task panel (desktop: task chats and overview) / task list (mobile, at / only) ── */}
       {(() => {
         const showDesktopPanel = !!selectedTask
           && !!activeTaskId
@@ -2377,7 +2353,7 @@ function AppShell() {
                 </Suspense>
               }
             />
-            {/* Voice mode became Helm's hands-free mode; keep old links and home-screen shortcuts working. */}
+            {/* Old voice-mode links and home-screen shortcuts now open Helm. */}
             <Route path="voice" element={<Navigate to="/helm" replace />} />
           </Routes>
           </div>
@@ -2436,8 +2412,7 @@ function AppShell() {
   );
 }
 
-// ── Mobile Task List View ────────────────────────────────────────
-// Full-screen view for the mobile Work tab: the task list or the quick chats, switched from its header
+// ── Mobile Work tab: the task list or the quick chats, switched from its header ──
 
 function MobileTaskListView({
   tasks,
@@ -2696,7 +2671,7 @@ function SessionRoute({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [launchMode, setLaunchModeState] = useState<SendMode>(DEFAULT_SEND_MODE);
-  /** Counts launch-mode choices, so a voice first message finishing late never undoes a newer one. */
+  /** Counts launch-mode choices, so a late voice first message never undoes a newer one. */
   const launchModeChoiceRef = useRef(0);
   const setLaunchMode = useCallback((mode: SendMode) => {
     launchModeChoiceRef.current += 1;
@@ -2733,8 +2708,7 @@ function SessionRoute({
   const draftLaunch = draft?.launch;
   const voiceJob = getVoiceJob(composerKey);
   const previousDraftRouteKeyRef = useRef(draftRouteKey);
-  // Shared with the change-model dialog; only the draft route needs settings,
-  // and cached settings are still read when fetching is disabled.
+  // Only the draft route fetches settings; cached ones are still read when fetching is off.
   const modelPresetMemory = useModelPresets({ enabled: isDraft });
   const { presets } = modelPresetMemory;
   const rememberedLaunchSelection = !draftLaunch?.model
@@ -2769,14 +2743,14 @@ function SessionRoute({
   const selectedPresetSlot = draftLaunch?.presetSlot ?? rememberedLaunchSelection?.slot;
   const activePresetSlot = selectedPresetSlot
     ?? modelPresetMemory.findSlotForModel(launchState.modelKey, launchState.availableModels);
-  // While a model A/B test runs, a chat whose model nobody picked leaves the choice of arm to the server.
+  // During a model A/B test, a chat with no picked model lets the server choose the arm.
   const abTestLaunch = isDraft && modelPresetMemory.abTest && !draftLaunch?.model && !draftLaunch?.presetSlot
     && !draftLaunch?.reasoningEffort && !draftLaunch?.contextTier
     ? modelPresetMemory.abTest
     : undefined;
   const rememberModelPreset = modelPresetMemory.remember;
   const playbooksQuery = usePlaybooksQuery({ enabled: isDraft });
-  // Only an explicit choice is sent; without one the agent picks a playbook (or the task's pin applies).
+  // Only an explicit choice is sent; else the agent picks a playbook or the task's pin applies.
   const launchPlaybookForCreate = draftLaunch?.playbook;
   const launchCreateOptions = useMemo(
     () => ({
@@ -2803,10 +2777,7 @@ function SessionRoute({
     setLaunchMode(DEFAULT_SEND_MODE);
   }, [setLaunchMode]);
 
-  /**
-   * A model choice is explicit draft state. Effort and context selections follow
-   * the selected preset, while each selection remains scoped to its model id.
-   */
+  /** Effort and context follow the chosen preset, each scoped to its model id. */
   const applyLaunchSelection = useCallback((selection: ModelPresetSelection) => {
     const reasoningEffortSelection = selection.reasoningEffort
       ? { modelId: selection.modelId, value: selection.reasoningEffort }
@@ -3024,9 +2995,7 @@ function SessionRoute({
       : `/sessions/${newSessionId}`;
     // Keep any unsent recording attached to the conversation it was made for.
     migrateVoiceRecording(composerKey, newSessionId);
-    // Every new chat on this route shares one composer slot and launch mode. The message belongs to
-    // its conversation from here, so hand both back now: waiting for delivery would show it in the
-    // next new chat and then wipe whatever was typed there.
+    // Release the shared draft now: after delivery it would show in, then wipe, the next new chat.
     releaseDraft(composerKey, sentDraft);
     resetLaunchOptions();
     const launchModeChoice = launchModeChoiceRef.current;
@@ -3075,7 +3044,7 @@ function SessionRoute({
         ? { sessionOptions: launchCreateOptions }
         : {}),
     });
-    // An auto-sent recording starts the new chat, so its launch mode is used up like a typed first send's.
+    // An auto-sent recording starts the chat, using up its launch mode like a typed first send.
     if (isDraft && delivered === "autosend" && launchModeChoice === launchModeChoiceRef.current) {
       resetLaunchOptions();
     }
@@ -3126,9 +3095,7 @@ function SessionRoute({
         />
       )}
       <ChatView
-        // No `key` here — the component must survive draft→real session transitions
-        // so pending first-send work can hand off to the real session without a
-        // remount. Session and draft-composer resets are handled inside ChatView.
+        // No key: a remount on draft-to-real switch would drop the pending first send.
         composerKey={composerKey}
         sessionId={sessionId}
         hasPlan={hasPlan}

@@ -12,7 +12,7 @@ export interface JsonlRecordScanOptions {
   chunkBytes?: number;
   /** Throw instead of buffering a record that grows past this many bytes. */
   maxRecordBytes?: number;
-  /** Hand the event loop back between reads once this much synchronous work has run; 0 yields between every read. */
+  /** Yield to the event loop after this much synchronous work; 0 yields between every read. */
   yieldAfterMs?: number;
 }
 
@@ -23,12 +23,7 @@ export interface JsonlRecordScan {
   trailing?: { record: Buffer; offset: number };
 }
 
-/**
- * Calls `onRecord` with each LF-terminated record of `file` (without its LF; a CR is kept) and
- * the record's byte offset. A record split across reads is joined once, when its LF arrives, so a
- * huge record costs its own size instead of a copy of its growing prefix per read. `record` may be
- * a view of the reused read buffer and is valid only until `onRecord` returns.
- */
+/** LF records with byte offsets; `record` may be the reused read buffer, so copy it to keep it. */
 export async function scanJsonlRecords(
   file: FileHandle,
   onRecord: (record: Buffer, offset: number) => void,

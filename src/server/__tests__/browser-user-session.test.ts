@@ -16,10 +16,7 @@ afterEach(async () => {
   for (const teardown of teardowns.splice(0).reverse()) await teardown();
 });
 
-/**
- * The user's session over a real broker and session store. The live gateway is a stand-in that
- * gives a ticket for any session and whose views a test opens and ends with `viewers`.
- */
+/** A user session on a real broker and store; `viewers` opens and ends fake gateway views. */
 function createUserBrowser() {
   const broker = new BrowserBroker({
     copilotHome: makeTestDir("browser-user-session"),
@@ -49,7 +46,7 @@ function createUserBrowser() {
     userSession,
     createTicket,
     signedIn,
-    /** What the gateway reports: how many views of the session are open, and whether the one that ended was cut off. */
+    /** Reports open views of the session, and whether the one that ended was cut off. */
     viewers: (browserSessionId: string, open: number, dropped = false): void => {
       for (const listener of listeners) listener(browserSessionId, open, dropped);
     },
@@ -153,7 +150,7 @@ describe("UserBrowserSession and agents", () => {
     user.viewers(browserSessionId, 0, true);
     await vi.advanceTimersByTimeAsync(14_999);
     await expect(user.agentUses()).rejects.toThrow(HELD);
-    // It is back, as on a phone that changed networks: the wait is over, and the browser stays the user's.
+    // Back, as after a network change: the wait ends and the browser stays the user's.
     user.viewers(browserSessionId, 1);
     await vi.advanceTimersByTimeAsync(60_000);
     await expect(user.agentUses()).rejects.toThrow(HELD);

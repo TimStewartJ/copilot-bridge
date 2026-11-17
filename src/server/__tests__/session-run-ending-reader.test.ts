@@ -38,8 +38,7 @@ describe("readPersistedRunEnding", () => {
   });
 
   it("skips everything a sub-agent wrote to the shared log", async () => {
-    // The shape that ended a working run on 2026-09-20: the main agent is mid-turn and an explore
-    // agent's last turn end is the newest line.
+    // The main agent is mid-turn and an explore agent's last turn end is the newest line.
     const path = writeLog("ending-subagent-tail", [
       { id: "main-end", type: "assistant.turn_end", timestamp: at(1_000), data: { turnId: "5" } },
       { id: "main-start", type: "assistant.turn_start", timestamp: at(1_000), data: { turnId: "6" } },

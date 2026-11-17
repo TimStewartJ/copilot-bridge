@@ -50,8 +50,7 @@ export function getProvider(name: ProviderName): WorkTrackingProvider {
       break;
     }
     case "github": {
-      // GitHub refs can be fully qualified ("owner/repo#123"), so enrichment works without
-      // settings; config only supplies defaults for short refs like "123" or "repo#123".
+      // Full refs work without settings; config only supplies defaults for short refs like "123".
       provider = new GitHubProvider(settings.providers?.github ?? { owner: "" });
       break;
     }
@@ -156,7 +155,7 @@ export async function enrichPullRequests(refs: PRRef[]): Promise<EnrichedPR[]> {
   );
 }
 
-/** The Azure DevOps provider when it is configured. Only it reads the links the work map is built from. */
+/** The configured Azure DevOps provider; only it reads the links the work map is built from. */
 export function getAdoProvider(): AdoProvider | null {
   const provider = getProvider("ado");
   return provider instanceof AdoProvider ? provider : null;

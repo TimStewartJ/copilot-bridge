@@ -1,5 +1,4 @@
-// Chat delivery outbox: messages queued for a chat. Rows with purpose "delivery" are messages from
-// triggers, management jobs and stopped commands; rows with purpose "defer" are restart notices.
+// Chat outbox: "delivery" rows come from triggers, jobs and stopped commands; "defer" are restarts.
 
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
@@ -13,10 +12,10 @@ export type DeferredPromptPurpose = "defer" | "delivery";
 /** Delivery ids for management job results sent back to the session that queued the job. */
 export const MANAGEMENT_JOB_DELIVERY_ID_PREFIX = "management-job:";
 
-/** Delivery ids for chat messages the session could not take when they were sent (see chat-message-outbox.ts). */
+/** Delivery id prefix for chat messages the session could not take (see chat-message-outbox.ts). */
 export const CHAT_MESSAGE_DELIVERY_ID_PREFIX = "chat-message:";
 
-/** Delivery ids and source ids for notices about stopped background commands (see background-commands.ts). */
+/** Delivery and source id prefix for stopped-command notices (see background-commands.ts). */
 export const BACKGROUND_COMMAND_DELIVERY_ID_PREFIX = "background-commands:";
 
 /** Upper bound on rows removed by a single terminal-row prune pass. */
@@ -128,7 +127,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     WHERE id = ? AND status = 'pending'
   `);
 
-  // With a claimToken the row must still be running under that claim; without one it must not be terminal yet.
+  // With a claimToken the row must still run under that claim; without, it must not be terminal.
   const settleByClaimStmt = db.prepare(`
     UPDATE deferred_prompts
     SET status = ?, claimToken = NULL, leaseExpiresAt = NULL, lastError = ?, updatedAt = ?
@@ -312,10 +311,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return row?.found === 1;
   }
 
-  /**
-   * Atomically claim a pending prompt for execution.
-   * Returns the claimed prompt + claimToken, or undefined if already claimed.
-   */
+  /** Atomically claims a pending prompt; undefined if already claimed. */
   function claimDue(id: string, leaseMs: number): { prompt: DeferredPrompt; claimToken: string } | undefined {
     const claimToken = randomUUID();
     const now = new Date();
@@ -350,25 +346,18 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return settle(id, "failed", lastError, options);
   }
 
-  /**
-   * Return a failed (or cancelled) deferral to the pending queue with a fresh
-   * attempt budget, due at `runAt` (now by default).
-   */
+  /** Requeues a failed or cancelled deferral with a fresh attempt budget, due at `runAt`. */
   function reactivate(id: string, runAt = new Date().toISOString()): boolean {
     const result = reactivateStmt.run(runAt, new Date().toISOString(), id);
     return (result as any).changes > 0;
   }
 
-  /**
-   * Withdraw a defer's final messages that have not reached the chat, waiting or failed. Used when
-   * the defer is restarted: what they say (that it stopped) is no longer true. Updates from a
-   * recurring defer that was still active when it sent them are kept; they report something real.
-   */
+  /** On restart: undelivered 'trigger stopped' results are no longer true, so retire them. */
   function retireUndeliveredFinalMessagesForSource(sessionId: string, sourceDeferId: string): number {
     const now = new Date().toISOString();
     let retired = 0;
     for (const row of selectUndeliveredForSource.all(sessionId, sourceDeferId) as Array<{ id: string; prompt: string }>) {
-      // Only results that said the trigger stopped; a message trigger's own prompt is the fire itself.
+      // Only results saying the trigger stopped; a message trigger's own prompt is the fire itself.
       const result = parseTriggerResultPrompt(row.prompt);
       if (!result || result.continues) continue;
       retired += (retireDeliveryStmt.run(now, row.id) as any).changes as number;
@@ -376,10 +365,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return retired;
   }
 
-  /**
-   * Give a claimed prompt back to the queue. With `retryAt` the try counts and the prompt is
-   * due again then; without it the try is not counted and the prompt stays due.
-   */
+  /** Gives a claim back; with `retryAt` the try counts and it is due then, else it stays due. */
   function release(
     id: string,
     claimToken: string,
@@ -428,36 +414,26 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     return (result as any).changes as number;
   }
 
-  /**
-   * Withdraw management job results still waiting for a session that is archived or gone.
-   * Returned defer results keep their own delivery rules and are not touched.
-   */
+  /** Withdraws job results waiting for an archived or gone session; defer results are untouched. */
   function cancelManagementJobDeliveriesForSession(sessionId: string): number {
     const result = cancelManagementJobDeliveriesStmt.run(new Date().toISOString(), sessionId);
     return (result as any).changes as number;
   }
 
-  /**
-   * Hard-delete every row owned by a session. Used when the session itself is
-   * deleted, so no orphaned deferral rows survive its owner.
-   */
+  /** Hard-deletes every row a session owns, when the session is deleted. */
   function deleteForSession(sessionId: string): number {
     const result = deleteForSessionStmt.run(sessionId);
     return (result as any).changes as number;
   }
 
-  /**
-   * Bounded hard-delete of terminal rows older than `olderThanIso`. Terminal
-   * rows can never run again, so they exist only as history; without pruning
-   * the table grows for the lifetime of the install.
-   */
+  /** Bounded delete of terminal rows older than olderThanIso, which would otherwise pile up. */
   function pruneTerminalRows(olderThanIso: string, limit = DEFAULT_TERMINAL_PRUNE_LIMIT): number {
     const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_TERMINAL_PRUNE_LIMIT;
     const result = pruneTerminalStmt.run(olderThanIso, boundedLimit);
     return (result as any).changes as number;
   }
 
-  /** Move rows whose lease ran out back to pending, their try still counted. Returns the chats affected. */
+  /** Moves rows whose lease ran out back to pending, try still counted; returns affected chats. */
   function reclaimExpiredRunning(now = new Date().toISOString()): string[] {
     const sessionIds = (selectExpiredRunningSessionIds.all(now) as Array<{ sessionId: string }>)
       .map((row) => row.sessionId);

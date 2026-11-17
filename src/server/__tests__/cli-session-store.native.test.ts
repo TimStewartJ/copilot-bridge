@@ -7,8 +7,7 @@ import { createCopilotCliSessionCatalog } from "../copilot-cli-session-catalog.j
 import { getProcessHost } from "../process-host.js";
 import { makeTestDir } from "./helpers.js";
 
-// Drives a real worker thread against a real SQLite file, so it runs in the native project, which
-// selects the production (worker) backend.
+// A real worker on a real SQLite file: native project only, where the worker backend is selected.
 const store = new CliSessionStore({ inline: false });
 
 afterAll(async () => {
@@ -71,15 +70,13 @@ describe("CLI session store on a real worker thread", () => {
     const { copilotHome, db } = createCliStore("bridge-cli-store-native-lock-");
     try {
       db.exec("BEGIN IMMEDIATE");
-      // The worker answers in order: once the read has come back, the delete is what it is doing,
-      // and it cannot finish while this thread holds the write lock.
+      // Answers come in order: once the read returns, the worker is blocked in the delete.
       const read = store.run({ op: "has", copilotHome, sessionId: "session-1" });
       const pendingDelete = store.run({ op: "delete", copilotHome, sessionId: "session-1" });
       expect(await read).toEqual({ result: "hit" });
       await new Promise((resolve) => setImmediate(resolve));
 
-      // Only a thread that is not stuck inside the delete can release the lock. On the calling
-      // thread the delete would wait out its busy timeout here and fail with "database is locked".
+      // On the calling thread the delete would block this COMMIT and fail: "database is locked".
       db.exec("COMMIT");
       await pendingDelete;
       expect(db.prepare("SELECT id FROM sessions ORDER BY id").all()).toEqual([{ id: "session-2" }]);

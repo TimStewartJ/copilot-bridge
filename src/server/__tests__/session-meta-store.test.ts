@@ -114,8 +114,7 @@ describe("session-meta-store", () => {
   });
 });
 
-// Record `count` runs for a schedule with strictly increasing timestamps so the
-// newest-first ordering is deterministic. Returns sessionIds oldest-first.
+// Strictly increasing timestamps keep newest-first order deterministic; returns ids oldest-first.
 function seedRuns(store: SessionMetaStore, scheduleId: string, count: number): string[] {
   const sessionIds: string[] = [];
   for (let i = 0; i < count; i++) {

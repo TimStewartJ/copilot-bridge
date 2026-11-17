@@ -1,5 +1,4 @@
-// Runs the steps of the browser tools and shapes what a tool answers with. What a step may be
-// is in browser-steps.ts.
+// Runs browser tool steps and shapes the tool's answer; allowed steps are in browser-steps.ts.
 
 import type { BrowserCommand, BrowserCommandResult } from "./agent-browser.js";
 import { ab, browserFailureAdvice, isAgentBrowserInstalled } from "./agent-browser.js";
@@ -32,7 +31,7 @@ export interface BrowserAutomationRunFailure extends BrowserAutomationRunSuccess
 
 /** The steps that are run again after the Bridge revived a browser that would not start. */
 const RERUN_AFTER_RECOVERY = new Set(["open", "wait", "snapshot", "click", "fill", "type", "select", "check", "press", "scroll", "get"]);
-/** All of a call's pictures arrive in one tool result, which a chat cannot compact its way out of. */
+/** A call's pictures all land in one tool result, which a chat cannot compact away. */
 const MAX_SCREENSHOT_CHARS_PER_CALL = 8_000_000;
 /** A page's markup or console can be megabytes; a step's result is for reading. */
 const MAX_STEP_OUTPUT_CHARS = 100_000;
@@ -147,7 +146,7 @@ export function formatBrowserStepTimeline(steps: BrowserAutomationStepResult[]):
 const AGENT_BROWSER_INSTALL_GUIDANCE =
   "agent-browser is not installed. Install it with: npm install -g agent-browser && agent-browser install";
 
-/** The failure a browser tool answers with when the agent-browser CLI is missing; undefined when it is there. */
+/** The tool failure for a missing agent-browser CLI; undefined when it is installed. */
 export async function agentBrowserMissingFailure(): Promise<ReturnType<typeof toolFailure> | undefined> {
   if (await isAgentBrowserInstalled()) return undefined;
   return toolFailure("agent-browser is not installed.", {
@@ -156,10 +155,7 @@ export async function agentBrowserMissingFailure(): Promise<ReturnType<typeof to
   });
 }
 
-/**
- * The result of a list of steps that stopped at one that failed. `fields` identify the browser
- * in the result, `logLines` in the session log.
- */
+/** Result of steps stopped by a failure; `fields` name the browser in it, `logLines` in the log. */
 export function browserStepFailure<T extends object>(
   failure: BrowserAutomationRunFailure,
   fields: T,

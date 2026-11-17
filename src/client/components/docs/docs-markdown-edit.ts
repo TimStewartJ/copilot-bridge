@@ -1,8 +1,4 @@
-/**
- * Text transforms behind the markdown editor's toolbar and keyboard shortcuts. Each takes the
- * textarea's value plus selection and returns the next value plus selection, so they can be
- * tested without a DOM.
- */
+/** Toolbar transforms: (value, selection) in and out, so they test without a DOM. */
 
 export interface TextEdit {
   value: string;
@@ -210,10 +206,7 @@ export function applyMarkdownAction(state: TextEdit, action: MarkdownAction): Te
   }
 }
 
-/**
- * Enter inside a list continues it; Enter on an empty item ends the list. Returns null when
- * the caret is not in a list, so the browser handles the key normally.
- */
+/** Enter continues a list, or ends it on an empty item; null outside a list. */
 export function continueListOnEnter(state: TextEdit): TextEdit | null {
   const { value, selectionStart: start, selectionEnd: end } = state;
   if (start !== end) return null;
@@ -234,10 +227,7 @@ export function continueListOnEnter(state: TextEdit): TextEdit | null {
   return { value: value.slice(0, start) + inserted + value.slice(end), selectionStart: caret, selectionEnd: caret };
 }
 
-/**
- * Tab and Shift+Tab nest list items. Returns null outside a list so Tab keeps moving focus,
- * which keyboard users rely on to leave the editor.
- */
+/** Tab/Shift+Tab nest list items; null outside a list so Tab still moves focus out. */
 export function indentListOnTab(state: TextEdit, outdent: boolean): TextEdit | null {
   const { value, selectionStart } = state;
   const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;

@@ -1,7 +1,4 @@
-// Suggested chats on a task: serving them, closing them, and the panel's refresh, which asks Helm's
-// model for this one task's next chats in a throwaway helper session. Helm's looks write them for
-// many tasks at once through helm_publish (helm/thinker/publish.ts); both go through
-// validateTaskStarters and replace the task's open set.
+// Task suggested chats; panel refresh and helm_publish both validate and replace the open set.
 import type { AppContext } from "./app-context.js";
 import type { AgentModelInfo } from "./agent-backend/types.js";
 import { chooseHelmModel, usableModels } from "./helm/helm-model.js";
@@ -19,12 +16,12 @@ const REFRESH_EFFORT = "medium";
 const MAX_HISTORY = 8;
 const MAX_CHECKLIST = 15;
 const MAX_CHATS = 8;
-/** The latest reply the model sees: its start and end, where replies put the outcome and any question. */
+/** The model sees a reply's start and end, where the outcome and any question usually are. */
 const REPLY_HEAD = 1_000;
 const REPLY_TAIL = 500;
-/** Transcript entries read to find a chat's latest reply; an agentic run has many entries per reply. */
+/** Transcript entries read to find a chat's latest reply; agentic runs have many per reply. */
 const REPLY_SCAN_ENTRIES = 80;
-/** How long a task's chats must stay quiet after a reply before its suggestions refresh by themselves. */
+/** How long a task's chats stay quiet after a reply before suggestions refresh by themselves. */
 export const AUTO_REFRESH_QUIET_MS = 3 * 60_000;
 /** An automatic refresh waits this long after the task's last refresh of any kind. */
 export const AUTO_REFRESH_COOLDOWN_MS = 30 * 60_000;
@@ -131,7 +128,7 @@ function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** The chat whose reply a refresh reads, and the short preview to use if its transcript can't be read. */
+/** The chat whose reply a refresh reads, and a preview to use if its transcript can't be read. */
 export interface ReplySource {
   sessionId: string;
   preview?: string;
@@ -199,7 +196,7 @@ export class TaskStartersService {
       && this.ctx.bridgeSessionStateStore?.getState(id)?.triggeredBy !== "schedule");
   }
 
-  /** Refreshes a task whose chats went quiet, unless it refreshed recently or today's cap is spent. */
+  /** Refreshes a quiet task, unless it refreshed recently or today's cap is spent. */
   autoRefresh(taskId: string, reply?: ReplySource): boolean {
     const store = this.ctx.taskStartersStore;
     if (!store || this.refreshing.has(taskId)) return false;
@@ -228,7 +225,7 @@ export class TaskStartersService {
     if (!this.store().close(taskId, starterId, how)) throw new TaskStartersError("That suggestion is gone", 404);
   }
 
-  /** Starts a refresh of one task; a second call while one runs joins it. Resolves when it is done. */
+  /** Refreshes one task; a call while one runs joins it. Resolves when done. */
   refresh(taskId: string, options: { trigger?: TaskStarterRefreshTrigger; reply?: ReplySource } = {}): Promise<void> {
     if (!this.ctx.taskStore.getTask(taskId)) throw new TaskStartersError("Task not found", 404);
     const running = this.refreshing.get(taskId);
@@ -257,7 +254,7 @@ export class TaskStartersService {
     return store;
   }
 
-  /** The task's chat that was active most recently, leaving out scheduled runs and chats still working, whose last message is progress. */
+  /** The task's most recently active chat, skipping scheduled runs and chats still working. */
   private latestChat(taskId: string): string | undefined {
     const task = this.ctx.taskStore.getTask(taskId);
     let latest: { id: string; at: string } | undefined;
@@ -270,7 +267,7 @@ export class TaskStartersService {
     return latest?.id;
   }
 
-  /** A chat's latest reply from its transcript, falling back to the short preview when it can't be read. */
+  /** A chat's latest reply from its transcript, else the short preview. */
   private async readLatestReply(taskId: string, source?: ReplySource): Promise<LatestReply | undefined> {
     const sessionId = source?.sessionId ?? this.latestChat(taskId);
     const fallback = source?.preview ? { text: source.preview } : undefined;

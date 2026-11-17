@@ -17,8 +17,7 @@ afterEach(() => {
 
 describe("validation command runner retention", () => {
   it("sweeps the log directory after a streaming run without touching the fresh log", async () => {
-    // The harness disables background sweeps so no test can delete real logs;
-    // this test is specifically about that behavior, so it opts back in.
+    // The harness disables background sweeps to protect real logs; this test opts back in.
     vi.stubEnv("BRIDGE_DISABLE_BACKGROUND_LOG_RETENTION", "");
     const rootDir = makeTestDir("validation-runner-sweep");
     const logDir = getValidationCommandLogDir(rootDir);

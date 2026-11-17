@@ -20,10 +20,7 @@ export function createServerShutdownCoordinator(
   dependencies: {
     exit?: (code: number) => void;
     maxBudgetMs?: number;
-    /**
-     * State to leave for the next server. Started in the tick of the request, before the services
-     * stop, so it is on disk even when the shutdown later runs out of time; awaited before exit.
-     */
+    /** State for the next server; started before services stop so a timeout cannot lose it. */
     saveHandoff?: () => Promise<unknown>;
   } = {},
 ): ServerShutdownCoordinator {

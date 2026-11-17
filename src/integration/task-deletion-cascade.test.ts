@@ -59,8 +59,7 @@ describe("task deletion removes the task's triggers", () => {
     const triggerId = createTaskTrigger(task.id, "Child");
     ctx.triggerStore!.recordRun({ triggerId, sessionId: "run-session" });
 
-    // The task row is deleted last, so dropping `tasks` makes the final
-    // statement in the transaction throw after the trigger deletes ran.
+    // The task row is deleted last, so hiding `tasks` makes the final statement throw.
     db.exec("PRAGMA foreign_keys = OFF");
     db.exec("ALTER TABLE tasks RENAME TO tasks_hidden");
 
@@ -181,8 +180,7 @@ describe("task deletion session disposition", () => {
     db.exec("ALTER TABLE tasks_hidden RENAME TO tasks");
     db.exec("PRAGMA foreign_keys = ON");
 
-    // Archiving commits with the cascade, so a surviving task cannot be left
-    // with all of its sessions mysteriously archived.
+    // Archiving commits with the cascade, so a surviving task never has its sessions archived.
     expect(ctx.tagStore!.getEntityTags("task", task.id).map((item) => item.id)).toEqual([tag.id]);
     expect(isArchived("session-a")).toBe(false);
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
@@ -203,8 +201,7 @@ describe("task deletion session disposition", () => {
       .delete(`/api/tasks/${task.id}?sessionDisposition=delete`)
       .expect(200);
 
-    // Deleting a session unlinks it from every task, so a shared session must
-    // never be destroyed on behalf of just one of its owners.
+    // A session shared with another task must not be deleted on behalf of only one owner.
     expect(deleted).toEqual(["exclusive-session", "second-exclusive"]);
     expect(res.body.deletedSessionIds).toEqual(deleted);
     expect(ctx.taskStore.getTask(task.id)).toBeUndefined();
@@ -241,8 +238,7 @@ describe("task deletion session disposition", () => {
 
     expect(res.body.error).toBe("session_disposition_failed");
     expect(res.body.sessionErrors).toMatchObject({ "doomed-session": "backend exploded" });
-    // Sessions are disposed before the task, so the survivor is the task itself
-    // rather than a set of orphaned sessions.
+    // Sessions are disposed before the task, so a failure leaves the task, not orphaned sessions.
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
     expect(ctx.taskStore.getTask(task.id)!.sessionIds).toEqual(["doomed-session"]);
   });
@@ -261,8 +257,7 @@ describe("task deletion session disposition", () => {
 
     expect(res.body.error).toBe("session_disposition_failed");
     expect(res.body.sessionErrors).toHaveProperty("late-session");
-    // The cascade would have dropped the new link silently — precisely the
-    // orphaning this path exists to prevent.
+    // The cascade would have silently dropped the new link, orphaning the session.
     expect(ctx.taskStore.getTask(task.id)).toBeDefined();
     expect(ctx.taskStore.getTask(task.id)!.sessionIds).toContain("late-session");
   });

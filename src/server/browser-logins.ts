@@ -1,6 +1,4 @@
-// Logins the user saved for the Bridge's browsers, so that an agent can sign in again when a site
-// has signed out. The passwords are in agent-browser's vault, which fills them into a page
-// without printing them; this module keeps the list of what is saved and for which site.
+// Saved logins per site; passwords stay in agent-browser's vault, never here.
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -15,7 +13,7 @@ export interface BrowserLogin {
   origin: string;
   username: string;
   savedAt: string;
-  /** The site did not accept it when an agent last used it. It is not tried again until it is saved anew. */
+  /** The site refused it when an agent last used it; it is not retried until saved anew. */
   failedAt?: string;
 }
 
@@ -65,10 +63,7 @@ export class BrowserLogins {
   private logins: Promise<BrowserLogin[]> | undefined;
   private writes: Promise<void> = Promise.resolve();
 
-  /**
-   * `file` lists the logins. The vault is the operating-system user's, shared by every Bridge
-   * that user runs, so names in it start with `scope`, which tells this Bridge's from the others'.
-   */
+  /** The vault is shared by every Bridge of the OS user, so names in it start with `scope`. */
   constructor(options: { file: string; scope: string; vault?: BrowserLoginVault }) {
     this.file = options.file;
     this.prefix = `bridge-${createHash("sha1").update(options.scope).digest("hex").slice(0, 8)}-`;
@@ -120,8 +115,7 @@ export class BrowserLogins {
       username: form.username,
       savedAt: new Date().toISOString(),
     };
-    // The vault checks the page against this address by its origin; the rest of it, which can
-    // carry one-time values, is not kept.
+    // The vault matches the page by origin; the rest of the address can carry one-time values.
     const saved = await this.vault.save(login.id, { ...form, url: `${origin}/` }, target);
     if (!saved.ok) return undefined;
     await this.change((logins) => [...logins.filter((other) => other.id !== login.id), login]);

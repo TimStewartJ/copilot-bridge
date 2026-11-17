@@ -1,5 +1,4 @@
-// Database module — single SQLite database for all app data
-// Uses Node.js built-in node:sqlite (DatabaseSync)
+// The single SQLite database for all app data, on Node's built-in node:sqlite.
 
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
@@ -32,10 +31,7 @@ export type DocsFtsHealth =
       ok: true;
       status: "available";
       checkedAt: string;
-      /**
-       * Process-local signal that this connection repaired docs_fts while opening
-       * or rechecking the database. The source of truth remains docs_pages/files.
-       */
+      /** This connection repaired docs_fts on open or recheck; docs_pages/files stay the truth. */
       repaired?: boolean;
       previousFailure?: DocsFtsFailure;
       repairMessage?: string;
@@ -312,11 +308,7 @@ export function openDatabase(dataDir: string): DatabaseSync {
   try {
     // Enable WAL mode for better concurrency and performance
     db.exec("PRAGMA journal_mode = WAL");
-    // Every store commits on the server's main thread. The default (FULL) flushes the disk on
-    // each commit; under disk load that flush has been measured at 0.5-2.6s, which freezes the
-    // event loop. NORMAL is SQLite's recommended WAL setting: the database cannot be corrupted
-    // and commits survive a process crash or kill. Only an OS crash or power loss can lose the
-    // last few transactions.
+    // FULL fsyncs each commit, freezing the loop for seconds; NORMAL only risks loss on OS crash.
     db.exec("PRAGMA synchronous = NORMAL");
     db.exec("PRAGMA busy_timeout = 5000");
     db.exec("PRAGMA foreign_keys = ON");
@@ -337,11 +329,7 @@ export function openMemoryDatabase(): DatabaseSync {
   return db;
 }
 
-/**
- * The schema is idempotent DDL only: every table and column is declared here
- * and applied with IF NOT EXISTS. Adding a column to an existing table needs an
- * explicit, column-existence-guarded ALTER TABLE next to the DDL.
- */
+/** Idempotent DDL; a new column on an existing table also needs a guarded ALTER TABLE here. */
 function initSchema(db: DatabaseSync): void {
   db.exec(`
     -- Tasks
@@ -1061,8 +1049,7 @@ function initSchema(db: DatabaseSync): void {
   addColumn("bridge_session_state", "promptProfile", "TEXT");
   addColumn("schedules", "promptProfile", "TEXT");
   addColumn("schedules", "modelTier", "TEXT");
-  // Playbooks replace prompt profiles: a chat's active playbook and who chose it, and the
-  // playbook a task or schedule pins for its chats. Monitor chats and schedules become Watch.
+  // Playbooks replace prompt profiles; Monitor chats and schedules become Watch.
   addColumn("bridge_session_state", "playbook", "TEXT");
   addColumn("bridge_session_state", "playbookSource", "TEXT");
   addColumn("schedules", "playbook", "TEXT");
@@ -1140,8 +1127,7 @@ function initSchema(db: DatabaseSync): void {
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_externalId ON calendar_events(externalId) WHERE externalId IS NOT NULL");
   // The calendar an imported event comes from, so the calendar can say where it came from.
   addColumn("calendar_events", "source", "TEXT");
-  // Which arm of a model A/B test each chat started on (shared/model-ab-test.ts). Kept when the chat
-  // is deleted, since dropping deleted chats would skew the comparison.
+  // A/B test arm per chat (shared/model-ab-test.ts); kept when the chat is deleted to avoid skew.
   db.exec(`
     CREATE TABLE IF NOT EXISTS model_ab_assignments (
       sessionId TEXT PRIMARY KEY,
@@ -1157,8 +1143,7 @@ function initSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_model_ab_assignments_test ON model_ab_assignments(testStartedAt);
   `);
-  // What Copilot's trajectory classifiers measured on each graded chat (chat-grading.ts). The result
-  // holds categorical labels, metrics and token counts, never transcript text.
+  // Trajectory classifier results per graded chat: labels, metrics, token counts, never transcript.
   db.exec(`
     CREATE TABLE IF NOT EXISTS chat_grades (
       sessionId TEXT PRIMARY KEY,
@@ -1252,12 +1237,11 @@ function initSchema(db: DatabaseSync): void {
     }
   }
 
-  // Helm's outside sources: which ones a run read, and what may have shaped each memory entry.
-  // Also when Helm last replied in a conversation, and when Tim opened each brief.
+  // Helm's sources per run and memory entry, its last reply per thread, and when briefs were seen.
   for (const [table, column] of [
     ["helm_memory", "fromSources"], ["helm_runs", "sourcesJson"], ["helm_runs", "fromSourcesJson"],
     ["helm_conversations", "lastReplyAt"], ["helm_runs", "seenAt"],
-    // Thread lines: whose move Helm says a task is, how long it holds off, and the task fields it read.
+    // Thread lines: whose move a task is, how long it holds off, and the task fields it read.
     ["helm_memory", "owner"], ["helm_memory", "holdUntil"], ["helm_memory", "basis"],
   ] as const) {
     const columns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((entry) => entry.name));
@@ -1372,11 +1356,7 @@ function initSchema(db: DatabaseSync): void {
   initializeDocsFts(db);
 }
 
-/**
- * Archiving a task now marks its conversations read, so anything unread under an archived task is new.
- * Tasks archived before that still hold old unread conversations; this settles them once per database.
- * Only conversations that are not archived themselves and belong to no active task are touched.
- */
+/** One-time: mark read the unread chats under tasks archived before archiving did so. */
 function settleArchivedTaskConversationsOnce(db: DatabaseSync): void {
   const marker = "migration:archived-task-chats-read";
   if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(marker)) return;

@@ -13,7 +13,7 @@ export interface UsageModelDisplayRow extends CopilotUsageTotals, Partial<Copilo
   hasUnpricedUsage?: boolean;
 }
 
-/** A readable model list at any column width; the old table's accounting fields remain one click away. */
+/** A model list readable at any width; the accounting fields are one click away. */
 export default function UsageModelList({ models }: { models: readonly UsageModelDisplayRow[] }) {
   return (
     <div className={cx(DS.surface.divided, "@container/usage-models")}>

@@ -1,5 +1,4 @@
-// What Helm knows: the memory Helm's chat and its looks start from, Tim's to read, correct and
-// forget, and its recent looks. When and how Helm looks is in Settings › Helm.
+// Helm's memory, for the user to read, correct and forget, and its recent looks.
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Pencil, Plus } from "lucide-react";

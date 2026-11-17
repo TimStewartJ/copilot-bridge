@@ -74,7 +74,7 @@ describe("owned Copilot stdio recovery on the actual host platform", () => {
       if (!owned || owned.descendants.length === 0) throw new Error("Cannot inspect the isolated native runtime ownership");
       const ping = vi.spyOn(clients[0], "ping").mockRejectedValueOnce(new Error("Controlled native-test liveness failure"));
       const failure = backends[0].probeHealth(undefined, "controlled-native-test");
-      // This check observes the real fencing and replacement completion, not a wall-clock polling budget.
+      // Waits on the real fencing and replacement, not a wall-clock polling budget.
       await Promise.all([recovered, expect(failure).resolves.toBe(false)]);
       ping.mockRestore();
       expect(created).toBe(2);

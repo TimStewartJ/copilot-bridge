@@ -3,8 +3,7 @@ import { queryOptions, type QueryClient, useQuery, useQueryClient } from "@tanst
 import { fetchCopilotQuota } from "../../api";
 import { queryKeys } from "../../queryClient";
 
-// The live counter is a network round trip, so it is cached rather than
-// refetched per render. It polls once a minute; Refresh forces a read.
+// Cached, since each read is a network round trip; Refresh forces a read.
 const COPILOT_QUOTA_STALE_TIME = 60_000;
 const COPILOT_QUOTA_POLL_INTERVAL = 60_000;
 

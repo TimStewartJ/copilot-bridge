@@ -1,8 +1,4 @@
-// A Copilot Fusion turn at High or Max runs in phases (a draft, a review, a redo) that the chat only
-// partly shows: the session log keeps the turn's messages and tool calls once the turn commits, and a
-// review or a judge's verdict never appears. Throughout, the runtime reports content-free progress
-// (which model is on which phase, tools starting and finishing). This turns that progress into the
-// run's status line.
+// Turns Fusion's content-free phase progress (draft, review, redo) into the run's status line.
 import { isRecord } from "../shared/is-record.js";
 
 const PHASE_VERBS: Readonly<Record<string, string>> = {
@@ -27,7 +23,7 @@ export const FUSION_PROGRESS_EVENT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 export interface FusionProgress {
-  /** The status this event leads to: text to show, "" to clear it, undefined to leave it as it is. */
+  /** The status this event leads to: text to show, "" to clear it, undefined to keep it. */
   observe(event: { type?: unknown; data?: unknown }): string | undefined;
 }
 
@@ -74,7 +70,7 @@ export function createFusionProgress(modelName: (modelId: string) => string): Fu
         case "assistant.fusion_phase_failed":
           if (phaseId) running.delete(phaseId);
           return show(describe());
-        // From the commit on, the turn's own messages and tool calls arrive and speak for themselves.
+        // From the commit on, the turn's own messages and tool calls speak for themselves.
         case "session.fusion_commit_started":
         case "session.fusion_completed":
         case "session.fusion_route_failed":

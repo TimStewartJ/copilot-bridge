@@ -1,6 +1,4 @@
-// What browser-launch asks of the machine it runs on: which browsers are installed, what
-// agent-browser's own configuration says, how old an executable is. Kept apart so that tests
-// replace it (see src/test-support/vitest-setup.ts) and do not depend on their host.
+// Host probes for browser-launch, split out so tests replace it (src/test-support/vitest-setup.ts).
 
 import { constants } from "node:fs";
 import { access, readdir, readFile, stat } from "node:fs/promises";
@@ -48,11 +46,7 @@ function downloadFolderVersion(executablePath: string): string | undefined {
   return undefined;
 }
 
-/**
- * Chrome and Edge on Windows print nothing for `--version` and may open a window instead; the
- * installed version is the name of the folder next to the executable. Chrome for Testing has no
- * such folder, but agent-browser names its download folder after the version.
- */
+/** Windows Chrome/Edge print nothing for --version (may open a window); read the version folder. */
 async function readWindowsBrowserVersion(executablePath: string): Promise<string | undefined> {
   try {
     const versions = (await readdir(path.dirname(executablePath)))
@@ -75,10 +69,7 @@ function downloadedBinaryCandidates(folder: string): string[] {
   return [path.join(folder, "chrome"), path.join(folder, "chrome-linux64", "chrome")];
 }
 
-/**
- * The newest Chrome for Testing that `agent-browser install` downloaded, from
- * `~/.agent-browser/browsers/chrome-<version>`. Undefined when there is none.
- */
+/** Newest Chrome for Testing from `agent-browser install` (~/.agent-browser/browsers), if any. */
 export async function findDownloadedBrowser(home = homedir()): Promise<string | undefined> {
   const root = path.join(home, ".agent-browser", "browsers");
   let names: string[];

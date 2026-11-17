@@ -11,13 +11,7 @@ import { DS, cx, type DsButtonSize, type DsButtonVariant, type DsStatusKind, typ
 import { IDENTITY_COLORS, IDENTITY_FILL, identityColor, type IdentityColor } from "./identity";
 import { haptic } from "../lib/haptics";
 
-/**
- * Bridge design system: the components screens are assembled from. README.md in this folder holds
- * the rules. Reach for one of these before writing a class string; add to this file, not to a
- * screen, when something a second screen will need is missing.
- */
-
-// ── Actions ─────────────────────────────────────────────────────────────────
+/** Build screens from these (rules in README.md); add shared pieces here, not in a screen. */
 
 interface ButtonProps extends ComponentProps<"button"> {
   /** `primary` is the one action a screen exists for. There is at most one, and chat's is Send. */
@@ -152,10 +146,7 @@ export function SegmentedControl<T extends string>({
   );
 }
 
-/**
- * One of several options that wrap: answers to a question, values of a multi-select. Pass
- * `selected` when the option holds a state; leave it out when pressing the option is the answer.
- */
+/** One of several wrapping options; `selected` for a state, omitted when pressing is the answer. */
 export function ChoiceButton({
   selected,
   className,
@@ -178,8 +169,6 @@ export function ChoiceButton({
     </button>
   );
 }
-
-// ── Fields ──────────────────────────────────────────────────────────────────
 
 export function TextInput({
   inputSize = "md",
@@ -206,10 +195,7 @@ export function Select({
   );
 }
 
-/**
- * A labelled control: the label beside it when its container has room, above it otherwise. Pass
- * `htmlFor` when the control is a single field; a group of buttons names itself with aria-label.
- */
+/** Label beside the control if room, else above; `htmlFor` for a field, aria-label for a group. */
 export function FormRow({
   label,
   htmlFor,
@@ -220,7 +206,7 @@ export function FormRow({
 }: {
   label: ReactNode;
   htmlFor?: string;
-  /** Hide a redundant visible label without losing its accessible name or reserving a label column. */
+  /** Hide a redundant label, keeping its accessible name and reserving no label column. */
   hideLabel?: boolean;
   help?: ReactNode;
   children: ReactNode;
@@ -240,12 +226,7 @@ export function FormRow({
   );
 }
 
-/**
- * One setting: what it is on the left, with at most a short hint, and its control on the right.
- * On a narrow container the control drops beneath the label. Rows sit in a `SettingList`, which
- * draws the hairlines between them. `children` holds anything that belongs beneath the whole row,
- * such as a notice or an opened editor. Long explanations belong behind a Details, not in `hint`.
- */
+/** Keep hint short; long explanations go behind a Details. children render beneath the row. */
 export function SettingRow({
   label,
   hint,
@@ -286,10 +267,7 @@ export function SettingList({ children, className }: { children: ReactNode; clas
   return <div className={cx(DS.surface.divided, "min-w-0", className)}>{children}</div>;
 }
 
-/**
- * An on/off setting. It is a native checkbox with the switch role, so it keeps checkbox semantics
- * and keyboard behaviour. On is the neutral high-contrast fill, never accent.
- */
+/** A native checkbox with the switch role, so keys work as usual; on is neutral, never accent. */
 export function Switch({
   className,
   onChange,
@@ -309,11 +287,7 @@ export function Switch({
   );
 }
 
-// ── Structure ───────────────────────────────────────────────────────────────
-
-/**
- * A labelled group of rows. It draws no box: the label and the space around it do the grouping.
- */
+/** A labelled group of rows with no box: the label and the space around it do the grouping. */
 export function Section({
   id,
   label,
@@ -333,7 +307,7 @@ export function Section({
   action?: ReactNode;
   /** `page` is a heading in a full-page view's outline; `group` labels rows in a panel. */
   level?: "group" | "page";
-  /** Give a significant region one group surface; never box its individual values or nest groups. */
+  /** One group surface for a significant region; never box individual values or nest groups. */
   surface?: boolean;
   children: ReactNode;
   className?: string;
@@ -375,10 +349,7 @@ export function Panel({
   );
 }
 
-/**
- * One line that says what something is and opens to show more. Closed by default: the reader
- * chooses what to open. Pass `expanded` and `onToggle` to control it from outside.
- */
+/** One line that opens to show more, closed by default; `expanded` and `onToggle` control it. */
 export function DisclosureRow({
   label,
   detail,
@@ -468,10 +439,7 @@ export function DisclosureRow({
   );
 }
 
-/**
- * The same line as a DisclosureRow, built on a native <details>. Use it where the open state needs
- * no handling: the browser keeps it, and `open` only sets how it starts.
- */
+/** A DisclosureRow on native <details> for state nobody handles; `open` only sets how it starts. */
 export function Details({
   label,
   detail,
@@ -501,8 +469,6 @@ export function Details({
   );
 }
 
-// ── Information ─────────────────────────────────────────────────────────────
-
 /** A state named in a word or two. */
 export function Badge({
   tone = "neutral",
@@ -518,7 +484,7 @@ export function Badge({
   );
 }
 
-/** How many things want attention. Hidden from assistive tech: the control it sits on says it in words. */
+/** How many things want attention; aria-hidden, since the control it sits on says it in words. */
 export function CountBadge({
   count,
   tone = "success",
@@ -564,10 +530,7 @@ function AutopilotGlyphPaths() {
   );
 }
 
-/**
- * The Autopilot mark, still. For a finished or chosen autopilot run (a badge, a transcript marker,
- * the composer toggle); a run in progress uses `StatusIcon kind="autopilot"`, which turns.
- */
+/** The still Autopilot mark; a run in progress uses `StatusIcon kind="autopilot"`, which turns. */
 export function AutopilotIcon({ size = 14, className }: { size?: number; className?: string }) {
   return (
     <svg
@@ -629,7 +592,7 @@ function StatusGlyph({ kind }: { kind: DsStatusKind }) {
     case "unread":
       return <circle cx="8" cy="8" r="4" fill="currentColor" />;
     case "unread-working": {
-      // The unread dot inside the working ring, so the shape still says both when the ring is still.
+      // The unread dot inside the working ring, so the shape says both even when it stops turning.
       const ring = { ...stroke, stroke: "var(--color-text-secondary)" } as const;
       return (
         <>
@@ -685,12 +648,7 @@ function StatusGlyph({ kind }: { kind: DsStatusKind }) {
   }
 }
 
-/**
- * A state as a glyph: needs input, working, unread, unread while working, warning, danger, done,
- * open, closed, paused, on.
- * The shape says which state it is, so the glyphs stay distinguishable without colour. It names
- * itself to assistive technology unless `decorative` is set because adjacent text already says it.
- */
+/** Shape tells the state apart without colour; set decorative when nearby text already says it. */
 export function StatusIcon({
   kind,
   label,
@@ -730,7 +688,7 @@ export function StatusIcon({
   );
 }
 
-/** A group's or tag's colour beside its name. Decorative: the name next to it is what identifies it. */
+/** A group's or tag's colour beside its name; decorative, the name is what identifies it. */
 export function IdentitySwatch({
   color,
   size = "sm",
@@ -752,7 +710,7 @@ export function IdentitySwatch({
   );
 }
 
-/** Picking one of the identity colours for something the person names, such as a group, tag or kind of event. */
+/** Picks an identity colour for something the user names, such as a group, tag or event kind. */
 export function IdentityColorChoice({
   value,
   onChange,
@@ -805,10 +763,7 @@ export function MetaLine({
   );
 }
 
-/**
- * Labelled values as a list with hairlines between them, instead of one box per value. `stacked`
- * puts the label above the value for a narrow column.
- */
+/** Labelled values with hairlines between, not a box each; `stacked` puts labels above values. */
 export function FieldList({
   children,
   className,
@@ -885,10 +840,7 @@ export function EmptyHint({ children, className }: { children: ReactNode; classN
   return <p className={cx(DS.text.empty, className)}>{children}</p>;
 }
 
-/**
- * Something the reader should know. The surface stays neutral; only the icon and the title carry
- * the tone, so a screen with a warning on it does not turn yellow.
- */
+/** Only the icon and title carry the tone, so a screen with a warning does not turn yellow. */
 export function Notice({
   tone = "info",
   icon,

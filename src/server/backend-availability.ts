@@ -1,7 +1,5 @@
 // agent-text-audit-file: error (agent runtime and connection errors)
-// Messages and classifiers for "the agent backend cannot take this request
-// right now". Kept separate from session-manager.ts so runners and API
-// handlers can classify errors without importing the whole manager.
+// Backend-unavailable messages; kept out of session-manager.ts so callers avoid importing it.
 
 import { ConnectionError } from "vscode-jsonrpc/node";
 import { isAgentRpcTimeoutError } from "./agent-backend/rpc-timeouts.js";
@@ -9,7 +7,7 @@ import { isAgentRpcTimeoutError } from "./agent-backend/rpc-timeouts.js";
 /** An in-flight run or request was failed because the backend RPC channel was lost. */
 export const BACKEND_DISCONNECTED_MESSAGE =
   "Agent backend disconnected; the Bridge is restarting it. Try again shortly.";
-/** Like BACKEND_DISCONNECTED_MESSAGE, for an interrupted run the Bridge will not continue on its own. */
+/** Like BACKEND_DISCONNECTED_MESSAGE, for a run the Bridge will not continue on its own. */
 export const BACKEND_DISCONNECTED_NOT_RESUMED_MESSAGE =
   "Agent backend disconnected again soon after its last recovery; the Bridge is restarting it "
   + "but will not continue this session automatically. Send a message to continue.";
@@ -25,7 +23,7 @@ export const BACKEND_NOT_READY_MESSAGE = "Agent backend is not ready yet; try ag
 /** Model refresh rotation (pre-existing wording, kept for compatibility). */
 export const BACKEND_REFRESH_IN_PROGRESS_MESSAGE = "Copilot SDK client refresh is in progress; try again shortly";
 export const BACKEND_NOT_INITIALIZED_MESSAGE = "SessionManager not initialized";
-/** The server is stopping, for a restart or a shutdown. Whoever asked finds the next server in seconds. */
+/** The server is stopping for a restart or shutdown; the next server is up in seconds. */
 export const BRIDGE_RESTARTING_MESSAGE = "Bridge is restarting; try again shortly.";
 
 /** Prompt re-sent to interactive sessions whose turn was cut off by a backend disconnect. */
@@ -54,23 +52,19 @@ function errorMessage(error: unknown): string {
   return typeof error === "string" ? error : "";
 }
 
-/** The request met a server that was stopping. It was not started, so it is safe to repeat on the next one. */
+/** The request met a stopping server and never started, so it is safe to repeat on the next. */
 export function isBridgeRestartingError(error: unknown): boolean {
   return errorMessage(error).includes(BRIDGE_RESTARTING_MESSAGE);
 }
 
-/** The backend is known to be absent, rotating, or freshly lost: safe to retry without consuming an attempt. */
+/** The backend is absent, rotating or just lost: retry without using up an attempt. */
 export function isBackendUnavailableError(error: unknown): boolean {
   const message = errorMessage(error);
   if (!message) return false;
   return BACKEND_UNAVAILABLE_MESSAGES.some((candidate) => message.includes(candidate));
 }
 
-/**
- * The request failed for a reason that usually clears on its own (a slow or
- * reconnecting backend, a stale cached handle, an RPC timeout) rather than
- * because the request itself is wrong.
- */
+/** A failure that usually clears on its own (slow backend, stale handle, RPC timeout). */
 export function isTransientBackendError(error: unknown): boolean {
   if (isBackendUnavailableError(error)) return true;
   if (isAgentRpcTimeoutError(error)) return true;

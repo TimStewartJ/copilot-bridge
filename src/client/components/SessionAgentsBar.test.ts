@@ -196,7 +196,7 @@ describe("SessionAgentsBar", () => {
     expect(text(harness)).toContain("Refactor move generation without changing behaviour.");
     expect(text(harness)).not.toContain("(truncated)");
 
-    // The agent reports again: the same state, new words. The counts moving makes the bar read the list again.
+    // Same state, new words: the counts moving makes the bar read the list again.
     fetchSessionAgents.mockResolvedValue(listed("Moved the gen…"));
     fetchSessionAgentDetail.mockResolvedValue(detail("Moved the generator into its own module."));
     await harness.render(createElement(SessionAgentsBar, {

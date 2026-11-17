@@ -1,6 +1,3 @@
-// browser_fetch — lightweight direct tool that uses agent-browser to fetch a
-// page and return its accessibility-tree snapshot. Sits between web_fetch
-// (pure HTTP) and the full browser skill (multi-step interactive flows).
 
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";

@@ -49,7 +49,7 @@ describe("useTaskReorderMode", () => {
     const { mode } = await renderMode({ enabled: true, dragging: false, onExit });
     await harness!.act(async () => mode().start());
     expect(mode().reordering).toBe(true);
-    // Capture phase, so dnd-kit's Escape-cancels-drag handler cannot run (and clear `dragging`) first.
+    // Capture phase, so dnd-kit's Escape handler cannot cancel the drag and clear `dragging` first.
     expect(keydownCapture).toBe(true);
     await harness!.act(async () => keydown?.({ key: "Escape" }));
     expect(mode().reordering).toBe(false);

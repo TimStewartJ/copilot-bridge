@@ -1,5 +1,4 @@
-// Dates typed as people say them: "fri", "tmrw 9am", "in 3 days", "Nov 15 at 3:30pm". Pure and
-// local-time: every date is read in the zone of `now` (the browser's, in the client).
+// Dates typed as people say them ("tmrw 9am"); every date is read in the zone of `now`.
 
 export interface TypedTime { hour: number; minute: number }
 
@@ -173,7 +172,7 @@ function readToken(tokens: string[], i: number, now: Date, state: State): number
       const pm = suffix.startsWith("p");
       hour = (hour % 12) + (pm ? 12 : 0);
     } else if (clock[2] === undefined) {
-      // A bare number is a time only after "at" ("at 3"), read as the next 3 o'clock in daytime hours.
+      // A bare number is a time only after "at" ("at 3"), read in daytime hours.
       if (tokens[i - 1] !== "at" || hour > 23) return 0;
       if (hour >= 1 && hour <= 7) hour += 12;
     } else if (hour > 23) {
@@ -215,10 +214,7 @@ export function parseWhen(text: string, now: Date = new Date()): TypedWhen | nul
   return time ? { date: toDateKey(date), time } : { date: toDateKey(date) };
 }
 
-/**
- * Finds a date phrase at the end of a line ("Call the bank fri 3pm") and returns the rest. The
- * longest trailing run of words that reads as a date wins; at least one other word must remain.
- */
+/** Splits off the longest trailing date phrase ("Call the bank fri 3pm"); one word must remain. */
 export function extractWhen(text: string, now: Date = new Date()): ExtractedWhen | null {
   const words = text.trim().split(/\s+/).filter(Boolean);
   for (let take = Math.min(6, words.length - 1); take >= 1; take -= 1) {

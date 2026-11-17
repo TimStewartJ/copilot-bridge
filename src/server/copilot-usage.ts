@@ -34,11 +34,7 @@ export type CopilotUsageSkipReason = "no_events" | "no_shutdown" | "empty_model_
 
 export interface CopilotUsageTotals {
   requests: number;
-  /**
-   * Total prompt tokens as reported by the CLI. This is INCLUSIVE of
-   * `cacheReadTokens` and `cacheWriteTokens`; it is not the uncached remainder.
-   * Use `uncachedInputTokens` for anything that prices input.
-   */
+  /** Prompt tokens including cache reads and writes; price input with `uncachedInputTokens`. */
   inputTokens: number;
   /** Prompt tokens that were neither served from nor written to cache. */
   uncachedInputTokens: number;
@@ -48,17 +44,9 @@ export interface CopilotUsageTotals {
   /** Reasoning tokens. Already counted inside `outputTokens`, so never billed again. */
   reasoningTokens: number;
   totalTokens: number;
-  /**
-   * GitHub's own metered cost for this usage, in AI credits, taken from the
-   * CLI's `totalNanoAiu`. Authoritative where present; older session logs
-   * predate the field and report 0.
-   */
+  /** GitHub's metered cost in AI credits (totalNanoAiu); 0 in older logs that lack the field. */
   meteredAiCredits: number;
-  /**
-   * Portion of `totalTokens` that came from snapshots carrying metered cost.
-   * Lets callers tell "GitHub billed zero" apart from "no metering recorded",
-   * so a partially metered range is never presented as a complete total.
-   */
+  /** Tells 'billed zero' from 'not metered', so a partly metered range isn't shown as a total. */
   meteredTokens: number;
 }
 
@@ -137,10 +125,7 @@ export interface CopilotUsageSessionRow extends CopilotUsageTotals, CopilotUsage
   unpricedModels: CopilotUsageUnpricedModelRow[];
 }
 
-/**
- * Per local-calendar-day, per-model usage slice kept in the session cache so
- * bounded time windows can be aggregated without rescanning session events.
- */
+/** Per local day, per model usage kept in the session cache, so windows skip rescanning events. */
 export interface CopilotUsageDailyModelRow extends CopilotUsageTotals {
   date: string;
   model: string;
@@ -452,11 +437,7 @@ export function buildCopilotUsageSummaryFromSessionResults({
   return summary;
 }
 
-/**
- * Bounded-window aggregation. Session results carry per-day model slices, so a
- * long-lived session only contributes the usage it actually recorded inside the
- * window instead of landing entirely on its last shutdown timestamp.
- */
+/** Per-day slices: a long session counts only usage inside the window, not all on its last day. */
 function accumulateRangedSessionResult(
   result: CopilotUsageSessionScanResult,
   context: {
@@ -492,8 +473,7 @@ function accumulateRangedSessionResult(
     return;
   }
 
-  // Zero-usage rows can survive in caches written before empty deltas were
-  // dropped; counting them would report sessions that did no work in-window.
+  // Old caches may hold zero-usage rows; counting them would report idle sessions in the window.
   const dailyRows = (result.dailyRows ?? []).filter(
     (row) => row.date >= startDate && hasUsageTotals(row),
   );
@@ -913,8 +893,7 @@ export async function scanCopilotUsageSession(
 
   const forkAccounting = firstShutdownSessionStartTime !== null
     && firstShutdownTotalNanoAiu !== null
-    // A missing authoritative snapshot makes the billed split between an
-    // inherited gap and a later divergent shutdown unknowable.
+    // A missing authoritative snapshot leaves the billed split between gap and shutdown unknowable.
     && usableShutdowns.every((shutdown) => shutdown.topLevelMeteredAiCredits !== null)
     ? {
         sessionCreatedAt,
@@ -1005,9 +984,7 @@ function buildShutdownUsageRows(
       }
       addTotals(existing, delta);
       modelTotals.set(key, existing);
-      // Every shutdown snapshot repeats cumulative totals for every model the
-      // session ever used, so idle models yield zero deltas. Bucketing those
-      // would date a model's usage to a day it did no work.
+      // Snapshots repeat totals for every model ever used; skip zero deltas so idle days get none.
       if (!hasUsageTotals(delta)) continue;
       if (bucketDay) {
         addDailyUsage(dailyTotals, bucketDay, model, contextTier, delta);
@@ -1052,9 +1029,7 @@ function buildShutdownUsageRows(
     undatedDeltas,
   );
 
-  // Usage recorded before the first timestamped shutdown is attributed to this
-  // session's earliest known day. A session where no shutdown carries a
-  // timestamp keeps its all-time totals but cannot appear in bounded windows.
+  // Undated usage goes to the first known day; with no dated shutdown it's all-time only.
   if (firstDayKey) {
     for (const pending of undatedDeltas) {
       addDailyUsage(dailyTotals, firstDayKey, pending.model, pending.contextTier, pending.delta);
@@ -1292,8 +1267,7 @@ function applyCostEstimateToModelRow(
     ...(contextTierLabel ? { contextTierLabel } : {}),
   } satisfies CopilotUsageModelPricingMetadata);
 
-  // Reasoning tokens are a subset of outputTokens, so output is already the
-  // full billable amount. Adding reasoning here would charge it twice.
+  // Reasoning tokens are part of outputTokens; adding them would charge them twice.
   const billableOutputTokens = Math.max(0, row.outputTokens);
   if (!priced || !rates) {
     assignCostEstimate(row, {
@@ -1543,13 +1517,7 @@ function hasMeteredCost(metricRecord: Record<string, unknown> | null | undefined
   return extractMeteredAiCredits(metricRecord?.totalNanoAiu) !== null;
 }
 
-/**
- * `usage.inputTokens` already contains cache reads and cache writes, so the
- * uncached remainder is what actually gets billed at the input rate. The CLI
- * reports that remainder directly as `tokenDetails.input`, which is preferred;
- * `usage` and `tokenDetails` are occasionally captured a beat apart, so fall
- * back to subtraction whenever the two do not reconcile exactly.
- */
+/** inputTokens includes cache reads/writes; prefer tokenDetails.input, subtract if they differ. */
 function extractUncachedInputTokens(
   detailRecord: Record<string, unknown> | null | undefined,
   inputTokens: number,
@@ -1565,11 +1533,7 @@ function extractUncachedInputTokens(
   return Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
 }
 
-/**
- * Counts each token exactly once. `inputTokens` is inclusive of cache traffic
- * and `reasoningTokens` is inclusive in `outputTokens`, so adding either on top
- * of its components would double count.
- */
+/** Counts each token once: inputTokens includes cache traffic, outputTokens includes reasoning. */
 function sumBilledTokens(totals: Omit<CopilotUsageTotals, "totalTokens">): number {
   return totals.uncachedInputTokens
     + totals.cacheReadTokens
@@ -1590,9 +1554,7 @@ function addTotals(target: CopilotUsageTotals, delta: CopilotUsageTotals): void 
   target.meteredTokens += delta.meteredTokens;
 }
 
-// Copilot writes a session.shutdown snapshot every time a session suspends, and each
-// snapshot repeats the running totals for the whole session lifetime. Summing the raw
-// snapshots multiplies usage for every resumed session, so only forward progress counts.
+// Shutdown snapshots repeat lifetime totals, so summing them overcounts; count only deltas.
 function diffCumulativeTotals(
   previous: CopilotUsageTotals | undefined,
   current: CopilotUsageTotals,

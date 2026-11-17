@@ -72,8 +72,7 @@ export function ProvidersSection({
   );
   const configuredBadge = stateWord("configured", true);
   const notConfiguredBadge = stateWord("not configured");
-  // GitHub enrichment works without settings, so its badge reports whether
-  // defaults for short refs exist rather than whether the provider is usable.
+  // GitHub works without settings, so its badge says whether short-ref defaults exist.
   const githubDefaultsBadge = stateWord("defaults set", true);
   const githubNoDefaultsBadge = stateWord("no defaults");
 

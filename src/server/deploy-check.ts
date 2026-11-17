@@ -15,8 +15,7 @@ import { runStreamingValidationCommand } from "./validation-command-runner.js";
 import { sh, type ShellCommand } from "./shell-command.js";
 
 export const DEPLOY_CHECK_STEPS = [
-  // Production-safe deploy validation only. Staging-only preview smoke asserts a
-  // bridge-staging worktree and is enforced by STAGING_DEPLOY_GATE instead.
+  // Production-safe only: preview smoke needs a staging worktree and runs in STAGING_DEPLOY_GATE.
   sh`npm run check:pr`,
 ] as const;
 
@@ -29,9 +28,7 @@ type DeployCheckStepResult = {
 };
 
 function resolveLogDir(cwd: string): string {
-  // Explicit operator override; deploy validation points its child processes at
-  // the production data dir. Only this entry point honors it, so an ambient value
-  // can never redirect a caller that passed its own root directory.
+  // Only this entry point reads the override, so an ambient value can't redirect other callers.
   const configured = process.env[VALIDATION_LOG_DIR_ENV]?.trim();
   if (configured) return resolve(configured);
   return getValidationCommandLogDir(resolveBridgeControlRoot(cwd));

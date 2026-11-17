@@ -1,16 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
 
-/** Prompts Bridge itself writes into a conversation: trigger messages and results, restart notices. */
+/** Prompts Bridge itself writes into a chat: trigger messages and results, restart notices. */
 const AUTOMATED_PROMPT_PREFIXES = ["<defer>", "<deferred-work-result>", "<trigger-result>", "<trigger>", "<bridge_notice>"];
-/** A stored defer prompt explains an identical message only if it was sent while that defer was live. */
+/** A stored defer prompt explains an identical message only if sent while that defer was live. */
 const DEFER_DELIVERY_SLACK_MS = 10 * 60_000;
 const BACKFILL_KEY = "backfilledFromSearchIndex";
 
-/**
- * When Tim last sent a message in each conversation, for task states. Written only where his own
- * words enter Bridge (typed chat, dictation, answers), so scheduled, deferred and recovery prompts
- * never count.
- */
+/** Last time the user's own words entered each chat; automated prompts never write here. */
 export function initializeSessionUserMessagesSchema(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS session_user_messages (sessionId TEXT PRIMARY KEY, lastSentAt TEXT NOT NULL);
@@ -37,12 +33,7 @@ function tableExists(db: DatabaseSync, name: string): boolean {
 
 interface DeferWindow { from: number; to: number }
 
-/**
- * One-time history from the chat search index, which already holds user-authored messages.
- * The index cannot tell Tim's words from prompts Bridge sent on his behalf, so those are removed:
- * wrapped automation prompts, defer prompts sent while that defer was live, and the opening
- * prompt of a scheduled run (each run starts its own conversation with exactly one prompt).
- */
+/** Backfill from search index minus Bridge-sent prompts (automation, live defers, run openers). */
 function backfillFromSearchIndex(db: DatabaseSync): void {
   const rows = db.prepare("SELECT sessionId, timestamp, content FROM search_chat_messages WHERE role = 'user' AND timestamp IS NOT NULL")
     .all() as Array<{ sessionId: string; timestamp: string; content: string }>;

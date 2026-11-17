@@ -1,23 +1,10 @@
-// Commands an agent left running in a session's attached shell: what the Bridge keeps loaded for
-// them, and how it tells the agent when one was cut off.
-//
-// The runtime runs these commands inside the session's handle. Releasing the handle (idle
-// eviction, a configuration refresh) stops them, and so does stopping the runtime in an orderly
-// way. When the runtime's process dies without that (the server or the runtime crashes), the
-// command's own process keeps running with no session attached. In every one of these cases the
-// runtime sends no completion notice for a command it did not see finish. Without the pieces
-// here, the agent that ended its turn to wait for the command would never hear about it again.
+// Runtime sends no notice for a command cut off by unload or crash; this tells the waiting agent.
 
 import type { BackgroundCommandStore } from "./background-command-store.js";
 import type { DeferredPromptRunner } from "./deferred-prompt-runner.js";
 import { BACKGROUND_COMMAND_DELIVERY_ID_PREFIX, type DeferredPromptStore } from "./deferred-prompt-store.js";
 
-/**
- * How long after a background command starts the Bridge keeps its session loaded and holds its
- * own restarts for it. Of the background commands that finished in a month of sessions, 99% did
- * so within this window. The limit exists because some never finish: a dev server or a watcher
- * must not pin a session or hold restarts for as long as it runs.
- */
+/** 99% of finished commands end within this; the cap stops dev servers pinning sessions. */
 export const BACKGROUND_COMMAND_PROTECT_MS = 45 * 60_000;
 
 /** Matches the other automatic resumes, so a command that takes the server down cannot loop. */
@@ -37,14 +24,7 @@ export interface RunningBackgroundCommand {
   pid?: number;
 }
 
-/**
- * How the session lost the command.
- * `unloaded`: the Bridge released the session's runtime handle, and the runtime stops an attached
- * command when that happens.
- * `runtime-lost`: the runtime went away under a running server. `restart`: the server stopped
- * with the command still marked running. An orderly stop of the runtime ends the command, but
- * after a crash its process keeps running, and the Bridge cannot tell the two apart afterwards.
- */
+/** unloaded: handle released, command stopped; runtime-lost/restart: process may still run. */
 export type BackgroundCommandStopCause = "unloaded" | "runtime-lost" | "restart";
 
 export interface StoppedBackgroundCommand extends RunningBackgroundCommand {
@@ -86,11 +66,7 @@ function describeStoppedCommand(command: StoppedBackgroundCommand): string {
   return `- shellId ${command.shellId}${label} (started ${command.startedAt}${process}, ${cause}, possibly still running)${text}`;
 }
 
-/**
- * The notice an agent gets, once, about commands its session lost. It says a command was stopped
- * only where the Bridge knows that. Otherwise the agent is told to look for the process first: a
- * command that outlived a crash is still running, and rerunning it would run it twice.
- */
+/** Says "stopped" only when known; else the agent must look for the process before rerunning it. */
 export function buildStoppedCommandsNotice(commands: readonly StoppedBackgroundCommand[]): string {
   const listed = commands.slice(0, MAX_LISTED_COMMANDS);
   const unlisted = commands.length - listed.length;
@@ -116,7 +92,7 @@ export function buildStoppedCommandsNotice(commands: readonly StoppedBackgroundC
   ].join("\n");
 }
 
-/** The same notice as a message of its own, for an agent that ended its turn to wait for the command. */
+/** The notice as its own message, for an agent that ended its turn to wait on the command. */
 export function buildStoppedCommandsWakePrompt(commands: readonly StoppedBackgroundCommand[]): string {
   return [
     buildStoppedCommandsNotice(commands),
@@ -136,14 +112,7 @@ export interface StoppedCommandWakeDeps {
 
 export type StoppedCommandWakeOutcome = "queued" | "none" | "not_recent" | "archived" | "busy" | "cooldown";
 
-/**
- * Starts a turn that tells an idle agent its commands were cut off. Only for a command the Bridge
- * was still keeping the session for: that one was cut off by something the agent could not expect
- * (a forced restart, a crash, a configuration refresh), and the agent is most likely waiting for
- * it. An older command is usually a server nobody is waiting for, so its loss stays with the store
- * and goes out with the session's next message instead. A queued wake takes the session's stopped
- * commands with it, so the next message does not repeat them.
- */
+/** Wake only for commands in the protect window; older losses go out with the next message. */
 export function queueStoppedCommandWake(
   deps: StoppedCommandWakeDeps,
   sessionId: string,
@@ -155,9 +124,7 @@ export function queueStoppedCommandWake(
     isWithinBackgroundCommandProtection(command.startedAt, Date.parse(command.stoppedAt)));
   if (!recent) return "not_recent";
   if (deps.isSessionArchived?.(sessionId)) return "archived";
-  // A turn in flight is retried or resumed by its own recovery, and that prompt carries the notice.
-  // A session that is only being loaded again has no prompt coming, so its message is queued here
-  // and delivered once the session is free.
+  // A turn in flight carries the notice in its recovery prompt; only idle sessions are woken here.
   if (deps.hasRunInFlight?.(sessionId)) return "busy";
   const sourceId = `${BACKGROUND_COMMAND_DELIVERY_ID_PREFIX}${sessionId}`;
   const lastWakeAt = deps.deferredPromptStore.listDeliveriesForSession(sessionId)
@@ -185,13 +152,7 @@ export interface BackgroundCommandBootRecovery {
   woken: string[];
 }
 
-/**
- * A command still marked running at boot was cut off by the server stopping: a loaded session
- * clears the mark when its command finishes. Whether its process went down with the server is not
- * known here (an orderly stop ends it, a crash leaves it running), and the notice says so. Call
- * once per process, before any session loads. `wake` is for the production server only. A staged
- * preview must never start turns on its own.
- */
+/** Call once per process before sessions load; wake only in production, never a staged preview. */
 export function recoverBackgroundCommandsOnBoot(
   deps: Omit<StoppedCommandWakeDeps, "backgroundCommandStore" | "deferredPromptStore"> & {
     backgroundCommandStore: BackgroundCommandStore;

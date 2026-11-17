@@ -57,4 +57,5 @@ Every test is code someone has to keep passing through later refactors, so add o
 
 - `npm run test:xplat-audit` runs in `check:fast` and blocks known non-portable test patterns. Avoid `xplat-audit-ignore-*` comments; if one is truly necessary, keep it narrow and say why the test is still safe.
 - `npm run test:agent-text-audit` runs in `check:fast` and CI. It fails on a word or phrase check in production code that does not say where its text comes from; see "Agent output" in `AGENTS.md`.
+- `npm run test:comment-audit` runs in `check:fast` and CI, on tests too. It fails on a comment over one line or 100 columns, or two comments with no code between; see "Comments" in `AGENTS.md`.
 - `npm run test:public-audit` runs in `check:fast` and CI. It fails on `package-lock.json` entries outside the public npm registry and on Azure DevOps orgs that are not on its list of made-up names. Installing through a mirror writes the mirror's address into the lockfile; `npm run lockfile:public` puts it back.

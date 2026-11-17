@@ -11,7 +11,7 @@ const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\
 export const ON_SCREEN_PHRASE = "I've put that on screen.";
 
 export interface SpeakableTextOptions {
-  /** Said in place of a fenced code block. Default: ON_SCREEN_PHRASE. Pass "" to drop code silently. */
+  /** Said for a fenced code block. Default: ON_SCREEN_PHRASE; "" drops code silently. */
   codeBlockPhrase?: string;
   /** Said in place of a bare URL. Default: "a link". */
   urlPhrase?: string;
@@ -19,7 +19,7 @@ export interface SpeakableTextOptions {
   uuidPhrase?: string;
 }
 
-/** Converts model output (which should already be plain speech) into text that TTS reads naturally. */
+/** Converts model output (meant to be plain speech already) into text that TTS reads well. */
 export function toSpeakableText(text: string, options: SpeakableTextOptions = {}): string {
   const codeBlockPhrase = options.codeBlockPhrase ?? ON_SCREEN_PHRASE;
   const urlPhrase = options.urlPhrase ?? "a link";

@@ -1,11 +1,4 @@
-// Event-driven staging preview discovery.
-//
-// Staging previews are built by the separate management-job-runner process, so the
-// live server never observes the build in-process. The management_jobs table is the
-// only authoritative shared signal, and SQLite offers no cross-process change feed.
-// This controller therefore watches a job row only for the lifetime of that job:
-// discovery runs when a watched job reaches a terminal state, and every timer stops
-// as soon as no job is being watched. No permanent background interval remains.
+// Watches job rows only while they run (no cross-process feed); no permanent interval.
 
 import {
   getManagementJobStaleAfterMs,
@@ -28,19 +21,9 @@ const TERMINAL_STATUSES: ReadonlySet<ManagementJobStatus> = new Set<ManagementJo
 ]);
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
-/**
- * How long a claimed job may go without any row update before it is treated as
- * abandoned. The runner heartbeats every few seconds and claimNext() rewrites the
- * row when it picks a job up, so this only elapses for jobs no runner will ever
- * finish — it must never be an absolute cap on a job that is still progressing.
- */
+/** Idle window since the last row update (heartbeats reset it); never a cap on a running job. */
 const DEFAULT_MAX_IDLE_WATCH_MS = 60 * 60_000;
-/**
- * Final termination guarantee for a row that is never claimed. A queued row has no
- * writer at all until claimNext() picks it up, so queue waits are exempt from the
- * idle window; this bound keeps an endlessly queued row (runner down) from being
- * watched forever. Startup resume re-adopts anything still active after a restart.
- */
+/** Caps only queue waits (queued rows get no updates); claimed jobs use the idle window. */
 const DEFAULT_MAX_TOTAL_WATCH_MS = 12 * 60 * 60_000;
 
 export type StagingPreviewDiscoveryReason =
@@ -76,13 +59,7 @@ export interface StagingPreviewDiscoveryController {
   resumeActiveJobs(): void;
   /** Run discovery once. Coalesces with any in-flight or queued run. */
   requestDiscovery(reason?: StagingPreviewDiscoveryReason): Promise<void>;
-  /**
-   * Resolve once the in-flight tick and any discovery drain it started have
-   * fully completed. Timer-driven ticks start real async work (store reads,
-   * filesystem cleanup, child-process teardown) that outlives the timer
-   * callback itself, so callers that need a settled view must await this
-   * rather than assuming a timer advance finished the work.
-   */
+  /** Awaits the tick's async work too; a timer advance alone doesn't mean it finished. */
   settle(): Promise<void>;
   watchedJobIds(): string[];
   hasScheduledWork(): boolean;
@@ -120,12 +97,10 @@ export function createStagingPreviewDiscovery(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let ticking = false;
   let stopped = false;
-  // The promise for the tick currently executing (null when idle). Exposed via
-  // settle() so callers can await real async work a timer callback started.
+  // The running tick, so settle() can await async work a timer callback started.
   let tickPromise: Promise<void> | null = null;
 
-  // Every discovery run — timer-driven or requested — funnels through one drain so
-  // async cleanup never interleaves with registration on the shared preview maps.
+  // All runs share one drain so async cleanup never interleaves with registration.
   let drainPromise: Promise<void> | null = null;
   let queuedReason: StagingPreviewDiscoveryReason | null = null;
   const queuedJobs = new Map<string, ManagementJob>();
@@ -224,8 +199,7 @@ export function createStagingPreviewDiscovery(
           continue;
         }
 
-        // A stalled runner may still be reclaimed by claimNext(), so keep watching.
-        // One defensive rescan picks up artifacts a crashed runner already wrote.
+        // claimNext() may still reclaim a stalled job; rescan once for what a crashed runner wrote.
         if (isStaleRunningJob(job)) {
           if (!entry.stalledRescanDone) {
             entry.stalledRescanDone = true;
@@ -236,17 +210,12 @@ export function createStagingPreviewDiscovery(
           entry.stalledRescanDone = false;
         }
 
-        // A queued row has no writer until claimNext() picks it up, so its
-        // updatedAt is frozen while it waits behind other jobs: queue wait is not
-        // idleness. Any row update (claim, heartbeat, status change) is progress.
+        // Queued rows are never updated, so waiting isn't idle; any row update is progress.
         if (job.status === "queued" || job.updatedAt !== entry.lastUpdatedAt) {
           entry.lastUpdatedAt = job.updatedAt;
           entry.idleDeadlineMs = nowMs + maxIdleWatchMs;
         }
 
-        // The total bound only ends an endless queue wait. Once a job is claimed it
-        // is bounded by the idle window instead, so a job that starts running just
-        // before the ceiling is still watched through to completion.
         const queuedTooLong = job.status === "queued" && nowMs >= entry.totalDeadlineMs;
         if (nowMs >= entry.idleDeadlineMs || queuedTooLong) {
           watched.delete(jobId);
@@ -272,8 +241,7 @@ export function createStagingPreviewDiscovery(
     if (TERMINAL_STATUSES.has(job.status)) return;
     // Re-noting a reused job must not restart its idle window.
     if (watched.has(job.id)) return;
-    // The windows are anchored to adoption, not creation: a job resumed long after
-    // a restart is still going to be built by the runner.
+    // Windows start at adoption, not creation: a job resumed long after a restart still gets built.
     watched.set(job.id, {
       idleDeadlineMs: now() + maxIdleWatchMs,
       totalDeadlineMs: now() + maxTotalWatchMs,
@@ -312,8 +280,7 @@ export function createStagingPreviewDiscovery(
     },
 
     async settle(): Promise<void> {
-      // Loop: a tick may enqueue a drain, and a drain may be queued behind a tick.
-      // Keep awaiting until neither is in flight.
+      // A tick may enqueue a drain and a drain may wait on a tick, so loop until both are idle.
       while (tickPromise || drainPromise) {
         await (tickPromise ?? Promise.resolve());
         await (drainPromise ?? Promise.resolve());

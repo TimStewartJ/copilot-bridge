@@ -62,7 +62,7 @@ describe("bundled skills", () => {
 
     const contractFamily = CONTRACT_PLAYBOOKS[dir];
     if (contractFamily || CONTRACT_HELPERS.includes(dir) || metadata["bridge-kind"] !== undefined) {
-      // Playbook and helper text is copied into todo lists verbatim and follows the plain-prose rule.
+      // Playbook and helper text is copied into todo lists verbatim, so it must be plain prose.
       expect(raw.includes("\u2014"), "contains an em dash").toBe(false);
     }
     if (contractFamily || metadata["bridge-kind"] === "playbook") {

@@ -12,11 +12,7 @@ export interface RestartStatus {
   requestedAt: string | null;
 }
 
-/**
- * What the UI shows about a restart. Nothing else reads it, because a pending restart never refuses
- * or delays work: the launcher swaps the server only once the Bridge is idle, and the server
- * confirms that in the same step as it stops (POST /api/shutdown with ifIdle).
- */
+/** UI only: a pending restart never blocks work; the launcher swaps once the Bridge is idle. */
 export async function readRestartStatus(dataDir: string): Promise<RestartStatus> {
   const [signal, state] = await Promise.all([
     readPendingRestartSignal(dataDir),

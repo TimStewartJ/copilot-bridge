@@ -1,8 +1,4 @@
-// Chat grades: Copilot's trajectory classifiers (taskAnalytics.classifyTrajectory) run over chats the
-// user picks in Settings › Usage by date, model and origin. A run sends each chat's events.jsonl to the
-// runtime, which runs its retrospective classifiers on GitHub's judge models (billed as AI credits), and
-// the categorical labels are kept per chat in `chat_grades`. The labels are model-derived, untrusted
-// measurements: the Bridge only counts them for the chart and never decides anything from them.
+// Grades chats with Copilot's trajectory classifiers; labels are untrusted, only ever counted.
 import { open, stat } from "node:fs/promises";
 import type { DatabaseSync } from "./db.js";
 import type {
@@ -23,10 +19,7 @@ import type {
   ChatGradesView,
 } from "../shared/chat-grades.js";
 
-/**
- * Largest log a run sends. The whole log goes to the runtime as one JSON-RPC request on the stdio
- * channel every live chat shares, so a huge one is skipped instead.
- */
+/** Largest log sent: it goes as one JSON-RPC request on the stdio channel all live chats share. */
 export const CHAT_GRADE_MAX_LOG_BYTES = 32 * 1024 * 1024;
 const MAX_LOG_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_DETAIL_CHARS = 500;
@@ -56,7 +49,7 @@ export type ChatEventsRead =
   | { kind: "too-large"; bytes: number }
   | { kind: "ok"; events: unknown[]; malformedLines: number };
 
-/** Every event of a chat's events.jsonl, streamed off the event loop's critical path; malformed lines are dropped. */
+/** Every event of a chat's events.jsonl, streamed; malformed lines are dropped. */
 export async function readChatEventsForGrading(eventsPath: string, maxBytes = CHAT_GRADE_MAX_LOG_BYTES): Promise<ChatEventsRead> {
   let size: number;
   try {
@@ -79,7 +72,7 @@ export async function readChatEventsForGrading(eventsPath: string, maxBytes = CH
   };
   const file = await open(eventsPath, "r");
   try {
-    // Reads only what was there when the run looked, so a chat still writing does not grow the request.
+    // Stops at the size seen at start, so a chat still writing does not grow the request.
     const { trailing } = await scanJsonlRecords(file, addRecord, { end: size, maxRecordBytes: MAX_LOG_LINE_BYTES });
     if (trailing) addRecord(trailing.record);
   } finally {
@@ -192,7 +185,6 @@ export type ChatGradeStore = ReturnType<typeof createChatGradeStore>;
 
 // ── Choosing chats ─────────────────────────────────────────────
 
-/** The usage reader's per-chat row (copilot-usage.ts), as far as choosing chats needs it. */
 export interface ChatGradeUsageSession {
   sessionId: string;
   models: readonly { model: string; outputTokens: number; totalTokens: number }[];
@@ -227,10 +219,7 @@ export interface ChatGradeSelection {
   matching: ChatGradeCandidate[];
 }
 
-/**
- * The chats a view or run covers: listed chats with a log that were active in the date range, started
- * by a person unless `includeScheduled`, and whose main model is one of `models` when any are given.
- */
+/** Chats with a log active in range, user-started unless `includeScheduled`, model in `models`. */
 export async function selectChatsForGrading(input: {
   sessions: readonly ChatGradeUsageSession[];
   scheduled: ReadonlySet<string>;
@@ -269,18 +258,13 @@ export async function selectChatsForGrading(input: {
 
 // ── Report ─────────────────────────────────────────────────────
 
-/** Broadest first: a session or task row measures the chat's work as a whole, a turn or prompt row a part of it. */
 const SCOPE_RANK: Readonly<Record<string, number>> = { session: 4, task: 3, turn: 2, prompt: 1 };
 const scopeRank = (scope: string): number => SCOPE_RANK[scope] ?? 0;
 
 /** A taxonomy classifier's top level. */
 const TAXONOMY_TOP_KEY = "l1";
 
-/**
- * The label key a classifier is charted by. Keys are the classifier's output schema, not model prose:
- * the key named like the classifier's last word (`outcome` for task_outcome, `language` for
- * prompt_language), else `l1` (a taxonomy's top level), else the first key in sorted order.
- */
+/** Chart key from the output schema: the classifier's last word, else `l1`, else first sorted. */
 export function chartLabelKey(classifier: string, keys: Iterable<string>): string | undefined {
   const sorted = [...new Set(keys)].sort();
   const lastWord = classifier.split("_").at(-1);
@@ -296,13 +280,7 @@ interface CountedUnit {
   labels: Record<string, string>;
 }
 
-/**
- * Label counts per classifier and model over graded chats. Each classifier is counted at the broadest
- * scope it reported in these chats (session if it judges whole chats, else task, turn or prompt), so
- * task_outcome counts tasks and a sentiment classifier counts messages. Within that scope a unit counts
- * once (session snapshots share a unit id; the latest is kept), and only successful rows count:
- * declined, abandoned and failed rows have no labels.
- */
+/** Label counts per classifier and model at its broadest reported scope; each unit once, if ok. */
 export function buildChatGradesReport(chats: readonly ChatGradeReportChat[], grades: readonly ChatGrade[]): ChatGradesReport {
   const gradeById = new Map(grades.map((grade) => [grade.sessionId, grade]));
   const graded = chats.flatMap((chat) => {
@@ -435,17 +413,14 @@ function tokenTotals(result: AgentTrajectoryClassifyResult): Pick<ChatGrade, "in
 const hasRetryableRows = (result: AgentTrajectoryClassifyResult): boolean =>
   result.classifications.some((row) => row.status === "failed" || row.status === "abandoned");
 
-/**
- * One grading run at a time, a few chats at once. A run lives in memory: a restart ends it, and every
- * chat it finished is already saved.
- */
+/** One run at a time, a few chats at once; in memory: a restart ends it, saved grades stay. */
 export function createChatGrader(deps: ChatGraderDeps) {
   const now = deps.now ?? (() => new Date());
   const logger = deps.logger ?? console;
   const concurrency = Math.max(1, deps.concurrency ?? GRADING_CONCURRENCY);
   let run: GradingRun | undefined;
 
-  /** Chats a run would grade: all of them on a regrade, otherwise those with no grade or a failed attempt. */
+  /** Chats a run would grade: all on a regrade, else those with no grade or a failed attempt. */
   function pending(sessionIds: readonly string[], regrade: boolean): string[] {
     if (regrade) return [...sessionIds];
     const grades = new Map(deps.store.listFor(sessionIds).map((grade) => [grade.sessionId, grade]));
@@ -471,8 +446,7 @@ export function createChatGrader(deps: ChatGraderDeps) {
     try {
       let previousResult: AgentTrajectoryClassifyResult | undefined;
       if (keptGrade?.trajectoryFingerprint) {
-        // Validation is free and returns the log's fingerprint: an unchanged log keeps its grade and
-        // retries only the classifiers that failed on it.
+        // Validation is free: an unchanged log keeps its grade and retries only failed classifiers.
         const check = await deps.classify({ events: read.events, validateOnly: true });
         if (check.validation && !check.validation.valid) return skip("invalid", eventCount, check.validation.errors.join("; "));
         if (check.trajectoryFingerprint === keptGrade.trajectoryFingerprint) {
@@ -554,7 +528,7 @@ export type ChatGrader = ReturnType<typeof createChatGrader>;
 
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Filters from a query string or JSON body: `from`/`to` days, `models` (repeated or comma-separated), `includeScheduled`. */
+/** Filters from a query or body; `models` may be repeated or comma-joined. */
 export function parseChatGradesFilters(source: Record<string, unknown>): { filters: ChatGradesFilters } | { error: string } {
   const day = (value: unknown): string | undefined | null => {
     if (value === undefined || value === null || value === "") return undefined;

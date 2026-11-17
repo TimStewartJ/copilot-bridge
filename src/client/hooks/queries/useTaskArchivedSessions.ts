@@ -27,10 +27,7 @@ export function useTaskArchivedSessionsQuery(taskId: string | undefined, enabled
   });
 }
 
-/**
- * Every archived session any task has loaded so far, so a chat opened from a task's archived list
- * finds its summary and details without the global archived list.
- */
+/** Archived sessions any task has loaded, so a chat opened from one needs no global list. */
 export function useCachedTaskArchivedSessions(): Session[] {
   const queryClient = useQueryClient();
   const [version, setVersion] = useState(0);

@@ -145,7 +145,7 @@ interface Limits {
   keepChats?: number;
 }
 
-/** `keptExpiresAt` is the end date of the trigger being edited when the form left it alone; it may have passed. */
+/** `keptExpiresAt`: the edited trigger's untouched end date, which may have passed. */
 function buildLimits(form: TriggerFormState, now: Date, keptExpiresAt?: string): TriggerFormResult<Limits> {
   const limits: Limits = {};
   if (form.maxRuns.trim()) {
@@ -226,10 +226,7 @@ function sameCheck(left: TriggerCheckSpec | undefined, right: TriggerCheckSpec |
     && Boolean(left.fireOnFirstRun) === Boolean(right.fireOnFirstRun);
 }
 
-/**
- * Only what changed: resending an unchanged timing would restart its countdown, and an unchanged
- * one-time trigger whose time has passed would be refused.
- */
+/** Only what changed: resent timing restarts its countdown, or is refused once past. */
 export function buildTriggerUpdate(form: TriggerFormState, existing: TriggerView, now = new Date()): TriggerFormResult<TriggerUpdateInput> {
   const commonError = checkCommon(form);
   if (commonError) return { ok: false, error: commonError };

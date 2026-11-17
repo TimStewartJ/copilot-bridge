@@ -1,6 +1,4 @@
-// Browser web search tool — uses agent-browser to search Google, Bing, then DuckDuckGo.
-// Returns an accessibility-tree snapshot of the results page for the LLM to interpret,
-// avoiding fragile CSS selectors that break when search engines change their DOM.
+// Browser web search (Google, Bing, DuckDuckGo); returns an a11y snapshot, not scraped selectors.
 
 import { createHash, randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";

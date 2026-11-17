@@ -1,4 +1,4 @@
-/** The chat mic's settings and what it records about a dictation, shared by the server and the client. */
+/** The chat mic's settings and what it records about a dictation, shared by server and client. */
 
 export const SPEECH_MODEL_IDS = ["parakeet-v3", "parakeet-unified-en"] as const;
 export type SpeechModelId = (typeof SPEECH_MODEL_IDS)[number];
@@ -20,10 +20,7 @@ export interface SpeechCoverage {
   gapStartSeconds: number;
 }
 
-/**
- * Why a dictation was held instead of sent. `coverage` means speech may be missing, and
- * `unchecked` means the recognizer gave no timing to check it against.
- */
+/** Why a dictation was held: `coverage`, speech may be missing; `unchecked`, no timing to check. */
 export type VoiceReviewReason = "coverage" | "unchecked";
 
 /** The review a dictation needs, or undefined when it may send. */

@@ -8,10 +8,7 @@ export interface ToolCallTreeNode {
   rootToolCallId: string;
   status: ToolCallStatus;
   isContextOnly: boolean;
-  /**
-   * The calls made directly beneath this one in everything that is loaded. A node cut down to one
-   * stretch of work has only that stretch's children, and this says how many there are in all.
-   */
+  /** Direct children across everything loaded, even when the node shows one stretch's only. */
   loadedChildCount: number;
   descendantCount: number;
   runningCount: number;
@@ -42,7 +39,7 @@ export type ChatRenderSegment =
   | { type: "skill-segment"; entry: ChatSkillEntry }
   | { type: "completion-segment"; entry: ChatCompletionEntry }
   | { type: "reasoning-segment"; entry: ChatReasoningEntry }
-  /** Autopilot continuing on its own; `count` merges continuations with nothing shown between them. */
+  /** Autopilot continuing; `count` merges continuations with nothing shown between. */
   | { type: "continuation-segment"; entry: ChatContinuationEntry; count: number };
 
 export function buildToolCallForest(toolCalls: ToolCall[]): ToolCallForest {
@@ -276,12 +273,7 @@ function segmentInteractionEntries(entries: ChatEntry[]): ChatRenderSegment[] {
     currentToolEntries = [];
   };
 
-  /**
-   * The main agent's calls of one turn form one group, shown where the turn's first call is. A
-   * sub-agent's call stays where it happened: the stretch of work it falls in gathers it under its
-   * agent (chat-activity.ts), so an agent that works across several of the main agent's replies
-   * appears in each stretch with what it did there.
-   */
+  /** Sub-agent calls aren't turn-grouped; chat-activity gathers them per stretch by agent. */
   const turnGroupIdOf = (entry: ChatToolEntry): string | undefined => (
     entry.toolCall.parentToolCallId ? undefined : getTurnGroupId(entry)
   );

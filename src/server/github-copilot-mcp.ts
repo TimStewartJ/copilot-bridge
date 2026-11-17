@@ -2,8 +2,7 @@ import type { GitHubMcpToolConfig } from "@github/copilot-sdk";
 import type { McpServerConfig } from "./mcp-config.js";
 import { resolveBridgeCopilotGitHubToken } from "./copilot-client-options.js";
 
-// Use the SDK-reserved server name so the CLI hosts GitHub MCP and hoists
-// `web_search` to the first-class tool name.
+// The SDK-reserved name makes the CLI host GitHub MCP and expose `web_search` as a top-level tool.
 export const GITHUB_COPILOT_MCP_SERVER_NAME = "github-mcp-server";
 export const GITHUB_COPILOT_MCP_WEB_SEARCH_TOOL = "web_search";
 export const GITHUB_COPILOT_MCP_READONLY_URL = "https://api.githubcopilot.com/mcp/readonly";

@@ -1,4 +1,4 @@
-// REST routes for Helm's brief, memory and looks, mounted under /api/helm next to the conversation routes.
+// REST routes for Helm's brief, memory and looks, under /api/helm.
 import express from "express";
 import { HelmError } from "../helm-service.js";
 import type { HelmThinker } from "./thinker.js";

@@ -48,10 +48,7 @@ vi.mock("node:fs", () => ({
   lstatSync: lstatSyncMock,
 }));
 
-/**
- * Directories the code under test created and has not removed again. The mocked filesystem
- * keeps this up to date, so a test can tell whether a directory still exists.
- */
+/** Directories that currently exist in the mocked filesystem. */
 const directories = new Set<string>();
 
 function removeDirectoryTree(target: string): void {
@@ -73,10 +70,7 @@ interface BrowserCall {
 /** What agent-browser prints for a command, or the text it fails with. */
 type BrowserReply = string | { fails: string };
 
-/**
- * What the page-check script (`pageSignalsScript` in browser-page-check.ts) returns for a page,
- * as the JSON text it produces. Without overrides it is an ordinary page with content.
- */
+/** The JSON `pageSignalsScript` returns for a page; without overrides, an ordinary page. */
 function pageSignals(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     url: "https://example.com/",
@@ -136,11 +130,7 @@ const FORM_WITH_CAPTCHA = {
   block: { kind: "captcha", by: "reCAPTCHA", status: 200 },
 } as const;
 
-/**
- * Stands in for the agent-browser binary and records what it was asked. `reply` answers the
- * commands a test cares about. Every other command succeeds: the page check reads an ordinary
- * page, and the browser reports the blank page it starts on.
- */
+/** Fakes the agent-browser binary and records calls; commands `reply` skips succeed. */
 function mockAgentBrowser(
   reply: (call: BrowserCall, earlier: readonly BrowserCall[]) => BrowserReply | undefined = () => undefined,
 ): BrowserCall[] {
@@ -178,11 +168,7 @@ function defaultReply(call: BrowserCall): BrowserReply {
   return "ok";
 }
 
-/**
- * Runs a fetch without its real waits: the page check gives a human check five seconds to pass
- * by itself. Only the timers are faked; every round lets the mocked commands and the waits make
- * progress until the fetch has settled.
- */
+/** Fakes timers so the page check's 5 s human-check wait passes at once. */
 async function withoutWaits<T>(fetch: () => T | Promise<T>): Promise<T> {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
@@ -431,7 +417,7 @@ describe("browser_fetch tool", () => {
       expect(result).not.toHaveProperty(otherField);
       const notice = result[field];
       expect(notice).toMatchObject({ kind: page.block.kind, by: page.block.by });
-      // The browser of this call is gone when the agent reads the result, so there is no session to name.
+      // This call's browser is gone by the time the agent reads it, so no session to name.
       expect(notice.guidance).not.toContain("browserSessionId");
       for (const sessionTool of ["browser_session_start", "browser_session_handoff"]) {
         expect(notice.guidance).toContain(sessionTool);

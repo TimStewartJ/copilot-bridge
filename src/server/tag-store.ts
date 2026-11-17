@@ -117,8 +117,7 @@ export function createTagStore(db: DatabaseSync) {
       values.push(updates.name, normalizeTagNameKey(updates.name));
     }
     if (updates.color !== undefined) {
-      // Silently dropping an unknown colour made REST/tool callers report
-      // success for a change that was never persisted.
+      // Throw rather than drop it, or callers report success for a change never saved.
       if (!TAG_COLORS.includes(updates.color)) {
         throw new InvalidTagColorError(updates.color);
       }
@@ -163,9 +162,7 @@ export function createTagStore(db: DatabaseSync) {
       if (!tag) throw new Error(`Tag ${tagId} not found`);
     }
 
-    // `entity_tags` has no cascade, so a failure between the delete and the
-    // re-insert would silently strip an entity's tags with nothing to restore
-    // them.
+    // One transaction: a failure between delete and re-insert would strip the entity's tags.
     runTransaction(db, () => {
       db.prepare("DELETE FROM entity_tags WHERE entityType = ? AND entityId = ?").run(entityType, entityId);
 

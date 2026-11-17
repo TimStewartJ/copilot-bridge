@@ -1,7 +1,4 @@
-// Home and Helm are one page: Helm's brief beside the Helm conversation. Wide screens show both;
-// narrower ones switch between them, and the address says which is showing (Home is the brief,
-// /helm the conversation) so links, the back button and the hands-free dock keep working. A phone
-// switches with its Home and Helm tabs, at thumb reach, so only the widths between draw the switch.
+// Panes switch by URL (Home brief, /helm talk) so Back works; phones switch with tabs instead.
 import type { ReactNode } from "react";
 import { MessageSquare, Newspaper } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -27,7 +24,7 @@ export default function HelmPage({ pane, brief, talk }: {
     </div>;
   }
   return <div className="flex min-h-0 flex-1 flex-col">
-    {/* Same bar as the Work tab's Tasks/Chats switch, so moving between the two tabs keeps it still. */}
+    {/* Same bar as the Work tab's Tasks/Chats switch, so it stays still across tabs. */}
     {!phone && <div className="flex shrink-0 items-center border-b border-border bg-bg-secondary px-4 py-3">
       <SegmentedControl<HelmPagePane> ariaLabel="Brief or talk" value={pane} fullWidth
         options={[

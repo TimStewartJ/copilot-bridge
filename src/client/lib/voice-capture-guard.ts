@@ -1,8 +1,4 @@
-// A chat mic capture is at risk from the moment recording starts until the server has the audio:
-// first it exists only in this tab's memory, then it is an upload that a reload would cut off.
-// While any capture is at risk this keeps the screen awake, asks before the tab is closed, and lets
-// the app hold back its own page reloads. Other work a reload would destroy, such as a chat message
-// that has not reached the server, holds those reloads too.
+// While a capture or unsent message is at risk: keep awake, confirm tab close, hold app reloads.
 
 interface WakeLockSentinelLike {
   readonly released: boolean;
@@ -31,7 +27,7 @@ function confirmLeaving(event: BeforeUnloadEvent): void {
   event.returnValue = "";
 }
 
-/** The browser drops a screen wake lock whenever the tab is hidden, so it is taken again on return. */
+/** The browser drops the wake lock when the tab hides, so it is taken again on return. */
 async function keepScreenAwake(): Promise<void> {
   if (activeCaptures === 0 || document.visibilityState !== "visible" || (wakeLock && !wakeLock.released)) return;
   try {
@@ -48,7 +44,7 @@ function onVisibilityChange(): void {
   void keepScreenAwake();
 }
 
-/** Marks a capture as at risk. Call the returned function once its audio is stored or handed over. */
+/** Marks a capture at risk; call the result once its audio is stored or handed over. */
 export function holdVoiceCapture(): () => void {
   activeCaptures += 1;
   if (activeCaptures === 1) {
@@ -71,7 +67,7 @@ export function holdVoiceCapture(): () => void {
   };
 }
 
-/** Holds the app's own page reloads, and nothing else. Call the returned function once the work is safe. */
+/** Holds only the app's own page reloads; call the result once the work is safe. */
 export function holdPageReload(): () => void {
   otherReloadHolds += 1;
   let released = false;
@@ -93,7 +89,7 @@ export async function whileHoldingVoiceCapture<T>(work: () => Promise<T>): Promi
   }
 }
 
-/** Rechecks safety at reload time, including captures or sends started after the timer was armed. */
+/** Rechecks at reload time, catching captures or sends started after the timer was armed. */
 export function schedulePageReloadWhenSafe(reload: () => void, onHeld: () => void): () => void {
   let cancelWait = () => {};
   const timer = setTimeout(() => {
@@ -110,7 +106,7 @@ export function schedulePageReloadWhenSafe(reload: () => void, onHeld: () => voi
   };
 }
 
-/** Runs `callback` once a page reload would destroy nothing, which may be right away. Returns a cancel function. */
+/** Runs `callback` once a reload would lose nothing, maybe at once; returns a cancel function. */
 export function whenPageReloadSafe(callback: () => void): () => void {
   if (activeCaptures === 0 && otherReloadHolds === 0) {
     callback();

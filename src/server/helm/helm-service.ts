@@ -1,11 +1,4 @@
-// Helm: Bridge's orchestration manager. One current conversation, usable as typed chat or
-// hands-free voice, backed by an ordinary Bridge session with the Helm profile.
-//
-// Context lifecycle: easy to reset, still resumable, never eternal.
-// - "New conversation" starts clean; the previous one stays in recent history.
-// - A conversation left idle long enough stops being current, so Helm opens fresh, with a
-//   one-click way back to where you left off.
-// - Recent conversations expire after a retention window unless the user keeps them.
+// Helm: one current conversation, typed or voice, on an ordinary session with the Helm profile.
 import { createListedSessionId } from "../unlisted-sessions.js";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -51,7 +44,7 @@ export const HELM_POLICY = {
   pruneIntervalMs: 60 * 60_000,
 } as const;
 
-/** Effort for a Helm conversation or look when neither the Helm role nor the user's default says. */
+/** Effort for Helm when neither the Helm role nor the user's default sets one. */
 export const HELM_FALLBACK_REASONING_EFFORT = "high";
 
 export interface HelmConversationView {
@@ -65,7 +58,7 @@ export interface HelmConversationView {
   /** A turn is working, rather than waiting for input or holding the session open. */
   replying: boolean;
   handsFree: boolean;
-  /** Visible activity time of Helm's latest finished reply, for read state; null before any reply. */
+  /** Visible activity time of Helm's latest reply, for read state; null before any. */
   lastReplyAt: string | null;
   /** When retention will delete it; absent for kept conversations. */
   expiresAt?: string;
@@ -123,7 +116,7 @@ export class HelmService implements HelmToolRuntime {
       if (!event.sessionId || !this.store.isHelmSession(event.sessionId)) return;
       if (event.type === "session:idle") {
         this.store.touch(event.sessionId, new Date(this.now()).toISOString());
-        // Only a turn that ended in a reply counts, timed like the chat's own read state so viewing it clears it.
+        // Only a reply counts, timed like the chat's read state so viewing the chat clears it.
         const repliedAt = event.assistantPreview ? this.ctx.sessionMetaStore.getMeta(event.sessionId)?.lastVisibleActivityAt : undefined;
         if (repliedAt && this.store.recordReply(event.sessionId, repliedAt)) this.announce();
       } else if (event.type === "session:history-truncated") {
@@ -135,11 +128,7 @@ export class HelmService implements HelmToolRuntime {
     });
   }
 
-  /**
-   * Conversations from before Helm's chat became an ordinary chat were pinned to data/helm, which
-   * can sit inside the Bridge's own checkout and would load its repository instructions. Moves
-   * them to the Bridge workspace new conversations get. Returns how many moved.
-   */
+  /** Old chats pinned to data/helm may sit in the checkout and load its repo rules; move them. */
   moveLegacyWorkspaces(): number {
     const dataDir = this.ctx.runtimePaths?.dataDir;
     const workspace = this.ctx.runtimePaths ? ensureNeutralWorkspaceDir(this.ctx.runtimePaths) : undefined;
@@ -191,10 +180,7 @@ export class HelmService implements HelmToolRuntime {
     };
   }
 
-  /**
-   * Saves hands-free settings and the names list. The retired model and effort keys (sent by Tether)
-   * are kept as written and returned by reads, so its check that a write took passes; nothing reads them.
-   */
+  /** Retired model/effort keys are kept and echoed only so the phone app's write check passes. */
   async patchSettings(input: unknown): Promise<HelmSettingsResponse> {
     let patch: Partial<UnifiedHelmSettings>;
     try {
@@ -225,9 +211,7 @@ export class HelmService implements HelmToolRuntime {
     }
   }
 
-  // ── Session profile ────────────────────────────────────────────
-
-  /** Helm's own tools. The chat already has the Bridge's task, docs and trigger tools as an ordinary chat. */
+  /** Helm's own tools; the chat already has the Bridge's ordinary tools. */
   private getTools(): BridgeToolDefinition[] {
     const own = new Set<string>(HELM_TOOL_NAMES);
     this.tools ??= createHelmToolDefinitions(this.ctx, this.facade, this).filter((tool) => own.has(tool.name));
@@ -257,8 +241,7 @@ export class HelmService implements HelmToolRuntime {
           playbookSkills: this.ctx.skillCatalog?.playbooks().map((skill) => skill.id) ?? [],
         }),
         conversationContext: (sessionId, { afterLoss }) => {
-          // Without a loss, a conversation that already replied before this Bridge process started
-          // got its index then (or predates it): resending would only repeat it.
+          // A conversation that replied before this process started already got its index.
           if (!afterLoss && this.store.get(sessionId)?.lastReplyAt) return undefined;
           return this.buildTaskIndex();
         },
@@ -296,9 +279,7 @@ export class HelmService implements HelmToolRuntime {
     return buildHelmTaskIndex({ tasks, threads, lastActivity, ...(attention ? { attention } : {}) });
   }
 
-  // ── Hands-free binding and watched sessions (HelmToolRuntime) ──
-
-  /** Marks a Helm conversation as having hands-free on, so it isn't retired or deleted meanwhile. Returns an unbind function. */
+  /** Keeps a hands-free conversation from being retired or deleted; returns an unbind function. */
   bindHandsFree(helmSessionId: string): () => void {
     this.handsFree.set(helmSessionId, (this.handsFree.get(helmSessionId) ?? 0) + 1);
     this.announce();
@@ -327,9 +308,7 @@ export class HelmService implements HelmToolRuntime {
     return this.watched.get(helmSessionId)?.has(sessionId) === true;
   }
 
-  // ── Conversations ──────────────────────────────────────────────
-
-  /** The session's own name (set by auto-naming or a rename), read once and then kept current by title events. */
+  /** The session's own name, read once and then kept current by title events. */
   private async resolveTitle(sessionId: string): Promise<string | null> {
     const cached = this.titles.get(sessionId);
     if (cached !== undefined) return cached;
@@ -422,7 +401,7 @@ export class HelmService implements HelmToolRuntime {
       fallbackEffort: HELM_FALLBACK_REASONING_EFFORT,
     });
     const sessionId = createListedSessionId();
-    // Registered before creation so the session is built with the Helm profile from its first config.
+    // Registered first so the session gets the Helm profile from its first config.
     this.store.create(sessionId, new Date(this.now()).toISOString());
     try {
       await this.ctx.sessionManager.createSession({
@@ -484,8 +463,7 @@ export class HelmService implements HelmToolRuntime {
     try {
       await this.deleteSession(sessionId);
     } finally {
-      // The row goes even if the backend delete failed: the session is locally gone either way,
-      // and a dangling row would keep resurrecting an unusable conversation.
+      // Removed even if the backend delete failed; a dangling row would revive a dead conversation.
       this.store.remove(sessionId);
       this.watched.delete(sessionId);
       this.titles.delete(sessionId);

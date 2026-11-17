@@ -1,5 +1,4 @@
-// Runs a Smart Turn v3 ONNX model on features from ./features.ts. ONNX Runtime is passed in, so
-// this package depends on neither onnxruntime-node nor onnxruntime-web and works with both.
+// Runs a Smart Turn v3 model; ONNX Runtime is passed in so it works with both node and web builds.
 
 import { createSmartTurnFeatureExtractor, SMART_TURN_FRAMES, SMART_TURN_MEL_BINS } from "./features.js";
 
@@ -18,7 +17,7 @@ export interface SmartTurnDetectorOptions {
   Tensor: SmartTurnTensorConstructor;
   /** An inference session for a Smart Turn v3 ONNX model. */
   session: SmartTurnSession;
-  /** A turn counts as complete above this probability. Default 0.5, as in Smart Turn's own inference code. */
+  /** A turn is complete above this probability. Default 0.5, as in Smart Turn's own code. */
   threshold?: number;
 }
 
@@ -30,10 +29,7 @@ export interface SmartTurnPrediction {
 }
 
 export interface SmartTurnDetector {
-  /**
-   * Judges whether the speaker has finished. Pass the turn so far as 16 kHz mono samples in
-   * [-1, 1], ending where the speaker went quiet. The last 8 seconds are used.
-   */
+  /** Takes 16 kHz mono samples in [-1, 1] ending at the pause; uses the last 8 seconds. */
   predict(samples: Float32Array): Promise<SmartTurnPrediction>;
 }
 

@@ -1,8 +1,4 @@
-// Hard upper bounds on every backend RPC the Bridge waits on. A dead JSON-RPC
-// connection never answers, so without these the watchdog, abort, graceful
-// restart, and every queued send wait forever. Timeouts are deliberately
-// generous: they exist to turn a wedged channel into a diagnosable failure
-// (and a liveness probe), not to police slow-but-alive runtimes.
+// Hard RPC bounds so a dead channel fails; generous on purpose, not to police slow runtimes.
 
 export const AGENT_RPC_TIMEOUTS_MS = {
   // Session-scoped
@@ -80,11 +76,7 @@ export interface BoundRpcOptions {
   onError?: (rpc: AgentRpcName, error: unknown) => void;
 }
 
-/**
- * Race `operation` against its configured hard timeout. The underlying RPC is
- * not cancelled (the SDK exposes no cancellation), so a late settlement is
- * observed and discarded to avoid unhandled rejections.
- */
+/** Races the RPC with its timeout; the SDK can't cancel it, so a late result is swallowed. */
 export async function boundRpc<T>(
   rpc: AgentRpcName,
   operation: () => Promise<T>,

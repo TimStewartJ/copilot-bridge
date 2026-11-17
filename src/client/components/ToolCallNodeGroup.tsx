@@ -48,10 +48,7 @@ export const ToolCallTree = memo(function ToolCallTree({
       );
 });
 
-/**
- * Sibling tool calls, one row each in the order they started. Calls that ran in parallel are
- * simply adjacent rows: their spinners and durations already say they overlapped.
- */
+/** One row per call in start order; parallel calls are just adjacent rows. */
 export const ToolCallNodeGroup = memo(function ToolCallNodeGroup({
   nodes,
   defaultExpanded = false,

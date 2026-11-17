@@ -3,12 +3,7 @@ export type SessionContextMarkerCapability = "exact" | "marker" | "unavailable";
 export type SessionContextSource = "live" | "backfill" | "estimated";
 export type SessionContextProvenanceField = "contextWindow" | "tokensUsed" | "tokensRemaining" | "modelUsage";
 
-/**
- * Provider-level capabilities describe what an adapter can generally report.
- * Field provenance describes where one specific value came from. Keep both:
- * a provider may support exact live context usage while an older row only has
- * backfilled model usage, or a future provider may expose estimated values.
- */
+/** Capabilities: what an adapter can report; provenance: where one value came from. Keep both. */
 export interface SessionContextFieldProvenance {
   source: SessionContextSource;
   confidence: SessionContextCapability;
@@ -92,10 +87,7 @@ export interface SessionContextEvent {
   metadata: Record<string, unknown> | null;
 }
 
-/**
- * Copilot SDK infinite-session defaults (InfiniteSessionConfig): background compaction starts at
- * 80% of the window and the session waits for it at 95%. Bridge does not override them for chats.
- */
+/** The SDK's InfiniteSessionConfig defaults, which the Bridge does not override for chats. */
 export const SESSION_CONTEXT_COMPACTION_THRESHOLDS = { background: 0.8, blocking: 0.95 } as const;
 
 /** What the window held at one reading, as the runtime split it. */

@@ -180,7 +180,7 @@ async function startManager() {
   return started;
 }
 
-/** Runs before the shared shutdown, so a test that fails early does not leave shutdown waiting on it. */
+/** Runs before the shared shutdown, so a test that fails early does not leave shutdown waiting. */
 function beforeShutdown(step: () => void) {
   shutdownSteps.push(step);
 }

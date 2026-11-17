@@ -11,7 +11,7 @@ export interface ConfigCardProps {
   children?: React.ReactNode;
 }
 
-/** A configured object in a settings list: its name and state on one line, a short detail beneath. */
+/** A configured object in a settings list: name and state on one line, a short detail beneath. */
 export function ConfigCard({
   title,
   badge,

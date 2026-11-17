@@ -47,7 +47,7 @@ export function serializeCopilotUsageSummary(summary: CopilotUsageSummary) {
     pricedAs: row.pricedAs,
     pricingStatus: row.pricingStatus,
     normalizedPricingModel: row.normalizedPricingModel,
-    // The same model can appear once per context tier; without these the rows are indistinguishable.
+    // A model can appear once per context tier; these tell the rows apart.
     ...(row.contextTier ? { contextTier: row.contextTier } : {}),
     ...(row.contextTierLabel ? { contextTierLabel: row.contextTierLabel } : {}),
   });

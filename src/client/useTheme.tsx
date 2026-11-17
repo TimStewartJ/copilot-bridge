@@ -22,7 +22,7 @@ interface ThemeContextValue {
   /** Resolved theme after system preference resolution */
   effectiveTheme: EffectiveTheme;
   savedTheme: ThemePreference;
-  /** Preview a settings draft; null returns to the saved preference. Persistence belongs to Save. */
+  /** Preview a settings draft; null returns to the saved preference. Save persists it. */
   previewTheme: (preference: ThemePreference | null) => void;
   /** Reduced-motion preference, including an unsaved settings preview. */
   motion: MotionPreference;

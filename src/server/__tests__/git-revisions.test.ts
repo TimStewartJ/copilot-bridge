@@ -74,10 +74,7 @@ function mockExecFileImplementation(
   });
 }
 
-/**
- * The running commit is read once, when the first reader is created, with the same `git log`
- * arguments as every later read of the live checkout. Order tells them apart.
- */
+/** The first read is the running commit, same `git log` args as later reads; order tells apart. */
 function headReads(running: string, local: string): () => string {
   let reads = 0;
   return () => (reads++ === 0 ? running : local);

@@ -1,7 +1,4 @@
-// The index of live tasks a Helm conversation starts with. Helm used to learn which tasks exist
-// only by asking (helm_brief, task_list, find), and when it didn't ask it started work outside the
-// task the work belonged to. The index is sent once, in front of the conversation's first message,
-// so it never changes the cached prompt; Helm falls back to its tools when it may be stale.
+// Task index sent once before the first message, so it never changes the cached prompt.
 import { formatBridgeLink } from "../../shared/bridge-links.js";
 import type { Task } from "../task-store.js";
 import type { HelmThreadOwner } from "../../shared/helm-thinker.js";
@@ -65,10 +62,7 @@ function rank(attention: TaskAttention | undefined): number {
   return attention.reasons.length ? 2 : 1;
 }
 
-/**
- * Live tasks, at most maxChars of them: the ones being worked on before those set aside, then by
- * priority and latest activity. Returns undefined when there are no live tasks.
- */
+/** Live tasks within maxChars: worked-on before set aside, then by priority and activity. */
 export function buildHelmTaskIndex(input: HelmTaskIndexInput): string | undefined {
   const maxChars = input.maxChars ?? HELM_TASK_INDEX_MAX_CHARS;
   const activity = (task: HelmTaskIndexInput["tasks"][number]) =>

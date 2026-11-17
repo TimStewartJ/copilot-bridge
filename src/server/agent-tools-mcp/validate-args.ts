@@ -1,17 +1,4 @@
-/**
- * Runtime contract validation for Bridge tool arguments.
- *
- * The declared `inputSchema` of a Bridge tool is advisory on every invocation
- * path: the SDK native tool bridge (`bridge-native-tools.ts`) hands the raw
- * argument object straight to the handler. Without this check each handler has
- * to re-derive its own contract, and anything it forgets to check reaches a
- * store or a native call unvalidated.
- *
- * This validates the JSON Schema subset the Bridge tools actually declare.
- * `SUPPORTED_SCHEMA_KEYWORDS` is asserted against the live tool registry by a
- * test, so introducing a keyword this validator does not understand fails CI
- * instead of silently widening the contract.
- */
+/** Validates tool args: the native bridge passes raw args, so inputSchema alone checks nothing. */
 
 import { isRecord } from "../../shared/is-record.js";
 
@@ -80,8 +67,7 @@ function matchesType(value: unknown, type: string): boolean {
     case "null":
       return value === null;
     default:
-      // Fail closed: an unrecognized type declaration must not silently disable
-      // validation. The registry audit rejects these at build time.
+      // Fail closed: an unknown type must not disable validation (the registry audit rejects it).
       return false;
   }
 }
@@ -124,9 +110,7 @@ function validateValue(schema: unknown, value: unknown, path: string): string | 
   if (Array.isArray(schema.anyOf)) {
     const branchErrors = schema.anyOf.map((branch) => validateValue(branch, value, path));
     if (branchErrors.every((error) => error !== undefined)) {
-      // Prefer the branch the value was clearly aiming for (matching top-level
-      // type), so an object missing a field reports that instead of a vague
-      // "no branch matched".
+      // Report the branch whose type matches, so a missing field beats a vague "no branch matched".
       const targeted = schema.anyOf.findIndex((branch) => isRecord(branch) && matchesDeclaredType(branch.type, value));
       if (targeted >= 0) return branchErrors[targeted];
       return at(path, `does not match any allowed shape (received ${describeType(value)})`);
@@ -221,11 +205,7 @@ function validateObject(schema: JsonSchema, value: Record<string, unknown>, path
   return undefined;
 }
 
-/**
- * Validate a tool argument object against its declared schema.
- * Returns a human-readable message describing the first violation, or
- * `undefined` when the arguments satisfy the declared contract.
- */
+/** Validates tool arguments against their schema; returns the first violation, or undefined. */
 export function validateToolArguments(schema: unknown, args: unknown): string | undefined {
   if (!isRecord(schema) && typeof schema !== "boolean") return undefined;
   if (!isRecord(args)) {
@@ -234,7 +214,7 @@ export function validateToolArguments(schema: unknown, args: unknown): string | 
   return validateValue(schema, args, "");
 }
 
-/** Collect schema keywords this validator does not understand (used by the registry coverage test). */
+/** Collect schema keywords this validator does not understand. */
 export function findUnsupportedSchemaKeywords(schema: unknown, path = ""): string[] {
   if (Array.isArray(schema)) {
     return schema.flatMap((entry, index) => findUnsupportedSchemaKeywords(entry, `${path}[${index}]`));

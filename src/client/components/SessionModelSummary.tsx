@@ -4,10 +4,7 @@ import type { ModelInfo, SessionModelState } from "../api";
 import { formatSessionModelSummaryLabel } from "../lib/session-model";
 import { DS, cx } from "../design/tokens";
 
-/**
- * What a chat is and what it runs on, as a few quiet words for the chat header. It draws no bar of
- * its own: the header it sits in owns the line.
- */
+/** What a chat is and runs on, as quiet words; it draws no bar, the header owns the line. */
 export default function SessionModelSummary({
   title,
   state,
@@ -25,7 +22,7 @@ export default function SessionModelSummary({
   loading: boolean;
   error?: string;
   onRetry: () => void;
-  /** Opens the editor for this chat's model, effort and context. Without it the label is plain text. */
+  /** Opens the editor for this chat's model, effort and context; without it the label is plain. */
   onEdit?: () => void;
   /** Why editing is unavailable right now, such as a working session. Disables the label. */
   editDisabledReason?: string;

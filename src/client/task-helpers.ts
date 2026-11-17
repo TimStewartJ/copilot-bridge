@@ -10,10 +10,7 @@ function compareOngoingFirst(a: Pick<Task, "kind">, b: Pick<Task, "kind">): numb
   return a.kind === "ongoing" ? -1 : 1;
 }
 
-/**
- * Sort tasks by status priority then by order. Active ongoing tasks float to the top; archived
- * tasks keep their stored order, which is newest archived first.
- */
+/** By status, then order; ongoing tasks lead, archived keep stored order (newest first). */
 export function sortTasksByStatusAndOrder(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => {
     const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
@@ -84,12 +81,7 @@ export function isSetAsideTask(task: Pick<Task, "deferred" | "muted" | "status">
   return task.status === "active" && (task.deferred || task.muted);
 }
 
-/**
- * The sidebar reorders only the tasks it shows, and grouped drags submit just one group's IDs. The
- * server numbers exactly the IDs it receives, so hidden set-aside tasks from that same cohort keep
- * their slots and the new visible order fills the rest. Hidden tasks in other groups are untouched.
- * Pass `targetGroupId` when a task is moving into a group, since its stored group is still the old one.
- */
+/** Hidden set-aside tasks in the sent group keep their slots; pass targetGroupId when moving. */
 export function mergeVisibleOrder(
   activeTasks: readonly Task[],
   hiddenIds: ReadonlySet<string>,

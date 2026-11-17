@@ -10,12 +10,7 @@ type CreateReactDomHarnessOptions = {
 };
 
 const DEFAULT_WAIT_MAX_FLUSHES = 100;
-/**
- * Budget for a beforeAll hook that imports a component graph after installing
- * the DOM shim. Static imports are collected without any timeout, but a
- * dynamic import in a hook gets the shared hook budget, which a large graph can
- * exceed while one worker per core competes for the transform pipeline.
- */
+/** Dynamic imports in beforeAll share the hook timeout, which big graphs exceed under load. */
 export const COMPONENT_IMPORT_WARMUP_TIMEOUT_MS = 120_000;
 type HarnessCleanup = () => Promise<void>;
 const activeHarnessCleanups = new Set<HarnessCleanup>();
@@ -69,9 +64,7 @@ async function withRealTimersForHarnessCleanup(callback: () => Promise<void>): P
 export async function createReactDomHarness(options: CreateReactDomHarnessOptions = {}) {
   const dom = (options.installDom ?? installDomShim)();
   try {
-    // Keep these imports after the DOM shim is installed. React DOM probes the
-    // test environment during import/render, so top-level imports can reintroduce
-    // the global-ordering bugs this harness is meant to avoid.
+    // Import React DOM only after the shim is installed: it probes globals at import time.
     const [{ createRoot }, { act }] = await Promise.all([
       import("react-dom/client"),
       import("react"),
@@ -141,11 +134,7 @@ export async function waitTick(): Promise<void> {
 const REAL_SET_TIMEOUT = setTimeout;
 
 async function waitSchedulerTask(): Promise<void> {
-  // Service the check phase (setImmediate) and the timers phase (setTimeout) so a
-  // React scheduler task backed by a real timer is observed deterministically.
-  // setImmediate alone never advances the timers phase, so a fast, idle event loop
-  // can exhaust every flush before a setTimeout(0) — clamped to ~1ms, and up to the
-  // ~15.6ms tick on Windows — ever fires, which made scheduler-task waits flaky.
+  // setImmediate alone never runs the timers phase, so also await setTimeout(0) to avoid flakes.
   await new Promise<void>((resolve) => setImmediate(resolve));
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   await Promise.resolve();

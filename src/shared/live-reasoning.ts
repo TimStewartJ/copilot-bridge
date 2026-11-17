@@ -1,12 +1,4 @@
-/**
- * Live model thinking, folded identically by the server's event bus and the browser's stream hook.
- *
- * Thinking streams as ephemeral deltas that never reach `events.jsonl`. The only persisted copy is
- * `reasoningText` on the turn's `assistant.message`, so a block is "committed" once that message
- * arrives: it takes the message's event id as `sourceEventId`, and the chat view retires it as soon
- * as the matching disk entry is loaded. One assistant message yields exactly one disk entry, so
- * committing folds every block still open into a single one.
- */
+/** Thinking persists only as assistant.message reasoningText; commit folds open blocks into one. */
 export interface LiveReasoningBlock {
   id: string;
   content: string;
@@ -15,10 +7,7 @@ export interface LiveReasoningBlock {
   startedAt?: string;
   /** Set once the model moved on to text or tool calls, or the message was persisted. */
   completedAt?: string;
-  /**
-   * The persisting message's own timestamp. Unlike `completedAt` it never comes from a local
-   * clock, so it is the only time that may be compared against disk history.
-   */
+  /** The persisting message's timestamp; unlike `completedAt`, comparable with disk history. */
   committedAt?: string;
   turnId?: string;
   turnInstanceId?: string;
@@ -97,10 +86,7 @@ export function closeOpenReasoning(
   return blocks.map((block) => block.completedAt ? block : { ...block, completedAt: at });
 }
 
-/**
- * Apply the complete text of one block. It repairs a block whose deltas were missed and is ignored
- * when the text is already represented, because it is sent after the message that commits it.
- */
+/** Repairs a block whose deltas were missed; ignored when the commit already holds the text. */
 export function completeReasoningBlock(
   blocks: LiveReasoningBlock[],
   input: ReasoningCompleteInput,
@@ -135,10 +121,7 @@ export function completeReasoningBlock(
   ];
 }
 
-/**
- * The turn's assistant message was persisted with this thinking. Fold every uncommitted block into
- * one that carries the persisted text and the message's event id.
- */
+/** Folds every uncommitted block into one with the persisted text and the message's event id. */
 export function commitReasoning(
   blocks: LiveReasoningBlock[],
   input: ReasoningCommitInput,

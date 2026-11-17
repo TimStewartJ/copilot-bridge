@@ -6,16 +6,12 @@ import { isSettledAskUserCall } from "./ask-user-record";
 import { isRecordedCompletionCall } from "./verification-record";
 import type { ChatTurnDetails } from "../../shared/chat-turn-details.js";
 
-/**
- * Work done between two things the agent said: its thinking and its tool calls, in order, and what
- * each sub-agent did meanwhile. The chat renders each such stretch as one collapsible block, so a
- * long agentic turn reads as a few lines of prose instead of a wall of tool rows.
- */
+/** Thinking and tool calls between two agent messages, rendered as one collapsible block. */
 
 export type ActivityStep =
   | { kind: "reasoning"; key: string; entry: ChatReasoningEntry }
   | {
-      /** The main agent's calls of one turn. A delegation among them holds what its agent did here. */
+      /** The main agent's calls of one turn; a delegation holds what its agent did here. */
       kind: "tools";
       key: string;
       entries: ChatToolEntry[];
@@ -23,10 +19,7 @@ export type ActivityStep =
       turnInstanceId?: string;
     }
   | {
-      /**
-       * What one agent did in this stretch when it was launched in an earlier one. However its
-       * calls were interleaved with everyone else's, they are one step, and so one row.
-       */
+      /** One row for what an agent launched earlier did in this stretch, however interleaved. */
       kind: "agent";
       key: string;
       /** The call that launched the agent the main agent delegated to. */
@@ -49,7 +42,7 @@ export interface QuestionBlock {
   toolCall: ToolCall;
 }
 
-/** A recorded `verify_complete` report, lifted out of the steps so it reads as the work's outcome. */
+/** A `verify_complete` report, lifted out of the steps so it reads as the work's outcome. */
 export interface VerificationBlock {
   type: "verification";
   key: string;
@@ -63,15 +56,9 @@ export type ChatRenderBlock =
   | Exclude<ChatRenderSegment, { type: "tool-segment" } | { type: "reasoning-segment" }>;
 
 export interface GroupActivityOptions {
-  /**
-   * Also lift out questions with no recorded answer. Only safe once nothing can still answer them;
-   * while a run is live the open question is shown by its own form.
-   */
+  /** Also lift out unanswered questions; only safe once nothing can still answer them. */
   includeUnfinishedQuestions?: boolean;
-  /**
-   * The session's agents, for following a step up to the agent the main agent launched when the
-   * launching calls in between are above the loaded history.
-   */
+  /** Finds a step's top-level agent when the launching calls are above the loaded history. */
   agents?: Pick<TranscriptAgentDirectory, "byToolCallId">;
 }
 
@@ -83,7 +70,7 @@ export interface ActivitySummary {
   runningCount: number;
   /** The main agent's calls that failed. */
   failedCount: number;
-  /** Agents that did something in this stretch, with how much they did and how much of it failed. */
+  /** Agents active in this stretch, with their call and failure counts. */
   agentCount: number;
   agentToolCount: number;
   agentFailedCount: number;
@@ -101,13 +88,7 @@ function toolStepKey(entries: ChatToolEntry[], index: number): string {
   return `tools:${entries[0]?.toolCall.toolCallId ?? index}`;
 }
 
-/**
- * A turn instance id is the persisted `assistant.turn_start` event id, identical live and on disk.
- * Keying a block by the turn that opened it keeps it mounted while its entries are handed from the
- * stream to disk history; entry ids and tool-call ids are only the fallback for older logs. A block
- * that opens with an agent's step is keyed by that call: the agent's turn is not known to the
- * stream, and one agent opens many blocks.
- */
+/** Key by turn instance id (same live and on disk) to stay mounted; agent blocks key by call. */
 function getBlockBaseKey(step: ActivityStep): string {
   if (step.kind === "reasoning") {
     return step.entry.turnInstanceId
@@ -124,12 +105,7 @@ function getBlockBaseKey(step: ActivityStep): string {
     ?? step.key;
 }
 
-/**
- * Puts each agent's calls in one place within a stretch. A call made by an agent that was
- * delegated to in this stretch moves into the step that holds the delegation, where it renders
- * beneath it. A call made by an agent launched earlier joins that agent's one step, which sits
- * where the agent first acted here. The main agent's steps keep their order.
- */
+/** Moves agent calls under their delegation, or into one step for an agent launched earlier. */
 function gatherAgentSteps(
   steps: ActivityStep[],
   topLevelAgentOf: (toolCall: ToolCall) => string,
@@ -314,11 +290,6 @@ export function groupActivitySegments(
   return blocks;
 }
 
-/**
- * Indices of in-turn tool-accompanying assistant updates (`progressUpdate: true`) that have been
- * superseded within the same user exchange by a standalone assistant reply (`!progressUpdate`),
- * without crossing a user prompt, an Autopilot continuation, or a lifted `ask_user` question.
- */
 export function findSupersededProgressBlockIndices(blocks: readonly ChatRenderBlock[]): ReadonlySet<number> {
   const superseded = new Set<number>();
   for (let index = 0; index < blocks.length; index += 1) {
@@ -347,10 +318,7 @@ function parseTime(value: string | undefined): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
-/**
- * A call that handed work to an agent which carries on after the call itself has returned. Before
- * the session's records name the agent, the call's own arguments say how it was launched.
- */
+/** A call whose agent outlives it; before records name the agent, its arguments tell. */
 export function launchesBackgroundAgent(toolCall: ToolCall): boolean {
   if (toolCall.agent) return toolCall.agent.background === true;
   if (!toolCall.isSubAgent) return false;
@@ -358,11 +326,7 @@ export function launchesBackgroundAgent(toolCall: ToolCall): boolean {
   return typeof args === "object" && args !== null && !Array.isArray(args) && args.mode === "background";
 }
 
-/**
- * Where a call stands as far as its stretch is concerned. Handing work to a background agent is
- * done the moment the agent starts; what becomes of the agent afterwards shows on the agent's own
- * rows, in the stretches where it works, and must not keep the stretch that launched it alive.
- */
+/** A background-agent launch is done once the agent starts, so it never keeps its stretch open. */
 export function getStepStatus(toolCall: ToolCall): ToolCallStatus {
   return launchesBackgroundAgent(toolCall) ? getOwnToolCallStatus(toolCall) : getToolCallStatus(toolCall);
 }
@@ -414,8 +378,7 @@ export function summarizeActivity(steps: ActivityStep[], nowMs?: number): Activi
     if (status === "running") runningCount += 1;
     if (status === "failed") failedCount += 1;
     const startedAt = parseTime(toolCall.startedAt);
-    // Handing work to a background agent takes no time. While the agent works, the stream reports
-    // its latest word as that call's end, which would stretch this block for as long as it does.
+    // A background launch takes no time; the stream's moving end would stretch this block.
     observe(startedAt, launchesBackgroundAgent(toolCall) ? startedAt : parseTime(toolCall.completedAt));
   }
   for (const toolCall of inAgents) {
@@ -425,8 +388,7 @@ export function summarizeActivity(steps: ActivityStep[], nowMs?: number): Activi
     observe(parseTime(toolCall.startedAt), parseTime(toolCall.completedAt));
   }
 
-  // Agents with a step of their own here: one per continued agent, and each delegation in this
-  // stretch whose agent has already done something.
+  // One per continued agent, plus each delegation here whose agent has already done something.
   const parentIds = new Set(inAgents.map((toolCall) => toolCall.parentToolCallId));
   const agentCount = steps.filter((step) => step.kind === "agent").length
     + main.filter((toolCall) => parentIds.has(toolCall.toolCallId)).length;
@@ -450,12 +412,7 @@ export function summarizeActivity(steps: ActivityStep[], nowMs?: number): Activi
   };
 }
 
-/**
- * For each agent, by launching call, the key of the newest stretch that has a row for it. An agent
- * that works across several of the main agent's replies has a row in each stretch; this tells the
- * rows which of them is the current one. Pass the previous answer to get it back when nothing
- * moved, so the rows that read it are not told it changed every time the transcript does.
- */
+/** Newest stretch key per agent; pass previous to get it back unchanged so rows don't re-render. */
 export function mapLatestAgentBlocks(
   blocks: readonly ChatRenderBlock[],
   previous?: ReadonlyMap<string, string>,

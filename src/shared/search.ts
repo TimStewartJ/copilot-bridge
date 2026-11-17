@@ -14,10 +14,7 @@ export interface BridgeSearchRequest {
   refreshOnly?: boolean;
   /** Match any of the words instead of all of them. */
   anyWord?: boolean;
-  /**
-   * A date range as ISO instants: `after` inclusive, `before` exclusive; empty means unbounded.
-   * Messages count by when they were sent; chats found by title, tasks and docs by their last activity.
-   */
+  /** ISO range, `after` inclusive, `before` exclusive; messages by send time, else by activity. */
   after?: string;
   before?: string;
 }

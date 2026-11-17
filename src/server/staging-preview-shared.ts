@@ -32,10 +32,7 @@ export const FAILURE_SESSION_LOG_OUTPUT_LIMIT = 4_000;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 export const COMMAND_OUTPUT_CAPTURE_LIMIT = 1024 * 1024;
 export const STAGING_INSTALL_COMMAND = sh`npm install --no-audit --no-fund --include=dev`;
-// An install takes well under a minute, but it is thousands of small file writes with little
-// processor time of its own: next to other heavy work on a busy machine it has needed more than
-// five minutes, which failed a deploy whose checks had already passed. The limit only has to
-// catch an install that hangs.
+// Generous: on a busy machine an install has taken over five minutes; this only catches a hang.
 export const STAGING_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 export const STAGING_PREVIEW_MODEL = "gpt-6-luna";
 export const STAGING_BACKEND_STARTUP_TIMEOUT_MS = 30_000;
@@ -45,10 +42,7 @@ export const STAGING_BACKEND_SWITCH_STOP_RETRY_DELAY_MS = 1_000;
 export const STAGING_BACKEND_REQUEST_START_WAIT_MS = 2_000;
 export const STAGING_BACKEND_FAILURE_BACKOFF_BASE_MS = 30_000;
 export const STAGING_BACKEND_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
-/**
- * Consecutive lazy-start failures after which a preview is treated as
- * permanently dead: its route is removed instead of answering 502 forever.
- */
+/** Consecutive lazy-start failures after which a preview's route is removed instead of 502ing. */
 export const STAGING_BACKEND_START_MAX_ATTEMPTS = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_START_MAX_ATTEMPTS", 5);
 export const STAGING_BACKEND_LIVE_LIMIT = parsePositiveIntegerEnv("BRIDGE_STAGING_BACKEND_LIVE_LIMIT", 3);
 export const STAGING_BACKEND_STARTUP_RESTORE_LIMIT = parseNonNegativeIntegerEnv("BRIDGE_STAGING_BACKEND_STARTUP_RESTORE_LIMIT", 1);
@@ -282,7 +276,7 @@ export function listActivePreviewTargets(
   return targets;
 }
 
-/** Preview trees hold a client build and a database copy, so they are deleted off the main thread. */
+/** Preview trees hold a client build and a database copy, so delete them off the main thread. */
 const removeTree = (path: string): Promise<void> => getProcessHost().removeTree(path);
 
 export async function removePreviewGeneration(target: PreviewTarget): Promise<void> {
@@ -310,7 +304,7 @@ export async function prunePreviewGenerations(
   return removed;
 }
 
-/** Withdraws a preview without deleting it: a server started from now on will not open its files. */
+/** Withdraws a preview without deleting it: servers started later will not open its files. */
 export function unpublishPreview(prefix: string, previewParent = STAGING_PREVIEW_PARENT): void {
   rmSync(activePreviewManifestPath(prefix, previewParent), { force: true });
 }

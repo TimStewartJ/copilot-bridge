@@ -64,7 +64,7 @@ function harness() {
       for (const item of said) if (predicate(item)) dropped.push(item.key);
     },
   });
-  /** The chat starts a run, the way session-runner does: the bus is reset, then busy is announced. */
+  /** Starts a run like session-runner: the bus is reset, then busy is announced. */
   const announceBusy = () => {
     for (const listener of statusListeners) listener({ type: "session:busy", sessionId: SESSION_ID });
   };
@@ -151,7 +151,7 @@ describe("HandsFreeLayer", () => {
     await vi.waitFor(() => expect(h.said.at(-1)).toMatchObject({ key: "end:run-2a", text: fallbackSummary(LONG_REPLY) }));
     expect(h.said.at(-1)?.offer).toBeUndefined();
 
-    // Asking for it in full while the summary is still being written: the summary is not said after it.
+    // Asking for it in full while the summary is being written: the summary is not said after.
     let finishSummary!: (summary: HandsFreeSpokenSummary) => void;
     h.model.speak.mockImplementationOnce(() => new Promise((resolve) => { finishSummary = resolve; }));
     h.startRun("run-2b");

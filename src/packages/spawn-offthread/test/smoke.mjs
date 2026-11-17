@@ -1,5 +1,4 @@
-// Runs in a scratch project that has only the packed tarballs installed (npm run packages:verify).
-// It proves the published build resolves by name, loads its compiled worker, and starts real processes.
+// Run by packages:verify against the packed tarball: resolves by name, loads its worker, spawns.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -44,9 +43,7 @@ assert.ok(launches.every((launch) => launch.createMs >= 0 && launch.queuedMs >= 
 assert.deepEqual(errorListeners(), errorListenersAtStart);
 await host.shutdown();
 
-// A program that logs to a file survives a write the operating system refuses. Before 0.1.1 the
-// pipe Node puts between a worker thread and process.stdout made that an unhandled 'error'.
-// The script sits beside this file so that it resolves the package by name the same way.
+// A refused stdout write must not crash the program; the script sits here to resolve by name.
 const here = dirname(fileURLToPath(import.meta.url));
 const preload = join(here, "spawn-offthread.refuse-write.cjs");
 const program = join(here, "spawn-offthread.failed-write.mjs");

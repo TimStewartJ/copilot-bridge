@@ -139,7 +139,7 @@ describe("buildWorkMapData", () => {
       expect.objectContaining({ key: "repo:30", title: "PR 30", taskIds: [], workItemIds: ["10"] }),
     ]);
     expect(ado.fetchAssignedWorkItemIds).not.toHaveBeenCalled();
-    // Work item 11 was found through a pull request, so its own links are read once the map is known.
+    // Item 11 came from a pull request, so its own links are read once the map is known.
     expect(ado.fetchWorkItemLinks.mock.calls.map(([asked]) => asked)).toEqual([["10"], ["11"]]);
   });
 

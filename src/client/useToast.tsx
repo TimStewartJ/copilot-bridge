@@ -16,10 +16,7 @@ import { haptic } from "./lib/haptics";
 export type ToastInput = Omit<ToastData, "id" | "tone"> & {
   id?: string;
   tone?: ToastData["tone"];
-  /**
-   * Success and error toasts report the outcome of something you did, so on a phone app that offers
-   * haptics they come with the matching feedback. Pass false for a toast about something you did not do.
-   */
+  /** Success and error toasts give haptics; pass false for something the user did not do. */
   haptic?: boolean;
 };
 
@@ -43,10 +40,7 @@ const FALLBACK: ToastContextValue = {
 
 const ToastContext = createContext<ToastContextValue | undefined>(undefined);
 
-/**
- * Returns the toast API. Outside a `ToastProvider` this degrades to no-ops so
- * components (and focused tests) that render standalone never crash.
- */
+/** Outside a `ToastProvider` this is no-ops, so standalone components and tests never crash. */
 export function useToast(): ToastContextValue {
   return useContext(ToastContext) ?? FALLBACK;
 }
@@ -107,8 +101,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((prev) => prev.map((toast) => (toast.id === id ? { ...toast, ...patch, id } : toast)));
   }, []);
 
-  // Reconcile timers and pending flags against the live toast list so removals
-  // (dismiss, replace, overflow eviction) never leak a timer or a stale flag.
+  // Reconcile with the live toast list so any removal never leaks a timer or a stale flag.
   useEffect(() => {
     const live = new Set(toasts.map((toast) => toast.id));
     for (const id of [...timersRef.current.keys()]) {
@@ -137,14 +130,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       try {
         await toast.action?.onAction();
       } catch (err) {
-        // Actions own their user-facing error reporting; never let a throwing
-        // action surface as an unhandled rejection.
+        // Actions report their own errors; never let one surface as an unhandled rejection.
         console.error("[toast] action failed:", err);
       } finally {
         setPendingActionIds((prev) => prev.filter((entry) => entry !== toast.id));
-        // Re-arm auto-dismiss so a toast whose action failed (and therefore was
-        // not dismissed by the caller) cannot linger on screen forever. Dismissing
-        // an already-removed toast is a no-op, so this is safe either way.
+        // Re-arm auto-dismiss so a failed action's toast cannot linger forever.
         scheduleDismiss(toast.id, toast.durationMs ?? DEFAULT_TOAST_DURATION_MS);
       }
     })();

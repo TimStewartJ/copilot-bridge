@@ -1,15 +1,4 @@
-// Carries a pending hibernation from one server to the next.
-//
-// The timed hibernation and the idle watcher live in the server's memory (device-hibernate.ts),
-// and the watcher waits while a restart is pending. A deploy restart therefore always came before
-// a hibernation the user had asked for, and then dropped it; so did a server that died. While a
-// hibernation is pending, the server now keeps a copy of it in its data directory, and the next
-// server takes it over at startup: after a shutdown, and after a crash as well.
-//
-// The file is good for one start, and only for a start that follows soon on the same boot of the
-// device. After a shutdown that was meant to last, or after the device itself restarted, an old
-// request to hibernate would be a surprise. The running server rewrites the file every minute,
-// so its age says how long no server has been running, not how long ago the user asked.
+// Saves a pending hibernation for the next server; rewritten each minute so age = server downtime.
 
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
@@ -27,16 +16,13 @@ import { getDeviceHibernateCommand, type DeviceHibernateCommand } from "./platfo
 
 export const HIBERNATE_HANDOFF_FILE_NAME = "hibernate-handoff.json";
 
-/** A restart swaps the server in seconds; a rollback takes a few minutes. Older than this, the server was down on purpose. */
+/** Restarts take seconds, rollbacks minutes; older means the server was stopped on purpose. */
 export const HIBERNATE_HANDOFF_MAX_AGE_MS = 10 * 60_000;
 
 /** How often the running server rewrites the saved copy while a hibernation is pending. */
 export const HIBERNATE_HANDOFF_REFRESH_MS = 60_000;
 
-/**
- * The least time a new server runs before a hibernation it took over can fire. Results that the
- * old server queued for its sessions are delivered in the first minute, and they start runs.
- */
+/** Minimum uptime before an inherited hibernation fires; queued results start runs meanwhile. */
 export const HIBERNATE_HANDOFF_SETTLE_MS = 60_000;
 
 const HANDOFF_VERSION = 1;
@@ -57,8 +43,7 @@ function finiteOrNull(value: unknown): number | null {
 
 async function writeHandoffFile(dataDir: string, intent: HibernateIntent): Promise<void> {
   const file: HibernateHandoffFile = { version: HANDOFF_VERSION, writtenAt: Date.now(), ...intent };
-  // Written under another name first: a server killed half way must not leave a file that parses.
-  // One server writes it, so the name can be fixed and a leftover is overwritten by the next write.
+  // Temp file first so a kill midway leaves no parsable file; one writer, so a fixed name is safe.
   const tempPath = join(dataDir, `.${HIBERNATE_HANDOFF_FILE_NAME}.tmp`);
   try {
     await writeFile(tempPath, `${JSON.stringify(file)}\n`, "utf8");
@@ -70,7 +55,7 @@ async function writeHandoffFile(dataDir: string, intent: HibernateIntent): Promi
 }
 
 export interface HibernateHandoffKeeper {
-  /** Resolves once the saved copy matches the hibernation that is pending now, or the attempt has failed. */
+  /** Resolves once the saved copy matches the pending hibernation, or the attempt failed. */
   settled(): Promise<void>;
   /** Stops keeping the copy and leaves the file as it is. */
   stop(): Promise<void>;
@@ -78,12 +63,7 @@ export interface HibernateHandoffKeeper {
 
 let activeKeeper: HibernateHandoffKeeper | null = null;
 
-/**
- * Keeps the saved copy in step with the hibernation that is pending: written when one is armed or
- * scheduled, rewritten every minute while it is, removed when it is turned off or has fired. A
- * server that dies leaves the file behind for the next one. Start it after
- * `restoreHibernateHandoff`, which removes the file it reads.
- */
+/** Mirrors pending hibernation to disk; start after restoreHibernateHandoff, which deletes it. */
 export function startHibernateHandoffKeeper(dataDir: string): HibernateHandoffKeeper {
   let stopped = false;
   let queued = false;
@@ -155,10 +135,7 @@ export async function stopHibernateHandoffKeeper(): Promise<void> {
   await activeKeeper?.stop();
 }
 
-/**
- * Called when the server begins to shut down. Writes the hibernation that is still to come for
- * the next server and stops this one from firing it. Returns whether there was one.
- */
+/** On shutdown, saves the pending hibernation for the next server and stops this one firing it. */
 export async function saveHibernateHandoff(dataDir: string): Promise<boolean> {
   // From here on the file belongs to the next server, which removes it when it has read it.
   await stopHibernateHandoffKeeper();
@@ -172,10 +149,7 @@ export async function saveHibernateHandoff(dataDir: string): Promise<boolean> {
   return true;
 }
 
-/**
- * Called once at server startup. Takes over what the previous server left, if it is fresh and the
- * device has not restarted since. The file is removed either way, so it is never applied twice.
- */
+/** At startup, adopts a fresh handoff unless the device restarted; always removes the file. */
 export async function restoreHibernateHandoff(
   sources: HibernateIdleSources,
   dataDir: string,

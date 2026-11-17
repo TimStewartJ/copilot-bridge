@@ -1,14 +1,9 @@
-// Shared contract of the process host: request/response shapes that cross the thread boundary,
-// and the error type callers see. This module must stay free of node:child_process so the
-// calling thread never loads it through the host.
+// Cross-thread host contract; must not import node:child_process, so callers never load it.
 
 export interface HostExecOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  /**
-   * Milliseconds the command may take. The worker applies it to the running process, and the
-   * host also enforces it on the calling thread so slow process creation cannot exceed it.
-   */
+  /** Ms the command may take; the host also enforces it so slow creation cannot exceed it. */
   timeout?: number;
   maxBuffer?: number;
   shell?: boolean | string;
@@ -16,10 +11,7 @@ export interface HostExecOptions {
   windowsVerbatimArguments?: boolean;
   killSignal?: NodeJS.Signals | number;
   encoding?: "utf-8" | "utf8";
-  /**
-   * "stdout-json" completes as soon as stdout holds one complete JSON value and then kills the
-   * child. Some CLI clients print their result but do not exit promptly.
-   */
+  /** "stdout-json": once stdout holds a whole JSON value, end and kill the child (some hang). */
   completeWhen?: "stdout-json";
 }
 

@@ -192,8 +192,7 @@ describe("Helm thinker", () => {
       connect: async () => ({ tools: [{ name: "search_mail", readOnly: true }], call: async () => ({ text: "Landlord: rent is due Friday", isError: false }), close: async () => undefined }),
     });
     active.packet.outsideSources = [{ name: "mail", ok: true, lastReadAt: null, tools: [{ name: "search_mail" }] }];
-    // A rule an earlier look wrote from a calendar source reaches this run through memory, and so
-    // does a thread line it wrote then; that source is no longer read, so a rewrite keeps it.
+    // Memory written from a calendar source no longer read; a rewrite keeps that source.
     active.carriedSources = ["calendar-id"];
     store.addMemory({ kind: "thread", key: "local:t1", text: "Flight held", author: "helm", status: "active", fromSources: ["calendar-id"] });
     const readSource = (thinker as any).getTools().find((tool: any) => tool.name === "read_source");
@@ -204,8 +203,7 @@ describe("Helm thinker", () => {
 
     expect(text(await publish({ ...BRIEF, items: [{ kind: "due", bridge: "local", source: "mail", title: "Rent", recommendation: "Pay it." }], memory: { ...BRIEF.memory, dates: [{ key: "rent", text: "Rent due Friday", source: "mail: landlord" }] } }))).toMatch(/"success":true/);
     const written = store.listMemory().filter((entry) => entry.author === "helm");
-    // A look that read mail no longer marks every line as written from mail: the thread cites
-    // nothing, the date cites mail through its source note, and a proposal carries the whole run's.
+    // Only lines that cite mail are marked from mail; a proposal carries the whole run's sources.
     expect(Object.fromEntries(written.map((entry) => [entry.kind, entry.fromSources]))).toEqual({ thread: ["calendar-id"], date: ["mail-id"], rule: ["calendar-id", "mail-id"] });
     expect(store.getRun(run.id)).toMatchObject({ fromSources: ["calendar-id", "mail-id"], sources: [{ serverId: "mail-id", name: "mail", ok: true, used: true }] });
     expect(store.getSourceCoverage()).toEqual({ "mail-id": run.startedAt });
@@ -383,7 +381,7 @@ describe("Helm thinker", () => {
 
   it.each([
     { hour: 9, minute: 0, manual: false, triggers: ["schedule"] }, // starting exactly on the slot
-    { hour: 10, minute: 29, manual: false, triggers: ["schedule"] }, // 90 minutes late when replayed
+    { hour: 10, minute: 29, manual: false, triggers: ["schedule"] }, // 90 min late when replayed
     { hour: 10, minute: 29, manual: true, triggers: ["manual"] },
     { hour: 10, minute: 59, manual: false, triggers: [] }, // exactly two hours when replayed
   ])("rechecks the missed 09:00 slot after startup at $hour:$minute, manual=$manual", async ({ hour, minute, manual, triggers }) => {

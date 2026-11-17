@@ -1,6 +1,4 @@
-// What a person types into a sign-in form while they have a browser on show, offered back to
-// them to keep for agents, as a password manager offers to save a login. One watch per browser
-// session, so the offer outlasts a view that reconnects.
+// Offers to save logins typed into a shown browser; one watch per browser session.
 
 import { createHash } from "node:crypto";
 
@@ -8,13 +6,7 @@ import type { BrowserLiveLoginMessage } from "../shared/browser-live.js";
 import type { BrowserCommandOptions, BrowserTarget } from "./agent-browser.js";
 import { loginHost, type BrowserLogin, type BrowserLogins, type SignInForm } from "./browser-logins.js";
 
-/**
- * Finds a page's sign-in form the way a password manager does, with nothing known about the
- * site: one visible password field that is not for a new password, and the text field before it.
- * A sign-up or change-password form has more than one, or none for the current password.
- * `bridgePassword` marks a field whose password was read, so that it is still found after the
- * page turned it into text to show the password.
- */
+/** Like a password manager: one visible current-password field and the text field before it. */
 const FIND_SIGN_IN_FORM = `
   const shown = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
   const inputs = [...document.querySelectorAll("input")].filter(shown);
@@ -29,7 +21,7 @@ const script = (result: string): string => `(() => {${FIND_SIGN_IN_FORM}\n  ${re
 
 /** An expression that is 1 on a page showing a sign-in form with both fields, else 0. */
 export const SIGN_IN_FORM_PRESENT = script("return username && password ? 1 : 0;");
-/** The form's address and what its two fields hold, or null. The result is a password: log it nowhere. */
+/** The form's address and its two field values, or null. Holds a password: log it nowhere. */
 export const SIGN_IN_FORM_VALUES_SCRIPT = script(
   "if (!username || !password) return null; password.bridgePassword = true; return [location.href, username.value, password.value];",
 );
@@ -50,11 +42,7 @@ export function parseSignInForm(output: string): SignInForm | undefined {
   }
 }
 
-/**
- * Keys travel to the page through the browser's stream and the read through its command line,
- * so a read can overtake the last characters typed. It is repeated after this long until two
- * agree.
- */
+/** Keys go by stream and reads by CLI, so a read can overtake typing; reread until two agree. */
 const SETTLE_MS = 50;
 const MAX_READS = 4;
 /** An offer nobody answered is forgotten, and the password with it. */
@@ -71,10 +59,7 @@ export class LoginWatch {
   private typed = false;
   /** A sign-in the person typed and has not yet said what to do with. */
   private offer: { form: SignInForm; replaces: boolean; at: number } | undefined;
-  /**
-   * What they last declined to keep, and what they last kept: neither is offered again. "Not now"
-   * holds while the form is on show, so that typing it again does not ask again; the next visit does.
-   */
+  /** Neither is offered again; "Not now" lasts while the form is shown, not to the next visit. */
   private declined: string | undefined;
   private kept: { form: string; login: BrowserLogin } | undefined;
   /** Set while the view says that a login was saved. */
@@ -110,7 +95,7 @@ export class LoginWatch {
     return { type: "login", state: "none" };
   }
 
-  /** `answer`: a view asked for something and waits to hear how it went, also when nothing changed. */
+  /** `answer`: a view asked and waits for the outcome, even when nothing changed. */
   private tell(answer = false): void {
     const message = this.message();
     const text = JSON.stringify(message);
@@ -124,10 +109,7 @@ export class LoginWatch {
     this.typed = true;
   }
 
-  /**
-   * Called before a key or click that can submit a form reaches the page, which is the last
-   * moment its fields can be read: the page is gone right after.
-   */
+  /** Called before input that may submit a form, the last moment its fields can be read. */
   async submitting(read: () => Promise<SignInForm | undefined>): Promise<void> {
     if (!this.typed) return;
     this.typed = false;
@@ -142,7 +124,7 @@ export class LoginWatch {
     const typed = fingerprint(form);
     if (typed === this.declined) return;
     const existing = await this.logins.forPage(form.url);
-    // What was kept is offered anew once it is no longer what is saved: removed, or refused by the site.
+    // Offer what was kept again once it is no longer saved: removed, or refused by the site.
     if (typed === this.kept?.form && existing?.savedAt === this.kept.login.savedAt && !existing.failedAt) return;
     this.offer = { form, replaces: !!existing, at: Date.now() };
     this.saved = undefined;

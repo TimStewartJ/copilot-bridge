@@ -141,7 +141,7 @@ export function prepareResponsiveVegaSpec(
   };
 }
 
-/** Renders a spec with vega-embed, loaded on first use. Shared with charts the app builds itself. */
+/** Renders a spec with vega-embed, loaded on first use; also used for the app's own charts. */
 export async function renderVegaLite(
   container: HTMLElement,
   spec: VegaSpecObject,

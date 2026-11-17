@@ -155,14 +155,10 @@ const POLL_INTERVAL = 2_000;
 const HEALTH_TIMEOUT = 120_000;
 const HEALTH_POLL_INTERVAL = 30_000;
 const HEALTH_POLL_TIMEOUT = 5_000;
-/**
- * Steady-state polls wait this long for an answer. A timeout only proves the event loop was busy
- * for that long: a server stalled by machine load is alive, and killing it destroys every
- * in-flight session run to fix nothing. Only a server that stays silent this long is treated as hung.
- */
+/** Long on purpose: a slow reply means load, and killing a live server destroys in-flight runs. */
 const HEALTH_STEADY_POLL_TIMEOUT = 60_000;
 const HEALTH_FAILURE_THRESHOLD = 3;
-/** How long the server may report blocked agent backend recovery before the launcher restarts it. */
+/** How long the server may report blocked backend recovery before the launcher restarts it. */
 const BLOCKED_BACKEND_RECOVERY_GRACE_MS = 60_000;
 const BLOCKED_BACKEND_RECOVERY_MAX_RESTARTS = 3;
 const BLOCKED_BACKEND_RECOVERY_RESTART_WINDOW_MS = 60 * 60_000;
@@ -172,7 +168,7 @@ const WEBHOOK_TIMEOUT_MS = 10_000;
 
 const IDLE_PROBE_TIMEOUT = 10_000; // an unanswered idle probe counts as busy
 const GRACEFUL_EXIT_WAIT = 15_000; // wait for clean exit after POST /api/shutdown
-const GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT = 5_000; // bound shutdown POST so force-kill fallback is reachable
+const GRACEFUL_SHUTDOWN_REQUEST_TIMEOUT = 5_000; // bounded so the force-kill fallback is reachable
 const CHILD_IDENTITY_CAPTURE_TIMEOUT_MS = 10_000;
 const CRASH_RESTART_DELAY = 5_000;
 const MAX_CRASH_RESTARTS = 5;
@@ -240,8 +236,7 @@ const blockedBackendRecovery = createBlockedBackendRecoveryMonitor({
   notify: (message) => {
     void notifyWebhook(`${message} (${tag()})`, tunnelSupervisor.getUrl());
   },
-  // The HTTP server is responsive, so only the verified force-kill path can also
-  // take down a runtime that fencing could not prove gone.
+  // The server still answers, so only the verified force kill also stops a runtime fencing missed.
   restart: (reason) => recoverServer(reason, { killExisting: true }),
   isAutoRecoverySuppressed: () => suppressAutoRecovery,
 });
@@ -434,12 +429,7 @@ function ensureDeps(): boolean {
   return true;
 }
 
-/**
- * A prepared release slot ships its own node_modules, so activating it skips the
- * production-root build. Staging worktrees still link their node_modules into the
- * production root, so bring it up to date with the now-active dependency inputs;
- * staging falls back to its own install if this fails.
- */
+/** Release slots carry node_modules, but staging links the production root's, so sync it here. */
 function syncProductionRootDepsAfterReleaseActivation(): void {
   if (DISTRIBUTION.mode === "release" || !dependencyInputsChangedSinceLastSync()) return;
   log("Production-root dependencies lag the activated release — syncing...");
@@ -724,11 +714,7 @@ function rejectInvalidRestartSignal(
   }
 }
 
-/**
- * Whether the Bridge has nothing in flight: no run, no session being created, no queued or running
- * management job. A pending restart blocks nothing and simply asks again on the next poll, for as
- * long as it takes. An unanswered probe counts as busy; a hung server is the health poll's to recover.
- */
+/** Idle = no run, session creation or management job; an unanswered probe counts as busy. */
 async function isBridgeIdle(): Promise<boolean> {
   if (!serverProcess) return true;
   let reason = "the server is not answering";
@@ -755,11 +741,7 @@ async function isBridgeIdle(): Promise<boolean> {
   return false;
 }
 
-/**
- * Acts on a pending restart request. The request stays where it is until the Bridge is idle, so
- * later requests keep joining it; it is claimed only once the server has agreed to stop.
- * `force` skips the wait: the server is already gone or is being replaced because it is unhealthy.
- */
+/** Claim only after the server agrees to stop so later requests join; force skips the wait. */
 async function processRestartSignal(force = false): Promise<void> {
   if (restartCheckInFlight || restarting || shuttingDown) return;
   restartCheckInFlight = true;
@@ -1281,12 +1263,7 @@ async function requestServerShutdown(deadline: Deadline, ifIdle: boolean): Promi
   }
 }
 
-/**
- * Stops the server for a restart. With `ifIdle` the server agrees only while nothing is in flight,
- * and checks that in the same step as it stops taking work, so the restart cannot cut off a run
- * that began after the launcher last looked. "busy" leaves everything as it was. `onStopping`
- * runs once the stop is certain.
- */
+/** ifIdle: the server checks idle and stops taking work in one step, so no new run is cut off. */
 async function stopServerForRestart(
   ifIdle: boolean,
   onStopping: () => Promise<void>,
@@ -1333,7 +1310,7 @@ async function stopServerForRestart(
   return outcome.ok ? "stopped" : "failed";
 }
 
-/** Takes the request out of its waiting place. Whatever joined it since it was first read comes along. */
+/** Takes the pending request, including whatever joined it since it was first read. */
 function claimRestartSignal(): RestartSignal {
   const claim = consumeRestartSignalFile(SIGNAL_FILE, IN_PROGRESS_SIGNAL_FILE);
   if (claim.status === "claimed") {
@@ -1350,10 +1327,7 @@ function claimRestartSignal(): RestartSignal {
   throw new Error("Restart request disappeared before cutover");
 }
 
-/**
- * Swaps the server. Called only while the Bridge is idle, or with `force`. Until the server has
- * agreed to stop nothing is changed, so "waiting" means the request simply stays pending.
- */
+/** Swaps the server when idle or forced; nothing changes until the server agrees to stop. */
 async function restart(signal: RestartSignal, force: boolean): Promise<RestartOutcome> {
   log(force ? "═══ Restarting ═══" : "═══ Bridge is idle — restarting ═══");
   const validationMode = signal.validationMode;
@@ -1491,7 +1465,7 @@ async function restart(signal: RestartSignal, force: boolean): Promise<RestartOu
   if (shuttingDown) return "failed";
   if (healthy) {
     if (candidateRelease) await writeActiveRelease(DATA_DIR, candidateRelease);
-    // The restart is over for everyone watching it; what follows is the launcher's own housekeeping.
+    // The restart is over for watchers; what follows is the launcher's own housekeeping.
     clearInProgressSignal();
     await safeClearRestartState();
     if (candidateRelease) {

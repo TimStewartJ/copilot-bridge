@@ -26,9 +26,7 @@ import { transcriptTurnDetails } from "./transcript-turn-details.js";
 import type { ChatTurnDetails } from "../shared/chat-turn-details.js";
 import { isToolAccompanyingProgress } from "../shared/progress-update.js";
 
-// Shared event→entry transform logic
-// Produces a flat chronological list of text messages, tool calls, and visual artifacts.
-// Used by the disk reader (readMessagesFromDisk) and other on-disk event consumers.
+// Turns session events into a flat chronological list of messages, tools and visuals.
 
 export interface TransformedVisual {
   artifactId: string;
@@ -88,11 +86,7 @@ export interface TransformedEntry {
   visual?: TransformedVisual;
   // Completion fields (when type === "completion")
   completion?: TerminalCompletion;
-  /**
-   * Reasoning fields (when type === "reasoning") — the model's thinking ahead of a reply or tool
-   * call, with the text in `content`. The entry deliberately has no `sourceEventId`: its thinking
-   * was persisted on an `assistant.message` whose id already identifies that message's own entry.
-   */
+  /** No sourceEventId: its assistant.message id already keys that reply's own entry. */
   reasoning?: { messageEventId?: string; startedAt?: string };
 }
 
@@ -101,18 +95,14 @@ function isTurnTerminalEvent(event: any): boolean {
     && !isSdkSubagentSessionError(event);
 }
 
-/** A completion card as the transcript records it: the event it is keyed to and that event's time. */
+/** A completion card as the transcript records it: its keyed event and that event's time. */
 export interface TranscriptCompletion {
   completion: TerminalCompletion;
   sourceEventId?: string;
   timestamp?: string;
 }
 
-/**
- * The completion card `event` adds to the transcript, given the `task_complete` call still pending
- * before it. The disk transcript and the live run both use this, so a live card carries the exact
- * identity of the disk entry that later replaces it.
- */
+/** Shared by disk and live, so a live card has the id of the disk entry that replaces it. */
 export function getTranscriptCompletion(
   event: any,
   pending: TerminalCompletion | undefined,
@@ -131,10 +121,7 @@ export function getTranscriptCompletion(
 
 const FORK_BOUNDARY_SKIP_EVENT_TYPES = new Set(["system.message"]);
 
-/**
- * Event types whose payload (`data`) the transcript reads. Every other event matters only through
- * its envelope (`type`, `id`): as a fork boundary or as the history's latest event.
- */
+/** Event types whose `data` the transcript reads; others matter only by `type` and `id`. */
 export const TRANSCRIPT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "user.message",
   "assistant.message",
@@ -158,10 +145,7 @@ export const TRANSCRIPT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "abort",
 ]);
 
-/**
- * Drops the payload of an event the transcript never reads, so a whole-history read does not hold
- * every binary asset and permission request in memory. The transform's output is unchanged.
- */
+/** Drops unread payloads so a whole-history read does not hold every binary asset in memory. */
 export function projectTranscriptEvent(event: unknown): unknown {
   if (!event || typeof event !== "object" || Array.isArray(event) || !("data" in event)) return event;
   const record = event as Record<string, unknown>;
@@ -218,9 +202,7 @@ function getUserMessageContent(event: any): string {
   return typeof content === "string" ? content : "";
 }
 
-// Agent-injected skill context arrives as a `user.message` whose `data.source`
-// is tagged like "skill-<id>" (e.g. "skill-browser"). The SDK marks these so
-// clients can keep them out of the normal user timeline.
+// SDK tags injected skill context as source 'skill-<id>'; keep it out of the timeline.
 const SKILL_SOURCE_PATTERN = /^skill(?:[-:]|$)/i;
 
 function getSkillSource(event: any): string | undefined {
@@ -231,30 +213,14 @@ function getSkillSource(event: any): string | undefined {
   return SKILL_SOURCE_PATTERN.test(trimmed) ? trimmed : undefined;
 }
 
-/**
- * Runtime plumbing the user never typed.
- *
- * The agent runtime injects its own `user.message` events tagged
- * `source: "system"` — currently the deferred-tool `<system_reminder>` block it
- * prepends when many MCP tools are registered. Through Copilot CLI 1.0.73 these
- * carried the text only in `transformedContent` (which Bridge never reads) and
- * left `content` empty, so they fell out of the timeline by accident. CLI 1.0.75
- * also emits a copy with the reminder in `content`, which would otherwise render
- * as if the user had pasted it.
- *
- * These are model-context plumbing, not user speech, so they stay out of the
- * visible transcript regardless of which field the runtime populates.
- */
+/** Runtime-injected source 'system' messages (system_reminder) are not user speech; hide them. */
 function isAgentInjectedSystemMessage(event: any): boolean {
   if (event?.type !== "user.message") return false;
   const source = event?.data?.source;
   return typeof source === "string" && source.trim().toLowerCase() === "system";
 }
 
-/**
- * A turn the Copilot CLI started itself to keep an autopilot run going. It arrives as an empty
- * `user.message`; this is the same test the CLI's own rewind list uses.
- */
+/** An autopilot turn the CLI started: an empty `user.message`, the CLI's own rewind-list test. */
 export function isAutopilotContinuationEvent(event: any): boolean {
   if (event?.type !== "user.message" || isSdkAgentUserMessage(event) || isAgentInjectedSystemMessage(event)) {
     return false;
@@ -332,11 +298,7 @@ export function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
   return false;
 }
 
-/**
- * The main agent's thinking for one model call, as persisted on its `assistant.message`. It yields
- * a transcript entry of its own, so the transform and the stats scanner must both count it, but it
- * is not visible activity: thinking alone never marks a session unread.
- */
+/** Main-agent thinking: a transcript entry both counters must count, but it never marks unread. */
 export function getVisibleReasoningText(event: any): string | undefined {
   if (event?.type !== "assistant.message") return undefined;
   if (event?.data?.parentToolCallId || getSdkAgentId(event)) return undefined;
@@ -452,13 +414,7 @@ function base64DecodedBytes(data: unknown): number | undefined {
   return Math.floor((data.length * 3) / 4) - padding;
 }
 
-/**
- * Images the runtime's image tool generated or edited, as visual cards. The runtime saves each one
- * in the session's images/ folder and lists it in the result's structured content; the card loads
- * it through the session's image route. The URL is relative to the API root (`/api/...`), and the
- * client puts its own base path in front. An image saved anywhere else is left out, because that
- * route could not serve it.
- */
+/** Image tool results as cards; only images in the session's images/ folder can be served. */
 export function getGeneratedImageVisuals(
   event: any,
   toolName: string | undefined,
@@ -528,10 +484,7 @@ export function getVisibleEventTimestamp(event: any, sessionId?: string): string
   return event?.data?.timestamp ?? event?.timestamp;
 }
 
-/**
- * Serializable fold state for {@link createVisibleActivityTracker}. Exposed so incremental
- * event-log scans can resume from a previously scanned byte offset instead of rescanning.
- */
+/** Fold state of {@link createVisibleActivityTracker}, so incremental scans can resume. */
 export interface VisibleActivityTrackerState {
   openVisibleToolCallIds: string[];
   lastVisibleActivityAt?: string;
@@ -623,12 +576,7 @@ export function getLastVisibleActivityAt(events: any[], sessionId?: string): str
   return tracker.getLastVisibleActivityAt();
 }
 
-/**
- * Transcript state carried from one event to the next. Given the cursor in effect just before an
- * event, the rest of the log transforms exactly as it does inside a whole-history transform, so a
- * reader can start mid-log from a saved cursor. Per-turn usage additionally needs the owning
- * prompt and its usage records; the disk reader includes that prefix in the window.
- */
+/** State just before an event; resuming from it transforms the rest exactly like a full pass. */
 export interface TranscriptCursor {
   turnIndex: number;
   subAgentTurnIndex: number;
@@ -641,13 +589,9 @@ export interface TranscriptCursor {
   activeSubAgentToolCallIds: string[];
   /** The log is known to stamp its agents' turns with their agent; see agent-event-ownership.ts. */
   agentTurnsStamped: boolean;
-  /**
-   * A turn was taken for an agent's only because an agent was running when it began. If the log
-   * later shows that it stamps turns, a whole-history transform takes that turn for the main
-   * agent's, and a cursor that guessed no longer matches it.
-   */
+  /** Turn guessed as an agent's; if the log later proves stamped, this cursor no longer matches. */
   guessedAgentTurn: boolean;
-  /** The open turn of each agent whose turns are stamped, by the owner its events are filed under. */
+  /** The open turn of each agent whose turns are stamped, keyed by its events' owner. */
   agentTurns: Record<string, { turnId: string; turnInstanceId: string }>;
 }
 
@@ -670,10 +614,7 @@ export function cloneTranscriptCursor(cursor: TranscriptCursor): TranscriptCurso
   };
 }
 
-/**
- * Applies one event to the cursor. `agentOwners` must already have learnt from the event. Returns
- * false for an event that can never change the cursor.
- */
+/** `agentOwners` must have seen the event already; false for events that never move the cursor. */
 export function advanceTranscriptCursor(cursor: TranscriptCursor, event: any, agentOwners: AgentEventOwners): boolean {
   const data = event?.data;
   const firstStamp = !cursor.agentTurnsStamped && showsAgentTurnsAreStamped(event);
@@ -687,8 +628,7 @@ export function advanceTranscriptCursor(cursor: TranscriptCursor, event: any, ag
     return true;
   }
   if (event?.type === "assistant.turn_start") {
-    // When the runtime says whose turn a turn event is, each agent's turn is followed on its own
-    // and the main agent's is never mistaken for one of theirs.
+    // Stamped turns are tracked per agent, so the main agent's turn is never taken for theirs.
     const agentOwner = cursor.agentTurnsStamped ? agentOwners.ownerOf(event) : undefined;
     if (agentOwner !== undefined) {
       cursor.subAgentTurnIndex += 1;
@@ -697,7 +637,7 @@ export function advanceTranscriptCursor(cursor: TranscriptCursor, event: any, ag
         turnInstanceId: getAssistantTurnInstanceId(event, `subagent-turn-instance-${cursor.subAgentTurnIndex}`),
       };
     } else if (!cursor.agentTurnsStamped && cursor.activeSubAgentToolCallIds.length > 0) {
-      // A runtime that does not say whose turn this is: with an agent running, take it for an agent's.
+      // Unstamped runtime: with an agent running, take the turn for an agent's.
       cursor.guessedAgentTurn = true;
       cursor.subAgentTurnIndex += 1;
       cursor.activeTurnId = `subagent-turn-${cursor.subAgentTurnIndex}`;
@@ -744,10 +684,7 @@ export interface TransformEventsToMessagesOptions {
   initialCursor?: TranscriptCursor;
 }
 
-/**
- * Transform raw SDK/JSONL events into a chronological list of entries.
- * Pass 1 indexes tool completion results, pass 2 emits entries in event order.
- */
+/** Pass 1 indexes tool completion results; pass 2 emits entries in event order. */
 export function transformEventsToMessages(
   events: any[],
   sessionId?: string,
@@ -784,8 +721,7 @@ export function transformEventsToMessages(
       toolNames.set(data.toolCallId, data.toolName ?? data.name ?? "unknown");
       if (toolNames.get(data.toolCallId) === IMAGE_GENERATION_TOOL_NAME) imageToolArgs.set(data.toolCallId, data.arguments);
     } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
-      // Raw completion data is retained so pass 2 can derive display text through the same shared
-      // resolver the live fold uses. The event array is already in memory, so this costs nothing.
+      // Raw data kept so pass 2 derives display text through the same resolver as the live fold.
       toolCompletes.set(data.toolCallId, {
         success: data.success,
         data,
@@ -831,13 +767,7 @@ export function transformEventsToMessages(
         }
       }
     } else if (isTurnTerminalEvent(event)) {
-      // Provisional: a real completion can still arrive after `assistant.turn_end` and must win.
-      //
-      // An ending only speaks for the calls of whoever ended. A sub-agent finishes turns while the
-      // `task` call that launched it, and the calls of agents running beside it, are still open
-      // and healthy; closing those here reported them as failed until their real completion
-      // landed. A background agent likewise outlives the main agent's turn. Only a hard stop of
-      // the whole session leaves nothing behind to complete anything.
+      // Provisional; a turn end fails only its own agent's open calls, abort/shutdown fails all.
       const endedBy = getSdkAgentId(event);
       const stopsEverything = event.type === "abort" || event.type === "session.shutdown";
       for (const [toolCallId, owner] of openToolCallOwners) {
@@ -852,8 +782,7 @@ export function transformEventsToMessages(
     }
   }
 
-  // Pass 2: Emit entries chronologically. The cursor owns every state change; an entry reads the
-  // turn it belongs to (a closing event's turn is the one in effect before it closes).
+  // The cursor owns every state change; a closing event belongs to the turn it closes.
   for (const event of events) {
     const data = (event as any).data;
     const { activeTurnId: closingTurnId, activeTurnInstanceId: closingTurnInstanceId } = cursor;
@@ -906,8 +835,7 @@ export function transformEventsToMessages(
         ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
       const fileAttachments = data.attachments
         ?.filter((a: any) => a.type === "file" && a.path)
-        // Attachment paths recorded on Windows are backslash-separated; win32.basename strips
-        // both "\\" and "/" separators on any host and is identical to posix basename for "/"-paths.
+        // win32.basename handles both "\\" and "/" paths on any host.
         ?.map((a: any) => ({ type: "file" as const, path: a.path, displayName: a.displayName ?? winPath.basename(a.path) }));
       const allAttachments = [...(blobAttachments ?? []), ...(fileAttachments ?? [])];
       entries.push({

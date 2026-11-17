@@ -1,10 +1,4 @@
-// Shared test helpers — lightweight test fixtures (temp dirs, runtime paths,
-// in-memory SQLite, mock services).
-//
-// Deliberately kept free of the Express/API-router graph. `createTestApp` lives
-// in ./test-app.ts because API services and routing pull a large runtime graph
-// into every file that touches this module, and most test files only
-// need `makeTestDir` or `setupTestDb`.
+// Light fixtures only; keep the API router graph out (createTestApp lives in ./test-app.ts).
 
 import type { SessionPlaybookView } from "../../shared/workflow-vocabulary.js";
 import { afterEach, vi } from "vitest";
@@ -85,8 +79,7 @@ export function makeTestDir(prefix: string): string {
 export function registerTestAppCleanup(cleanup: () => Promise<void>): () => Promise<void> {
   let completion: Promise<void> | undefined;
   const trackedCleanup = () => {
-    // A timed-out test's finally block can overlap afterEach. Both must join
-    // cleanup before the shared hook removes files still owned by that work.
+    // A timed-out test's finally can overlap afterEach; both join one cleanup before files go.
     completion ??= Promise.resolve().then(cleanup).finally(() => {
       testAppCleanups.delete(trackedCleanup);
     });
@@ -165,18 +158,12 @@ export async function withTestEnv<T>(
   }
 }
 
-/**
- * Create an in-memory SQLite database with schema initialized.
- * Returns the database instance. No cleanup needed — GC handles it.
- */
+/** An in-memory SQLite database with the schema; no cleanup needed. */
 export function setupTestDb(): DatabaseSync {
   return openMemoryDatabase();
 }
 
-/**
- * Put a trigger straight into a stopped state, as a fixture. The store has no call for this: a
- * trigger stops only through its runner, cancellation, or its limits.
- */
+/** Fixture: stops a trigger directly, which the store only does via runner, cancel or limits. */
 export function endTrigger(
   db: DatabaseSync,
   triggerId: string,
@@ -210,10 +197,7 @@ export function createTestBus() {
   return createGlobalBus();
 }
 
-/**
- * `SessionManager.readSessionsFromDisk` for a double that only says which sessions exist:
- * the sessions the given listing returns are the ones found when asked for by id.
- */
+/** `readSessionsFromDisk` for a double: by-id lookups find the sessions `list` returns. */
 export function sessionsOnDisk(list: (options: { includeArchived: boolean }) => any[] | Promise<any[]>) {
   return async (sessionIds: readonly string[], options: { includeArchived?: boolean } = {}): Promise<any[]> => {
     const sessions = await list({ includeArchived: options.includeArchived ?? true });
@@ -422,21 +406,7 @@ export {
 } from "./test-paths.js";
 
 
-/**
- * Fills a partial session double out to the full `AgentSession` facade.
- *
- * `AgentSession` requires its operational methods: the Copilot wrapper defines them all
- * unconditionally and reports capability absence through the *result* (either
- * `undefined` or a thrown error), never through method presence. Callers
- * therefore no longer guard with `typeof session.x === "function"`, so a mock
- * that omits a method fails at runtime — and the `as unknown as AgentSession`
- * casts these doubles rely on mean the compiler will not catch it.
- *
- * Build session doubles through this helper and override only what the test
- * asserts on. The returned object keeps the caller's concrete mock types.
- * The default release joins one simulated raw SDK disconnect, preserving its
- * failures and pending state. An explicit release override takes precedence.
- */
+/** Fills a partial double out to a full AgentSession; `as` casts would hide a missing method. */
 export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentSession {
   let releasePromise: Promise<AgentSessionRelease> | undefined;
   const defaults: AgentSession = {
@@ -481,18 +451,7 @@ export function makeAgentSessionStub<T extends object>(overrides: T): T & AgentS
   return Object.assign(defaults, overrides) as T & AgentSession;
 }
 
-/**
- * Advance fake timers by `ms`, then settle whatever real async work the fired
- * timer started before returning.
- *
- * `vi.advanceTimersByTimeAsync` fires timer callbacks and drains microtasks, but
- * it cannot wait for work that leaves the microtask queue (libuv filesystem
- * calls, SQLite reads on a second connection, child-process teardown). Any
- * controller whose timer callback kicks off such work must expose `settle()`
- * (or an equivalent promise) so tests can wait for a consistent view instead of
- * assuming the timer advance finished it. Use this helper in every fake-timer
- * test that asserts on the *results* of a timer-driven tick.
- */
+/** Advances fake timers, then awaits `settle` for real I/O the timer started. */
 export async function advanceTimersAndSettle(
   ms: number,
   settle: () => Promise<void>,
@@ -501,15 +460,7 @@ export async function advanceTimersAndSettle(
   await settle();
 }
 
-/**
- * Session lifecycle deadlines run on setTimeout and Date.now(): release is
- * bounded to 5s before a lease is quarantined (reported as a reconnecting
- * backend), fencing is due after 60s, capacity waits and detail RPCs have their
- * own bounds. A test that holds one of those operations open and then asserts
- * on manager state fakes only these clocks, so a starved worker cannot expire a
- * deadline between arranging a state and asserting it. Microtasks and
- * setImmediate stay real. Pair with `afterEach(() => vi.useRealTimers())`.
- */
+/** Fakes setTimeout and Date so lifecycle deadlines can't expire mid-test; restore timers after. */
 export function freezeLifecycleDeadlines(): void {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 }

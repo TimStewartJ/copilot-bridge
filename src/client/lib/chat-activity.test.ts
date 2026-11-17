@@ -309,14 +309,14 @@ describe("agents in a stretch of work", () => {
     const background = record("moves", { status: "running", background: true });
     const [block] = activity(blocksOf([
       thought("t1", "turn-a", { timestamp: at(2), reasoning: { startedAt: at(0) } }),
-      // While the agent works, the stream moves the end of the call that launched it to its latest word.
+      // While the agent works, the stream moves its launching call's end to its latest word.
       tool("moves", "turn-a", { isSubAgent: true, startedAt: at(2), completedAt: at(95), success: true, agent: background }),
       tool("read", "turn-a", { startedAt: at(3), completedAt: at(35), success: true }),
     ]));
 
     expect(summarizeActivity(block!.steps)).toMatchObject({ toolCount: 2, runningCount: 0, durationMs: 35_000 });
 
-    // Before the session's records name the agent, the call's own arguments say it runs in the background.
+    // Before records name the agent, the call's own arguments say it runs in the background.
     const [unnamed] = activity(blocksOf([
       tool("moves", "turn-a", { isSubAgent: true, args: { mode: "background" }, startedAt: at(2), completedAt: at(95), success: true }),
       tool("read", "turn-a", { startedAt: at(3), completedAt: at(35), success: true }),

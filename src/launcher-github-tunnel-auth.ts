@@ -22,12 +22,7 @@ export type GitHubTunnelHostAuthDependencies = {
   now: () => number;
 };
 
-/**
- * Reads the github.com credential Git Credential Manager (or any git credential helper)
- * stores for HTTPS pushes, for `account` when one is named. Prompts are disabled so a
- * missing or expired credential fails instead of opening a sign-in window on an
- * unattended launcher.
- */
+/** Reads git's github.com credential; prompts off so a missing one fails, not opens a sign-in. */
 export function readGitHubTokenFromGitCredential(account?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", ["credential", "fill"], {
@@ -117,12 +112,7 @@ function clusterApi(cluster: string): string {
   return `https://${cluster}.rel.tunnels.api.visualstudio.com`;
 }
 
-/**
- * Host credentials for tunnels owned by a GitHub account. Each launch reads the GitHub
- * credential, finds the tunnel's cluster, and asks the Dev Tunnels API for a host-scoped
- * token; `devtunnel host --access-token` then runs without touching the CLI's login. The
- * short-lived host token also reads the tunnel's host connection count for health checks.
- */
+/** Gets host tokens via the git GitHub credential, so devtunnel host never uses the CLI login. */
 export function createGitHubTunnelHostAuth(
   deps: GitHubTunnelHostAuthDependencies = defaultDependencies,
 ): TunnelHostAuth {

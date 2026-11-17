@@ -96,7 +96,7 @@ export function isInlineRenderableAttachment(mimeType: string): boolean {
   return INLINE_RENDERABLE_MIME_TYPES.has(mimeType.toLowerCase());
 }
 
-/** What a browser shows in a tab by itself, running nothing as the Bridge: a PDF or a media player. */
+/** What a browser shows in a tab without running anything as the Bridge: PDF, audio, video. */
 export function isBrowserViewableAttachment(mimeType: string): boolean {
   const mime = mimeType.toLowerCase();
   return mime === "application/pdf" || mime.startsWith("audio/") || mime.startsWith("video/");
@@ -121,7 +121,7 @@ export function getSessionGeneratedImagesDir(copilotHome: string, sessionId: str
   return join(copilotHome, "session-state", sessionId, "images");
 }
 
-/** One file directly inside `dir`, resolved through links, or an error the routes map to 403/404. */
+/** A file directly in `dir`, resolved through links, or an error the routes map to 403/404. */
 function resolveDirectChildFile(dir: string, fileName: string): Result<ResolvedOutboundAttachment> {
   if (!fileName || basename(fileName) !== fileName || fileName.includes("..")) return err("fileName is invalid");
   const filePath = join(dir, fileName);
@@ -147,11 +147,7 @@ function resolveDirectChildFile(dir: string, fileName: string): Result<ResolvedO
   return ok({ filePath: realPath, displayName, mimeType, inline: isInlineRenderableAttachment(mimeType) });
 }
 
-/**
- * A file the user attached to a prompt, kept in the session's files/ folder. The CLI records sent
- * images without their bytes, so chat history shows them from here. Only direct children of the
- * folder resolve; subfolders such as outgoing/ and visuals/ have routes of their own.
- */
+/** User uploads in files/ (the CLI keeps no image bytes); direct children only. */
 export function resolveSessionUploadedFile(copilotHome: string, sessionId: string, fileName: string): Result<ResolvedOutboundAttachment> {
   if (!isCanonicalSessionId(sessionId)) return err("sessionId is invalid");
   return resolveDirectChildFile(getSessionFilesDir(copilotHome, sessionId), fileName);

@@ -1,6 +1,4 @@
-// The skill catalog: a cached view of every skill sessions can load, with the workflow metadata
-// playbooks and machine skills declare. Session setup is synchronous, so it reads the last scan;
-// scans run in the background, after skill or pack changes and on a slow timer.
+// Cached skill catalog; synchronous session setup reads the last background scan.
 
 import {
   scanSkills,
@@ -43,7 +41,7 @@ export function createSkillCatalog(options: SkillCatalogOptions) {
     return skills;
   }
 
-  /** Rescans now. Calls during a scan share it, and one more scan follows so late changes are seen. */
+  /** Rescans now; calls during a scan share it, and one more scan follows to catch late changes. */
   function refresh(): Promise<SkillSummary[]> {
     if (inflight) {
       rerun = true;
@@ -99,10 +97,7 @@ export function createSkillCatalog(options: SkillCatalogOptions) {
 
 export type SkillCatalog = ReturnType<typeof createSkillCatalog>;
 
-/**
- * Which installed skill fills each role a playbook can name, and which skills add steps to a
- * playbook. Only skills this chat loads count: packs outside the chat's tags are left out.
- */
+/** Which loaded skill fills each playbook role or adds steps; skips packs outside chat tags. */
 export function formatSkillRolesBlock(skills: readonly SkillSummary[], activePackIds: ReadonlySet<string>): string | undefined {
   const loaded = skills.filter((skill) => skill.source !== "pack" || (skill.packId && activePackIds.has(skill.packId)));
   const roleLines: string[] = [];
@@ -136,10 +131,7 @@ Playbooks name roles instead of services. No installed skill fills a role on thi
   ].join("\n");
 }
 
-/**
- * The models playbooks refer to by role: helpers and reviewers from Settings › Models, and a
- * panel of distinct models from the tiers for cross-model review.
- */
+/** Models playbooks name by role: helpers, reviewers, and a cross-model panel from the tiers. */
 export function formatModelRolesBlock(
   settings: Pick<AppSettings, "modelRoles" | "modelPresets" | "model"> | undefined,
   models?: readonly RoleModelInfo[],

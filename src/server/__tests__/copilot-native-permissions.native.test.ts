@@ -57,7 +57,6 @@ async function fixture(signal: AbortSignal) {
     await startClient();
   };
   // Owned so cleanup can prove the CLI's process tree exited before the temp folders go.
-  // Recovery fencing itself is covered by copilot-backend-recovery.native.test.ts.
   const backend = new CopilotBackend(client, { localStdioOwnership: true });
   const setup = (async () => {
     await mkdir(cwd);
@@ -122,8 +121,7 @@ describe("native Copilot automatic tool approvals", () => {
       expect(await raw.rpc.tools.execute({ name: shell, arguments: { command, description: "Native permission fixture", mode: "sync" } }))
         .toMatchObject({ resultType: "success", textResultForLlm: expect.stringContaining("native fixture") });
       expect(await readFile(file, "utf-8")).toBe("after\n");
-      // Empty sessions are discarded on detach. One loopback response persists
-      // the conversation needed to test a real cold resume, without cloud inference.
+      // Empty sessions are discarded on detach; one loopback reply keeps it for a cold resume.
       await expect(session.sendAndWait({ prompt: "Finish this local diagnostic fixture." }, null))
         .resolves.toMatchObject({ data: { content: "Native fixture finished." } });
       await session.release();

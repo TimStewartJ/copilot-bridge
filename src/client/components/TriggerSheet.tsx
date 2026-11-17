@@ -261,7 +261,7 @@ function TriggerCard({
       />
 
       {trigger.lastError && (
-        // On a trigger that is still going, the last error is why it is waiting or what its last check hit.
+        // On a live trigger, the last error is why it waits or what its last check hit.
         <Notice tone={live ? "warning" : "danger"} icon={<AlertTriangle size={12} />} className="mt-2">
           {trigger.lastError}
         </Notice>

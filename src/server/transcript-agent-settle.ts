@@ -1,10 +1,7 @@
 import type { SessionAgentTask } from "../shared/session-agents.js";
 import type { TranscriptAgent } from "../shared/transcript-agents.js";
 
-/**
- * How much later than an agent's turn began the runtime's list must have been read before it can
- * overrule the log. An event's timestamp and the time of the read are only roughly comparable.
- */
+/** How long after a turn began the runtime list must be read to overrule the log. */
 const RUNTIME_LIST_MARGIN_MS = 2_000;
 
 export interface RuntimeAgentList {
@@ -13,19 +10,7 @@ export interface RuntimeAgentList {
   refreshedAt?: string;
 }
 
-/**
- * Corrects agents the event log still shows working when the runtime knows they are not.
- *
- * The log records that an agent stopped only when the runtime gets to write it. A process that was
- * killed, a run that was stopped, and some follow-up turns leave no such event, and the agent would
- * read as working for good. The runtime's own list of the agents it tracks settles it: a list read
- * after the agent's turn began that does not show the agent running means the agent is not
- * running, however old that read is, because only a later turn could change it and the log shows
- * when the latest turn began.
- *
- * Agents another agent launched are left to the log: the list is only known to name the agents the
- * main agent launched.
- */
+/** Any runtime list read after the turn began settles it; skip nested agents (list omits them). */
 export function settleTranscriptAgents(
   agents: TranscriptAgent[],
   runtime: RuntimeAgentList,

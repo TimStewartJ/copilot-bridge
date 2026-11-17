@@ -1,8 +1,4 @@
-// What every calendar screen shares: how a kind of item looks, how its time reads, and where it
-// opens. Kinds are told apart by their glyph (shape first, colour only on the glyph), so the grid
-// stays neutral like the rest of the Bridge. Events carry the identity colour the person gave their
-// kind (their own, or an import source) on a bar at the block's edge, never as a fill; imported
-// events also step back in weight, so they read right even when two kinds share a colour.
+// Kinds differ by glyph; event colour only as an edge bar, never a fill; imports step back.
 import { Bot, Flag, RotateCcw } from "lucide-react";
 import { DEFAULT_OWN_COLOR, defaultSourceColor, sourceOf, UNNAMED_SOURCE, type CalendarColor, type CalendarColors, type CalendarItem, type CalendarItemKind } from "../../shared/calendar";
 import { IDENTITY_FILL } from "../design/identity";
@@ -50,7 +46,7 @@ export function sourceFilterLabel(source: string): string {
   return source === UNNAMED_SOURCE ? "Imported" : `From ${sourceName(source)}`;
 }
 
-/** The block recipe for an item on the grid: own events are content; imported events and derived dates step back. */
+/** Grid block classes: own events are content; imports and derived dates step back. */
 export function itemSurface(item: CalendarItem): string {
   if (isImported(item)) return "bg-surface-selected/60 text-text-secondary";
   if (item.kind === "event") return "bg-surface-selected text-text-primary";
@@ -64,7 +60,7 @@ export function eventColor(item: CalendarItem, colors: CalendarColors | undefine
   return colors?.sources[sourceOf(item)] ?? defaultSourceColor(sourceOf(item));
 }
 
-/** The colour bar down an event block's leading edge. The block must be positioned and clip its corners. */
+/** Colour bar on an event block's leading edge; the block must be positioned and clip corners. */
 export function EventBar({ item, colors }: { item: CalendarItem; colors: CalendarColors | undefined }) {
   if (item.kind !== "event") return null;
   return <span aria-hidden="true" className={cx("pointer-events-none absolute inset-y-0 left-0 w-[3px]", IDENTITY_FILL[eventColor(item, colors)])} />;
@@ -155,7 +151,7 @@ export function readHiddenSources(): string[] {
 }
 
 export function writeHiddenSources(sources: readonly string[]): void {
-  try { localStorage.setItem(HIDDEN_SOURCES_KEY, JSON.stringify(sources)); } catch { /* private mode */ }
+  try { localStorage.setItem(HIDDEN_SOURCES_KEY, JSON.stringify(sources)); } catch { /* private */ }
 }
 
 /** The Events layer covers the person's own events; each import source has its own switch. */

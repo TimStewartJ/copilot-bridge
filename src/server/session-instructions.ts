@@ -44,24 +44,7 @@ export const AGENT_LIFECYCLE_GUIDANCE = `
 * Replacing an agent or removing its files does not stop it. Use agent_stop. Idle agents still count against the shared live-agent limit; once you have the result and need no follow-up, use agent_dismiss.
 `.trim();
 
-/**
- * How to spend the time a slow command takes, and how to wait without paying for it twice.
- * Where the numbers come from (Claude main-agent requests, 15 September to 1 October 2026):
- * - 240 seconds: a request that started within five minutes of the previous one read the cache
- *   99.7% of the time, and one that started more than five and a half minutes after it missed it
- *   94% of the time. A wait of three to four minutes was followed by a miss 5% of the time, about
- *   as often as a wait of one to three minutes (3%).
- * - Ten or more times: a request that misses the cache writes it again at 1.25 times the input
- *   price (see COPILOT_CACHE_WRITE_INPUT_RATE_MULTIPLIER), while cached input costs about a
- *   tenth of the input price for 29 of the 33 priced models, a twentieth for one and a quarter
- *   for three that charge nothing extra for the write.
- * - 45 minutes: at those prices and that miss rate, polling every four minutes costs as much as
- *   one uncached wake-up after about 33 minutes where cached input costs a tenth, and after about
- *   47 minutes where it costs a twentieth. The guidance uses one figure near the upper end; in
- *   between, the two choices differ by less than half the price of one uncached request.
- * Other providers keep a cache longer, so for them the 240 seconds are stricter than needed.
- * The text is fixed for the life of the process, so it never disturbs a session's cached prefix.
- */
+/** 240 s: cache hit 99.7% within 5 min, missed 94% past 5.5; 45 min: polling cost break-even. */
 export const LONG_RUNNING_WORK_GUIDANCE = `
 **Long-running commands and waiting**
 * Start independent slow commands together, slowest first. Use mode "async" for work taking more than a minute or two when you can do other work meanwhile. Completion notifications are automatic.
@@ -70,18 +53,10 @@ export const LONG_RUNNING_WORK_GUIDANCE = `
 * Background commands live only while the session stays loaded. Ending the turn still allows a completion wake-up; Bridge keeps the session loaded and holds restarts for about ${Math.round(BACKGROUND_COMMAND_PROTECT_MS / 60_000)} minutes after the command started. Later unloading of an idle session stops its commands and delivers a <bridge_notice> naming them.
 `.trim();
 
-// Section transforms for CLI-rendered text the Bridge keeps but must correct. The pattern
-// lives inside each function so the prompt fingerprint (which hashes function source)
-// changes whenever the transform does. Each returns the input unchanged when the line is absent.
-
-/**
- * identity group: removes the runtime's mode statement, which frames every session as
- * software engineering. The rendered group starts with the Bridge identity (the replaced
- * preamble) and the runtime places the statement before the tone section, so only that
- * span is searched and neither a custom identity nor user style guidance is edited.
- */
+// Keep each pattern inside its function: the prompt fingerprint hashes function source.
 const codingModeStatementRemovers = new Map<string, (content: string) => string>();
 
+/** Drops the runtime's coding-mode line, searching only between identity and tone sections. */
 export function createCodingModeStatementRemover(identityText: string): (content: string) => string {
   // One function per identity keeps rebuilt session configs deep-equal.
   const cached = codingModeStatementRemovers.get(identityText);
@@ -117,7 +92,7 @@ export function removeConciseReplyDirective(content: string): string {
   return content.replace(/^[^\S\r\n]*Respond concisely to the user\b.*(?:\r?\n|$)/m, "").trimEnd();
 }
 
-/** last_instructions: reinforces concise style at the prompt tail when Default detail is concise. */
+/** last_instructions: restates concise style at the prompt tail when Default detail is concise. */
 export function applyConciseReplyDirective(content: string): string {
   // agent-text-audit: tool-output (the Copilot CLI's built-in system prompt)
   const stripped = content.replace(/^[^\S\r\n]*Respond concisely to the user\b.*(?:\r?\n|$)/m, "").trimEnd();
@@ -125,7 +100,7 @@ export function applyConciseReplyDirective(content: string): string {
   return stripped ? `${stripped}\n${reminder}` : reminder;
 }
 
-/** last_instructions: reinforces right-sized, readable replies at the prompt tail when Default detail is adaptive. */
+/** last_instructions: asks for right-sized replies at the prompt tail when detail is adaptive. */
 export function applyAdaptiveReplyDirective(content: string): string {
   // agent-text-audit: tool-output (the Copilot CLI's built-in system prompt)
   const stripped = content.replace(/^[^\S\r\n]*Respond concisely to the user\b.*(?:\r?\n|$)/m, "").trimEnd();
@@ -164,7 +139,7 @@ Desktop computer use is on, but Cua Driver is not installed yet, so this session
 </computer_use>
 `.trim();
 
-/** The rules for Cua Driver's desktop tools; the foreground part is also enforced before each call. */
+/** Rules for Cua Driver's desktop tools; the foreground part is also enforced before each call. */
 export function computerUseCuaGuidance(awayAfterMinutes: number): string {
   return `
 <computer_use>

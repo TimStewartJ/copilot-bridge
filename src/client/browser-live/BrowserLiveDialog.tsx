@@ -10,11 +10,7 @@ import { LiveBrowserView } from "./LiveBrowserView";
 
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [tabindex="0"]';
 
-/**
- * The part of the screen that is really visible. A phone's keyboard covers the bottom of a fixed
- * overlay without resizing it, so the dialog follows the visual viewport to keep the page, the
- * text row and the answers in view while typing. Undefined where that is not needed or not known.
- */
+/** Follow the visual viewport: a phone keyboard covers a fixed overlay without resizing it. */
 function useVisibleBox(): CSSProperties | undefined {
   const [box, setBox] = useState<{ top: number; height: number } | null>(null);
   useEffect(() => {
@@ -36,11 +32,7 @@ function useVisibleBox(): CSSProperties | undefined {
   return box ? { top: box.top, bottom: "auto", height: box.height } : undefined;
 }
 
-/**
- * A browser session's live view over the whole screen: edge to edge on a phone, a large dialog on
- * a desktop. It is drawn outside the element that opened it, so it is not clipped or disabled by a
- * card, a list or another dialog around that element.
- */
+/** Portaled out of its opener so a card, list or dialog around it cannot clip or disable it. */
 export function BrowserLiveDialog({
   browserSessionId,
   title = "Browser",
@@ -80,9 +72,7 @@ export function BrowserLiveDialog({
   const stop = (event: { stopPropagation: () => void }) => event.stopPropagation();
 
   return createPortal(
-    // The view is a child of whatever opened it in React's tree, so events are stopped here to
-    // keep the handlers around the opener out of what happens inside: a chat reads a wheel turn
-    // or a touch anywhere in its transcript as the reader scrolling away from the latest reply.
+    // Portal events still bubble to the opener; stop them or the chat reads a scroll-away.
     <div
       className="fixed inset-0 z-[70] flex bg-black/50 md:p-4"
       style={visibleBox}

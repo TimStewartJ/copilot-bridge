@@ -86,8 +86,7 @@ describe("response transport", () => {
     const etag = first.headers.etag;
     expect(etag).toBeTruthy();
 
-    // What fetch() sends when page script supplies If-None-Match (Fetch spec forces
-    // cache mode "no-store", which appends these two request headers).
+    // fetch() with If-None-Match uses cache mode "no-store", which adds these two headers.
     const revalidated = await request(app)
       .get("/api/sessions")
       .set("Accept-Encoding", "br, gzip")

@@ -27,7 +27,7 @@ function overviewIndicator(row?: TaskOverviewRow): TaskIndicator {
   };
 }
 
-/** Only task-specific uncertainty occupies a task's status slot; a gap in a shared source keeps the last reading. */
+/** Only task-specific doubt fills the status slot; a shared-source gap keeps the last reading. */
 export function useTaskAttentionPresentation(
   tasks: readonly AttentionTask[],
   indicators: ReadonlyMap<string, TaskIndicator> | undefined,

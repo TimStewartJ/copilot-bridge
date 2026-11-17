@@ -61,10 +61,7 @@ export interface Task {
   pullRequests: PRRef[];
 }
 
-/**
- * What the browser gets about a task's linked sessions. A task can link thousands of archived
- * scheduled runs, so the full ID list stays on the server.
- */
+/** The browser's view of a task's sessions; the full id list stays on the server. */
 export interface TaskSessionSummary {
   /** Linked sessions that are not archived, oldest link first. */
   activeSessionIds: string[];
@@ -80,7 +77,7 @@ export interface SessionTaskLink {
   cwd?: string;
 }
 
-/** A task as stored, minus its session links: a task can link thousands of sessions, and most readers do not use them. */
+/** A task without its session links, which can number thousands and most readers skip. */
 export type TaskWithoutSessions = Omit<Task, "sessionIds">;
 
 export type ClientTask<T extends TaskWithoutSessions = Task> = Omit<T, "sessionIds"> & TaskSessionSummary;
@@ -147,10 +144,7 @@ export const TASK_MOMENTUM_EVENTS_KEEP = 200;
 export const TASK_MOMENTUM_EVENT_PREVIEW_CHARS = 500;
 export const TASK_MOMENTUM_EVENTS_MAX_LIMIT = 100;
 
-/**
- * `removed` is false when the delete matched no row, so callers can report an
- * honest no-op instead of claiming an unlink that never happened.
- */
+/** `removed` is false when no row matched, so callers can report a no-op honestly. */
 export interface UnlinkWorkItemResult {
   task: Task;
   removed: boolean;
@@ -406,10 +400,7 @@ function quoteTitle(title: string): string {
   return `"${flat.length > TITLE_HISTORY_PREVIEW_CHARS ? `${flat.slice(0, TITLE_HISTORY_PREVIEW_CHARS - 1)}…` : flat}"`;
 }
 
-/**
- * A rename lands in task history so a wrong one is easy to spot and undo, and agents see recent
- * renames in their context. Naming a placeholder task is setup, not a rename, so it is skipped.
- */
+// Renames go to task history so a wrong one is easy to undo; naming a placeholder is skipped.
 function recordTitleChange(
   db: DatabaseSync,
   taskId: string,
@@ -517,11 +508,7 @@ export function createTaskStore(
     return rows.map(hydrateWithoutSessions).sort(compareTaskListOrder);
   }
 
-  /**
-   * The tasks each of the given sessions is linked to, in task-list order. Sessions without a
-   * link are absent. Reads the links of these sessions only; the whole link table only when no
-   * sessions are named.
-   */
+  /** Each given session's linked tasks in list order; with no sessions named, reads every link. */
   function listTaskLinksBySession(sessionIds?: readonly string[]): Map<string, SessionTaskLink[]> {
     const links = new Map<string, Array<SessionTaskLink & Pick<Task, "status" | "kind" | "order">>>();
     if (sessionIds?.length === 0) return links;
@@ -546,19 +533,13 @@ export function createTaskStore(
     return links;
   }
 
-  /**
-   * Records that Tim sent a message or answered a question in a conversation. Deliberately silent:
-   * it feeds task states, not task history. Only routes carrying his own words call it.
-   */
+  /** Records the user's own message or answer in a chat; feeds task states, not history. */
   function recordUserMessage(sessionId: string, at = new Date().toISOString()): void {
     db.prepare(`INSERT INTO session_user_messages (sessionId, lastSentAt) VALUES (?, ?)
       ON CONFLICT(sessionId) DO UPDATE SET lastSentAt = excluded.lastSentAt WHERE excluded.lastSentAt > lastSentAt`).run(sessionId, at);
   }
 
-  /**
-   * One pass per source, per task: Tim's latest own edit, the last message he sent in a linked
-   * conversation, and when waiting-for last changed.
-   */
+  /** Per task: the user's latest edit and message, and when waiting-for last changed. */
   function listMomentumSignals(): Map<string, MomentumSignals> {
     const signals = new Map<string, MomentumSignals>();
     const add = (taskId: unknown, patch: MomentumSignals) => {
@@ -597,8 +578,7 @@ export function createTaskStore(
     const now = new Date().toISOString();
     const cwd = defaultTaskCwd();
 
-    // The order bump, the INSERT and the links are one unit: if any of them fails, every active
-    // task must not keep the +1, and no task is left behind without the work it was created for.
+    // One unit: a failure must not leave the order bump or a task without its links.
     runTransaction(db, () => {
       assertTaskGroupExists(db, normalizedGroupId);
       // Bump order of all existing active tasks to make room at top
@@ -754,8 +734,7 @@ export function createTaskStore(
     }
 
     values.push(id);
-    // Cohort bump and the row's own write are one unit, so a failure cannot
-    // leave the destination cohort shifted without the moved task landing at 0.
+    // One unit, so the cohort is never shifted without the moved task landing at 0.
     runTransaction(db, () => {
       assertTaskGroupExists(db, groupId);
       const momentumBefore = readMomentumSnapshot(db, id);
@@ -788,12 +767,7 @@ export function createTaskStore(
       .all(id) as Array<{ sessionId: string }>).map((row) => row.sessionId);
   }
 
-  /**
-   * Counts backing the delete-confirmation dialog, in one query.
-   *
-   * The client cannot derive these: its session list is noise-filtered and
-   * excludes archived sessions, so it would undercount badly.
-   */
+  /** Delete-dialog counts; the client's filtered, unarchived session list would undercount. */
   function getTaskSessionCounts(id: string): { total: number; archived: number; shared: number } {
     const row = db.prepare(`
       SELECT
@@ -818,8 +792,7 @@ export function createTaskStore(
   function listTaskSessionSummaries(taskId?: string): Map<string, TaskSessionSummary> {
     const forTask = taskId === undefined ? "" : "AND ts.taskId = ?";
     const args = taskId === undefined ? [] : [taskId];
-    // Grouped in SQLite, one row and one hash per task: a task can link thousands of sessions.
-    // The order the revision hashes is stated inside the aggregate; SQLite promises no other.
+    // ORDER BY sits inside group_concat because SQLite promises no other order for the hash.
     const tasks = db.prepare(`
       SELECT ts.taskId, count(*) AS total,
         group_concat(ts.sessionId, char(10) ORDER BY ts.linkedAt, ts.sessionId) AS sessionIds
@@ -847,10 +820,7 @@ export function createTaskStore(
     return summaries;
   }
 
-  /**
-   * One page of a task's archived sessions, most recent activity first, and how many there are.
-   * A session with no recorded activity is placed by when it was linked.
-   */
+  /** A page of archived sessions, newest activity (else link time) first, with the total. */
   function listArchivedSessionIdsForTask(
     taskId: string,
     page: { limit: number; offset: number },
@@ -874,13 +844,7 @@ export function createTaskStore(
     return { sessionIds: rows.map((row) => row.sessionId), total: Number(total.total) };
   }
 
-  /**
-   * Session IDs linked to this task and to no other task.
-   *
-   * Deleting a session unlinks it from *every* task, so a bulk "delete the
-   * task's sessions" must not reach sessions another task still owns. Callers
-   * delete these and merely unlink the rest.
-   */
+  /** Deleting a chat unlinks it from every task, so bulk deletes may only reach these. */
   function listExclusiveSessionIdsForTask(id: string): string[] {
     return (db.prepare(`
       SELECT ts.sessionId FROM task_sessions ts
@@ -893,10 +857,7 @@ export function createTaskStore(
     `).all(id) as Array<{ sessionId: string }>).map((row) => row.sessionId);
   }
 
-  /**
-   * This task's conversations that are not archived themselves and belong to no active task.
-   * Once the task is archived these are the ones nothing in the working lists still shows.
-   */
+  /** This task's unarchived chats linked to no active task; hidden once the task is archived. */
   function listOpenSessionIdsWithoutActiveTask(id: string): string[] {
     return (db.prepare(`
       SELECT ts.sessionId FROM task_sessions ts
@@ -910,22 +871,14 @@ export function createTaskStore(
     `).all(id) as Array<{ sessionId: string }>).map((row) => row.sessionId);
   }
 
-  /**
-   * Delete the task's owned rows. Must run inside an open transaction.
-   *
-   * `triggers.taskId` has no foreign key, so the task's triggers do not cascade with the task.
-   * Neither do `entity_tags` rows. Both are deleted here, rather than through `TriggerStore` or
-   * `TagStore`, so the parent and everything it owns commit or roll back together; SQLite has no
-   * nested transactions, so the cascade cannot be split across stores that each own a transaction.
-   */
+  /** Caller holds the transaction: triggers/tags have no FK and SQLite can't nest transactions. */
   function cascadeWithinTransaction(id: string): string[] {
     const deletedTriggerIds = (db
       .prepare("SELECT id FROM triggers WHERE taskId = ?")
       .all(id) as Array<{ id: string }>).map((row) => row.id);
     for (const triggerId of deletedTriggerIds) {
       db.prepare("DELETE FROM trigger_runs WHERE triggerId = ?").run(triggerId);
-      // Chats that survive the task keep the trigger's name as provenance, but an id pointing at a
-      // deleted trigger is a dangling reference.
+      // Surviving chats keep the trigger's name but drop its now-dangling id.
       db.prepare(`
         UPDATE bridge_session_state
         SET scheduleId = NULL, updatedAt = ?
@@ -939,10 +892,7 @@ export function createTaskStore(
     return deletedTriggerIds;
   }
 
-  /**
-   * Delete a task and every trigger it owns (plus their run history) in one
-   * transaction, returning the deleted trigger IDs so the caller can announce them.
-   */
+  /** Deletes a task with its triggers and their runs in one transaction; returns trigger ids. */
   function deleteTaskCascade(id: string): { deletedTriggerIds: string[] } {
     db.exec("BEGIN");
     let deletedTriggerIds: string[];
@@ -957,15 +907,7 @@ export function createTaskStore(
     return { deletedTriggerIds };
   }
 
-  /**
-   * Archive every session linked to a task and delete the task in one
-   * transaction.
-   *
-   * Archiving is pure SQLite, so it can commit atomically with the cascade —
-   * the task can never be left alive with its sessions unexpectedly archived,
-   * and sessions can never be archived for a task that survived. Callers still
-   * own the non-transactional side effects (events).
-   */
+  /** Archiving is plain SQLite, so it commits atomically with the task's deletion. */
   function archiveSessionsAndDeleteTask(id: string): {
     deletedTriggerIds: string[];
     archivedSessionIds: string[];
@@ -997,12 +939,6 @@ export function createTaskStore(
     return { deletedTriggerIds, archivedSessionIds };
   }
 
-  /**
-   * Remove a session link from every task that has it, in one transaction, and
-   * return the affected task IDs. Replaces the caller-side
-   * `listTasks()` → filter → per-task `unlinkSession()` loop, which rehydrated
-   * every task (three relation queries each) just to find matches.
-   */
   function unlinkSessionFromAllTasks(sessionId: string): string[] {
     const affectedTaskIds = (db
       .prepare("SELECT taskId FROM task_sessions WHERE sessionId = ?")
@@ -1030,10 +966,7 @@ export function createTaskStore(
     return db.prepare("SELECT taskId, sessionId, linkedAt FROM task_sessions").all() as unknown as SessionLink[];
   }
 
-  /**
-   * Remove exactly these links, in one transaction, and return the affected task IDs. A link that
-   * was removed and made again since it was read has a new `linkedAt` and stays.
-   */
+  /** Removes exactly these links (a relinked one has a new `linkedAt`); returns task ids. */
   function removeSessionLinks(links: readonly SessionLink[]): string[] {
     if (links.length === 0) return [];
     const affected = new Set<string>();
@@ -1085,7 +1018,7 @@ export function createTaskStore(
     return getTask(taskId)!;
   }
 
-  /** Normalize numeric-looking IDs (e.g. "00123" → "123") and GitHub refs (URL → "owner/repo#123") */
+  /** Normalizes numeric ids ("00123" → "123") and GitHub refs (URL → "owner/repo#123"). */
   function normalizeWorkItemId(id: string): string {
     return normalizeWorkItemIdValue(id);
   }
@@ -1111,8 +1044,7 @@ export function createTaskStore(
       ? db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ? AND provider = ?").run(taskId, normalizedId, provider)
       : db.prepare("DELETE FROM task_work_items WHERE taskId = ? AND itemId = ?").run(taskId, normalizedId)) as { changes?: number };
     const removed = (result.changes ?? 0) > 0;
-    // Reporting success for a delete that matched nothing let callers claim a
-    // work item was unlinked while the row was still there.
+    // A delete that matched nothing is not a successful unlink.
     if (!removed) return { task, removed: false };
     db.prepare("UPDATE tasks SET updatedAt = ? WHERE id = ?").run(new Date().toISOString(), taskId);
     emitChange(taskId);
@@ -1169,10 +1101,7 @@ export function createTaskStore(
     }));
   }
 
-  /**
-   * A scheduled session receives its schedule metadata only after its prompt is delivered, so a
-   * fast first write can be recorded without it. Attach the schedule to those events once known.
-   */
+  /** Tags events a scheduled session wrote before its schedule metadata arrived. */
   function attributeMomentumEventsToSchedule(sessionId: string, scheduleId: string, scheduleName: string): number {
     const result = db.prepare(`
       UPDATE task_momentum_events SET scheduleId = ?, scheduleName = ?

@@ -108,7 +108,7 @@ describe("createOpusRecordingEncoder", () => {
     // The encoder's own delay, read from the header it described its stream with.
     expect(stream).toMatchObject({ channels: 1, preSkip: 312, inputSampleRate: SAMPLE_RATE });
     expect(stream.packets.map((packet) => [...packet])).toEqual(Array.from({ length: 76 }, (_, index) => [0x48, index, 7]));
-    // The encoder padded to a whole packet; the recording is still exactly the 1.5 s that was captured.
+    // The encoder padded to a whole packet; the duration is still exactly the 1.5 s captured.
     expect(oggOpusDurationSeconds(stream)).toBe(1.5);
     expect(FakeAudioEncoder.last.state).toBe("closed");
   });

@@ -16,8 +16,7 @@ import {
 function waitForReady(child: ChildProcess): Promise<void> {
   return new Promise((resolve, reject) => {
     let output = "";
-    // Generous readiness window: under heavy machine load (many processes,
-    // slow process spawning) the root helper can take a while to print READY.
+    // Generous: under heavy load the root helper can take a while to print READY.
     const timeout = setTimeout(() => reject(new Error("child readiness timed out")), 30_000);
     child.once("error", reject);
     child.stdout?.on("data", (chunk) => {
@@ -121,10 +120,7 @@ async function requestHelperCleanup(child: ChildProcess): Promise<void> {
 
 describe.runIf(process.platform === "win32")("Windows process-tree integration", () => {
   it("terminates a high-churn descendant tree without touching an unrelated process", async () => {
-    // Long-lived leaf/root helpers (5 min) so the persistent processes do not
-    // self-exit during a slow run on a heavily loaded host. The assertions rely
-    // on the "unrelated" process still being alive and the root only exiting
-    // because it was terminated — not because a short self-exit timer fired.
+    // Helpers live 5 min so only termination, not a self-exit timer, ends them on a slow host.
     const leafCode = "setTimeout(() => process.exit(0), 300000)";
     const rootCode = `
       const { spawn } = require("node:child_process");

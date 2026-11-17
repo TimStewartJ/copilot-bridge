@@ -1,10 +1,7 @@
 import { isRecord } from "../shared/is-record.js";
 import type { CopilotAccount } from "../shared/copilot-accounts.js";
 
-/**
- * Credentials the runtime borrows rather than holds: the gh CLI's login and token environment
- * variables. Switching to them is not what the account list is for.
- */
+/** Borrowed credentials (gh CLI login, env tokens), which the account list does not switch to. */
 const BORROWED_AUTH_TYPES = new Set(["gh-cli", "env"]);
 
 function text(value: unknown): string | null {
@@ -28,10 +25,7 @@ function usedPercent(quota: unknown): number | null {
   return Math.min(100, Math.max(0, 100 - remaining));
 }
 
-/**
- * The runtime's `account.getAllUsers` entries as the account list shows them. The entries carry
- * tokens; only the fields named here leave this function.
- */
+/** account.getAllUsers entries for the account list; only these fields leave, never tokens. */
 export function toCopilotAccounts(
   users: unknown,
   currentAuthInfo: unknown,

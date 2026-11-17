@@ -1,9 +1,5 @@
 // agent-text-audit-file: tool-output (the agent runtime's log lines)
-// A durable record of each agent-backend loss, kept under the data directory.
-//
-// Telemetry spans are pruned after a week and the runtime's own log holds only its last few
-// minutes, so the evidence for a loss is usually gone before anyone looks. A record keeps what
-// the Bridge knew when it gave the backend up, and the runtime's account of its final minutes.
+// Durable record per backend loss: spans and the runtime log expire before anyone looks.
 
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -16,11 +12,11 @@ const MAX_RECORDS = 200;
 const RUNTIME_LOG_WINDOW_MS = 3 * 60_000;
 /** The runtime keeps writing until the Bridge has killed it. */
 const RUNTIME_LOG_AFTER_LOSS_MS = 30_000;
-/** The runtime keeps five 10 MB files; the limit only guards against a log that has stopped rotating. */
+/** The runtime rotates at 10 MB; this cap only guards against a log that stopped rotating. */
 const RUNTIME_LOG_MAX_BYTES = 64 * 1024 * 1024;
 const RUNTIME_LOG_MAX_LINES = 400;
 const RUNTIME_LOG_MAX_LINE_CHARS = 300;
-/** The runtime starts logging while the SDK is still connecting, before the Bridge counts the backend as started. */
+/** The runtime logs while the SDK connects, before the Bridge counts the backend as started. */
 const RUNTIME_LOG_START_SLACK_MS = 2 * 60_000;
 
 const PROCESS_LOG_NAME = /^process-(\d+)-(\d+)(?:\.\d+)?\.log$/;
@@ -29,10 +25,7 @@ const LINE_HEAD = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) \[(DEBUG|IN
 /** Model requests and responses, and the HTML tokenizer's trace of fetched pages. */
 const PAYLOAD_TAGS = ["[rust:model_wire]", "[rust:log]"];
 
-/**
- * Session and server lifecycle lines, which carry ids, step names and durations only. Everything
- * else at INFO or DEBUG is dropped: those levels also log request bodies and tool descriptions.
- */
+/** Lifecycle lines carry only ids and durations; other INFO/DEBUG lines can hold request bodies. */
 const LIFECYCLE_LINES: readonly RegExp[] = [
   /^Created session: /,
   /^Resumed session: /,
@@ -56,10 +49,7 @@ const EVENT_DELIVERY_SESSION = /"delivery_session_id":"([0-9a-f-]{36})"/;
 const EVENT_DELIVERY_TYPE = /"event_type":"([A-Za-z0-9_.]+)"/;
 
 export type BackendLossPing = {
-  /**
-   * "skipped": the backend had already reported its channel lost, so nothing was sent.
-   * "failed" or "timeout" is conclusive only if it took less than `runtimeKilledAfterMs`.
-   */
+  /** "skipped": channel already lost. failed/timeout count only if under runtimeKilledAfterMs. */
   outcome: "responsive" | "timeout" | "failed" | "skipped" | "unsupported";
   elapsedMs: number;
 };
@@ -84,7 +74,7 @@ export type RuntimeLogExcerpt =
       lastLineAt: string | null;
       /** Events the runtime handed to the Bridge inside the window, per session. */
       eventDeliveries: Array<{ sessionId: string; count: number; lastAt: string; lastEventType: string | null }>;
-      /** Lifecycle, warning and error lines inside the window, oldest first, each cut to a fixed length. */
+      /** Lifecycle, warning and error lines in the window, oldest first, each cut short. */
       lines: string[];
       earlierLinesOmitted: number;
     };
@@ -95,10 +85,7 @@ export interface BackendLossRecord {
   at: string;
   reason: string;
   detail?: string;
-  /**
-   * "bridge": the Bridge replaced a runtime that had not reported a failure, because a session
-   * release or resume never finished. "runtime": its channel failed or it stopped answering.
-   */
+  /** "bridge": replaced after a release or resume hung. "runtime": its channel failed or hung. */
   origin: "bridge" | "runtime";
   summary: string;
   trigger: {
@@ -117,7 +104,7 @@ export interface BackendLossRecord {
     pid: number | null;
     runtimePids: number[];
   };
-  /** The host's last wake from sleep as this server saw it; nulls when it has not slept since the server started. */
+  /** The host's last wake from sleep; nulls when it has not slept since the server started. */
   host: { lastResumeAt: string | null; msSinceResume: number | null; sleptMs: number | null };
   /** The newest event any session's runtime handle delivered to the Bridge. */
   lastRuntimeEvent: { at: string; msBeforeLoss: number; sessionId: string; type: string } | null;
@@ -177,7 +164,7 @@ function chooseProcessLog(
   const newest = (candidates: ProcessLog[]) =>
     candidates.reduce<ProcessLog | null>((best, log) => (!best || log.startedAtMs > best.startedAtMs ? log : best), null);
 
-  // A pid can be reused within the retained logs; the lost runtime is the newest process that had it.
+  // A pid can be reused within the logs; the lost runtime is the newest process that had it.
   const byPid = newest([...logs.values()].filter((log) =>
     options.pids.includes(log.pid) && log.startedAtMs <= options.lossAtMs));
   if (byPid) return { log: byPid, matchedBy: "pid" };
@@ -189,10 +176,7 @@ function chooseProcessLog(
   return byStart ? { log: byStart, matchedBy: "start-time" } : null;
 }
 
-/**
- * Reads what the lost runtime logged in its final minutes. Model traffic and tool payloads are
- * never copied: lifecycle lines are matched by shape, and warnings and errors are cut short.
- */
+/** Reads the lost runtime's final log minutes; never copies model traffic or tool payloads. */
 export async function readRuntimeLogExcerpt(options: RuntimeLogExcerptOptions): Promise<RuntimeLogExcerpt> {
   let names: string[];
   try {

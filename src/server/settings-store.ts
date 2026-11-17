@@ -52,8 +52,7 @@ import {
 
 export type ThemePreference = "light" | "dark" | "system";
 export type MotionPreference = "system" | "reduce" | "full";
-// Reasoning-effort ids are fully SDK-driven (per-model `supportedReasoningEfforts`),
-// so this is an open string alias rather than a fixed enumeration.
+// Open string: effort ids come from each model's SDK `supportedReasoningEfforts`.
 export type ReasoningEffort = string;
 
 export interface BrowserSettings {
@@ -94,19 +93,16 @@ export function resolveComputerUseAwayMinutes(settings: Pick<AppSettings, "compu
   return settings?.computerUse?.awayAfterMinutes ?? DEFAULT_COMPUTER_USE_AWAY_MINUTES;
 }
 
-/** Lets chats call the runtime's image tool, which bills a separate image model per image. On unless `enabled` is false. */
+/** The runtime's image tool, billed per image on a separate model; on unless `enabled` is false. */
 export interface ImageGenerationSettings {
   enabled?: boolean;
 }
 
-/** Hands-free voice settings and Helm's names list. Helm's model and effort are its role in `modelRoles`. */
+/** Hands-free voice settings and Helm's names list; Helm's model is its role in `modelRoles`. */
 export interface HelmSettings extends Partial<Omit<UnifiedHelmSettings, HelmLegacySettingKey>> {
-  /**
-   * Names the user says that speech recognition mishears or Helm can't know (machine, project and app
-   * names), given to Helm with its instructions and to the hands-free layer.
-   */
+  /** Names speech mishears or Helm can't know; given to Helm and the hands-free layer. */
   glossary?: string;
-  /** What Tether last wrote for the retired model and effort settings, returned as written. Nothing reads them. */
+  /** Tether's last retired model and effort settings, echoed back as written; unused. */
   legacy?: HelmLegacySettings;
 }
 
@@ -145,15 +141,9 @@ export interface AppSettings {
   contextTier?: CopilotContextTier;
   modelPresets?: ModelPresets;
   lastModelPreset?: ModelPresetSlot;
-  /**
-   * Which model each kind of work runs on (Settings › Models). A missing role is "Automatic": the
-   * behaviour from before roles. New chats, Helm chat and background checks keep their older
-   * fields (model…, helm.model, deferWorker) in step with a tier, so every reader of those still
-   * works; changing one of those fields directly makes that role follow the field again.
-   * Present (even empty) once the roles have been set up or inferred.
-   */
+  /** Per-role models; missing is Automatic. Tiers mirror into legacy fields old readers use. */
   modelRoles?: ModelRoles;
-  /** Starts new chats on one of two tiers at random to compare them; see shared/model-ab-test.ts. */
+  /** Starts new chats on one of two random tiers to compare them; see shared/model-ab-test.ts. */
   modelAbTest?: ModelAbTestSettings;
   /** Legacy input fields migrated into modelPresets. */
   familyDefaults?: ModelFamilyDefaults;
@@ -163,7 +153,7 @@ export interface AppSettings {
   computerUse?: ComputerUseSettings;
   imageGeneration?: ImageGenerationSettings;
   helm?: HelmSettings;
-  /** The chat mic's speech model and how dictations are reviewed; read and written through /api/voice/chat-mic. */
+  /** Chat mic speech model and dictation review; read and written via /api/voice/chat-mic. */
   chatMic?: ChatMicSettings;
   /** Early compaction for models whose provider rejects large requests; unset uses the defaults. */
   imageBudget?: ImageBudgetSettings;
@@ -341,7 +331,7 @@ function readEnabledFlag(key: string, value: unknown): boolean | undefined {
   return typeof enabled === "boolean" ? enabled : undefined;
 }
 
-/** Off unless turned on; the engine and away time are kept while it is off so turning it back on restores them. */
+/** Off unless turned on; engine and away time are kept while off so turning it on restores them. */
 function normalizeComputerUseSettings(value: unknown): ComputerUseSettings | undefined {
   const enabled = readEnabledFlag("computerUse", value);
   if (!isRecord(value)) return undefined;
@@ -643,14 +633,7 @@ function sameChoice(a: { model?: string; reasoningEffort?: string; contextTier?:
     && (a.contextTier ?? "default") === (b.contextTier ?? "default");
 }
 
-/**
- * Keeps the role map and the older per-feature fields in step:
- * - a direct change to a role's older field (model/effort/context, deferWorker) in this
- *   update, without a change to that role, makes the role follow the field again ("custom");
- * - a role on a tier writes the tier into its older field, so existing readers use it;
- * - settings from before roles get them inferred once, only where the current setup already
- *   equals a tier exactly, so nothing changes behaviour.
- */
+// Sync roles and legacy fields: legacy edit makes role custom; tier writes legacy; infer if exact.
 function reconcileModelRoles(base: AppSettings, normalized: AppSettings, value: Record<string, unknown>): void {
   const baseRoles = base === DEFAULT_SETTINGS ? undefined : base.modelRoles;
   // A role counts as set by this write only when the write changes it.
@@ -680,7 +663,7 @@ function reconcileModelRoles(base: AppSettings, normalized: AppSettings, value: 
   for (const role of ["chat", "background"] as const) {
     if (fieldChanged[role] && !roleTouched(role)) delete roles[role];
   }
-  // A role can't stay on a tier that has no model: it keeps what it last ran on (its older field) or goes back to Automatic.
+  // A role on a tier with no model falls back to its older field, or to Automatic.
   for (const role of Object.keys(roles) as Array<keyof ModelRoles>) {
     const choice = roles[role];
     if (isTierChoice(choice) && !presets[choice.tier]?.model) delete roles[role];
@@ -714,11 +697,7 @@ function normalizeModelAbTest(value: unknown): ModelAbTestSettings | undefined {
   return { enabled: value.enabled, a: value.a, b: value.b, ...(startedAt ? { startedAt } : {}) };
 }
 
-/**
- * The server owns when a test began, so its results never mix two setups. A write that turns the test
- * on, moves an arm, or changes what an arm's tier runs starts a new test. A write that leaves an arm's
- * tier without a model ends it, unless the write itself asked for that arm, which is refused.
- */
+/** Server owns startedAt: arm or tier changes start a new test; an arm without a model ends it. */
 function reconcileModelAbTest(base: AppSettings, normalized: AppSettings, value: Record<string, unknown>): void {
   const next = normalized.modelAbTest;
   // Reading the stored row: keep it as saved.
@@ -746,10 +725,7 @@ function reconcileModelAbTest(base: AppSettings, normalized: AppSettings, value:
   normalized.modelAbTest = { enabled, a: next.a, b: next.b, ...(startedAt ? { startedAt } : {}) };
 }
 
-/**
- * Helm's model used to be kept in `helm.model` (with `helm.typedReasoningEffort` for its chat). A Helm
- * role that was Automatic but had a model there becomes a custom role with that model and effort.
- */
+// An Automatic Helm role with a legacy `helm.model` becomes a custom role with that model.
 function migrateHelmModel(normalized: AppSettings, value: Record<string, unknown>): void {
   const helm = isRecord(value.helm) ? value.helm : undefined;
   const model = typeof helm?.model === "string" ? helm.model.trim() : "";
@@ -891,7 +867,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("imageBudget" in value) normalized.imageBudget = normalizeImageBudgetSettings(value.imageBudget);
   if ("experimental" in value) normalized.experimental = normalizeExperimentalSettings(value.experimental);
   if ("deployGuards" in value) normalized.deployGuards = normalizeDeployGuards(value.deployGuards);
-  // Like every other settings object, a write sends the whole role map; a missing role is Automatic.
+  // A write sends the whole role map; a missing role is Automatic.
   if ("modelRoles" in value) normalized.modelRoles = normalizeModelRoles(value.modelRoles) ?? {};
   if ("modelAbTest" in value) normalized.modelAbTest = normalizeModelAbTest(value.modelAbTest);
   reconcileModelRoles(base, normalized, value);

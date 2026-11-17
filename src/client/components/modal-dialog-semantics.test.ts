@@ -171,8 +171,7 @@ function clickButton(harness: ReactDomHarness, matcher: (props: any, node: any) 
 }
 
 beforeEach(() => {
-  // Overlay data loads are irrelevant here; keep every request pending so each
-  // sheet renders its stable loading/empty state.
+  // Keep every request pending so each sheet renders its stable loading/empty state.
   vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
 });
 
@@ -181,9 +180,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-// Each overlay only needs to prove it wired the hook up to a real container and
-// heading. Escape handling itself lives in the hook and is covered by
-// useModalDialog.test.ts plus the custom dismiss-target cases below.
+// Only proves the hook is wired; Escape handling is tested in useModalDialog.test.ts.
 it.each(overlayCases)("$name exposes a named modal dialog", async ({ accessibleName, element }) => {
   const { harness } = await renderOverlay(element(vi.fn()));
   try {

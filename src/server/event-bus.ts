@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-// Event bus for session streaming — decouples work from HTTP responses
-// Tracks snapshot of current in-flight turn, streams live events to subscribers
+// Event bus for session streaming: keeps the in-flight turn's snapshot and streams live events.
 
 import type {
   NativeUserInputResponse,
@@ -86,11 +85,7 @@ export interface StreamEvent {
   [key: string]: unknown;
 }
 
-/**
- * A tool call the stream knows about. Includes recently-completed calls so a result can render
- * immediately; the client substitutes this state onto the matching disk entry rather than
- * appending a second copy, so `events.jsonl` still decides where the tool sits in the transcript.
- */
+/** Includes recent completions; the client overlays them on the disk entry, never appends. */
 export interface LiveTool {
   toolCallId: string;
   name: string;
@@ -135,21 +130,12 @@ export interface LiveCompletion {
   turnInstanceId?: string;
 }
 
-/**
- * Assistant text held on the stream until `events.jsonl` catches up. A segment with a
- * `sourceEventId` is disk-backed and the client drops it once that id appears in loaded history.
- * A segment without one is bridge-native (for example slash-command output that never reaches the
- * SDK) and therefore has no disk representation at all.
- */
+/** Assistant text held until events.jsonl catches up; client drops it once sourceEventId loads. */
 export interface LiveAssistantSegment {
   id: string;
   content: string;
   sourceEventId?: string;
-  /**
-   * True only for text the bridge produced itself (for example slash-command output that never
-   * reached the SDK). Such text has no `events.jsonl` representation, so it is never handed off to
-   * disk history and survives turn boundaries.
-   */
+  /** Bridge-made text with no events.jsonl copy: never handed to disk history, survives turns. */
   bridgeNative?: boolean;
   /** Emitted alongside non-interactive tool calls rather than as a standalone reply. */
   progressUpdate?: boolean;
@@ -158,10 +144,7 @@ export interface LiveAssistantSegment {
   timestamp?: string;
 }
 
-/**
- * Ephemeral run state only. Committed transcript content and ordering come from `events.jsonl`
- * via `/messages-fast`; nothing here re-projects it.
- */
+/** Ephemeral run state only; the transcript comes from events.jsonl via /messages-fast. */
 export interface BusSnapshot {
   type: "snapshot";
   runId: string;
@@ -175,15 +158,9 @@ export interface BusSnapshot {
   pendingUserMessages: ProjectedUserMessage[];
   /** In-flight and recently-completed tool calls, keyed by `toolCallId`. */
   liveTools: LiveTool[];
-  /**
-   * The turn each working sub-agent is in, as `[launching tool call, turn instance]` pairs, so a
-   * browser that reconnects mid-run applies the next agent turn boundary to the right calls.
-   */
+  /** Each working sub-agent's [launch call, turn], so a reconnect splits turns correctly. */
   agentTurns: Array<[string, string]>;
-  /**
-   * The main agent has stopped and the run is held open by background work: agents still running,
-   * or a command in an attached shell. It ends when the main agent starts a turn.
-   */
+  /** The main agent stopped; background agents or commands hold the run until its next turn. */
   mainAgentIdle: boolean;
   /** Visuals published this run that disk history may not have surfaced yet. */
   liveVisuals: LiveVisual[];
@@ -240,7 +217,7 @@ export interface ProjectedUserMessage {
   content: string;
   attachments?: StartWorkAttachment[];
   pending: boolean;
-  /** The runtime's id for the submitted message, returned by `session.send` and saved on its `user.message`. */
+  /** The runtime's id for the message, from `session.send` and saved on its `user.message`. */
   messageId?: string;
   sourceEventId?: string;
   timestamp?: string;
@@ -254,20 +231,14 @@ interface SavedUserMessage {
   timestamp?: string;
 }
 
-/**
- * Saved user messages kept waiting for their `session.send` result. Hidden prompts and runtime
- * turns are saved too but never claimed, so only the newest few are kept.
- */
+/** Cap on saved user messages awaiting session.send; hidden and runtime turns are never claimed. */
 const MAX_UNCLAIMED_SAVED_USER_MESSAGES = 32;
 
 
 type Listener = (event: StreamEvent) => void;
 
 const CLEANUP_DELAY = 5 * 60_000;
-/**
- * How long after an agent starts or stops working the browser is told to read history once more.
- * The runtime can still be writing the event that says so when the first read arrives.
- */
+/** Recheck history this long after an agent starts or stops; the runtime may still be writing. */
 const AGENT_CHANGE_RECHECK_MS = 1_000;
 
 interface UserInputCanceledOptions {
@@ -300,12 +271,7 @@ export interface TerminalNoticeOptions {
   terminalCompletion?: TerminalCompletion;
 }
 
-/**
- * Build the bridge-native run notice for a terminal event. Anything already represented in
- * `events.jsonl` (normal assistant replies, `task_complete` completion cards) yields no notice —
- * disk stays the sole transcript authority. Only content the SDK never persisted, or a run outcome
- * with no disk representation, becomes a notice.
- */
+/** Only for what events.jsonl lacks; disk-backed replies and completion cards get no notice. */
 export function createRunNotice(options: TerminalNoticeOptions): RunNotice | undefined {
   const timestamp = options.timestamp ? { timestamp: options.timestamp } : {};
   if (options.terminalType === "error") {
@@ -318,8 +284,7 @@ export function createRunNotice(options: TerminalNoticeOptions): RunNotice | und
   }
   if (options.terminalType === "aborted" || options.terminalType === "shutdown") {
     const kind = options.terminalType === "aborted" ? "stopped" : "interrupted";
-    // Partial text only reached disk if the SDK persisted an assistant message for it. Otherwise
-    // the stream is its only copy, so carry it on the notice.
+    // With no persisted assistant message the stream has the only copy, so carry it on the notice.
     const unpersistedContent = options.assistantSourceEventId ? undefined : options.content;
     return {
       kind,
@@ -327,8 +292,7 @@ export function createRunNotice(options: TerminalNoticeOptions): RunNotice | und
       ...timestamp,
     };
   }
-  // A `done` run with no SDK terminal event never reached the SDK (for example a slash command
-  // answered locally), so its output exists only here.
+  // A `done` run with no SDK terminal event (a local slash command) has its output only here.
   if (options.terminalSourceEventId || options.terminalCompletion) return undefined;
   if (!options.content) return undefined;
   return { kind: "command", content: options.content, ...timestamp };
@@ -351,10 +315,7 @@ function isTerminalStreamEvent(event: StreamEvent): boolean {
     || event.type === "shutdown";
 }
 
-/**
- * Events the SDK also persists to `events.jsonl` as a visible transcript entry. Observing one means
- * the disk-backed history has advanced and subscribers should refresh their committed window.
- */
+/** Events the SDK also writes to events.jsonl as visible entries; one means history advanced. */
 function isCommittedHistoryEvent(event: StreamEvent): boolean {
   if (event.type === "tool_start" || event.type === "tool_done" || event.type === "visual_published") {
     return true;
@@ -460,7 +421,7 @@ export class SessionEventBus {
   private runId = randomUUID();
   private streamingContent = "";
   private userMessages: ProjectedUserMessage[] = [];
-  /** This run ended before the agent got its message, which says so itself; the run adds no notice. */
+  /** The run ended before the agent got its message; that message says so, so add no notice. */
   private promptUndelivered = false;
   /** Saved user messages by runtime message id, until the entry they belong to is known. */
   private unclaimedSavedUserMessages = new Map<string, SavedUserMessage>();
@@ -478,30 +439,18 @@ export class SessionEventBus {
   private providerRetry?: ProviderRetryState;
   private runNotice?: RunNotice;
   private runMode?: SendMode;
-  /**
-   * Runtime-owned pending interactions this run, keyed by the runtime's own
-   * request id. Deliberately NOT reset on turn boundaries: an `ask_user` prompt
-   * blocks inside its tool call while the surrounding run keeps streaming, so
-   * only explicit resets, terminal cleanup, and disposal may clear it.
-   */
+  /** Not reset per turn: ask_user blocks inside its tool call while the run keeps streaming. */
   private pendingUserInputIndex = new Map<UserInputRequestId, PendingUserInputRequestView>();
   private pendingElicitationIndex = new Map<ElicitationRequestId, PendingElicitationRequestView>();
-  /** Bridge holds these requests itself (see shell-auth-requests.ts); this is their listing for the stream. */
+  /** Bridge holds these itself (shell-auth-requests.ts); this lists them for the stream. */
   private pendingShellAuthIndex = new Map<ShellAuthRequestId, PendingShellAuthRequestView>();
   /** Server-only: last assistant text observed this run, used for abort/shutdown fallback. */
   private lastAssistantSegment?: LiveAssistantSegment;
   private finalContent?: string;
   private terminalCompletion?: TerminalCompletion;
-  /**
-   * Pending terminal completion captured from a hidden `task_complete` tool start. Carried into the
-   * terminal event (done/aborted/shutdown/error) so abnormal endings surface the agent's summary,
-   * matching disk replay. Cleared when a new turn starts.
-   */
+  /** From a hidden task_complete; put on the terminal event so abnormal ends keep the summary. */
   private pendingTerminalCompletion?: TerminalCompletion;
-  /**
-   * The run's latest completion that an event has put in the transcript, with that event's id and
-   * time. The card keeps them whichever event later ends the run, so it hands off to its disk entry.
-   */
+  /** The latest completion an event put in the transcript, kept so the card hands off to disk. */
   private transcriptCompletion?: TranscriptCompletion;
   private errorMessage?: string;
   private terminalType?: "done" | "error" | "aborted" | "shutdown";
@@ -535,8 +484,7 @@ export class SessionEventBus {
     if (mode) this.broadcast({ type: "run_mode", runMode: mode });
   }
 
-  /** Last assistant text observed on this run, including text not yet persisted to disk. */
-  /** Notes that an event put this run's completion in the transcript (see getTranscriptCompletion). */
+  /** Notes an event put this run's completion in the transcript (see getTranscriptCompletion). */
   recordTranscriptCompletion(recorded: TranscriptCompletion): void {
     this.transcriptCompletion = recorded;
     this.pendingTerminalCompletion = undefined;
@@ -574,25 +522,17 @@ export class SessionEventBus {
     };
   }
 
-  /**
-   * Announce that an observed event will become a committed history entry, so subscribers can
-   * refresh the disk-backed transcript instead of receiving a duplicate live projection. The
-   * signal carries no payload: the client owns its own refresh epoch.
-   */
+  /** Subscribers refetch disk history instead of getting a duplicate live projection. */
   private advanceHistory(): void {
     this.broadcast({ type: "history_advanced" });
   }
 
-  /** Something the chat's history shows changed outside a run (a not-sent message was resent or discarded). */
+  /** History changed outside a run (a not-sent message was resent or discarded). */
   announceHistoryChange(): void {
     this.advanceHistory();
   }
 
-  /**
-   * A sub-agent started or stopped working. Nothing in the overlay stands for that: the browser
-   * reads it back from history, which is told to look now and once more shortly after, in case the
-   * runtime was still writing the event the first time.
-   */
+  /** Recheck shortly after: the runtime may still be writing the event the first time. */
   announceAgentChange(): void {
     this.advanceHistory();
     if (this.agentChangeTimer) return;
@@ -603,7 +543,7 @@ export class SessionEventBus {
     this.agentChangeTimer.unref?.();
   }
 
-  /** The sub-agent a tool event belongs to, by the call that launched it; nothing for the main agent. */
+  /** The sub-agent owning a tool event, by its launching call; undefined for the main agent. */
   private getOwningAgent(event: StreamEvent): string | undefined {
     if (!isToolStreamEvent(event)) return undefined;
     if (typeof event.parentToolCallId === "string" && event.parentToolCallId) return event.parentToolCallId;
@@ -626,10 +566,7 @@ export class SessionEventBus {
     return userMessage.id;
   }
 
-  /**
-   * Replace the newest uncommitted prompt while preserving its stable live identity. Returns the
-   * id of the entry that now shows the prompt.
-   */
+  /** Replaces the newest uncommitted prompt, keeping its live identity; returns the entry id. */
   replacePendingPrompt(prompt: string, attachments?: StartWorkAttachment[]): string {
     const index = this.findPendingPromptIndex(undefined, true);
     if (index < 0) return this.setPendingPrompt(prompt, attachments);
@@ -648,23 +585,14 @@ export class SessionEventBus {
     return next.id;
   }
 
-  /**
-   * Fallback for runtimes whose `user.message` carries no message id: commit the oldest pending
-   * prompt with the same text, in FIFO order. With no text, commits the oldest pending prompt.
-   * The entry stays on the stream until the client sees its `sourceEventId` in disk history, so
-   * the prompt can never flicker out.
-   */
+  /** Fallback when user.message has no id: commit the oldest pending prompt with the same text. */
   commitPendingPrompt(expectedPrompt?: string, sourceEventId?: string, timestamp?: string): void {
     const index = this.findPendingPromptIndex(expectedPrompt, false);
     if (index < 0) return;
     this.commitUserMessageAt(index, sourceEventId, timestamp);
   }
 
-  /**
-   * Records the runtime's id for the message a projected entry was sent as (the result of
-   * `session.send`). The entry commits once its saved `user.message` has been seen as well,
-   * whichever of the two arrives first.
-   */
+  /** Commits once both this id and its saved user.message are seen, in either order. */
   assignUserMessageId(entryId: string, messageId: string): void {
     const index = this.userMessages.findIndex((message) => message.id === entryId);
     if (index < 0) return;
@@ -682,10 +610,7 @@ export class SessionEventBus {
     }
   }
 
-  /**
-   * Records that the runtime saved the user message with this id. Commits the projected entry
-   * the id was assigned to, or keeps the save until `assignUserMessageId` names that entry.
-   */
+  /** Commits the entry assigned this saved message id, or holds it until assignUserMessageId. */
   recordSavedUserMessage(messageId: string, sourceEventId?: string, timestamp?: string): void {
     const index = this.userMessages.findIndex((message) => message.messageId === messageId);
     if (index >= 0) {
@@ -868,18 +793,7 @@ export class SessionEventBus {
     });
   }
 
-  /**
-   * The only listing of in-flight interaction requests Bridge has.
-   *
-   * The Copilot runtime owns the requests and remains the sole adjudicator of
-   * whether an id is live or stale — every *response* still goes through it —
-   * but it exposes no wire method that *enumerates* them
-   * (`session.permissions.pendingRequests` answers with permission prompts
-   * only). Without this index a browser reconnecting mid-`ask_user` would have
-   * no way to re-render the prompt. These maps are keyed by the runtime's own
-   * request ids, taken straight off its `*.requested` events and normalized
-   * per event at ingest by `session-runner`.
-   */
+  /** Pending prompts to re-show on reconnect; the runtime judges liveness but cannot list them. */
   getPendingInteractionIndex(): PendingInteractionSnapshot {
     return {
       pendingUserInputs: [...this.pendingUserInputIndex.values()]
@@ -891,11 +805,7 @@ export class SessionEventBus {
     };
   }
 
-  /**
-   * Drops every cached entry. Terminal cleanup owns this: it must first capture
-   * the ids it needs to cancel, since the runtime only releases a pending
-   * request when something answers it.
-   */
+  /** Drops every entry; take the ids to cancel first, as requests stay pending until answered. */
   clearPendingInteractionIndex(): void {
     this.pendingUserInputIndex.clear();
     this.pendingElicitationIndex.clear();
@@ -955,8 +865,7 @@ export class SessionEventBus {
       this.finalizePendingUserMessages();
     }
 
-    // Update ephemeral run state. Anything that will land in events.jsonl is announced via
-    // `history_advanced` instead of being projected into a parallel transcript.
+    // Ephemeral state only; what lands in events.jsonl is announced via `history_advanced`.
     switch (event.type) {
       case "provider_retry":
         this.providerRetry = normalizeProviderRetryState(event.providerRetry);
@@ -983,9 +892,7 @@ export class SessionEventBus {
           ...(this.currentTurnId ? { turnId: this.currentTurnId } : {}),
           ...(this.currentTurnInstanceId ? { turnInstanceId: this.currentTurnInstanceId } : {}),
         });
-        // The runtime sends the complete block after the message that committed it, so it nearly
-        // always changes nothing. Subscribers fold it the same way; do not resend the whole text
-        // to them just to have it ignored.
+        // The complete block nearly always changes nothing; don't resend the text.
         if (next === this.liveReasoning) return;
         this.liveReasoning = next;
         break;
@@ -1012,7 +919,7 @@ export class SessionEventBus {
         }
         break;
       case "tool_update":
-        // Update an existing active tool's metadata (e.g., when subagent.started upgrades a "task" tool)
+        // Update an active tool's metadata (e.g. subagent.started upgrading a "task" tool).
         {
           const toolCallId = getToolCallId(event);
           const patch: Partial<LiveTool> = {
@@ -1079,10 +986,7 @@ export class SessionEventBus {
       case "assistant_partial":
         {
           const eventContent = typeof event.content === "string" ? event.content : "";
-          // The SDK only persists an assistant entry when the message carries content, so an
-          // empty message (a tool-only turn) must not stamp streamed text with its event id —
-          // that id would never appear on disk and the segment could never retire. Leave the text
-          // accumulating so the next real assistant message finalizes it.
+          // Empty messages aren't saved; their id never hits disk, so the text would never retire.
           if (!eventContent && this.streamingContent) break;
           const content = eventContent || this.streamingContent;
           if (content) {
@@ -1178,8 +1082,7 @@ export class SessionEventBus {
       this.providerRetry = undefined;
       // Thinking that never reached an assistant message has no disk copy and ends with the run.
       this.liveReasoning = keepCommittedReasoning(this.liveReasoning);
-      // Tools still open at the terminal never got a result; mark them finished rather than
-      // dropping them, so they don't render as perpetually running before the next disk read.
+      // Open tools got no result; mark them finished so they don't show as running until reload.
       this.liveTools = this.liveTools.map((tool) => tool.completedAt
         ? tool
         : {
@@ -1188,7 +1091,7 @@ export class SessionEventBus {
             success: terminalType === "done",
           });
       if (resolved) {
-        // Autopilot's run ends on session.idle, which is never persisted, after session.task_complete.
+        // Autopilot's run ends on the unpersisted session.idle, after session.task_complete.
         const sourceEventId = identity ? identity.sourceEventId : this.terminalEventId;
         const timestamp = identity?.timestamp ?? this.terminalTimestamp;
         this.liveCompletion = {
@@ -1233,8 +1136,7 @@ export class SessionEventBus {
   getSnapshot(pendingInteractions?: PendingInteractionSnapshot): BusSnapshot {
     const turnId = this.currentTurnId ?? this.terminalTurnId;
     const turnInstanceId = this.currentTurnInstanceId ?? this.terminalTurnInstanceId;
-    // A completed run has nothing in flight by definition, so never replay the
-    // listing index past terminal even if cancellation could not drain it.
+    // A completed run has nothing in flight, so never replay the index past terminal.
     const pending = pendingInteractions
       ?? (this._complete
         ? emptyPendingInteractions()
@@ -1353,9 +1255,7 @@ export class SessionEventBus {
   }
 
   private startTurn(): void {
-    // Keep the ending turn's disk-backed items for one more turn (see live-turn-retention.ts):
-    // the client's read of them is usually still in flight. Bridge-native segments have no disk
-    // copy at all and always survive.
+    // Keep the ending turn's disk-backed items one more turn: the client may still be reading.
     const endingTurnInstanceId = this.currentTurnInstanceId;
     const segments = this.liveAssistantSegments.filter((segment) => (
       segment.bridgeNative === true

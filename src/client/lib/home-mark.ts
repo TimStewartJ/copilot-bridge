@@ -6,10 +6,7 @@ export interface HelmReplyState {
   handsFree: boolean;
 }
 
-/**
- * A reply in the current Helm conversation that Tim has not had on screen. Until read state has loaded
- * every conversation looks unread, so nothing counts; nor does a reply hands-free is reading out.
- */
+/** An unseen Helm reply; nothing counts before read state loads or while hands-free reads it. */
 export function isHelmReplyUnread(
   current: HelmReplyState | null | undefined,
   readStateHydrated: boolean,

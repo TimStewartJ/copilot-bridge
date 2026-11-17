@@ -261,7 +261,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     return listChecklistItems(taskId);
   }
 
-  /** Get all unchecked checklist items across all active tasks and global (unparented) checklist items */
+  /** All unchecked items across active tasks and the global list. */
   function listAllOpenChecklistItems(): ChecklistItem[] {
     return (db.prepare(`
       SELECT checklist_items.* FROM checklist_items
@@ -274,7 +274,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     `).all() as any[]).map(hydrate);
   }
 
-  /** Get recently completed checklist items (last 7 days) across active tasks and global checklist items */
+  /** Items completed in the last 7 days across active tasks and the global list. */
   function listRecentlyCompletedChecklistItems(): ChecklistItem[] {
     const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
     return (db.prepare(`
@@ -285,10 +285,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     `).all(weekAgo) as any[]).map(hydrate);
   }
 
-  /**
-   * Checklist items with a deadline from `from` to `to` (inclusive dates), open or done, on active
-   * tasks or the global list; with `taskId`, only that task's. Their task title comes along.
-   */
+  /** Items, open or done, due from..to inclusive on active tasks or global, with task title. */
   function listChecklistItemsByDeadline(from: string, to: string, taskId?: string): Array<ChecklistItem & { taskTitle?: string }> {
     const rows = db.prepare(`
       SELECT checklist_items.*, tasks.title AS taskTitle FROM checklist_items
@@ -302,7 +299,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     return rows.map((row) => ({ ...hydrate(row), ...(row.taskTitle ? { taskTitle: String(row.taskTitle) } : {}) }));
   }
 
-  /** Open items whose deadline is before `before`, oldest first, and how many open items have no deadline. */
+  /** Open items due before `before`, oldest first, plus how many open items have no deadline. */
   function listDeadlineSummary(before: string, limit: number, taskId?: string): {
     overdue: Array<ChecklistItem & { taskTitle?: string }>; overdueTotal: number; undated: number;
   } {

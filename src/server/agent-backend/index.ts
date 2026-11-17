@@ -1,8 +1,4 @@
-// Public entry point for the AgentBackend abstraction.
-//
-// Callers import from `./agent-backend` instead of reaching for
-// `@github/copilot-sdk` directly. The factory exists so Step 3 can add
-// `kind: "claude-code"` without touching call sites.
+// Entry point for AgentBackend; import from here, not @github/copilot-sdk.
 
 import { CopilotClient } from "@github/copilot-sdk";
 
@@ -53,31 +49,19 @@ export type {
 export { CopilotBackend };
 
 export interface CreateAgentBackendOptions {
-  /**
-   * Which backend implementation to construct. Step 1 ships only
-   * `"copilot"`; Step 3 will add `"claude-code"`.
-   */
+  /** Which backend implementation to construct. */
   kind: "copilot";
-  /**
-   * Environment override forwarded into `buildCopilotClientOptions`. Use
-   * to set `COPILOT_HOME` for session isolation (staging previews,
-   * disposable sessions).
-   */
+  /** Env override for `buildCopilotClientOptions`, e.g. an isolated `COPILOT_HOME`. */
   clientEnv?: Record<string, string | undefined>;
   /** Directory for the scratch Copilot home that agent shells use; see agent-shell-env.ts. */
   agentShellDir?: string;
 }
 
-/**
- * Construct an `AgentBackend` per `opts.kind`. Step 1 only supports
- * Copilot; the dispatch lives here so future callers do not change.
- */
 export function createAgentBackend(opts: CreateAgentBackendOptions): AgentBackend {
   switch (opts.kind) {
     case "copilot": {
       const options = buildCopilotClientOptions(opts.clientEnv);
-      // The pinned CLI's headless stdio mode owns its local session manager.
-      // npm-loader.js forwards to a native child, so fencing must verify both.
+      // npm-loader.js forwards to a native child, so fencing must verify both processes.
       return new CopilotBackend(new CopilotClient(options), { localStdioOwnership: true, agentShellDir: opts.agentShellDir });
     }
     default: {

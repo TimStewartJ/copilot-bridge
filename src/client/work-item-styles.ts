@@ -41,7 +41,6 @@ export const WI_STATE_STYLES: Record<string, string> = {
   Open: "bg-info-surface text-info",
 };
 
-/** CSS dot class + label for PR statuses */
 /** Pull request states, drawn with StatusIcon: open ring, done check, closed cross. */
 export const PR_STATUS_STYLES: Record<string, { status: DsStatusKind; label: string }> = {
   active: { status: "open", label: "Active" },

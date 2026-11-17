@@ -4,11 +4,6 @@ import {
   type TranscriptAgentDirectory,
 } from "../../shared/transcript-agents.js";
 
-/**
- * What the transcript needs from the session's agent records (shared/transcript-agents.ts): the
- * agent behind each launching call, a stand-in for a launching call that is above the loaded
- * window, and which agents are working now.
- */
 
 const AGENT_ROW_PREFIX = "🤖 ";
 
@@ -22,14 +17,10 @@ export function agentDisplayName(toolCall: Pick<ToolCall, "name" | "agent">): st
   return toolCall.agent?.name ?? (toolCall.name.replace(/^🤖\s*/, "") || "Agent");
 }
 
-/** Entries the previous pass already built, so a row whose entry and agent are unchanged keeps its object. */
+/** Entries from the previous pass, so an unchanged row keeps its object. */
 export type AgentAttachmentCache = WeakMap<ChatEntry, { agent: TranscriptAgent; entry: ChatEntry }>;
 
-/**
- * Gives every launching call in `entries` its agent record. A call the loaded history could not
- * yet tell was a delegation (its agent reported in above the part that was read) becomes an agent
- * row here.
- */
+/** Gives launching calls their agent; calls not yet known as delegations become agent rows. */
 export function attachTranscriptAgents(
   entries: ChatEntry[],
   directory: TranscriptAgentDirectory,
@@ -77,12 +68,7 @@ function placeholderFor(agent: TranscriptAgent): ToolCall {
   return placeholder;
 }
 
-/**
- * Stand-ins for launching calls that are not loaded. A step names the call that launched its
- * agent, and the loaded window usually begins long after that call, so without a stand-in the step
- * would have nothing to sit under and would read as the main agent's. A parent the session's
- * records do not know either is still an agent, just an unnamed one.
- */
+/** Stand-ins for unloaded launching calls, so agents' steps don't read as the main agent's. */
 export function buildAgentPlaceholders(
   toolCalls: readonly ToolCall[],
   directory: TranscriptAgentDirectory,
@@ -107,11 +93,7 @@ export function getWorkingAgents(directory: TranscriptAgentDirectory): Transcrip
   return directory.all.filter((agent) => agent.status === "running" && !agent.parentToolCallId);
 }
 
-/**
- * The agents as they stand once nothing can still be running them: the run is over and no
- * background agent is alive. One the records still show working never recorded that it stopped,
- * because the session shut down or its process went away; it did not finish.
- */
+/** Agents still running after the run lost their process: show them stopped, not finished. */
 export function withoutWorkingAgents(agents: readonly TranscriptAgent[]): readonly TranscriptAgent[] {
   if (!agents.some((agent) => agent.status === "running")) return agents;
   return agents.map((agent): TranscriptAgent => {
@@ -129,10 +111,7 @@ export function listAgentNames(agents: ReadonlyArray<Pick<TranscriptAgent, "name
   return `${names.slice(0, shown - 1).join(", ")} and ${names.length - (shown - 1)} more`;
 }
 
-/**
- * The line for a run whose main agent has nothing of its own in flight and is waiting for agents
- * to report back. It names how many, not what each is doing this second, so it holds still.
- */
+/** The line while the main agent only waits on agents; it gives a count so it holds still. */
 export function describeWaitingOnAgents(
   agents: ReadonlyArray<Pick<TranscriptAgent, "name" | "description">>,
 ): { label: string; detail?: string; count: number } {

@@ -55,12 +55,7 @@ function hydrate(row: any): McpServer {
   };
 }
 
-/**
- * A single unreadable `mcp_servers` row must not break every registry read.
- * `listMcpServers()` feeds session creation, settings sync, and the MCP settings
- * UI, so throwing here would leave the user unable to even delete the bad row.
- * Reads skip it; writes stay strictly validated.
- */
+/** Reads skip a bad row (else the user can't even delete it); writes stay strictly validated. */
 const MCP_SERVER_HYDRATION: RowHydrationContext<any> = {
   store: "mcp-servers",
   describeRow: (row) => `${String(row?.id ?? "<no id>")} ("${String(row?.name ?? "")}")`,
@@ -105,9 +100,7 @@ export function createMcpServerStore(db: DatabaseSync) {
   }
 
   function updateMcpServer(id: string, updates: UpdateMcpServerInput): McpServer {
-    // Existence is checked against the raw row, not the hydrated one, so a server
-    // whose stored config has become unreadable can still be repaired by writing a
-    // valid config instead of reporting a confusing "not found".
+    // Check the raw row, so a server with an unreadable config can be repaired.
     const exists = db.prepare("SELECT 1 AS found FROM mcp_servers WHERE id = ?").get(id) as { found?: number } | undefined;
     if (exists?.found !== 1) throw new Error(`MCP server ${id} not found`);
 
@@ -130,10 +123,7 @@ export function createMcpServerStore(db: DatabaseSync) {
     }
 
     values.push(id);
-    // The write and its read-back are one unit: if the stored config is still
-    // unreadable after the update, the caller gets an error AND the row is left
-    // untouched, instead of a 400 over a change that actually committed.
-    // Joins settings-store's transaction when called from its default sync.
+    // One unit: if the config is still unreadable after the write, roll back and throw.
     return runInOwnOrOuterTransaction(db, () => {
       db.prepare(`UPDATE mcp_servers SET ${fields.join(", ")} WHERE id = ?`).run(...values);
       const updated = getMcpServer(id);
@@ -154,10 +144,7 @@ export function createMcpServerStore(db: DatabaseSync) {
 
   function resolveMcpServers(serverIds?: Iterable<string>): Record<string, McpServerConfig> {
     const servers = serverIds === undefined
-      // Default resolution must survive one unreadable row: it runs on every
-      // session start, so throwing here would block session creation entirely.
-      // Explicitly requested ids stay strict — silently dropping a dependency
-      // the caller asked for would be worse than failing.
+      // Defaults skip bad rows (every session start); explicit ids stay strict.
       ? hydrateRowsSafely(
         db.prepare("SELECT * FROM mcp_servers WHERE enabledByDefault = 1 ORDER BY name COLLATE NOCASE").all() as any[],
         hydrate,

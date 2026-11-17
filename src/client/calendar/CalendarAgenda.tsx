@@ -19,7 +19,7 @@ interface Props {
 export function AgendaRow({ item, onOpen, time, colors, phone }: {
   item: CalendarItem; onOpen: () => void; time?: string; colors: CalendarColors | undefined; phone?: boolean;
 }) {
-  // A timed event shows its start in the time column and its end beneath the title, so neither wraps.
+  // A timed event's start goes in the time column and its end under the title, so neither wraps.
   const until = item.kind === "event" && !item.allDay && item.end && !time ? `Until ${formatClockShort(item.end)}` : undefined;
   const context = [until, itemContext(item)].filter(Boolean).join(" · ") || undefined;
   return (

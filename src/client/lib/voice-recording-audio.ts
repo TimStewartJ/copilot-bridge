@@ -1,6 +1,3 @@
-// Audio helpers for chat mic recordings: downsample to the speech engine's 16 kHz while
-// recording so uploads are a third of the size, then package the result as a WAV file.
-
 /** Sample rate the local speech engine transcribes at; anything higher is wasted upload. */
 export const TRANSCRIPTION_SAMPLE_RATE = 16_000;
 
@@ -34,11 +31,7 @@ function createLowPassStage(cutoffHz: number, sampleRate: number): BiquadStage {
   };
 }
 
-/**
- * Streaming downsampler: a 4th-order Butterworth low-pass (two biquads) against aliasing,
- * then linear interpolation. Matches the voice mode capture worklet so both features feed
- * the recognizer the same kind of audio. Never upsamples.
- */
+/** Butterworth low-pass then linear interpolation, never upsamples; match the capture worklet. */
 export class SpeechResampler {
   readonly outputRate: number;
   private readonly ratio: number;
@@ -87,15 +80,12 @@ function writeAscii(view: DataView, offset: number, value: string): void {
 }
 
 const PRESENCE_WINDOW_SECONDS = 0.02;
-/** -50 dBFS: a quiet room under the browser's noise suppression stays below it; a voice does not. */
+/** -50 dBFS: a quiet room under noise suppression stays below it; a voice does not. */
 const PRESENCE_LEVEL_RMS = 10 ** (-50 / 20);
-/** Loud time needed in total: a tap on the phone is a few milliseconds, a short word about a hundred. */
+/** Total loud time needed: a phone tap is a few ms, a short word about 100. */
 const PRESENCE_HEARD_SECONDS = 0.1;
 
-/**
- * Tells whether a microphone hears anything like a voice yet, from loudness alone.
- * It cannot tell speech from a loud fan; it is for spotting a dead, muted or wrong microphone.
- */
+/** Loudness only: spots a dead, muted or wrong microphone, but can't tell speech from a fan. */
 export class SoundPresence {
   private readonly windowSize: number;
   private readonly windowsNeeded: number;

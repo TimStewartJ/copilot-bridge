@@ -15,7 +15,7 @@ export type ShellAuthHandler = (
 ) => Promise<ShellAuthHandlerResponse>;
 
 export interface ShellAuthRequestsDeps {
-  /** The bus of the chat's run in progress, or undefined when no run is open to show the prompt in. */
+  /** The bus of the chat's run in progress; undefined when no run is open to show the prompt. */
   getLiveBus(sessionId: string): SessionEventBus | undefined;
   /** A prompt was shown to, or taken away from, the chat's user. */
   onPendingChange(sessionId: string, state: "requested" | "completed", at?: string): void;
@@ -30,11 +30,7 @@ interface PendingShellAuth {
 
 const CANCEL: ShellAuthHandlerResponse = { action: "cancel" };
 
-/**
- * Holds the passwords and answers shell commands ask the chat's user for, from the runtime's
- * request until the user answers, cancels, or the runtime stops waiting. The answer is handed to
- * the waiting runtime call and dropped: it is never logged, stored, or published on the bus.
- */
+/** Holds shell prompts until answered; answers go only to the runtime, never logs or the bus. */
 export class ShellAuthRequests {
   private readonly pending = new Map<string, Map<ShellAuthRequestId, PendingShellAuth>>();
   private readonly logger: Pick<Console, "log" | "warn">;
@@ -79,7 +75,7 @@ export class ShellAuthRequests {
     });
   };
 
-  /** The user's answer. Throws a PendingInteractionError for an unknown request or an invalid answer. */
+  /** The user's answer; throws PendingInteractionError for an unknown request or invalid answer. */
   respond(sessionId: string, requestId: ShellAuthRequestId, payload: unknown): SubmittedShellAuthResponse {
     const entry = this.pending.get(sessionId)?.get(requestId);
     if (!entry) {

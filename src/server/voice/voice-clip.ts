@@ -1,5 +1,4 @@
-// Pure helpers for transcribing recorded clips: WAV decoding and splitting speech into
-// chunks the recognizer can handle without holding up live voice conversations.
+// Pure helpers for transcribing clips: WAV decoding and splitting speech into recognizer chunks.
 import type { SpeechCoverage } from "../../shared/chat-mic.js";
 
 export class WavDecodeError extends Error {}
@@ -107,7 +106,7 @@ export interface SpeechChunkPlanOptions {
   maxGapSeconds: number;
   /** Extra audio kept around each chunk so word edges are not clipped. */
   padSeconds: number;
-  /** The audio being planned. With it, speech too long for one chunk is cut where it is quietest. */
+  /** With the audio, speech too long for one chunk is cut where it is quietest. */
   samples?: Float32Array;
 }
 
@@ -145,12 +144,7 @@ function quietestPoint(samples: Float32Array, from: number, to: number, sampleRa
   return from + quietest * hop + Math.floor((hopsPerWindow * hop) / 2);
 }
 
-/**
- * Cuts speech that is too long for one chunk. Steady background noise hides pauses from the speech
- * detector, which then reports half a minute or more as a single segment, and the recognizer drops
- * whole sentences from input that long. The speech is cut into the fewest pieces that fit, each cut
- * at the quietest point within half a piece of an even split.
- */
+/** Long segments make the recognizer drop sentences; cut at quiet points near even splits. */
 function splitLongSegment(segment: SampleRange, maxChunk: number, options: SpeechChunkPlanOptions): SampleRange[] {
   const pieces: SampleRange[] = [];
   let start = segment.start;
@@ -170,7 +164,7 @@ function splitLongSegment(segment: SampleRange, maxChunk: number, options: Speec
   return pieces;
 }
 
-/** Turns detected speech segments into padded, non-overlapping recognizer chunks, none longer than the maximum. */
+/** Turns speech segments into padded, non-overlapping chunks, none longer than the maximum. */
 export function planSpeechChunks(segments: readonly SampleRange[], totalSamples: number, options: SpeechChunkPlanOptions): SampleRange[] {
   const maxChunk = Math.round(options.maxChunkSeconds * options.sampleRate);
   const maxGap = Math.round(options.maxGapSeconds * options.sampleRate);
@@ -218,10 +212,7 @@ export function isLexicalToken(token: string): boolean {
   return /[\p{L}\p{N}]/u.test(token);
 }
 
-/**
- * Finds the longest stretch of detected speech with no recognized words in it. Silence between
- * words does not count, and the walk runs across chunk boundaries, so words lost at a cut are seen too.
- */
+/** Longest speech stretch with no recognized words; gaps between words don't count. */
 export function measureSpeechCoverage(
   speech: readonly SampleRange[],
   tokenStartSeconds: readonly number[],

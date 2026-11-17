@@ -1,6 +1,4 @@
-// What a step of the browser tools is: which agent-browser commands and options one may be,
-// the shape of each, and how the tools describe them to the model. Nothing here touches a
-// browser; browser-automation.ts runs the steps.
+// Step vocabulary and validation only; nothing here touches a browser (browser-automation.ts).
 
 import { err, ok, type Result } from "./tool-results.js";
 
@@ -27,12 +25,7 @@ export interface BrowserAutomationCommand {
 /** The options of a `screenshot` step; any other argument is its element or its file. */
 export const SCREENSHOT_OPTIONS: readonly string[] = ["--full", "--annotate"];
 
-/**
- * The agent-browser commands a step may be. Left out are the ones that would take the browser
- * out of the Bridge's hands, which chooses, serialises and closes it (close, connect, session,
- * stream, state, auth, batch and their kind), and with them the names agent-browser accepts for
- * the same things (quit, exit, goto, navigate). A command of a later agent-browser is added here.
- */
+/** Omits commands that take the browser from the Bridge (close, session...) and their aliases. */
 const STEP_COMMANDS = new Set([
   "open", "read", "snapshot", "screenshot", "pdf", "eval", "wait", "get", "is", "find",
   "click", "dblclick", "hover", "focus", "fill", "type", "select", "check", "uncheck", "press",
@@ -42,11 +35,7 @@ const STEP_COMMANDS = new Set([
   "diff", "vitals", "a11y", "record", "trace", "profiler",
 ]);
 
-/**
- * The options a step may carry. agent-browser reads its own options (--session, --profile,
- * --cdp, --json and some forty more) wherever they stand in a command, also where a value was
- * meant, so any argument shaped like an option that is not listed here is refused.
- */
+/** agent-browser parses its flags (--session, --cdp...) anywhere, so others are refused. */
 const STEP_OPTIONS: Record<string, readonly string[]> = {
   snapshot: ["-i", "-s"],
   wait: ["--url", "--text", "--load", "--fn"],
@@ -68,16 +57,11 @@ function isRef(value: string): boolean {
   return /^@[\w:-]+$/.test(value);
 }
 
-/**
- * Try to fix common ref format mistakes:
- *   "e42"        → "@e42"
- *   "[ref=e42]"  → "@e42"
- * Returns the original string if it doesn't look like a misformatted ref.
- */
+/** Fixes common ref mistakes ("e42", "[ref=e42]" to "@e42"); otherwise returns the value as is. */
 function autoCorrectRef(value: string): string {
   // Already valid
   if (isRef(value)) return value;
-  // Missing @ prefix: "e42" → "@e42" (must start with a letter to distinguish from durations like "5000")
+  // Missing @: "e42" → "@e42"; a leading letter tells it from a duration like "5000".
   if (/^[a-zA-Z][\w:-]*$/.test(value) && /\d/.test(value)) return `@${value}`;
   // Snapshot display format: "[ref=e42]" → "@e42"
   const bracketMatch = value.match(/^\[ref=([\w:-]+)\]$/);
@@ -163,10 +147,7 @@ const REF_FIRST_ARG_COMMANDS = new Set(["click", "check", "fill", "type", "selec
 /** Commands where a later arg is an element ref (get text <ref>). */
 const REF_SECOND_ARG_COMMANDS = new Set(["get"]);
 
-/**
- * Commands where the first arg *may* be a ref (wait can take a selector, a
- * duration, or a ref). Only auto-correct when the arg looks ref-shaped.
- */
+/** wait takes a selector, duration or ref, so only a ref-shaped first arg is corrected. */
 const REF_FIRST_ARG_OPTIONAL_COMMANDS = new Set(["wait"]);
 
 export function normalizeBrowserAutomationCommands(rawCommands: unknown): Result<BrowserAutomationCommand[]> {

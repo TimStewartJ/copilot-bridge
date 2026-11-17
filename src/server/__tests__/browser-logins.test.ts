@@ -225,7 +225,7 @@ describe("LoginWatch", () => {
     watch.keyPressed();
     await watch.submitting(reads(FORM));
     expect(told).toHaveLength(before);
-    // "Not now" is for this visit to the form: after the page moved on, the same sign-in is offered again.
+    // "Not now" covers this visit only: after the page moves on, the sign-in is offered again.
     await watch.pageRead("https://accounts.example.com/home", false);
     watch.keyPressed();
     await watch.submitting(reads(FORM));

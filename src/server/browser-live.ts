@@ -1,5 +1,4 @@
-// Live view of a browser session: relays between a Bridge client and the WebSocket stream that
-// agent-browser serves for the session, so the user can watch the page and act in it.
+// Live view: relays a session's agent-browser stream to a client so the user can watch and act.
 
 import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -38,29 +37,17 @@ const STREAM_COMMAND_TIMEOUT_MS = 10_000;
 const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024;
 const MAX_CONNECTIONS_PER_SESSION = 3;
 const STREAM_MAX_FPS = 15;
-/** Text is handed to the browser a character at a time; this many go out before others get a turn. */
+/** Text goes to the browser a character at a time; this many go out before others get a turn. */
 const TEXT_BATCH_CHARACTERS = 64;
 /** Typing waits while this much is still on its way to the browser. */
 const STREAM_BACKLOG_BYTES = 256 * 1024;
-/**
- * agent-browser notices a tab or popup that opened or closed only when it runs a command, and
- * until then its stream shows the tab it knew. Reading the page (its size and address) is that
- * command, so an open view reads it this often while tabs are likely to change: for a while
- * after input, and while more than one is open. Otherwise it reads at the slow rate.
- */
+/** agent-browser sees tab changes only on a command; poll fast after input or with several tabs. */
 const PAGE_POLL_MS = 4_000;
 const SLOW_PAGE_POLL_MS = 30_000;
 const RECENT_INPUT_MS = 20_000;
-/**
- * A click or a key press is what opens and closes tabs, so the page is read again this long
- * after the last one, and once more for a tab that took a moment to appear.
- */
+/** Clicks and keys open and close tabs, so the page is reread this long after the last one. */
 const INPUT_FOLLOW_UP_READS_MS = [600, 2_500] as const;
-/**
- * A view nobody has touched for this long is closed; it can be opened again. Its reads keep the
- * session in use, and for some sessions the browser is kept from agents while it is on show, so
- * a view left open in a forgotten tab must not last.
- */
+/** Close untouched views: their reads keep the session busy and may keep agents off the browser. */
 const VIEW_IDLE_MS = 10 * 60_000;
 /** A connection that does not answer a ping by the next one is gone, whatever the socket says. */
 const HEARTBEAT_MS = 20_000;
@@ -70,8 +57,7 @@ const MAX_TABS = 20;
 const MAX_TAB_TITLE_LENGTH = 200;
 const MAX_TAB_URL_LENGTH = 2_048;
 const base64 = (script: string): string => Buffer.from(script, "utf-8").toString("base64");
-// The array is turned into text outside the page. A page can replace its own JSON.stringify, and
-// with it what the address field of a view shows; it cannot replace its location.
+// Stringified outside the page: a page can replace JSON.stringify, but not its location.
 const PAGE_SCRIPT_BASE64 = base64(`[innerWidth, innerHeight, location.href, document.title, ${SIGN_IN_FORM_PRESENT}]`);
 const SIGN_IN_FORM_VALUES_SCRIPT_BASE64 = base64(SIGN_IN_FORM_VALUES_SCRIPT);
 /** A key or click waits for the form to be read first, so the read gives up soon. */
@@ -115,10 +101,7 @@ interface PendingFileChooser {
 
 const FILE_CHOOSER_GONE = "The page is no longer asking for a file. Use its button again.";
 
-/**
- * A picked file's name as the page will see it: the one it had on the person's device, without
- * a folder, and different from the names in `taken`, which it joins.
- */
+/** A picked file's device name without its folder, made unique against `taken`, which it joins. */
 export function liveFileName(original: string, taken: Set<string>): string {
   const base = (original.split(/[\\/]/).pop() ?? "").replace(/[\u0000-\u001f<>:"|?*]/g, "_").trim();
   const name = base && base !== "." && base !== ".." ? base : "file";
@@ -137,10 +120,7 @@ export interface BrowserLiveGatewayOptions {
   sessions: BrowserSessionStore;
   broker: BrowserBroker;
   telemetryStore?: TelemetryStore;
-  /**
-   * The folder for the files viewers pick for a page's file chooser; it is the gateway's alone
-   * and emptied when the gateway starts. Without it a view offers no file choosing.
-   */
+  /** Gateway-only folder for files viewers pick, emptied at start; without it views offer none. */
   filesDir?: string;
   runCommand?: (
     command: BrowserCommand,
@@ -194,10 +174,7 @@ function parseStreamMessage(
   }
 }
 
-/**
- * Which tab the browser shows and at which address, going by the `tabs` of a stream message.
- * Two messages with the same answer are about the same page.
- */
+/** The shown tab and address in a stream message's `tabs`; equal answers mean the same page. */
 function visibleTab(tabs: unknown): string {
   const shown: unknown = Array.isArray(tabs)
     ? tabs.find((tab: unknown) => typeof tab === "object" && tab !== null && (tab as { active?: unknown }).active === true)
@@ -245,10 +222,7 @@ function mayChangeTabs(message: BrowserLiveClientMessage): boolean {
     || (message.type === "input_keyboard" && message.eventType !== "keyDown");
 }
 
-/**
- * `viewers` is how many live views of the session are open now. `dropped` says the one that
- * just ended lost its connection without closing it, so it may be back in a moment.
- */
+/** `dropped`: the view that ended lost its connection without closing, so it may come back. */
 export type BrowserLiveViewerListener = (browserSessionId: string, viewers: number, dropped: boolean) => void;
 
 export class BrowserLiveGateway {
@@ -290,8 +264,7 @@ export class BrowserLiveGateway {
         reason: "session_ended",
         message: "The browser session has ended.",
       });
-      // A browser reads a chosen file when the page does, so the files stay for as long as the
-      // session that got them.
+      // The browser reads a chosen file when the page does, so files live as long as the session.
       void this.removeFiles(browserSessionId);
     });
   }
@@ -302,11 +275,7 @@ export class BrowserLiveGateway {
     await rm(join(this.filesDir, browserSessionId), { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
   }
 
-  /**
-   * Takes a file chooser a view was told of for one upload, and says where the upload's files
-   * go. Undefined when the page is not waiting for them (any more), or an upload for the same
-   * chooser is under way. The claim ends with chooseFiles or releaseFileChooser.
-   */
+  /** Claims a pending chooser for one upload, returns its folder; undefined if gone or claimed. */
   async claimFileChooser(id: string): Promise<{ folder: string; multiple: boolean } | undefined> {
     const chooser = this.fileChoosers.get(id);
     if (!chooser || chooser.claimed || !this.filesDir) return undefined;
@@ -332,11 +301,7 @@ export class BrowserLiveGateway {
     chooser.used();
   }
 
-  /**
-   * Gives the page the files received for a claimed chooser, which is thereby answered: also
-   * when the page did not take them, because the element that asked is gone then (the page
-   * moved on, or its tab was closed). The files stay where they are.
-   */
+  /** Answers the claimed chooser, even if the page no longer takes the files. */
   async chooseFiles(id: string, paths: readonly string[]): Promise<Result<void>> {
     const chooser = this.fileChoosers.get(id);
     if (!chooser) return err(FILE_CHOOSER_GONE);
@@ -345,10 +310,7 @@ export class BrowserLiveGateway {
     return chooser.setFiles(paths).then(() => ok(undefined), () => err(FILE_CHOOSER_GONE));
   }
 
-  /**
-   * The loopback port of the stream agent-browser serves for a browser, starting the stream when
-   * it is off. Throws BrowserLiveUnavailableError when this agent-browser cannot stream.
-   */
+  /** The browser's loopback stream port, starting the stream if off. Throws if it cannot stream. */
   async resolveStreamPort(browserTarget: BrowserTarget): Promise<number> {
     const options: BrowserCommandOptions = {
       browserTarget,
@@ -384,12 +346,7 @@ export class BrowserLiveGateway {
     return this.lastCheck;
   }
 
-  /**
-   * Finds out whether a live view would work, on a browser the caller has for itself: the stream
-   * sends a picture of the page, and a click and typed text sent through it reach the page. This
-   * is everything the Bridge relies on agent-browser's stream for, so it is the check to run
-   * after agent-browser was updated. Replaces the page the browser shows.
-   */
+  /** Checks all we need of the stream (picture, click, typing); run after agent-browser updates. */
   async checkStream(browserTarget: BrowserTarget): Promise<BrowserLiveCheck> {
     try {
       await this.runStreamCheck(browserTarget);
@@ -455,10 +412,7 @@ export class BrowserLiveGateway {
     }
   }
 
-  /**
-   * The stream port of a browser session. The session cannot be closed meanwhile and no other
-   * operation runs on its browser, so the stream is never started on a browser that is going away.
-   */
+  /** Holds the session and browser, so the stream never starts on a browser that is going away. */
   private async resolveSessionStreamPort(browserSessionId: string): Promise<number> {
     const held = await this.sessions.holdSession(browserSessionId, (record) => this.broker.withTarget(
       { context: record.context, browserTarget: record.browserTarget, publicSlot: record.publicSlot },
@@ -557,10 +511,7 @@ export class BrowserLiveGateway {
     let lastShownTab: string | undefined;
     let lastTabs = "[]";
     let streamTabs: BrowserLiveTab[] = [];
-    // agent-browser reports a tab's title and address as they were when it first saw the tab.
-    // The tab on show is described by the latest read of it instead, and what two reads in a
-    // row found in a tab is kept for when it is no longer on show. One read is not enough to go
-    // by: its result and the news of which tab is on show arrive in either order.
+    // Tab info from agent-browser is stale; use our reads, two in a row for a hidden tab (racy).
     let page: { tabId: string | undefined; title: string; url: string } | undefined;
     const seenInTab = new Map<string, { title: string; url: string }>();
     let tabCount = 1;
@@ -614,8 +565,7 @@ export class BrowserLiveGateway {
     this.connections.set(browserSessionId, peers);
     this.viewersChanged(browserSessionId);
 
-    // Input goes to the browser in the order it came, text a few characters at a time so that a
-    // long paste neither holds the server up nor piles up in front of a slow browser.
+    // Input goes in order, text in small batches so a long paste neither blocks nor piles up.
     let inputTail: Promise<void> = Promise.resolve();
     const forward = async (message: BrowserLiveClientMessage): Promise<void> => {
       const upstream = stream;
@@ -634,8 +584,7 @@ export class BrowserLiveGateway {
         }
       }
     };
-    // Registered before anything is awaited, so that a message sent meanwhile has a listener.
-    // Input that arrives before the browser's stream is open has no page to go to and is dropped.
+    // Registered before any await so nothing is missed; input before the stream opens is dropped.
     client.on("message", (data) => {
       let message: BrowserLiveClientMessage | undefined;
       try {
@@ -660,16 +609,14 @@ export class BrowserLiveGateway {
         return;
       }
       inputTail = inputTail.then(async () => {
-        // A form is read before the key or click that submits it: the page is gone right after.
-        // Whatever becomes of the read, the input goes on to the page.
+        // Read the form before input that submits it, as the page goes; the input goes on anyway.
         if (login && maySubmit(accepted)) await login.submitting(readSignInForm).catch(() => undefined);
         else if (accepted.type === "input_keyboard") login?.keyPressed();
         await forward(accepted);
       }).catch(() => undefined);
       if (mayChangeTabs(accepted)) readSoon();
     });
-    // A view that is closed, or whose page is left, says so (1000, 1001). Anything else is a
-    // connection that broke.
+    // 1000 and 1001 are a closed view or a left page; any other code is a broken connection.
     client.on("close", (code) => end(
       { type: "closed", reason: "stream_ended", message: "The live view was closed." },
       code !== 1000 && code !== 1001,
@@ -694,8 +641,7 @@ export class BrowserLiveGateway {
     };
     const readSignInForm = async (): Promise<SignInForm | undefined> => {
       if (ended || stream?.readyState !== WebSocket.OPEN) return undefined;
-      // What this returns holds a password. It goes to the watch and nowhere else: no span, no
-      // log, and no error that quotes it.
+      // The result holds a password: it goes to the watch only, never to a span, log or error.
       const result = await this.runCommand(
         ["eval", "-b", SIGN_IN_FORM_VALUES_SCRIPT_BASE64],
         SIGN_IN_FORM_READ_TIMEOUT_MS,
@@ -791,22 +737,18 @@ export class BrowserLiveGateway {
         return timer;
       });
     };
-    // Apart from input: opening an address takes as long as the page takes to load, and the
-    // page is there to be clicked meanwhile. One runs at a time; of those asked for meanwhile
-    // only the last is run, as a browser treats a second address typed while the first loads.
+    // Page loads run apart from input; one at a time, and only the latest queued one runs.
     let commandRunning = false;
     let nextCommand: BrowserLivePageCommand | undefined;
     const runPageCommand = async (message: BrowserLivePageCommand): Promise<void> => {
       // Before the stream is open there is no page on show to act on.
       if (ended || stream?.readyState !== WebSocket.OPEN) return;
-      // One operation on the browser at a time, like an agent's own, and none on a session
-      // that is being closed. A command that fails changes nothing; the page shows what is.
+      // One operation at a time and none on a closing session; a failed command changes nothing.
       await this.sessions.holdSession(browserSessionId, (current) => this.broker.withTarget(
         sessionLease(current),
         { toolName: "browser_live", browserOpId: randomBytes(8).toString("hex"), duringHold: true, skipReadiness: true },
         async () => {
-          // The wait for the browser may have outlasted the view, and with it the user's hold
-          // on the browser.
+          // The wait for the browser may have outlasted the view and the user's hold.
           if (ended) return;
           if (message.type === "tab" && message.action === "close") {
             // A browser without a tab has nothing to show, and its window closes.
@@ -833,8 +775,7 @@ export class BrowserLiveGateway {
       })();
     };
 
-    // A page's file chooser is drawn outside the page, where the view cannot show it. The
-    // browser hands it over instead, and the viewer is asked for the files on their own device.
+    // The file chooser is drawn outside the page, so the viewer picks files on their own device.
     const receivingFiles = (): boolean => fileChooserId !== undefined && this.fileChoosers.get(fileChooserId)?.claimed === true;
     const offerFileChooser = async (chooser: FileChooser): Promise<void> => {
       // Files on their way are for the chooser they were picked for; a tap meanwhile opens nothing.
@@ -890,8 +831,7 @@ export class BrowserLiveGateway {
     }
     if (ended) return;
 
-    // One frame at a time, each sent only after the client drew the one before, so a slow
-    // connection shows the latest page rather than a growing backlog.
+    // Ack-paced frames, so a slow connection shows the latest page rather than a backlog.
     stream = this.connectStream(`ws://127.0.0.1:${port}/?pacing=ack&maxFps=${STREAM_MAX_FPS}`);
     stream.on("open", () => {
       void readPage();
@@ -918,9 +858,7 @@ export class BrowserLiveGateway {
         sendUrl(message.url);
         if (navigated) void readPage();
       } else if (message.type === "tabs") {
-        // agent-browser sends its tabs after every command it runs, and reading the page is
-        // one. Only another visible tab, or another address of it, is a reason to read again:
-        // a read for every message would cause the next message, without end.
+        // Reads trigger tabs messages; re-read only on a new tab or address, or it loops forever.
         streamTabs = liveTabs(message.tabs);
         tabCount = streamTabs.length;
         for (const id of seenInTab.keys()) {

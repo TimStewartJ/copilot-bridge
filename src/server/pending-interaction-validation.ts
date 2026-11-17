@@ -771,11 +771,7 @@ function clipString(value: unknown, maxLength: number): string {
   return typeof value === "string" ? value.slice(0, maxLength) : "";
 }
 
-/**
- * Normalizes a shell authentication request from the runtime. Only a missing request id is
- * rejected; anything else is shown as well as it can be, since a rejected request makes the
- * command fail. An unknown input kind is masked.
- */
+/** Rejects only a missing request id, as rejecting fails the command; masks unknown input kinds. */
 export function normalizePendingShellAuthRequest(
   input: unknown,
   requestedAt?: string,

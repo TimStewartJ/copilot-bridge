@@ -9,13 +9,7 @@ export interface UnreadSession<T extends UnreadTask = UnreadTask> {
   task?: T;
 }
 
-/**
- * Chats holding results the reader has not seen, newest first: the set Home lists as new replies.
- * A chat that is still working is not unread yet, the chat open behind the caller is being read,
- * and a chat whose tasks are all muted stays quiet. A chat with no active task left is listed under
- * its archived task: archiving marks a task's chats read, so this one arrived afterwards. Naming a
- * task lists that task's unread chats even when it is muted, as its own session list does.
- */
+/** Unread chats for Home; a chat with no active task lists under its archived task. */
 export function listUnreadSessions<T extends UnreadTask>({ sessions, tasks, isUnread, activeSessionId, taskId }: {
   sessions: readonly Session[];
   tasks: readonly T[];

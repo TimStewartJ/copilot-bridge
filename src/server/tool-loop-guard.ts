@@ -1,7 +1,4 @@
-// Detection helpers for tool-only loops and shell calls whose command does nothing.
-// Emits telemetry signals only — the session runner never blocks on these
-// findings. Use detected candidates to monitor whether the protocol-level
-// loop-prevention work is sufficient before adding any runtime enforcement.
+// Telemetry only: the session runner never blocks on these findings.
 
 import { isRecord } from "../shared/is-record.js";
 

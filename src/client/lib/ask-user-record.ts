@@ -2,13 +2,7 @@
 import type { ToolArgs, ToolCall } from "../api";
 import { readAutomaticAnswerReason } from "../../shared/automatic-answer.js";
 
-/**
- * Reads a finished `ask_user` call back into the question that was asked and what came of it.
- *
- * The question comes from the call's own arguments. The answer is the text the Copilot CLI recorded
- * for it, shown as written: the CLI owns that wording and changes it between releases, so Bridge
- * does not take it apart into fields or choices.
- */
+/** Show the CLI's recorded answer as written; the CLI changes its wording, so never parse it. */
 
 export type AskUserOutcome =
   | "answered"
@@ -126,7 +120,7 @@ export function readAskUserRecord(toolCall: Pick<ToolCall, "name" | "args" | "re
   return { message, fields, outcome, ...(note ? { note } : {}) };
 }
 
-/** A root-level question that has settled: it belongs in the conversation, not in the agent's steps. */
+/** A settled root-level question belongs in the conversation, not in the agent's steps. */
 export function isSettledAskUserCall(toolCall: ToolCall, includeUnfinished: boolean): boolean {
   if (toolCall.parentToolCallId || toolCall.isSubAgent || !isAskUserToolName(toolCall.name)) return false;
   const settled = toolCall.success !== undefined || Boolean(toolCall.completedAt) || Boolean(toolCall.result?.trim());

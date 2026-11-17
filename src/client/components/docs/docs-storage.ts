@@ -1,7 +1,4 @@
-/**
- * Small, failure-tolerant localStorage layer for the Docs view: layout preferences, per-collection
- * sort, and unsaved editor drafts. Storage can be unavailable or full; nothing here may throw.
- */
+// Docs localStorage (layout, sort, drafts); storage may be unavailable or full, so never throw.
 import { DEFAULT_DB_SORT, type DbSortState, type PageDraftFields } from "./docs-model";
 
 const EXPANDED_KEY = "bridge-docs-expanded";

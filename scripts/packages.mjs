@@ -1,32 +1,5 @@
 #!/usr/bin/env node
-// In-tree packages (src/packages/*) are published on their own. This script checks and builds
-// them the way a consumer gets them. It never writes under src/: the Bridge build stamp hashes
-// that tree, so build output goes to a directory outside the repository.
-//
-//   typecheck               type-check every package with its own tsconfig, not the Bridge's
-//   pack   [--out <dir>]    compile every package and write an installable tarball for each
-//   verify [--out <dir>]    pack, install the tarballs into a scratch project, run each smoke test
-//   release-check <package> [--dry-run]
-//                           say whether the package's version can be released from this checkout
-//   changelog-check         fail when a package's src/ changed since its latest release tag
-//                           (<folder>-v<version>) and its CHANGELOG.md does not say so
-//
-// Without --out, pack and verify work in a new temporary directory. pack prints it, because the
-// tarballs are its result. verify removes it once everything passed and leaves it in place after a
-// failure. Add package names or folder names after the command to limit it to those packages.
-//
-// A tarball from pack is what a release publishes (see src/packages/README.md). Its package.json
-// is the folder's without "private", which stays in the folder so npm refuses to publish the
-// source, and with the commit it was built from as gitHead.
-//
-// release-check is the first step of the Publish Package workflow, and works the same on a
-// developer's machine. It asks npm which versions exist and origin whether the release tag does.
-// With --dry-run it reports a version that is already released instead of failing on it, so the
-// workflow can be tried out between releases.
-//
-// changelog-check ignores edits to comments and whitespace in TypeScript files, and accepts lines
-// under "## Unreleased", or under "## <version>" once package.json has the next version. It needs
-// the release tags (git fetch --tags), and skips itself outside a git checkout.
+// Type-checks, packs and verifies src/packages/* as consumers get them; never writes under src/.
 
 import { spawnSync } from "node:child_process";
 import {
@@ -52,14 +25,14 @@ const tscCli = join(repoRoot, "node_modules", "typescript", "bin", "tsc");
 const REQUIRED_TARBALL_FILES = ["package.json", "README.md", "LICENSE", "dist/index.js", "dist/index.d.ts"];
 const FORBIDDEN_TARBALL_PATH = /(^|\/)(src|test)\/|\.test\.|\.ts$(?<!\.d\.ts)/;
 const REGISTRY = "https://registry.npmjs.org";
-// RELEASE_VERSION has no pre-release: one would need a dist-tag other than "latest", which the release workflow does not set.
+// RELEASE_VERSION allows no pre-release: that needs a dist-tag the release workflow does not set.
 
 function fail(message) {
   console.error(`[packages] ${message}`);
   process.exit(1);
 }
 
-/** The path as the file system spells it: links resolved and letter case as stored, even if its tail does not exist yet. */
+/** The path with links resolved and letter case as stored, even if its tail does not exist yet. */
 function canonicalPath(path) {
   const missing = [];
   let existing = resolve(path);
@@ -84,7 +57,7 @@ function run(command, args, options = {}) {
   return result.stdout ?? "";
 }
 
-/** How to run npm without a shell: the Windows npm.cmd shim needs one, so its npm-cli.js is run with Node. */
+/** Runs npm-cli.js with Node, since the Windows npm.cmd shim would need a shell. */
 function npmInvocation() {
   const fromNpmRun = process.env.npm_execpath;
   if (fromNpmRun && /npm-cli\.js$/.test(fromNpmRun) && existsSync(fromNpmRun)) return [process.execPath, [fromNpmRun]];
@@ -113,7 +86,7 @@ function listPackages(only) {
       const dir = join(packagesDir, entry.name);
       return { dir, manifest: JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) };
     });
-  // A scoped name starts with "@", which PowerShell reads as an operator, so the folder name works too.
+  // PowerShell reads a leading "@" as an operator, so the folder name works too.
   const isNamed = (entry, wanted) => entry.manifest.name === wanted || basename(entry.dir) === wanted;
   const unknown = only.filter((wanted) => !all.some((entry) => isNamed(entry, wanted)));
   if (unknown.length > 0) fail(`unknown package(s): ${unknown.join(", ")}. Known: ${all.map((entry) => basename(entry.dir)).join(", ")}`);
@@ -125,7 +98,7 @@ function fileSlug(name) {
   return name.replace(/^@/, "").replace(/\//g, "-");
 }
 
-/** The commit a package's files come from. Undefined when they differ from it, or outside a git checkout. */
+/** The commit a package's files come from; undefined if they differ from it or outside git. */
 function sourceCommit(dir) {
   const git = (args) => spawnSync("git", args, { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   const head = git(["rev-parse", "HEAD"]);
@@ -206,7 +179,7 @@ function changelogProblems(dir, version) {
   return problems;
 }
 
-/** The versions of a package that are public on npm, or undefined when npm does not know the package. */
+/** A package's public npm versions, or undefined when npm does not know the package. */
 async function publishedVersions(name) {
   let response;
   try {
@@ -282,7 +255,7 @@ if (command === "typecheck") {
   await releaseCheck(packages[0], dryRun);
 } else if (command === "pack" || command === "verify") {
   const outRoot = outArg ? resolve(outArg) : mkdtempSync(join(tmpdir(), "bridge-packages-"));
-  // Packing empties <out>/<package name> first, and the Bridge build stamp hashes src/.
+  // Packing empties <out>/<package> and the build stamp hashes src/, so stay outside the repo.
   if (isInsideOrSame(repoRoot, outRoot)) fail(`--out must be outside the repository (${repoRoot}): ${outRoot}`);
   mkdirSync(outRoot, { recursive: true });
   if (command === "pack") pack(packages, outRoot);

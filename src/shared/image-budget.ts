@@ -1,4 +1,4 @@
-/** Early compaction for models whose provider rejects large requests; see src/server/image-budget.ts. */
+/** Early compaction for providers that reject large requests; see src/server/image-budget.ts. */
 export interface ImageBudgetSettings {
   /** Unset means on. */
   enabled?: boolean;
@@ -6,10 +6,10 @@ export interface ImageBudgetSettings {
   ceilingsMb?: Record<string, number>;
 }
 
-/** Measured 2026-09-27: Claude models served through Google Vertex reject requests over about 30.0 MB. */
+/** Claude models served through Google Vertex reject requests over about 30 MB. */
 export const DEFAULT_IMAGE_CEILINGS_MB: Readonly<Record<string, number>> = Object.freeze({ "claude-*": 30 });
 
-/** Share of the ceiling at which a turn is paused and compacted; the rest absorbs images added before a tool boundary. */
+/** Ceiling share that triggers compaction; the rest absorbs images until a tool boundary. */
 export const IMAGE_BUDGET_COMPACT_FRACTION = 2 / 3;
 
 export const IMAGE_BUDGET_MAX_CEILING_MB = 1_000;

@@ -1,12 +1,6 @@
 import { haptic } from "./haptics";
 
-/**
- * Copies text to the clipboard, falling back to a hidden textarea plus
- * `document.execCommand("copy")` when the async Clipboard API is unavailable
- * (insecure origins, embedded webviews). Rejects when the copy genuinely fails
- * so callers can surface a failure instead of a false "Copied" confirmation.
- * A copy that worked gives a light haptic in a host app that offers it; the caller reports failures.
- */
+/** Falls back to execCommand without the Clipboard API; rejects on failure so no false Copied. */
 export async function writeClipboardText(text: string) {
   await copyText(text);
   haptic("light");

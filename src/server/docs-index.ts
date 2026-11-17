@@ -218,7 +218,6 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
 
   // ── Index management ──────────────────────────────────────────
 
-  /** Rebuild the entire index from files on disk */
   function reindex(): { indexed: number } {
     ensureFtsAvailable("reindex docs", { retryInit: true });
     const pages = docsStore.scanAllPages();
@@ -266,8 +265,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
       runInTransaction(() => {
         const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
         if (existing) {
-          // With external-content FTS, remove the old indexed row before mutating docs_pages.
-          // Otherwise SQLite can fail when the content table body/title has already changed.
+          // External-content FTS: delete the old row before editing docs_pages, or SQLite can fail.
           db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.rowid);
           db.prepare(`
             UPDATE docs_pages SET title=?, tags=?, body=?, frontmatter_json=?, folder=?, created=?, modified=?
@@ -341,7 +339,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
 
   function buildFtsQuery(query: string, searchOptions: DocsSearchOptions): string {
     const parsed = parseSearchQuery(query, { anyWord: searchOptions.anyWord });
-    // A trailing space means the last word is finished, so only an in-progress word gets a prefix match.
+    // A trailing space means the last word is done, so only an unfinished word gets a prefix match.
     if (!searchOptions.prefix || !parsed.fts || /\s$/.test(query)) return parsed.fts;
     return `${parsed.fts}*`;
   }
@@ -534,10 +532,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
     });
   }
 
-  /**
-   * Adds display metadata to a filesystem tree. The tree stays the source of truth for what
-   * exists; a page the index has not caught up with simply keeps its slug as the label.
-   */
+  /** Adds display metadata to the file tree; a page not yet indexed keeps its slug as label. */
   function decorateTree(tree: DocTreeNode[]): DocTreeNode[] {
     const summaries = new Map(listPageSummaries().map((summary) => [summary.path, summary]));
 

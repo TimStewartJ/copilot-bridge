@@ -1,7 +1,4 @@
-// Whisper-style log-mel features for the Smart Turn end-of-turn model.
-// Mirrors smart-turn's inference.py: keep the last 8 s of 16 kHz audio (left-padded with
-// zeros), zero-mean/unit-variance normalize the window, then WhisperFeatureExtractor
-// (n_fft 400, hop 160, 80 slaney mel bins, log10, clamp to max-8, (x+4)/4).
+// Whisper log-mel features matching smart-turn's inference.py exactly; steps are in the code.
 
 export const SMART_TURN_SAMPLE_RATE = 16_000;
 export const SMART_TURN_WINDOW_SECONDS = 8;
@@ -184,12 +181,7 @@ class BluesteinPowerSpectrum {
 }
 
 export interface SmartTurnFeatureExtractor {
-  /**
-   * Turns 16 kHz mono samples in [-1, 1] into the model's input: a Float32Array of 80 x 800
-   * values (row-major: mel bin, then frame), to be fed as a tensor of shape [1, 80, 800].
-   * Only the last 8 seconds are used; shorter audio is padded with silence at the start.
-   * Each call returns a new array, so results stay valid across calls.
-   */
+  /** 16 kHz mono in [-1,1] to a new [1,80,800] mel-major array of the last 8 s, left-padded. */
   extract(samples: Float32Array): Float32Array;
 }
 

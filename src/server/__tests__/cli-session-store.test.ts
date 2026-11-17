@@ -252,7 +252,7 @@ describe("CLI session catalog failures", () => {
   });
 });
 
-/** A scripted worker thread: records what the store sends and replies only when the test says so. */
+/** A scripted worker: records what the store sends and replies only when the test says so. */
 class ScriptedWorker extends EventEmitter {
   readonly requests: Array<{ id: number; request: { op: string } }> = [];
   referenced = true;

@@ -1,10 +1,7 @@
 import type { BrowserLiveMouseMessage } from "../../shared/browser-live.js";
 import type { LivePoint } from "./live-input";
 
-/**
- * Turns pointer activity into the remote page's mouse events. The remote page is a desktop page,
- * so a finger is a mouse too: one finger moves, presses and releases; two fingers scroll.
- */
+// The remote page is a desktop page, so a finger is a mouse: one finger points, two scroll.
 
 export type LiveMouseButton = NonNullable<BrowserLiveMouseMessage["button"]>;
 
@@ -30,7 +27,7 @@ export interface LiveMouseSender {
   /** Returns the click count sent, so the matching release can repeat it. */
   press(point: LivePoint, button: LiveMouseButton, modifiers?: number): number;
   release(point: LivePoint, button: LiveMouseButton, clickCount: number, modifiers?: number): void;
-  /** Distances add up between sends. Whole pixels are sent; the fraction left over is kept for the next send. */
+  /** Distances add up between sends; whole pixels go out and the fraction carries over. */
   wheel(point: LivePoint, deltaX: number, deltaY: number, modifiers?: number): void;
   dispose(): void;
 }
@@ -39,10 +36,7 @@ function withModifiers(message: BrowserLiveMouseMessage, modifiers: number | und
   return modifiers ? { ...message, modifiers } : message;
 }
 
-/**
- * Sends mouse events, holding moves and wheel turns to a steady rate. The latest position and the
- * summed wheel distance are always delivered; only the steps in between are skipped.
- */
+/** Throttles moves and wheel turns; the latest position and summed wheel always arrive. */
 export function createMouseSender(
   send: (message: BrowserLiveMouseMessage) => void,
   timers: LiveTimers = systemTimers,
@@ -140,13 +134,9 @@ export interface LiveTouch {
   page: LivePoint;
 }
 
-/**
- * How long a finger is down before it counts as a press. The wait is what lets a second finger
- * turn the gesture into a scroll without first clicking whatever the first finger landed on, and
- * moving does not shorten it: the first finger of a two-finger swipe is often already moving.
- */
+/** Wait lets a second finger make a scroll, not a click; moving must not cut it short. */
 export const TOUCH_PRESS_DELAY_MS = 120;
-/** How far a finger moves, in screen pixels, before a touch shorter than the wait is a drag, not a tap. */
+/** Screen pixels a finger moves before a touch shorter than the wait is a drag, not a tap. */
 export const TOUCH_DRAG_SLOP_PX = 8;
 
 export interface TouchMouse {
@@ -157,13 +147,7 @@ export interface TouchMouse {
   dispose(): void;
 }
 
-/**
- * Reads touches as mouse input:
- * - A tap is a click where the finger landed.
- * - A finger that stays down holds the left button, pressed where it landed, until it lifts. That
- *   is what sliders, drag puzzles and press-and-hold checks need.
- * - Two fingers scroll. `onScroll` gets how far they moved on screen and where on the page.
- */
+/** Tap clicks; a held finger holds the left button (sliders, drags); two fingers scroll. */
 export function createTouchMouse(
   mouse: LiveMouseSender,
   onScroll: (deltaClientX: number, deltaClientY: number, at: LivePoint) => void,
@@ -280,7 +264,7 @@ export function createTouchMouse(
       if (!touches.delete(touch.id)) return;
       if (touch.id === primaryId) {
         if (mode === "resting" && origin) {
-          // Lifted before the wait ended: a flick is a short drag, anything else a tap where it landed.
+          // Lifted before the wait: a flick is a short drag, anything else a tap where it landed.
           if (movedPastSlop(touch)) {
             resting = touch;
             pressAfterWait();

@@ -32,7 +32,7 @@ export interface SessionCostReading {
   hasPrevious?: boolean;
 }
 
-/** Re-render on a slow clock so "warm for 3 more min" keeps telling the truth while the panel is open. */
+/** Re-render on a slow clock so "warm for 3 more min" stays true while the panel is open. */
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -64,7 +64,7 @@ export default function SessionContextPanel({
   insights?: SessionContextInsights | null;
   usage?: SessionUsageMetrics | null;
   usageUpdatedAt?: number;
-  /** The chat is on a routed model (Copilot Fusion), so the window is the one its last step used. */
+  /** On a routed model (Copilot Fusion), so the window is the one its last step used. */
   routedModel?: boolean;
   cost?: SessionCostReading;
 }) {
@@ -181,7 +181,7 @@ export default function SessionContextPanel({
             {usage?.modelRequests !== undefined && usage.modelRequests > 0 && (
               <Field label="Model calls">
                 <span className="tabular-nums">{formatNumber(usage.modelRequests)}</span>
-                {/* The SDK restarts this count when a session is resumed, so a zero is not "no messages". */}
+                {/* The SDK resets this count on resume, so zero is not "no messages". */}
                 {!!usage.totalUserRequests && (
                   <span className={cx("ml-2", DS.usage.meta)}>for {plural(usage.totalUserRequests, "message")} since the session was loaded</span>
                 )}

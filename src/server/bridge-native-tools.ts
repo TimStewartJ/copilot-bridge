@@ -16,12 +16,7 @@ export type BridgeNativeTool = Tool<Record<string, unknown>> & {
   defer?: "auto" | "never";
 };
 
-/**
- * Bridge tools that chats rarely use (fewer than 10 of about 450 chats in 30 days, measured
- * 2026-11-02). They load on demand through the runtime's tool search, which keeps about 23K
- * characters of definitions out of every request. Tools the prompt names as a required step
- * (agent_stop, browser_sign_in) stay loaded whatever their use.
- */
+/** Rarely used tools, loaded via tool search; tools the prompt requires (agent_stop) stay out. */
 export const DEFERRED_BRIDGE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "action_add", "action_remove", "action_update",
   "checklist_add", "checklist_list", "checklist_remove", "checklist_update",
@@ -36,10 +31,7 @@ export const DEFERRED_BRIDGE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "trigger_delete", "trigger_run",
 ]);
 
-/**
- * Bridge tools that only read, so calling one again with the same arguments changes nothing. The
- * runtime may repeat such a call when a crash lost its outcome (the SDK's `idempotent` hint).
- */
+/** Read-only Bridge tools the runtime may repeat if a crash lost the outcome (SDK `idempotent`). */
 export const IDEMPOTENT_BRIDGE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "action_list", "bridge_overview", "calendar_list", "checklist_list",
   "docs_db_query", "docs_db_schema", "docs_list", "docs_read", "docs_search", "docs_snapshot_list",
@@ -75,11 +67,7 @@ function convertCallToolResult(callResult: CallToolResult): ToolResultObject {
   return converted;
 }
 
-/**
- * Relabel image binaries whose declared MIME type contradicts their magic bytes.
- * Covers SDK-shaped results that bypass `normalizeToolResult`, so a mismatched
- * image can never reach the model through a bridge-native tool.
- */
+/** Fix image MIME from magic bytes for SDK-shaped results that skip normalizeToolResult. */
 function correctSdkBinaryImageMimes(result: ToolResultObject): ToolResultObject {
   const binary = result.binaryResultsForLlm;
   if (!binary || binary.length === 0) return result;

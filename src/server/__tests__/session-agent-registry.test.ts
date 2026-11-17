@@ -700,7 +700,7 @@ describe("SessionAgentRegistry", () => {
       expect(registry.getRunningCommands("s1")).toEqual([]);
       expect(onCommandsChanged).toHaveBeenCalledTimes(2);
       expect(onCommandsChanged).toHaveBeenLastCalledWith("s1", []);
-      // The runtime is about to start the turn that tells the agent, so the session is held a moment longer.
+      // The runtime is about to start the turn that tells the agent, so the session stays held.
       expect(registry.hasProtectedCommand("s1")).toBe(true);
       await vi.advanceTimersByTimeAsync(9_000);
       expect(registry.hasProtectedCommand("s1")).toBe(true);
@@ -721,7 +721,7 @@ describe("SessionAgentRegistry", () => {
       expect(registry.getRunningCommands("s1")).toEqual([]);
       expect(registry.hasProtectedCommand("s1")).toBe(false);
 
-      // It returned inside its wait. The run that waited on it is still going, so nothing is held for it.
+      // It returned inside its wait, whose run is still going, so nothing is held for it.
       tasks = [];
       await registry.refresh("s1", "returned");
       expect(registry.hasProtectedCommand("s1")).toBe(false);

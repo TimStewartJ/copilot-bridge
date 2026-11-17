@@ -6,17 +6,7 @@ import ts from "typescript";
 import { DESIGN_AUDIT_PENDING } from "./audit-pending";
 import { findLongCopy } from "./copy-audit";
 
-/**
- * Keeps screens on the design system. README.md in this folder holds the rules; this file turns the
- * ones a machine can check into a gate that runs in `check:fast` and `check:pr`.
- *
- * Every client source file is checked unless it is listed in audit-pending.ts, which names the
- * screens that have not been migrated yet. That list only shrinks: a new file is never added to it,
- * and a file that comes out clean has to be taken off it.
- *
- * The copy rule (copy-audit.ts) also reads this folder's primitives and the shared UI text listed in
- * COPY_ONLY_FILES, and no pending entry or design-audit-ignore comment exempts from it.
- */
+/** Gate for the checkable rules in README.md; pending files skip them, never the copy rule. */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
@@ -165,8 +155,7 @@ export function findDesignViolations(file: string, content: string): DesignViola
     const flattened = text.replace(/\r?\n/g, " ");
     const hasRecipeTokens = /\b(?:text|font|tracking|rounded|border|bg|shadow|p[xy]?|m[xy]?|z)-(?:\w|\[)/.test(flattened);
     for (const rule of DESIGN_RULES) {
-      // "A shadow" and "an uppercase letter" are also English. These two rules need a class
-      // context or another utility, rather than banning ordinary prose in a screen's labels.
+      // "shadow" and "uppercase" are also English, so these rules need a class context or recipe.
       if ((rule.id === "in-page-shadow" || rule.id === "uppercase-label") && !classContext && !hasRecipeTokens) continue;
       if (rule.matches(flattened)) report(rule.id, rule.message, start, text);
     }
@@ -188,8 +177,7 @@ export function findDesignViolations(file: string, content: string): DesignViola
       if (node.moduleSpecifier) checkText(`from ${node.moduleSpecifier.getText(source)}`, node.getStart(source));
     }
 
-    // Parse literals, not lines: comments and slashes inside strings are unambiguous, and a
-    // multiline recipe cannot hide a tinted box by splitting its border and fill across lines.
+    // Parse literals, not lines, so a recipe split across lines cannot hide a tinted box.
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       checkText(node.getText(source), node.getStart(source), isClassContext(node));
       return;

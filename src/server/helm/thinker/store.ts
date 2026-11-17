@@ -1,6 +1,4 @@
-// Persistence for Helm's looks and memory: memory, runs (each with its brief), item states, feedback,
-// handled items and settings. Helm-authored memory may be replaced by later runs; user-authored
-// memory is only ever changed by the user.
+// Helm memory and runs; user-authored memory is only ever changed by the user.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "../../db.js";
 import {
@@ -165,10 +163,7 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
     return getMemory(id)!;
   }
 
-  /**
-   * addFromSources only grows provenance: an edit, even Tim's, keeps what may have shaped the entry.
-   * fromSources replaces it, for a look that rewrote the entry and says which sources it now cites.
-   */
+  /** addFromSources only grows provenance, even on a user edit; fromSources replaces it. */
   function updateMemory(id: string, patch: { text?: string; source?: string | null; status?: HelmMemoryStatus; author?: HelmMemoryAuthor; confirm?: boolean; addFromSources?: readonly string[]; fromSources?: readonly string[] } & ThreadFields): HelmMemoryEntry | undefined {
     const current = getMemory(id);
     if (!current) return undefined;
@@ -323,7 +318,7 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
     return { itemId, status, outcome, updatedAt: at };
   }
 
-  /** Marks an open item as being acted on. False when it was already done, dismissed or in progress. */
+  /** Marks an open item as being acted on; false if already done, dismissed or in progress. */
   function claimItem(runId: string, itemId: string): boolean {
     const result = db.prepare(
       `INSERT INTO helm_item_state (runId, itemId, status, outcome, updatedAt) VALUES (?, ?, 'pending', NULL, ?)

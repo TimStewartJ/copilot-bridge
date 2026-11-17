@@ -13,8 +13,7 @@ import {
   type SourceToolInfo,
 } from "../thinker/outside-sources.js";
 
-// A tiny stdio MCP server: two tools, one read-only. It writes its pid to a file so the test can
-// see that closing the connection ends the process.
+// Stdio MCP server with two tools; its pid file lets the test see that closing ends the process.
 const FIXTURE = String.raw`
 const fs = require("node:fs");
 const readline = require("node:readline");
@@ -102,7 +101,7 @@ describe("Helm outside sources", () => {
     await transport.close();
     expect(await started).toBeInstanceOf(SourceError);
     let pid = 0;
-    try { pid = Number(readFileSync(pidFile, "utf8")); } catch { /* never got as far as writing it */ }
+    try { pid = Number(readFileSync(pidFile, "utf8")); } catch { /* never wrote it */ }
     if (pid) await vi.waitFor(() => expect(alive(pid)).toBe(false));
   });
 
@@ -150,7 +149,7 @@ describe("Helm outside sources", () => {
     await expect(sources.call("broken", "x", {})).rejects.toThrow(/not one of broken's tools/);
     await expect(sources.call("calendar", "x", {})).rejects.toThrow(/Unknown source/);
 
-    // A failed read still reached the look (provenance) but does not count as having read the source.
+    // A failed read counts as used (provenance) but not as having read the source.
     expect((await sources.call("mail", "search_mail", { q: "x" })).isError).toBe(true);
     expect(sources.usedServerIds).toEqual(["mail-id"]);
     expect(sources.readServerIds).toEqual([]);

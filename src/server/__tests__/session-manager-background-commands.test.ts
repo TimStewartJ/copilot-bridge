@@ -155,7 +155,7 @@ describe("SessionManager and commands left running in a session's shell", () => 
     await manager.agentRegistry.refresh("s1", "started");
     await vi.advanceTimersByTimeAsync(3 * MINUTE);
 
-    // The runtime died or was fenced: its handles are dropped without asking it to release anything.
+    // The runtime died or was fenced: its handles are dropped without asking it to release.
     manager.backendTransition = { owner: {}, phase: "retiring" };
     await manager.dropCachedSessionsForLostBackend();
     await vi.advanceTimersByTimeAsync(1);
@@ -225,7 +225,7 @@ describe("SessionManager and commands left running in a session's shell", () => 
     await vi.advanceTimersByTimeAsync(1);
 
     expect(session.disconnect).toHaveBeenCalledTimes(1);
-    // Loading the session again makes it busy, but no run is coming whose prompt could carry the notice.
+    // Reloading makes it busy, but no run is coming whose prompt could carry the notice.
     expect(seen).toEqual([{ busy: true, runInFlight: false, outcome: "queued" }]);
     const [delivery] = deferredPromptStore.listDeliveriesForSession("s1");
     expect(delivery?.status).toBe("pending");

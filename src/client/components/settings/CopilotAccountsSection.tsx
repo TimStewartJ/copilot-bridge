@@ -1,5 +1,4 @@
-// Settings › Copilot › Accounts: the Copilot accounts this machine has signed in, and which one the
-// Bridge runs on. Switching restarts the runtime, so it waits until no chat is running.
+// Copilot accounts signed in here; switching restarts the runtime, so it waits for idle chats.
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchCopilotAccounts, switchCopilotAccount, type CopilotAccount } from "../../api";
@@ -47,7 +46,7 @@ export function CopilotAccountsSection() {
       setError(errorText(cause));
       void queryClient.invalidateQueries({ queryKey: queryKeys.copilotAccounts });
     } finally {
-      // A failed restart may still have switched, so the quota and models are read again either way.
+      // A failed restart may still have switched, so reread the quota and models either way.
       void refreshCopilotQuotaQuery(queryClient).catch(() => undefined);
       void queryClient.invalidateQueries({ queryKey: queryKeys.models });
       setSwitching(null);

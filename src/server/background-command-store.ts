@@ -1,5 +1,4 @@
-// Durable markers for commands running in a session's attached shell, so a command cut off by
-// the Bridge can be reported to the agent that started it. See background-commands.ts.
+// Durable markers for shell commands, so one the Bridge cut off is reported to its agent.
 
 import type { DatabaseSync } from "./db.js";
 import { runInOwnOrOuterTransaction } from "./db-transaction.js";
@@ -11,7 +10,7 @@ import type {
 
 /** A loss nobody collected for this long belongs to a session that is no longer used. */
 const STOPPED_RETENTION_MS = 14 * 24 * 60 * 60_000;
-/** Enough to recognize the command in a notice. The full text stays in the session's own history. */
+/** Enough to recognize the command in a notice; the full text stays in the session history. */
 const COMMAND_TEXT_MAX_CHARS = 200;
 
 type MarkerRow = {
@@ -44,8 +43,7 @@ function toStopped(row: MarkerRow): StoppedBackgroundCommand & { sessionId: stri
 }
 
 export function createBackgroundCommandStore(db: DatabaseSync) {
-  // A marker written before the runtime reported the command's process ID gets it once known.
-  // A marker that is already a reported loss is left as it was.
+  // Fills in a pid reported after the marker was written; a marker already reported lost stays.
   const insertRunning = db.prepare(`
     INSERT INTO background_command_markers (sessionId, shellId, startedAt, description, command, pid)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -82,10 +80,7 @@ export function createBackgroundCommandStore(db: DatabaseSync) {
   );
 
   return {
-    /**
-     * Replaces what is known to be running in a loaded session. A command that left the list
-     * finished or was stopped by its agent, which the runtime reports itself, so its marker goes.
-     */
+    /** Replaces the running set; a command missing from it has ended, so its marker goes. */
     syncRunning(sessionId: string, commands: readonly RunningBackgroundCommand[]): void {
       runInOwnOrOuterTransaction(db, () => {
         const keep = new Set(commands.map((command) => `${command.shellId}\u0000${command.startedAt}`));
@@ -105,7 +100,7 @@ export function createBackgroundCommandStore(db: DatabaseSync) {
       });
     },
 
-    /** The session's runtime handle is gone. Its running commands become losses to report. Returns how many. */
+    /** The runtime handle is gone: running commands become losses to report. Returns how many. */
     markSessionStopped(sessionId: string, cause: BackgroundCommandStopCause, at: Date = new Date()): number {
       return Number(stopForSession.run(at.toISOString(), cause, sessionId).changes);
     },
@@ -131,7 +126,7 @@ export function createBackgroundCommandStore(db: DatabaseSync) {
       });
     },
 
-    /** The agent was told about exactly these; anything stopped since stays for the next message. */
+    /** Clears only those the agent was told about; later stops wait for the next message. */
     clearStopped(sessionId: string, commands: readonly Pick<StoppedBackgroundCommand, "shellId" | "startedAt">[]): void {
       if (commands.length === 0) return;
       runInOwnOrOuterTransaction(db, () => {

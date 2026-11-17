@@ -33,7 +33,7 @@ const TRIGGER_RESULT_MESSAGE_MAX_CHARS = 16 * 1024;
 const TRIGGER_RESULT_TOOL_NAME = "trigger_result";
 const DEFAULT_DEFER_WORKER_REASONING_EFFORT = "low";
 const DEFAULT_DEFER_WORKER_CONTEXT_TIER = "default";
-/** A check is one bounded look at something. One still running after this long is stuck and is stopped. */
+/** A worker check still running after this long is stuck and is stopped. */
 export const TRIGGER_WORKER_TIMEOUT_MS = 30 * 60_000;
 const DEFER_WORKER_STOP_GRACE_MS = 10_000;
 const DEFER_WORKER_TOOL_TRACE_LIMIT = 32;
@@ -43,7 +43,7 @@ export type TriggerWorkerAction = "continue" | "notify" | "finish" | "return" | 
 
 export interface TriggerWorkerInput {
   triggerId: string;
-  /** A recurring trigger's worker may continue or notify; a one-time trigger's can only finish or return. */
+  /** Recurring workers may continue or notify; one-time ones can only finish or return. */
   recurring: boolean;
   parentSessionId: string;
   prompt: string;
@@ -321,7 +321,7 @@ export class DisposableTriggerWorker {
 
   constructor(private readonly deps: DisposableTriggerWorkerDeps) {}
 
-  /** Abort in-flight checks; they fail as "Bridge is restarting" so runners requeue them without an attempt. */
+  /** Aborts in-flight checks as a restart, so runners requeue them without using an attempt. */
   abortAll(): void {
     for (const abort of this.abortHandlers) abort();
   }
@@ -406,7 +406,7 @@ export class DisposableTriggerWorker {
     const toolCalls = new Map<string, ToolCall>();
     const pendingToolCalls = new Map<string, ToolCall>();
     let rejectStopped!: (error: Error) => void;
-    // Ends the wait on the session even if the session never answers the abort, so cleanup always runs.
+    // Ends the wait even if the session never answers the abort, so cleanup always runs.
     const stopSignal = new Promise<never>((_resolve, reject) => {
       rejectStopped = reject;
     });
@@ -477,8 +477,7 @@ export class DisposableTriggerWorker {
       }
       const sessionConfig = {
         ...baseConfig,
-        // Nobody can answer a worker, so it gets neither ask_user nor the elicitation capability,
-        // and a shell command that asks for a password fails as it would without a terminal.
+        // Nobody can answer a worker: no ask_user, no elicitation, and shell password prompts fail.
         pendingInteractionEvents: false,
         // Nobody asked for an image either, and each one is billed.
         imageGeneration: { enabled: false },

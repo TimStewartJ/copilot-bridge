@@ -99,8 +99,7 @@ describe("staging_deploy", () => {
       return [...served.keys()];
     };
     expect(previewsServedByAStartingServer()).toEqual([preview.prefix]);
-    // A deploy-batch update must continue while the launcher waits for the
-    // existing restart to reach cutover.
+    // A deploy-batch update must go on while the launcher waits for the restart to reach cutover.
     mockDataFilePresence({ restartInProgress: true });
 
     const result = await mod.runStagingDeployJob(
@@ -115,8 +114,7 @@ describe("staging_deploy", () => {
     });
     expect(requestRestartMock).not.toHaveBeenCalled();
 
-    // The restarted server warms the newest published preview and then holds its database open,
-    // so the preview is withdrawn now. Nothing is deleted before the release is activated.
+    // The restarted server would hold the newest preview's database open, so it is withdrawn now.
     expect(previewsServedByAStartingServer()).toEqual([]);
     expect(existsSync(join(preview.dataDir!, "bridge.db"))).toBe(true);
     expect(removedTrees()).not.toContain(stagingDir);
@@ -136,8 +134,7 @@ describe("staging_deploy", () => {
   it("leaves the worktree alone while the deployed preview cannot be deleted", async () => {
     const { mod, stagingDir } = await setupDeployScenario();
     const preview = publishTestPreviewGeneration(mod, stagingDir, "generation-one", "<!doctype html>");
-    // A backend that holds the preview database open fails the delete (EPERM on Windows), and
-    // that backend runs out of the worktree. Deleting half of it would break a live process.
+    // A backend run from the worktree holds the preview database; a partial delete would break it.
     rmSyncThrowDirs.add(dirname(dirname(preview.outDir)));
 
     await expect(mod.cleanupCompletedStagingDeploy(stagingDir)).rejects.toThrow("EBUSY");
@@ -425,8 +422,7 @@ describe("staging_deploy", () => {
         stashChanges: true,
         respond: (cmd, _cwd, git) => {
           if (!isStashListCommand(cmd)) return undefined;
-          // Someone else stashes in the production checkout during the deploy
-          // window, so this deploy's entry is no longer on top by restore time.
+          // Someone else stashes during the deploy, so this deploy's entry is no longer on top.
           return ++stashListCalls === 1
             ? `${DEPLOY_STASH_SHA} On main: ${git.stashMarker}\n`
             : `${concurrentStashSha} On main: someone else\n${DEPLOY_STASH_SHA} On main: ${git.stashMarker}\n`;
@@ -465,8 +461,7 @@ describe("staging_deploy", () => {
     });
 
     it("reports the stranded stash when the stash list read throws after stashing", async () => {
-      // The command runner itself blows up (not a non-zero exit) right after the
-      // stash was created, so the deploy never learns what it stashed.
+      // The runner throws right after stashing, so the deploy never learns what it stashed.
       stagingLogMock.mockImplementation((message: string) => {
         if (String(message).includes("$ git --no-pager stash list ")) throw new Error("log sink exploded");
       });
@@ -498,8 +493,7 @@ describe("staging_deploy", () => {
     });
 
     it("keeps a completed deploy successful when restoring the stash throws", async () => {
-      // The restore command runner itself blows up (e.g. spawn failure), which is
-      // the only way left for the stash restore to throw.
+      // A spawn failure is the only way left for the stash restore to throw.
       const defaultSpawn = spawnMock.getMockImplementation();
       spawnMock.mockImplementation((cmd: string, ...rest: any[]) => {
         if (cmd === "git stash pop") throw new Error("spawn exploded");

@@ -1,15 +1,4 @@
-// The only module in this package that creates child processes or deletes directory trees.
-//
-// Creating a process is a synchronous call on the calling thread (CreateProcessW on Windows,
-// fork/exec or posix_spawn elsewhere), and under machine load that call has been measured taking
-// tens of seconds. The process host loads this module as a worker thread so that stall never lands on
-// the caller's event loop. The inline backend (tests, operational fallback) calls the same
-// functions on its own thread. Deleting a tree is the same kind of call: rmSync holds its thread
-// for the whole delete, and a source checkout is tens of thousands of files.
-//
-// Constraints: `new Worker()` loads this file from compiled JS, from tsx, and from Vitest, where
-// loader hooks are not reliably inherited. It therefore has no runtime imports from the rest of
-// the package (type imports are erased) and uses only erasable TypeScript syntax.
+// Worker module: no runtime imports from this package, erasable TS only (tsx and Vitest load it).
 
 import { exec, execFile, fork, spawn, type ChildProcess, type ForkOptions, type SpawnOptions } from "node:child_process";
 import { rmSync } from "node:fs";
@@ -24,7 +13,7 @@ import type {
   SerializedHostError,
 } from "./protocol.js";
 
-/** Marks a thread started by the process host. Other worker threads (Vitest's) import this module too. */
+/** Marks a thread the process host started; other workers (Vitest's) import this module too. */
 export const PROCESS_HOST_WORKER_FLAG = "spawnOffthreadWorker";
 
 function text(value: unknown): string {
@@ -62,10 +51,7 @@ function isCompleteJson(value: string): boolean {
   }
 }
 
-/**
- * Runs one command to completion with Node's own execFile/exec semantics (timeout, maxBuffer,
- * error shape). Never rejects: failures travel in the outcome so they can cross a thread boundary.
- */
+/** Runs one command like Node's execFile/exec; never rejects, so failures can cross threads. */
 export function execToOutcome(
   request: HostExecRequest,
   onCreated?: (createMs: number) => void,
@@ -132,11 +118,7 @@ export function execToOutcome(
   });
 }
 
-/**
- * Any wait is on this thread, not the caller's. The retry options only take effect for a tree in
- * use on Windows from the Node release that contains nodejs/node#64698: before it, rmSync does not
- * retry that error and its delay rounds down to zero, so Node 24.14 fails at once with EPERM.
- */
+/** Retries help an in-use Windows tree only on Node with nodejs/node#64698; older fails at once. */
 export function removeTreeOnCallingThread(path: string): void {
   rmSync(path, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 }
@@ -220,8 +202,7 @@ function serveProcessHost(port: NonNullable<typeof parentPort>): void {
     const createMs = performance.now() - startedAt;
 
     if (child.pid === undefined) {
-      // A failed spawn (for example ENOENT) reports once through "error". The host treats an
-      // error that arrives before "spawned" as terminal, so nothing else is relayed.
+      // A failed spawn reports once via "error"; the host treats it as terminal before "spawned".
       child.once("error", (error) => post({ type: "error", id, error: serializeError(error), createMs }));
       return;
     }

@@ -54,10 +54,7 @@ function agentRecord(partial: Partial<TranscriptAgent> = {}): TranscriptAgent {
   };
 }
 
-/**
- * Renders an agent's row as one stretch of a transcript does: `stretch` is the stretch the row is
- * in, and `newestStretch` the newest one that has a row for the agent.
- */
+/** `stretch` is the row's stretch; `newestStretch` the newest one with a row for the agent. */
 function renderAgentRow(
   node: ToolCallTreeNode,
   options: { runActive?: boolean; stretch?: string; newestStretch?: string; defaultExpanded?: boolean; contextOnly?: boolean } = {},
@@ -173,7 +170,7 @@ describe("ToolCallNodeGroup", () => {
   });
 
   it("counts a background agent's whole run on the row that launched it, and says where the rest is", () => {
-    // The launching call came back in 20ms; the agent then worked for two minutes across later stretches.
+    // The launch call returned in 20ms; the agent then worked two minutes across later stretches.
     const agent = agentRecord({ background: true, activeMs: 125_000, toolCount: 9, failedToolCount: 2 });
     const { roots } = buildToolCallForest([
       completedToolCall("agent", 0, 0.02, { name: "🤖 moves-agent", isSubAgent: true, agent, result: "All moves refactored." }),

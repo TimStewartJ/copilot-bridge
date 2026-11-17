@@ -238,8 +238,7 @@ describe("Copilot owned-runtime fence", () => {
     const rejected = expect(fence).rejects.toMatchObject({ retryable: true, message: expect.stringContaining("survivors") });
     await vi.advanceTimersByTimeAsync(300);
     await rejected;
-    // An unreadable survivor check proves nothing: a later attempt re-checks the retained survivor
-    // with one read and fails again without signalling anything or assuming exit.
+    // An unreadable survivor check proves nothing: the retry re-reads and fails without signalling.
     const retry = backend.fence();
     expect(retry).not.toBe(fence);
     await expect(retry).rejects.toThrow("survivors (4243, unknown)");
@@ -279,7 +278,7 @@ describe("Copilot owned-runtime fence", () => {
     const first = backend.fence();
     await expect(first).rejects.toMatchObject({ retryable: true, message: expect.stringContaining("kill-failed") });
 
-    // The native runtime is gone now, but its orphaned child is still alive and must be terminated first.
+    // The native runtime is gone, but its orphaned child is alive and must be terminated first.
     vi.mocked(getProcessIdentityStatuses).mockResolvedValueOnce(new Map([[orphan, "alive"], [exitedWorker, "exited"]]));
     vi.mocked(terminateProcessTree).mockImplementationOnce(async (identity) => ({ ok: true, status: "already-exited", root: identity }));
     const second = backend.fence();
@@ -369,7 +368,7 @@ describe("Copilot owned-runtime fence", () => {
     expect(terminateProcessTree).not.toHaveBeenCalled();
     startup.resolve();
     await starting;
-    // A pending startup was only too slow to observe; once it settles a later attempt can prove the runtime gone.
+    // A pending startup was only slow; once it settles a retry can prove the runtime gone.
     const retry = backend.fence();
     expect(retry).not.toBe(fence);
     await expect(retry).resolves.toBeUndefined();
@@ -408,8 +407,7 @@ describe("Copilot owned-runtime fence", () => {
     expect(child.listenerCount("exit")).toBeLessThanOrEqual(baseline);
   });
 
-  // SDK forceStop waits for its child to exit after SIGKILL. Model the loader dying while its native
-  // runtime descendants may survive, which is what the Bridge fence must still account for.
+  // The loader dies on SIGKILL while its native runtime descendants may survive the fence.
   function killLoaderOnSigkill(child: ChildProcess) {
     vi.spyOn(child, "kill").mockImplementation((signal) => {
       Reflect.set(child, "signalCode", signal ?? "SIGTERM");

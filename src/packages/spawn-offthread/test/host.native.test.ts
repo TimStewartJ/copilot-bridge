@@ -4,9 +4,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { HostExecError, ProcessHost } from "../src/index.js";
 import { makeTempDir } from "./support.js";
 
-// Drives real worker threads and real child processes. In the Copilot Bridge repository the
-// *.native.test.ts name puts it in the native project, where it does not compete with the
-// parallel suites for process creation.
+// Real workers and processes; the .native.test.ts name keeps it out of the parallel suites.
 const host = new ProcessHost({ mode: "worker" });
 const node = process.execPath;
 
@@ -113,8 +111,7 @@ describe("ProcessHost on real worker threads", () => {
   });
 
   it("never follows a directory link out of the tree it deletes", async () => {
-    // A checkout that links node_modules to a shared copy: deleting the checkout must remove the
-    // link (a junction on Windows, a symlink elsewhere), never what it points at.
+    // Deleting a checkout must remove its node_modules link (junction or symlink), not the target.
     const root = makeTempDir("remove-link");
     const production = join(root, "production", "node_modules");
     const worktree = join(root, "worktree");

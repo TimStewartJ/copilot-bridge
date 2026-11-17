@@ -34,10 +34,7 @@ interface SessionStartArgs {
   contextTier?: CopilotContextTier;
 }
 
-/**
- * Session ids are opaque — only trim them. The title normalizer strips quotes
- * and collapses whitespace, which would corrupt an id.
- */
+// Only trim: the title normalizer would corrupt an opaque id.
 function targetSessionId(args: any, invocation: SessionBridgeToolInvocation): string {
   const explicit = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
   return explicit || invocation.sessionId;
@@ -309,7 +306,7 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
         ctx.deferredPromptStore?.listDeliveriesForSession(sessionId)
           .some((delivery) => delivery.status === "pending" || delivery.status === "running") ?? false;
 
-      // No await from here to the write, so a chat cannot start a run between its check and the change.
+      // No await from here to the write, so no chat can start a run between check and change.
       const skipped: Array<{ sessionId: string; reason: string }> = [];
       const targets: string[] = [];
       let alreadyInState = 0;

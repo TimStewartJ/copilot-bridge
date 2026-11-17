@@ -121,12 +121,7 @@ async function setAge(path: string, ageMs: number): Promise<void> {
   await utimes(path, changedAt, changedAt);
 }
 
-/**
- * Readiness waits between its attempts, and the removal of a profile between its own, on real
- * timers. This runs an operation whose browser does not come up without those waits: only the
- * timers are faked, the file system stays real, and every round lets both make progress until
- * the operation has settled.
- */
+/** Fakes only timers, advancing them until the operation settles so retry waits don't stall it. */
 async function withoutReadinessWaits<T>(operation: () => Promise<T>): Promise<T> {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
@@ -171,7 +166,7 @@ describe("browser broker", () => {
       browserTarget: {
         sessionName: expect.stringMatching(/^copilot-bridge-public-[a-f0-9]{8}-1$/),
         profileDir: slotDir(root, 1),
-        // Its daemon outlives an idle browser_session handle, and goes away with the browser when one is lost.
+        // The daemon outlives an idle session handle and stops with the browser when one is lost.
         idleTimeoutMs: PUBLIC_BROWSER_DAEMON_IDLE_TIMEOUT_MS,
         stopDaemonOnShutdown: true,
       },
@@ -303,8 +298,7 @@ describe("browser broker", () => {
       order.push("second-enter");
     });
 
-    // Nothing but promise callbacks stands between the second operation and the target; one
-    // turn of the event loop runs them all, so it would have entered by now if it could.
+    // One event-loop turn runs all pending promise callbacks, so the second would have entered.
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(order).toEqual(["first-enter"]);
     releaseFirst();
@@ -424,7 +418,7 @@ describe("browser broker", () => {
       throw new Error("the page did not load");
     })).rejects.toThrow("the page did not load");
 
-    // The profile was not removed and is not left held: the cleanup's failure is logged, not thrown.
+    // The profile is neither removed nor left held: the cleanup failure is logged, not thrown.
     expect(removeProfile).not.toHaveBeenCalled();
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
   });
@@ -457,7 +451,7 @@ describe("browser broker", () => {
 
     await expect(broker.probe("public", inBrowser)).resolves.toMatchObject({ context: "public", status: "ready" });
 
-    // It ran once the browser was up, on the profile the probe held, and the browser was closed after it.
+    // It ran once the browser was up, on the probe's profile, and the browser closed after.
     expect(seen).toEqual([{ lease: expect.objectContaining({ context: "public", publicSlot: 1 }), inUse: 1 }]);
     expect(shutdownTarget).toHaveBeenLastCalledWith(seen[0].lease.browserTarget, undefined);
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
@@ -578,7 +572,7 @@ describe("public profile slots", () => {
     await expect(broker.disposeSessionTarget(lease, OP)).resolves.toBeUndefined();
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 2, inUse: 1 });
 
-    // The failed shutdown left it unknown what runs on the profile, so it is checked before its next use.
+    // After a failed shutdown the profile's state is unknown, so it is checked before reuse.
     shutdownTarget.mockClear();
     const next = await broker.createSessionTarget("public");
     expect(next.publicSlot).toBe(1);
@@ -624,7 +618,7 @@ describe("public profile slots", () => {
       return lease.publicSlot;
     });
 
-    // Nobody holds a one-off operation's profile after it: there is no one to try the shutdown again.
+    // A one-off operation's profile is not held after it: nobody would retry the shutdown.
     await expect(slotOfOperation()).resolves.toBe(1);
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
     expect(closedSlots(shutdownTarget)).toEqual([1, 1]);
@@ -732,7 +726,7 @@ describe("a public profile on which the browser does not start", () => {
     expect(health).not.toHaveProperty("lastError");
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
 
-    // The discarded profile's slot is the lowest free one again, and a browser starts on it from nothing.
+    // The discarded profile's slot is the lowest free one again, and starts empty.
     await expect(runPublic(broker)).resolves.toEqual({ slot: 1, profile: [] });
     expect(removeProfile).toHaveBeenCalledTimes(1);
   });
@@ -826,7 +820,7 @@ describe("a public profile on which the browser does not start", () => {
     // Two runs and no third.
     expect(triedProfiles()).toEqual(["slot-1", "slot-2"]);
     expect(operation).not.toHaveBeenCalled();
-    // The host is at fault, not the profile: the first one stays, and the one made to find that out goes.
+    // The host is at fault, not the profile: the first stays; the probe profile goes.
     expect(removeProfile.mock.calls).toEqual([[slotDir(root, 2)]]);
     expect(await readdir(publicRoot(root))).toEqual(["slot-1"]);
     await expect(readFile(join(slotDir(root, 1), "Cookies"), "utf-8")).resolves.toBe("from an earlier server");
@@ -852,8 +846,7 @@ describe("a public profile on which the browser does not start", () => {
       }
     });
 
-    // On a host that refuses the browser, every operation fails for that reason, and none for
-    // the profiles its predecessors tried.
+    // On a host that refuses the browser, every operation fails for that reason alone.
     expect(failures.filter((message) => !message.startsWith("Browser public context is unavailable: Chrome exited early")))
       .toEqual([]);
     await expect(readdir(publicRoot(root))).resolves.toEqual(["slot-1"]);
@@ -914,8 +907,7 @@ describe("a public profile on which the browser does not start", () => {
       }),
     ]));
 
-    // The only place was taken once for both runs: the second run did not wait for it behind
-    // the other operation, which got it when the first profile was gone.
+    // The second run did not queue behind the other operation, which got the slot later.
     expect(order).toEqual(["first on 2", "second on 1"]);
     expect(waitingDuringSecondRun).toBe(1);
     expect(broker.getSnapshot().public).toMatchObject({ status: "ready", activeOperations: 0, queuedOperations: 0 });
@@ -992,7 +984,7 @@ describe("a public profile on which the browser does not start", () => {
 
       await expect(runPublic(broker)).resolves.toEqual({ slot: 2, profile: [] });
 
-      // Closed after the first run, checked and closed around the second, then looked for once more.
+      // Closed after the first run, checked and closed around the second, then checked again.
       expect(closedSlots(shutdownTarget)).toEqual([1, 2, 2, 1]);
       expect(removeProfile).not.toHaveBeenCalled();
       await expect(readFile(brokenFile, "utf-8")).resolves.toBe("{ broken");
@@ -1116,7 +1108,7 @@ describe("a browser the user is acting in", () => {
     await expect(run()).rejects.toThrow(heldMessage("sign in to the store"));
     await expect(broker.withTarget(lease, OP, operation)).rejects.toThrow(heldMessage("sign in to the store"));
     expect(operation).not.toHaveBeenCalled();
-    // The browser is not even asked whether it is ready, and a refusal is no failure of the browser.
+    // The browser is not even probed, and a refusal does not count as a browser failure.
     expect(runCommand).not.toHaveBeenCalled();
     const health = broker.getSnapshot().public;
     expect(health).toMatchObject({ status: "stopped", activeOperations: 0, queuedOperations: 0 });
@@ -1125,8 +1117,7 @@ describe("a browser the user is acting in", () => {
     handBackFirst();
     await expect(run()).resolves.toBe("ran");
 
-    // The first handover is over; handing it back once more must not end a later one, even one
-    // that gives the same reason.
+    // Handing back the finished first handover again must not end a later one with the same reason.
     const handBackSecond = broker.holdTarget(lease, "sign in to the store");
     handBackFirst();
     await expect(run()).rejects.toThrow(heldMessage("sign in to the store"));
@@ -1216,8 +1207,7 @@ describe("a browser the user is acting in", () => {
     // It is behind the running operation on the same browser, as a second tool call of a chat is.
     const outcome = broker.withTarget(lease, QUIET, operation)
       .then(() => "ran", (error: unknown) => (error as Error).message);
-    // Nothing but promise callbacks stands between it and the browser's queue; one turn of the
-    // event loop runs them all.
+    // One event-loop turn runs all pending promise callbacks, so it is queued by now.
     await new Promise<void>((resolve) => setImmediate(resolve));
     const handBack = broker.holdTarget(lease, "sign in to the store");
     running.finish();
@@ -1245,7 +1235,7 @@ describe("public profile statistics and reset", () => {
     const broker = new BrowserBroker({ copilotHome: root, shutdownTarget, removeProfile });
 
     await expect(broker.getPublicProfileStats()).resolves.toEqual({ profiles: 1, inUse: 0 });
-    // A profile that has never been used is the lowest one without a folder: none of these stands for 1.
+    // A never-used profile is the lowest slot without a folder: here slot 1.
     const fresh = await broker.createSessionTarget("public", { unused: true });
     expect(fresh.publicSlot).toBe(1);
     await broker.disposeSessionTarget(fresh, OP);
@@ -1460,8 +1450,7 @@ describe("sweep of unused public profiles", () => {
     const broker = new BrowserBroker({ copilotHome: root, shutdownTarget, removeProfile });
     const held = await broker.createSessionTarget("public");
     await writeFile(join(held.browserTarget.profileDir, "Cookies"), "in use");
-    // A browser that has been open for weeks without changing its profile's folder, and an idle
-    // profile of the same age to show that the sweep did run.
+    // A browser open for weeks with an unchanged folder, and an idle twin to prove the sweep ran.
     await setAge(held.browserTarget.profileDir, UNUSED_SLOT_MAX_AGE_MS + DAY_MS);
     const unused = await makeAgedDirectory(root, "slot-9", UNUSED_SLOT_MAX_AGE_MS + DAY_MS);
     vi.setSystemTime(startedAt + HOUR_MS + MINUTE_MS);

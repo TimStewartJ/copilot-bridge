@@ -9,7 +9,7 @@ function readToken(req: express.Request): unknown {
   return req.get("x-voice-token") ?? req.query.token;
 }
 
-/** Rejects requests a browser marks as coming from another site (CSRF for side-effecting routes). */
+/** Rejects requests a browser marks as cross-site (CSRF guard for side-effecting routes). */
 function rejectCrossSite(req: express.Request, res: express.Response): boolean {
   const site = req.get("sec-fetch-site")?.toLowerCase();
   if (site && site !== "same-origin" && site !== "same-site" && site !== "none") {

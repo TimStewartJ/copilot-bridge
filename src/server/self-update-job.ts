@@ -87,10 +87,7 @@ async function isAncestor(
   return result.ok;
 }
 
-/**
- * HEAD holds the running release when the release commit is an ancestor of HEAD, or when upstream
- * history was rewritten and HEAD descends from a commit with exactly the release's files.
- */
+/** Release is an ancestor of HEAD, or (rewritten upstream) HEAD descends from its exact files. */
 async function headHoldsRelease(
   run: ReturnType<typeof createSelfUpdateRunner>,
   log: (message: string) => void,

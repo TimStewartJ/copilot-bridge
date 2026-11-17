@@ -1,16 +1,4 @@
-// Measures what starting processes costs the calling thread's event loop: node:child_process
-// against this package.
-//
-// In a project that has the package installed, save this file there and run it:
-//
-//   node event-loop.mjs
-//
-// In the package's repository, point it at a fresh build:
-//
-//   npm run packages:verify -- --out <dir>
-//   node src/packages/spawn-offthread/bench/event-loop.mjs <dir>/consumer/node_modules/spawn-offthread/dist/index.js
-//
-// Options: --count <processes per run, default 200> --concurrency <default 8> --rounds <default 2>
+// Event-loop cost of spawning, child_process vs this package; usage in the package README.
 import { execFile } from "node:child_process";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { resolve } from "node:path";
@@ -76,7 +64,7 @@ const createMs = [];
 const host = new ProcessHost({ onLaunch: (launch) => createMs.push(launch.createMs) });
 const hosted = () => host.execFile(node, childArgs);
 
-// Warm both paths: the first launch of a binary and the first worker start are not what is being compared.
+// Warm both paths so first binary launch and first worker start are not measured.
 await direct();
 await Promise.all(Array.from({ length: concurrency }, hosted));
 createMs.length = 0;

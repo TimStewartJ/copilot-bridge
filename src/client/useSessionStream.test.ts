@@ -693,8 +693,7 @@ describe("useSessionStream ephemeral state", () => {
         timestamp: "2026-07-24T10:00:00.000Z",
       }, () => getState().pendingUserMessages[0]?.sourceEventId === "user-event-1");
 
-      // The prompt stays on the stream after commit so the view can hand it off to disk history
-      // by identity rather than dropping it into a gap.
+      // The prompt stays after commit so the view hands it to disk history by identity.
       expect(getState().pendingUserMessages).toMatchObject([
         { id: "pending-1", sourceEventId: "user-event-1" },
       ]);
@@ -786,8 +785,7 @@ describe("useSessionStream ephemeral state", () => {
         committedAt: "2026-09-20T08:00:03.000Z",
       }]);
 
-      // Its history read is usually still in flight when the next turn starts, so committed
-      // thinking stays for one more turn; the view hides it as soon as disk history carries it.
+      // Committed thinking stays one more turn, as its history read is usually still in flight.
       await emitAndWait(act, source, { type: "thinking", turnId: "turn-2", turnInstanceId: "turn-start-2" },
         () => getState().activeTurnInstanceId === "turn-start-2");
       expect(getState().liveReasoning.map((block) => block.id)).toEqual(["r-1"]);
@@ -822,8 +820,7 @@ describe("useSessionStream ephemeral state", () => {
       await waitTick();
       expect(getState().liveTools[0]?.completedAt).toBe(completedAt);
 
-      // The disk read that carries the completion is still in flight here. Dropping the finished
-      // tool now would hand the row back to a disk entry that still says "running".
+      // Its disk read is in flight; dropping the tool now would show a disk entry still "running".
       await emitAndWait(act, source, { type: "thinking", turnId: "turn-2", turnInstanceId: "turn-start-2" },
         () => getState().activeTurnInstanceId === "turn-start-2");
       expect(getState().liveTools).toMatchObject([{ toolCallId: "tc-done", success: true, result: "ok" }]);
@@ -859,7 +856,7 @@ describe("useSessionStream ephemeral state", () => {
         type: "tool_start", toolCallId: "bg-open", name: "bash", parentToolCallId: "task-bg", turnInstanceId: "agent-1", timestamp: "2026-10-01T10:00:04.000Z",
       }, () => liveIds().length === 3);
 
-      // The main agent moves on twice: its own finished call lasts one turn, the agent's are untouched.
+      // Main agent moves on twice: its finished call lasts one turn, the agent's are untouched.
       await emitAndWait(act, source, { type: "thinking", turnId: "1", turnInstanceId: "main-2" },
         () => getState().activeTurnInstanceId === "main-2");
       expect(liveIds()).toEqual(["task-bg", "bg-done", "bg-open"]);
@@ -915,7 +912,7 @@ describe("useSessionStream ephemeral state", () => {
         liveTools: [
           { toolCallId: "main-view", name: "view", completedAt: "2026-10-01T10:00:05.000Z" },
           { toolCallId: "bg-view", name: "view", parentToolCallId: "task-bg", turnInstanceId: "agent-7", completedAt: "2026-10-01T10:00:06.000Z" },
-          // Started before the agent's first turn was known: it has no turn, and is not given the main agent's.
+          // Started before the agent's first turn was known: no turn, not the main agent's.
           { toolCallId: "bg-early", name: "view", parentToolCallId: "task-bg" },
         ],
       }), () => getState().liveTools.length === 3);

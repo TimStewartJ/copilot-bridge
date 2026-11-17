@@ -24,10 +24,7 @@ interface TaskPanelSummaryRowProps {
   expanded?: boolean;
 }
 
-/**
- * One linked thing in the task panel on one line: what kind it is, what it is called, and a figure
- * for how it is doing. It opens for the rest.
- */
+/** One linked thing on one line: its kind, its name and a status figure; it opens for the rest. */
 export default function TaskPanelSummaryRow({
   icon,
   label,
@@ -57,7 +54,7 @@ export default function TaskPanelSummaryRow({
   const content = (
     <>
       <span className={cx(DS.row.iconSlot, "text-text-faint")}>{icon}</span>
-      {/* A narrow desktop panel drops the label column for the title; the icon and tooltip still say it. A phone is wide enough to keep it. */}
+      {/* A narrow desktop panel drops the label (the icon and tooltip say it); phones keep it. */}
       <span className="sr-only shrink-0 @[18rem]/task-details:not-sr-only">
         <span className="block w-[5.25rem] truncate text-xs text-text-muted">{label}</span>
       </span>

@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
 export function initializeDashboardRetirementSchema(db: DatabaseSync): void {
-  // archivedSourcesJson is no longer read; SQLite cannot drop a column that carries a CHECK constraint.
+  // archivedSourcesJson is unused; SQLite cannot drop a column that has a CHECK constraint.
   db.exec(`
     CREATE TABLE IF NOT EXISTS checklist_item_details (
       itemId TEXT PRIMARY KEY REFERENCES checklist_items(id) ON DELETE CASCADE,

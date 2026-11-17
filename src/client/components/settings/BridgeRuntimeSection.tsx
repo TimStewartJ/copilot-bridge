@@ -41,10 +41,7 @@ const BACKEND_TONE: Record<AgentBackendLifecycleState, "neutral" | "warning" | "
   stopped: "neutral",
 };
 
-/**
- * What the Bridge is doing and the controls that act on the whole Bridge: restart, self-update and
- * the idle session cache. The live figures behind the one-line summaries open on request.
- */
+/** Bridge-wide state and controls (restart, self-update, idle cache); details open on request. */
 export function BridgeRuntimeSection({ refreshSignal = 0 }: { refreshSignal?: number }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);

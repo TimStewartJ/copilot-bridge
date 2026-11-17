@@ -140,12 +140,7 @@ export type BlockedBackendRecoveryMonitorOptions = {
   isAutoRecoverySuppressed: () => boolean;
 };
 
-/**
- * A healthy HTTP server whose agent backend recovery is blocked cannot recover
- * on its own. Restart it once the block has persisted past a grace period, but
- * cap how often that can happen so a recurring block cannot loop forever, and
- * never restart while automatic recovery is suppressed.
- */
+/** Restart a server with blocked recovery after a grace period; capped, never while suppressed. */
 export function createBlockedBackendRecoveryMonitor(options: BlockedBackendRecoveryMonitorOptions) {
   let restartTimesMs: number[] = [];
   let interventionReported = false;

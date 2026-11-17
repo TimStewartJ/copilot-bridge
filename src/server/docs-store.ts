@@ -166,10 +166,7 @@ export function validateTaggedDocContent(content: string): void {
   }
 }
 
-/**
- * Builds raw page content from structured frontmatter, so callers that edit fields (the docs
- * editor) never serialize YAML themselves: a title such as "Plan: phase 2" must stay valid.
- */
+/** Builds a page from frontmatter so editors never write YAML ("Plan: phase 2" stays valid). */
 export function serializeDocContent(frontmatter: Record<string, unknown>, body: string): string {
   const data: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(frontmatter)) {
@@ -397,8 +394,6 @@ export function createDocsStore(docsDir: string) {
     }
   }
 
-  // ── Page CRUD ─────────────────────────────────────────────────
-
   /** Resolve a page path, falling back to folder/index.md if path.md doesn't exist */
   function resolveFilePath(pagePath: string): { filePath: string; canonicalPath: string; usedFolderIndexFallback: boolean; usedExplicitIndexAlias: boolean } | null {
     const parsed = parsePagePath(pagePath);
@@ -571,8 +566,6 @@ export function createDocsStore(docsDir: string) {
     return { path: canonicalPath, deleted: deletePage(canonicalPath) };
   }
 
-  // ── Tree listing ──────────────────────────────────────────────
-
   /** A malformed schema must not take the whole tree down; the folder slug is a fine fallback. */
   function readCollectionName(folder: string): string | null {
     try {
@@ -637,9 +630,7 @@ export function createDocsStore(docsDir: string) {
   // ── DB entry CRUD ─────────────────────────────────────────────
 
   function normalizeDbEntryInput(input: Record<string, any>, mode: "add" | "update", folder?: string): { fields: Record<string, any>; body?: string } {
-    // Strict raw-content path: the docs UI editor sends the full frontmatter+body text under
-    // `content`. Parse it strictly so malformed frontmatter surfaces an error instead of being
-    // silently written into the markdown body (which would corrupt the entry's fields).
+    // Parse strictly: bad frontmatter must error, not be written into the body.
     if (typeof input.content === "string") {
       let parsed: matter.GrayMatterFile<string>;
       try {

@@ -1,8 +1,4 @@
-// The hands-free layer: speaks for one ordinary Bridge chat. The chat stays exactly as it is (it
-// gets the user's words as plain messages and writes normal replies); this layer decides what each
-// thing the user says is for, sends or steers, follows the chat's runs, and turns replies and
-// progress into speech. Its decisions and spoken lines come from a small fast model
-// (hands-free-model.ts); short commands and plain short replies need no model at all.
+// Hands-free layer: routes speech into one ordinary chat and speaks its replies and progress.
 import type { StreamEvent } from "../event-bus.js";
 import type {
   AgentSpeech,
@@ -23,7 +19,7 @@ export interface HandsFreeChat {
   isBusy(): boolean;
   /** The chat's current run, or undefined when it has none. */
   getBus(): { subscribe(listener: (event: StreamEvent) => void): () => void; readonly complete: boolean } | undefined;
-  /** Sends like the chat composer: starts a run when idle, steers a running one, queues when it can't. */
+  /** Sends like the composer: starts a run when idle, steers a running one, else queues. */
   deliver(text: string, clientMessageId?: string): Promise<ChatDelivery>;
   abort(): Promise<unknown>;
   title(): Promise<string | undefined>;
@@ -33,7 +29,7 @@ export interface HandsFreeChat {
 export interface HandsFreeLayerOptions {
   chat: HandsFreeChat;
   model: Pick<HandsFreeModel, "warm" | "route" | "speak" | "progress" | "announce">;
-  /** Bridge-wide status events, to notice runs the chat starts by other means (typed, scheduled). */
+  /** Bridge-wide status events, to notice runs started by other means (typed, scheduled). */
   subscribeStatus(listener: (event: { type: string; sessionId?: string }) => void): () => void;
   sessionId: string;
   glossary?: () => string | undefined;
@@ -135,10 +131,7 @@ export function toFullSpeech(markdown: string): string {
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 
-/**
- * A model summary as speech. The Bridge adds the offer to read the whole reply, so whether one was
- * made never depends on the model's wording; a question the reply asks comes last.
- */
+/** A summary as speech; the Bridge adds the read-in-full offer itself; any question goes last. */
 export function composeSummarySpeech(summary: HandsFreeSpokenSummary, offer: boolean): string {
   const parts = [summary.say];
   if (offer && !summary.plain) parts.push(summary.question ? "I can read you the whole thing." : "Want me to read the whole thing?");
@@ -184,10 +177,10 @@ export class HandsFreeLayer implements VoiceAgentApi {
   private lastSaid?: string;
   private lastReply?: string;
   private offerPending = false;
-  /** Words of a turn that was cut short before it reached the chat, kept for the turn that continues it. */
+  /** Words of a turn cut short before reaching the chat, kept for the turn that continues it. */
   private carry?: string;
   private readbackSeq = 0;
-  /** Bumped when the user asks for the last reply their own way; an automatic readback in progress is then dropped. */
+  /** Bumped when the user asks for the last reply; drops an automatic readback in progress. */
   private readbackRevision = 0;
   private lastReadbackKey?: string;
   private chatTitle?: string;
@@ -302,8 +295,7 @@ export class HandsFreeLayer implements VoiceAgentApi {
     this.log("route", { action: decision?.action ?? "fallback", ms: this.timers.now() - startedAt, text });
     const offerWasPending = this.offerPending;
     this.offerPending = false;
-    // Without a decision the words go to the chat, as they did before this layer existed; the
-    // commands that must never reach it were caught before routing.
+    // Without a decision the words go to the chat; commands that must not were caught earlier.
     const action = decision?.action ?? "send";
     switch (action) {
       case "send":
@@ -380,7 +372,7 @@ export class HandsFreeLayer implements VoiceAgentApi {
     }
     turn.listener.onStarted?.();
     this.log("sent", { delivery, typed: options.typed });
-    // A newly started run is picked up from its busy event; this covers a run that was already going.
+    // New runs are picked up from their busy event; this covers a run already going.
     this.attachCurrentRun();
     if (options.typed || turn.cancelled || this.detached) return this.finish(turn, { aborted: false, handled: "sent" });
     const ack = delivery === "steered" ? ACK_STEERED
@@ -404,8 +396,6 @@ export class HandsFreeLayer implements VoiceAgentApi {
     turn.done = true;
     turn.listener.onDone(result);
   }
-
-  // ── Following the chat's runs ──────────────────────────────────
 
   /** Subscribes to the chat's current run once; a run already followed is left as it is. */
   private attachCurrentRun(): void {
@@ -516,9 +506,7 @@ export class HandsFreeLayer implements VoiceAgentApi {
         break;
       case "error": {
         const message = typeof event.message === "string" ? event.message : "";
-        // The runtime's word for a turn that wrote nothing (it happens after steering, and the work
-        // carries on in a new turn); like an empty reply, it is not something to announce.
-        // agent-text-audit: error (the agent runtime's error for a turn that wrote nothing)
+        // agent-text-audit: error (runtime's empty-turn error after steering; same as empty)
         if (message.startsWith("No response was returned")) this.endRun(run, { kind: "done", content: "" });
         else this.endRun(run, { kind: "error", message });
         break;
@@ -601,11 +589,7 @@ export class HandsFreeLayer implements VoiceAgentApi {
     }
   }
 
-  /**
-   * `offer` in the result is true only when the speech ends with the offer, so a "yes" to it means
-   * read it all; after a question, "yes" answers the question. The fallback summary says the rest is
-   * on screen instead of offering.
-   */
+  /** offer only when speech ends with the offer, so a later "yes" means read all, not answer. */
   private async summary(content: string, offer: boolean): Promise<{ text: string; offer: boolean }> {
     const summary = await this.options.model.speak(content);
     if (!summary) return { text: fallbackSummary(content), offer: false };

@@ -14,7 +14,7 @@ export function getVoiceSessionIntent(status: VoiceSessionActivity["status"]): s
   return "Processing voice input";
 }
 
-/** Whether a chat shows the dictation placeholder is the voiceIntent flag, never the intent's wording. */
+/** The dictation placeholder follows the voiceIntent flag, never the intent's wording. */
 export function projectVoiceSessionActivity(queryClient: QueryClient, activity: VoiceSessionActivity): void {
   const intent = getVoiceSessionIntent(activity.status);
   patchSessionQueryData(queryClient, [activity.sessionId], (session: Session): Partial<Session> => {

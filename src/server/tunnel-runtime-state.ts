@@ -20,10 +20,7 @@ export type TunnelRuntimeState = {
   updatedAt: string;
 };
 
-/**
- * Additional tunnels keep their own state file so each supervisor can clean up its
- * own orphan. Only the primary file feeds the server's public URL.
- */
+/** An extra tunnel's own state file, for its orphan cleanup; only the primary sets the URL. */
 export function additionalTunnelRuntimeStateFileName(tunnelName: string): string {
   return `tunnel-runtime-${tunnelName}.json`;
 }

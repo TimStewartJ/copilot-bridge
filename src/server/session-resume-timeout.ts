@@ -1,29 +1,13 @@
 export const SESSION_RESUME_TIMEOUT_MS = 60_000;
 
 export interface ResumeSessionWithTimeoutOptions<TSession> {
-  /**
-   * Called synchronously when the timeout wins the race. Callers can use this
-   * to block another resume until the uncancellable SDK request settles.
-   */
+  /** Runs synchronously on timeout, e.g. to block another resume until the SDK request settles. */
   onTimeout?: () => void;
-  /**
-   * Cleanup for a resume promise that resolves *after* the timeout already
-   * rejected. Such a session is orphaned: no caller receives this value, so it
-   * is never cached and must be released here. Defaults to a duck-typed
-   * `session.disconnect()`.
-   */
+  /** Releases a session that resolved after the timeout; no caller holds it. */
   disconnectLateSession?: (session: TSession) => void | Promise<void>;
-  /**
-   * Observer for a resume promise that rejects *after* the timeout already
-   * rejected, and for failures thrown by `disconnectLateSession`. Defaults to a
-   * no-op; the late settlement is always observed so it cannot surface as an
-   * unhandled rejection.
-   */
+  /** Sees late rejections and disconnect failures so none becomes an unhandled rejection. */
   onLateError?: (error: unknown) => void;
-  /**
-   * Called after a timed-out resume either rejects or completes its late
-   * session cleanup.
-   */
+  /** Called after a timed-out resume rejects or finishes cleaning up its late session. */
   onLateSettled?: () => void;
 }
 
@@ -34,15 +18,7 @@ async function defaultDisconnectLateSession<TSession>(session: TSession): Promis
   }
 }
 
-/**
- * Races an SDK `resumeSession` promise against a timeout. On timeout the helper
- * rejects with `timeoutMessage`, but the underlying resume keeps running. Since
- * the SDK exposes no cancellation hook, this helper centralizes the lifecycle:
- * a late resolve disconnects the orphaned session and a late reject is observed,
- * so neither leaks a live session nor produces an unhandled rejection. The
- * normal (pre-timeout) success path is untouched and the caller still owns the
- * resolved session.
- */
+/** The SDK can't cancel a resume: on timeout, a late session is disconnected and errors seen. */
 export async function resumeSessionWithTimeout<TSession>(
   resume: Promise<TSession>,
   timeoutMessage: string,

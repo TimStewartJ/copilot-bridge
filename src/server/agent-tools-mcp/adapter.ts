@@ -3,11 +3,7 @@ import { validateToolArguments } from "./validate-args.js";
 import type { BridgeToolDefinition, BridgeToolHandlerExtra, BridgeToolHandlerResult } from "./server.js";
 
 export interface BridgeToolInvocation {
-  /**
-   * Session that issued the call. `undefined` when the tool was invoked without
-   * one — never an empty string, so a handler cannot mistake "no session" for a
-   * real session id.
-   */
+  /** Session that issued the call; `undefined`, never an empty string, when there is none. */
   sessionId: string | undefined;
   /** SDK sub-agent instance; a delegated call shares its parent chat's sessionId. */
   agentId?: string;
@@ -68,11 +64,7 @@ function requiresInvokingSession(scope: BridgeToolDefinition["scope"]): boolean 
 
 const ADAPTED_HANDLER = Symbol.for("bridge.tool.adaptedHandler");
 
-/**
- * True when the handler was produced by `defineBridgeTool`, and therefore runs
- * argument validation and the session guard. The registry rejects anything else
- * so a tool cannot be registered with those checks patched out.
- */
+/** Only defineBridgeTool handlers (validation plus session guard) may be registered. */
 export function isAdaptedToolHandler(handler: unknown): boolean {
   return typeof handler === "function"
     && (handler as unknown as Record<symbol, unknown>)[ADAPTED_HANDLER] === true;
@@ -112,11 +104,7 @@ export function defineBridgeTool(
   };
 }
 
-/**
- * Define a session-scoped tool. The adapter rejects the call when no session id
- * is present, so the handler receives a guaranteed `sessionId` and does not
- * repeat that check.
- */
+/** A session-scoped tool: calls without a session id are rejected, so handlers get one. */
 export function defineSessionBridgeTool(
   name: string,
   options: DefineSessionBridgeToolOptions,

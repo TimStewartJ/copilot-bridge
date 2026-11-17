@@ -6,12 +6,7 @@ const FORM_FIELDS = new Set(["type", "command", "args", "env", "executionScope",
 const LOCAL_ONLY_FIELDS = new Set(["workingDirectory"]);
 const REMOTE_ONLY_FIELDS = new Set(["oauthClientId", "oauthPublicClient", "oauthGrantType", "auth"]);
 
-/**
- * Carries over stored config fields the editor does not show (for example
- * `deferTools` or OAuth settings), so saving the form does not silently drop
- * them. Fields that only apply to the other transport are dropped when the
- * transport changes.
- */
+/** Keep stored fields the form hides (deferTools, OAuth); drop the other transport's fields. */
 export function withUneditedMcpServerFields<T extends McpServerConfig>(
   initial: McpServerConfig,
   edited: T,

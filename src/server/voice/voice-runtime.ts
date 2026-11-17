@@ -1,5 +1,4 @@
-// The local speech engine shared by voice mode and chat mic transcription: one install,
-// one engine process, one set of models.
+// One speech engine install, process and model set, shared by voice mode and the chat mic.
 import type { RuntimePaths } from "../runtime-paths.js";
 import type { ChatMicSettings, SpeechModelId } from "../../shared/chat-mic.js";
 import { resolveSpeechModel, resolveVoicePaths, type SpeechModel, type VoicePaths } from "./voice-catalog.js";
@@ -33,12 +32,7 @@ export function applySelectedSpeechModel(runtime: VoiceRuntime, settings: ChatMi
   runtime.engine.useSpeechModel(resolveUsableSpeechModel(runtime, settings));
 }
 
-/**
- * Keeps the engine on the chosen recognizer, and gets that recognizer onto a machine set up without
- * it, such as one installed when another model was the default. Whatever is on disk keeps working
- * until the new model is verified. A failed download is logged by the installer and tried again at
- * the next start.
- */
+/** Follows the selected recognizer, fetching it if missing; the old one works until it verifies. */
 export function followSelectedSpeechModel(
   runtime: VoiceRuntime,
   getSettings: () => ChatMicSettings | undefined,

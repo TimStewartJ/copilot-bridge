@@ -1,14 +1,4 @@
-// Passes a worker thread's stdout and stderr on to the process's own, without Node's pipes.
-//
-// Node pipes a worker's output into process.stdout and process.stderr, and a pipe listens for
-// 'error' on its destination. console.log drops a line it cannot write (a full disk, a closed
-// pipe, an operating system short of memory), but only while nothing else listens for 'error' on
-// the stream. With a worker's pipe in place, one failed write to the process's stdout became an
-// unhandled 'error' event and ended the program.
-//
-// The streams are left as Node created them, not requested with `stdout: true`: reading a stream
-// requested that way keeps the event loop alive until the worker ends, and an idle host must
-// never keep its program from exiting.
+// Relay by hand: Node's pipe turns a failed stdout write into a crash, and stdout:true blocks exit.
 
 import type { Readable, Writable } from "node:stream";
 
@@ -25,7 +15,7 @@ export interface WorkerOutputTargets {
 
 function ignore(): void {}
 
-/** Writes the way console.log does: a write that fails is dropped, unless the program listens for the error itself. */
+/** Writes like console.log: a failed write is dropped unless the program listens for the error. */
 function writeDroppingFailures(target: Writable, chunk: Buffer | string): void {
   try {
     target.write(chunk, (error) => {
@@ -37,10 +27,7 @@ function writeDroppingFailures(target: Writable, chunk: Buffer | string): void {
   }
 }
 
-/**
- * Replaces the pipes Node put between a new worker thread and the process's stdout and stderr.
- * Call it right after `new Worker(...)`, on a worker created without `stdout` or `stderr`.
- */
+/** Replaces a new worker's stdout/stderr pipes; call right after `new Worker` without them. */
 export function relayWorkerOutput(
   worker: WorkerOutput,
   targets: WorkerOutputTargets = { stdout: process.stdout, stderr: process.stderr },
@@ -52,7 +39,7 @@ export function relayWorkerOutput(
   for (const [source, piped, target] of routes) {
     source.unpipe(piped);
     source.on("data", (chunk: Buffer | string) => writeDroppingFailures(target, chunk));
-    // Removing the last pipe paused the stream, and a paused stream stays paused when a listener is added.
+    // Removing the last pipe paused the stream, and adding a listener does not resume it.
     source.resume();
   }
 }

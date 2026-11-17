@@ -54,7 +54,7 @@ describe("readSessionEventsTail", () => {
     });
     expect(tail.complete).toBe(false);
     const ids = tail.events.map((e: any) => e.id);
-    // The window is line-aligned, so it may carry a few events before the boundary, but never the old turn body.
+    // The line-aligned window may carry a few events before the boundary, never the old turn.
     expect(ids.slice(-3)).toEqual(["new-user", "new-delta", "new-end"]);
     expect(ids).not.toContain("old-user");
     expect(ids).not.toContain("old-delta");

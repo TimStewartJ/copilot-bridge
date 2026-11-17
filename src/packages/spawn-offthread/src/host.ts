@@ -1,18 +1,4 @@
-// Process host: child_process on worker threads.
-//
-// Creating a process is a synchronous call on the calling thread: CreateProcessW on Windows,
-// fork/exec or posix_spawn elsewhere. Under machine load that call has been measured taking tens
-// of seconds, and while it runs the calling thread's event loop serves nothing: no HTTP, no
-// health probe, no timer. The host therefore performs every process creation on worker threads.
-//
-//   execFile / exec   run a command to completion on a small pool of worker threads.
-//   spawn / fork      start a long-lived child on its own dedicated worker thread, so relaying
-//                     its output and IPC is never stuck behind another slow process creation.
-//   removeTree        delete a directory tree on its own worker thread. It is the same kind of
-//                     call: rmSync holds its thread for the whole delete.
-//
-// Deadlines are enforced on the calling thread: a command whose process cannot even be created
-// in time fails with a timeout instead of holding its caller for the length of the stall.
+// Process creation can block a thread for seconds under load, so every spawn runs on a worker.
 
 import type { ForkOptions, Serializable, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -66,29 +52,22 @@ export interface ProcessLaunchObservation {
 export type HostWorker = Pick<Worker, "postMessage" | "on" | "ref" | "unref" | "terminate">;
 
 export interface ProcessHostOptions {
-  /**
-   * "worker" (the default) creates processes on worker threads. "inline" creates them on the
-   * calling thread with the same API: for test suites that mock node:child_process, and as an
-   * operational fallback.
-   */
+  /** Default "worker"; "inline" spawns on this thread, for child_process mocks or as fallback. */
   mode?: ProcessHostMode;
   /** Most worker threads `execFile` and `exec` share. Default 4. */
   maxPoolWorkers?: number;
   /** Called once per process creation with how long it took. Exceptions it throws are ignored. */
   onLaunch?: (observation: ProcessLaunchObservation) => void;
-  /**
-   * Called when a spawned or forked child reports an error that nothing listens for. The default
-   * writes a warning to the console. A real ChildProcess would throw instead.
-   */
+  /** For an unheard child error (a real ChildProcess throws). Default: console warning. */
   onUnhandledChildError?: (error: Error, pid: number | undefined) => void;
   /** Test seam: supplies the worker threads instead of starting this package's worker module. */
   createWorker?: () => HostWorker;
 }
 
-/** Must match PROCESS_HOST_WORKER_FLAG in worker.ts, which the calling thread never imports in worker mode. */
+/** Must match PROCESS_HOST_WORKER_FLAG in worker.ts, which worker mode never imports here. */
 const WORKER_FLAG = "spawnOffthreadWorker";
 const DEFAULT_MAX_POOL_WORKERS = 4;
-/** Lets the worker's own timeout, which carries partial output, win over the calling-thread deadline. */
+/** Lets the worker's timeout, which has partial output, beat the calling-thread deadline. */
 const DEADLINE_GRACE_MS = 1_000;
 
 function startWorkerThread(): HostWorker {
@@ -198,7 +177,7 @@ class HostedChildProcess extends EventEmitter implements HostChild {
     if (!this.closed) this.worker.postMessage(request);
   }
 
-  /** An "error" event with no listener throws. A missing listener must never take the process down. */
+  /** Emitting "error" with no listener throws; that must never take the process down. */
   private report(error: Error): void {
     if (this.listenerCount("error") > 0) {
       this.emit("error", error);
@@ -223,7 +202,7 @@ class HostedChildProcess extends EventEmitter implements HostChild {
     try {
       this.post({ type: "send", id: this.id, seq, message });
     } catch (error) {
-      // The message cannot be copied to the child's thread. Throw to the caller, as send() does for a bad message.
+      // The message cannot cross to the child's thread: throw, as send() does for a bad one.
       this.sendCallbacks.delete(seq);
       throw error;
     }
@@ -290,10 +269,7 @@ class HostedChildProcess extends EventEmitter implements HostChild {
     }
   }
 
-  /**
-   * The process could not be created. Like a real ChildProcess, the handle reports it through
-   * "error" followed by "close" instead of a rejected spawn call.
-   */
+  /** Like a real ChildProcess, report a failed spawn as "error" then "close", not a rejection. */
   failToSpawn(error: Error): void {
     setImmediate(() => {
       this.report(error);
@@ -367,7 +343,7 @@ export class ProcessHost {
     this.createWorker = options.createWorker ?? startWorkerThread;
   }
 
-  /** Like util.promisify(child_process.execFile): resolves with output, rejects with HostExecError. */
+  /** Like promisified execFile: resolves with output, rejects with HostExecError. */
   execFile(file: string, args: readonly string[] = [], options: HostExecOptions = {}): Promise<{ stdout: string; stderr: string }> {
     return this.runExec({ kind: "execFile", file, args: [...args], options: cloneableExecOptions(options) }, file);
   }
@@ -377,10 +353,7 @@ export class ProcessHost {
     return this.runExec({ kind: "exec", command, options: cloneableExecOptions(options) }, command);
   }
 
-  /**
-   * Like child_process.spawn, but asynchronous: resolves once the process exists. A process that
-   * cannot be created still resolves, with `pid` undefined and an "error" event, as spawn does.
-   */
+  /** Async spawn: resolves once the process exists, or with no pid and "error" on failure. */
   spawn(file: string, args: readonly string[] = [], options: SpawnOptions = {}): Promise<HostChild> {
     return this.start("spawn", file, args, options);
   }
@@ -458,7 +431,7 @@ export class ProcessHost {
       try {
         target.worker.postMessage({ type: "exec", id: pending.id, request: pending.request } satisfies HostRequest);
       } catch (error) {
-        // An option that cannot be copied to another thread: fail this command, keep the worker usable.
+        // An option that cannot cross threads: fail this command, keep the worker usable.
         target.creating -= 1;
         this.releaseFromWorker(target, pending.id);
         this.settleExec(pending, error instanceof Error ? error : new Error(String(error)));
@@ -603,7 +576,7 @@ export class ProcessHost {
       try {
         worker.postMessage({ type: "spawn", id, file, args: [...args], options: hostOptions } satisfies HostRequest);
       } catch (error) {
-        // An option that cannot be copied to another thread: nothing was started, so stop the thread.
+        // An option that cannot cross threads: nothing was started, so stop the thread.
         release();
         reject(error);
       }
@@ -619,11 +592,7 @@ export class ProcessHost {
   }
 }
 
-/**
- * A worker thread holds a copy of process.env taken when the thread started, and pool workers
- * live as long as the host. child_process reads the live process.env when `env` is
- * omitted, so the host resolves it on the calling thread, at call time, to keep that behaviour.
- */
+/** Read env here at call time: worker threads hold a stale copy of process.env from their start. */
 function liveEnv(): NodeJS.ProcessEnv {
   return { ...process.env };
 }

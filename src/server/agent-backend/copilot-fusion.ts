@@ -1,14 +1,4 @@
-// Copilot Fusion is the runtime's `auto` model plus a routing tier: Standard, High or Max. The
-// runtime lists the tiers beside its model catalog rather than as models, and takes the choice as
-// `autoTier`, never as a reasoning effort. Bridge offers the tiers as the `auto` model's effort
-// levels, which is how GitHub presents them, and translates between the two only here, at the
-// Copilot backend boundary. The experimental Fusion context limit (Settings › Experimental) is
-// translated here too, into the capability override the runtime applies to every Fusion step.
-//
-// Since CLI 1.0.112 a request names a Fusion tier by its Fusion name (`standard`, `high`, `max`), as
-// `copilot --fusion-tier` does; the tier ids Bridge stores (`balance`, `hydrafusion`, ...) are
-// deprecated as requests but remain what the runtime reports back as `autoTier`. Requests therefore
-// use the Fusion name whenever the catalog gives one for the tier, and the tier id otherwise.
+// Bridge shows Fusion tiers as `auto` effort levels; only this file maps them to runtime terms.
 import type { CopilotClient } from "@github/copilot-sdk";
 import { isRecord } from "../../shared/is-record.js";
 import type { AgentCurrentModel, AgentModelInfo, AgentSetModelOptions } from "./types.js";
@@ -18,7 +8,7 @@ type AutoTierMetadata = NonNullable<CopilotModelList["auto"]>;
 
 export const AUTO_MODEL_ID = "auto";
 const COPILOT_FUSION_NAME = "Copilot Fusion";
-/** The HydraFusion research preview's model, retired by CLI 1.0.104. Its sessions move to Fusion High, as GitHub moved its users. */
+/** The retired HydraFusion preview's model; its sessions move to Fusion High, as GitHub's did. */
 const RETIRED_HYDRAFUSION_MODEL_ID = "hydrafusion";
 const RETIRED_HYDRAFUSION_TIER = "hydrafusion";
 
@@ -44,7 +34,7 @@ function withCapabilities(model: AgentModelInfo): AgentModelInfo {
   };
 }
 
-/** Auto tier id to the Copilot Fusion name a request uses for it, for the tiers that are Fusion tiers. */
+/** Auto tier id to the Fusion name a request uses for it, for tiers that are Fusion tiers. */
 export type FusionTierNames = ReadonlyMap<string, string>;
 
 export function fusionTierNamesFromList(list: CopilotModelList): FusionTierNames {
@@ -71,11 +61,7 @@ function describeAuto(model: AgentModelInfo, auto: AutoTierMetadata | undefined)
   };
 }
 
-/**
- * A create or resume config in the runtime's terms: the retired preview becomes Fusion High, and
- * `auto` carries its effort as the session's Auto tier and the experimental context limit as a
- * capability override. Returns a copy; other models pass through without the limit.
- */
+/** Create/resume config in runtime terms: `auto`'s effort becomes its autoTier. Returns a copy. */
 export function toRuntimeSessionConfig(
   config: Record<string, unknown>,
   fusionContextTokens?: number,
@@ -93,10 +79,7 @@ export function toRuntimeSessionConfig(
   return { ...withContext, capi: { ...(isRecord(rest.capi) ? rest.capi : {}), ...autoTierRequest(tier, fusionTiers) } };
 }
 
-/**
- * A model switch in the runtime's terms: `auto` takes its effort as the Auto tier to switch to, and
- * the experimental context limit, which the runtime drops on every switch to another model.
- */
+/** A runtime model switch: `auto` gets effort as its tier and the context limit a switch drops. */
 export function toRuntimeModelSwitch(
   model: string,
   options: AgentSetModelOptions | undefined,
@@ -116,10 +99,7 @@ export function toRuntimeModelSwitch(
   return { modelId, options: Object.keys(next).length > 0 ? next : undefined };
 }
 
-/**
- * Every step keeps its model's output allowance (128K on each model Fusion uses) out of the
- * window, so the window is the limit plus that allowance and each step gets the whole limit.
- */
+/** Each step reserves this output allowance, so the window is the limit plus it. */
 const FUSION_OUTPUT_ALLOWANCE_TOKENS = 128_000;
 
 /** The runtime's capability override that lets every Fusion step use `tokens` of prompt. */
@@ -143,10 +123,7 @@ export function replacementForRetiredModel(modelId: unknown): { modelId: string;
   return modelId === RETIRED_HYDRAFUSION_MODEL_ID ? { modelId: AUTO_MODEL_ID, autoTier: RETIRED_HYDRAFUSION_TIER } : undefined;
 }
 
-/**
- * The session's model as Bridge reads it: on `auto`, the tier it will use next (one waiting for the
- * next turn, then one being applied, then the committed one) is its effort.
- */
+/** The session's model; on `auto`, its next tier (pending, applying, committed) is the effort. */
 export function fromRuntimeCurrentModel(current: unknown): AgentCurrentModel | undefined {
   if (!isRecord(current)) return current as AgentCurrentModel | undefined;
   const { autoTier, pendingAutoTier, activatingAutoTier, ...model } = current;

@@ -1,8 +1,3 @@
-/**
- * Skill packs: sets of skills a machine adds on top of the Bridge's bundled ones, from a git
- * repository the Bridge keeps checked out or from a folder on disk. A pack can be limited to tasks
- * with certain tags, the way MCP servers are.
- */
 export type SkillPackSource =
   | { kind: "git"; url: string; ref?: string }
   | { kind: "folder"; path: string };
@@ -41,10 +36,7 @@ export function skillPackIdFromName(name: string): string {
   return id || "pack";
 }
 
-/**
- * A git URL must not start with "-" (it would read as an option) and must use a scheme git
- * fetches over the network or a local path git can clone.
- */
+/** No leading "-" (git would read an option); a network scheme git fetches, or a local path. */
 export function isAcceptableGitUrl(url: string): boolean {
   if (!url || url.startsWith("-") || /\s/.test(url)) return false;
   return /^(https:\/\/|ssh:\/\/|git@[^:]+:|file:\/\/)/i.test(url);

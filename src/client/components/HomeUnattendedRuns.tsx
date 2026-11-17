@@ -10,7 +10,7 @@ import { timeAgo } from "../time";
 
 const VISIBLE_ROWS = 5;
 
-/** The chat's own name when the server or the session list knows it, else its task's, else a plain word. */
+/** The chat's name from the server or session list, else its task's, else a plain word. */
 export function unattendedRunTitle(run: UnattendedRun, sessions?: readonly Session[]): string {
   return run.title || sessions?.find(session => session.sessionId === run.sessionId)?.summary || run.taskTitle || "Chat";
 }

@@ -1,11 +1,4 @@
-/**
- * Time-window selection shared by the Copilot usage API and the usage panel.
- *
- * Windows are always anchored to "now" and only bounded at the start, so a
- * clock skew between the scan timestamps and the request can never hide the
- * most recent usage. Day boundaries use the server's local calendar day, which
- * is the same calendar the cached daily buckets are keyed by.
- */
+/** Windows end at now and bound only the start, so clock skew never hides recent usage. */
 export type CopilotUsageRangeKey = "7d" | "28d" | "mtd" | "ytd" | "all";
 
 export const COPILOT_USAGE_RANGE_KEYS = ["7d", "28d", "mtd", "ytd", "all"] as const satisfies readonly CopilotUsageRangeKey[];
@@ -57,10 +50,7 @@ export function copilotUsageDayKey(value: Date | string | number): string | null
   return `${year}-${month}-${day}`;
 }
 
-/**
- * Resolve a range key into the inclusive start of its window. `7d` and `28d`
- * count the current local day plus the preceding 6 / 27 days.
- */
+/** A range's inclusive start; `7d` and `28d` include today and the 6 or 27 days before. */
 export function resolveCopilotUsageRange(
   key: CopilotUsageRangeKey,
   nowMs: number = Date.now(),

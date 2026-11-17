@@ -1,5 +1,4 @@
-// REST routes for Helm conversations (mounted under /api/helm). Messages themselves go through
-// the ordinary chat routes: a Helm conversation is a Bridge session.
+// Helm conversation routes under /api/helm; messages use the ordinary chat routes.
 import express from "express";
 import { HelmError, type HelmService } from "./helm-service.js";
 

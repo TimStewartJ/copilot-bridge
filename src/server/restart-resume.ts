@@ -68,15 +68,7 @@ function pendingRecoveryPrompts(store: DeferredPromptStore, sessionId: string) {
   );
 }
 
-/**
- * Production boot only. A marker that survived to boot is a run cut off by a server kill or
- * crash, because graceful shutdown drives runs to idle and clears them. Never call this from a
- * staged preview backend: its copied database can carry markers for production sessions.
- *
- * A run is resumed at once unless it was resumed less than the cooldown ago: then the work may be
- * what takes the server down. Such a run is resumed once more when the cooldown has passed, and
- * the chat says so. If the server goes down again soon after that, the run is left for the user.
- */
+/** Production boot only: a staged preview's copied DB holds production markers. */
 export function queueBootRecoveryPrompts(
   deps: BootRecoveryDeps,
   markerStore: Pick<InterruptedRunStore, "list" | "clear" | "markResumed" | "markRetryScheduled">,
@@ -114,7 +106,7 @@ export function queueBootRecoveryPrompts(
         continue;
       }
       if (sinceResumeMs >= 0) {
-        // It was made, and the server went down again: the marker goes, so nothing resumes this run.
+        // It was made and the server went down again: drop the marker so nothing resumes this run.
         markerStore.clear(sessionId);
         result.gaveUp.push(sessionId);
         announce(sessionId, RESTART_RESUME_GAVE_UP_MESSAGE);
@@ -126,7 +118,7 @@ export function queueBootRecoveryPrompts(
       marker.retryScheduled ? lastResumedAtMs : lastResumedAtMs + BOOT_RESUME_COOLDOWN_MS,
     );
     deps.deferredPromptStore.create(sessionId, RESTART_RECOVERY_CONTINUE_PROMPT, resumeAt.toISOString());
-    // The marker stays, stamped with the time of that resume: an exit soon after it finds the stamp.
+    // The marker stays, stamped with that resume time: an exit soon after it finds the stamp.
     markerStore.markRetryScheduled(sessionId, resumeAt);
     result.retryScheduled.push({ sessionId, resumeAt: resumeAt.toISOString() });
     announce(sessionId, resumeLaterMessage(resumeAt.getTime() - now.getTime()));
@@ -135,8 +127,7 @@ export function queueBootRecoveryPrompts(
   if (toResume.length > 0) {
     queueRestartRecoveryPrompts(deps, toResume);
     for (const run of toResume) {
-      // Stamp after queueing: the marker stays until the resumed run goes idle, so a second
-      // kill inside the cooldown window finds the stamp and puts the next resume off.
+      // Stamp after queueing: a second kill inside the cooldown finds it and puts the resume off.
       markerStore.markResumed(run.sessionId, now);
       result.resumed.push(run.sessionId);
     }
@@ -145,10 +136,7 @@ export function queueBootRecoveryPrompts(
   return result;
 }
 
-/**
- * A run of the chat has ended in the ordinary way while a resume that was put off is still
- * waiting: the user continued it, so that resume would only repeat the request.
- */
+/** The run ended normally while a put-off resume waits: the user continued, so drop the resume. */
 export function cancelScheduledRestartResume(deps: RestartResumeDeps, sessionId: string): number {
   let cancelled = 0;
   for (const prompt of deps.deferredPromptStore.listForSession(sessionId)) {

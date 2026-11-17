@@ -10,7 +10,7 @@ interface ContextMenuProps {
   position: ContextMenuPosition;
   onClose: () => void;
   children: React.ReactNode;
-  /** "above" opens upward from the point (for controls at the bottom of the screen, where a phone keyboard may cover what lies below). */
+  /** "above" opens upward, for controls at the bottom where a phone keyboard may cover the menu. */
   placement?: "below" | "above";
 }
 
@@ -99,8 +99,7 @@ export function CtxItem({
 
   const handleClick = () => {
     setTapped(true);
-    // Call synchronously to preserve user-gesture context (required for
-    // showPicker() / date inputs on mobile browsers).
+    // Synchronous, to keep the user gesture that showPicker() needs on mobile.
     onClick();
   };
 

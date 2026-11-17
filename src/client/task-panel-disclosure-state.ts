@@ -70,7 +70,7 @@ export function setTaskPanelDisclosureExpanded(
 
 export const TASK_PANEL_AGENT_SETUP_STORAGE_KEY = "bridge-task-panel-agent-setup-open";
 
-/** The task panel's Agent setup group starts closed; once the reader opens it, it stays open everywhere. */
+/** Agent setup starts closed; once opened, it stays open everywhere. */
 export function getTaskPanelAgentSetupExpanded(): boolean {
   try {
     return localStorage.getItem(TASK_PANEL_AGENT_SETUP_STORAGE_KEY) === "true";

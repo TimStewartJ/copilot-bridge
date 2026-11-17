@@ -1,10 +1,10 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getProcessHost, resetProcessHostForTests, resolveWorkerEntry } from "../process-host.js";
 
-// The host's mechanism is tested in src/packages/spawn-offthread. These tests cover what the
-// Bridge adds: one process-wide host, and the rule for which backend it uses.
+// What the Bridge adds to spawn-offthread: one process-wide host and how its backend is chosen.
 
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -39,6 +39,21 @@ describe("Bridge process host", () => {
     expect(resolveWorkerEntry("worker", import.meta.url).entry).toBe(join(serverDir, "__tests__", "worker.ts"));
     expect(resolveWorkerEntry("cli-session-store-worker").execArgv).toEqual(["--import", expect.stringMatching(/^file:.*tsx/)]);
   });
+
+  it.each(["cli-session-store-worker", "windows-process-table-worker"])(
+    "loads %s from source, where a worker thread's own imports get no .js-to-.ts mapping",
+    async (name) => {
+      const { entry, execArgv } = resolveWorkerEntry(name);
+      const worker = new Worker(entry, { execArgv });
+      const exit = new Promise<number>((resolve) => worker.once("exit", resolve));
+      const error = await new Promise<Error | undefined>((resolve) => {
+        worker.once("error", resolve);
+        void exit.then(() => resolve(undefined));
+      });
+      expect(error?.message).toBeUndefined();
+      expect(await exit).toBe(0);
+    },
+  );
 
   it("keeps what a host from before the move imports from the old worker path when it runs inline", async () => {
     const legacy = await import("../process-host-worker.js");

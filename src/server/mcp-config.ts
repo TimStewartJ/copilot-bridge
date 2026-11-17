@@ -13,10 +13,7 @@ export interface LocalMcpServerConfig extends McpServerConfigBase {
   args: string[];
   env?: Record<string, string>;
   workingDirectory?: string;
-  /**
-   * Bridge-owned execution intent. This is removed before forwarding the
-   * configuration to the Copilot runtime.
-   */
+  /** Bridge-owned; removed before the config is forwarded to the Copilot runtime. */
   executionScope?: McpExecutionScope;
 }
 

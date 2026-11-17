@@ -1,6 +1,4 @@
-// Changing one of the Bridge's own events; agents add them. A repeating event is edited as a whole
-// series: the form shows the series' first occurrence, whichever repeat was clicked. An imported
-// event (one with an externalId) is shown read-only, since the next import would replace an edit.
+// Repeats are edited as a whole series; imported events are read-only (an import overwrites).
 import { useEffect, useId, useState } from "react";
 import type { Task } from "../api";
 import type { CalendarEvent, CalendarRepeatEvery } from "../../shared/calendar";

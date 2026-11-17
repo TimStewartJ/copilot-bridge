@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 
 export type TaskNotesSource = "task" | "group";
-/** Notes up to this length travel whole with a chat's messages; longer ones travel as their start. */
+/** Notes up to this length go whole with a chat's messages; longer ones go as their start. */
 export const TASK_NOTES_BRIEF_LENGTH = 8000;
-/** Agents may not grow task notes past this, which stays under the brief so every chat sees them whole. */
+/** Agents may not grow notes past this; it stays under the brief so every chat sees them whole. */
 export const TASK_NOTES_MAX_LENGTH = 6000;
 /** Keeps a page under the 20 KB at which the CLI moves a tool's result to a file. */
 const PAGE_LENGTH = 16_000;
@@ -17,12 +17,12 @@ export function taskNotesRevision(notes: string): string {
   return notesHash("", notes);
 }
 
-/** Handed out only to a reader of the whole notes, so the revision in a brief can't stand in for it. */
+/** Given only to a reader of the whole notes, so a brief's revision can't stand in for it. */
 export function notesWriteTokenField(notes: string): { notesWriteToken?: string } {
   return notes.length > TASK_NOTES_BRIEF_LENGTH ? { notesWriteToken: notesHash("write:", notes) } : {};
 }
 
-/** Why these notes can't be replaced yet. An agent only has the start of long notes until it reads them. */
+/** Why these notes can't be replaced yet: an agent has only the start of long notes until read. */
 export function notesWriteRefusal(current: string, token: unknown): string | undefined {
   const { notesWriteToken } = notesWriteTokenField(current);
   if (!notesWriteToken || token === notesWriteToken) return undefined;
@@ -31,10 +31,7 @@ export function notesWriteRefusal(current: string, token: unknown): string | und
     : "These notes changed since you read them. Read them again and pass the new notesWriteToken.";
 }
 
-/**
- * Why an agent may not save these task notes. Notes already over the limit may still be saved at
- * their length or shorter, so they can be corrected and trimmed step by step.
- */
+/** Why an agent may not save these notes; notes over the limit may still shrink step by step. */
 export function notesLengthRefusal(current: string, next: string): string | undefined {
   if (next.length <= TASK_NOTES_MAX_LENGTH || next.length <= current.length) return undefined;
   const limit = TASK_NOTES_MAX_LENGTH.toLocaleString("en-US");
@@ -57,7 +54,7 @@ export function sliceTaskNotes(notes: string, offset: number, length: number): s
   return notes.slice(offset, end);
 }
 
-/** A continued read must name what it has read so far, so two versions can't be stitched into one. */
+/** A continued read names the revision it started on, so two versions can't be stitched. */
 export function notesContinuationRefusal(notes: string, offset: number, revision: unknown): string | undefined {
   return offset === 0 || (revision === taskNotesRevision(notes) && offset <= notes.length)
     ? undefined

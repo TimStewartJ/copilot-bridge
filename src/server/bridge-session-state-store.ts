@@ -40,11 +40,7 @@ function nowIso(): string {
 }
 
 export function createBridgeSessionStateStore(db: DatabaseSync) {
-  /**
-   * The terminal overlay is optional presentation metadata, so an unreadable
-   * overlay column degrades to "no overlay" instead of throwing and taking the
-   * whole `listStates()` read — and therefore every session list — down with it.
-   */
+  /** Optional display data: a bad overlay must not break listStates() and every session list. */
   function parseTerminalOverlay(row: any): SyntheticTerminalOverlay | undefined {
     if (!row.terminalOverlayJson) return undefined;
     try {
@@ -100,10 +96,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     return hydrateStateRows(rows);
   }
 
-  /**
-   * The rows of the given sessions. The table holds every session there has ever been, so a
-   * reader that knows which sessions it wants (a list response, a list build) asks for those.
-   */
+  /** The table holds every session ever, so readers ask only for the sessions they need. */
   function listStatesFor(sessionIds: readonly string[]): BridgeSessionStateMap {
     if (sessionIds.length === 0) return {};
     const rows = db.prepare(

@@ -1,6 +1,4 @@
-// Checks that a package whose src/ changed since its latest release says so in its CHANGELOG.md.
-// scripts/packages.mjs runs it as `changelog-check`; the decisions are pure functions so the
-// tests can call them without a git checkout.
+// changelog-check: a package whose src/ changed since its last release must say so in CHANGELOG.md.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -14,7 +12,7 @@ export function compareReleaseVersions(left, right) {
   return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 
-/** The non-blank lines of a changelog's `## <title>` section (`## <title> <suffix>` counts too), or undefined when it has none. */
+/** Non-blank lines of the `## <title>` or `## <title> <suffix>` section; undefined if none. */
 export function changelogSection(text, title) {
   const lines = text.split(/\r?\n/);
   const start = lines.findIndex((line) => line === `## ${title}` || line.startsWith(`## ${title} `));
@@ -34,7 +32,7 @@ export function latestReleaseTag(tags, folder) {
   return version === undefined ? undefined : { tag: `${prefix}${version}`, version };
 }
 
-// The printer drops these comments, but they change what the compiler or a bundler makes of the file.
+// The printer drops these comments, but they change what the compiler or a bundler does.
 const DIRECTIVE_COMMENT = /^\s*\/\/\/\s*<reference\b|@ts-(?:ignore|expect-error|nocheck|check)\b|[#@]__PURE__/;
 
 /** The source lines that carry a TypeScript or bundler directive. */
@@ -42,11 +40,7 @@ export function directiveComments(source) {
   return source.split(/\r?\n/).filter((line) => DIRECTIVE_COMMENT.test(line)).map((line) => line.trim());
 }
 
-/**
- * Whether a file's two versions differ in more than comments and whitespace. `before` or `after`
- * is undefined when the file did not exist; an added or deleted file is always a change.
- * TypeScript files are compared as printed without comments; other files byte for byte.
- */
+/** Whether two versions differ beyond TS comments and whitespace; undefined means no file. */
 export function isRealChange(ts, path, before, after) {
   if (before === undefined || after === undefined) return before !== after;
   if (!/\.tsx?$/.test(path)) return !Buffer.from(before).equals(Buffer.from(after));
@@ -58,10 +52,7 @@ export function isRealChange(ts, path, before, after) {
   return directiveComments(oldText).join("\n") !== directiveComments(newText).join("\n");
 }
 
-/**
- * Whether a package's changelog covers its source changes since the release `baselineVersion`.
- * `changelog` is undefined when the package has no CHANGELOG.md.
- */
+/** Whether a changelog (undefined if missing) covers source changes since `baselineVersion`. */
 export function changelogVerdict({ changedFiles, changelog, version, baselineVersion }) {
   if (changedFiles.length === 0) return { ok: true, detail: `no source changes since ${baselineVersion}` };
   const text = changelog ?? "";
@@ -91,7 +82,7 @@ function gitText(repoRoot, args) {
 
 const nulSeparated = (output) => output.split("\0").filter(Boolean);
 
-/** The files under a package's src/ that differ from the tag, uncommitted and untracked ones included, as paths relative to repoRoot. */
+/** Paths (from repoRoot) under a package's src/ that differ from the tag, untracked included. */
 function changedSourceFiles(repoRoot, dir, tag) {
   const source = ["src", "packages", basename(dir), "src"].join("/");
   const diffed = nulSeparated(gitText(repoRoot, ["diff", "--name-only", "-z", "--no-renames", "--relative", tag, "--", source]));
@@ -109,10 +100,9 @@ function contentNow(repoRoot, path) {
   return existsSync(file) ? readFileSync(file) : undefined;
 }
 
-/** Runs the check for each package and prints one line per package. Returns false when one failed. */
+/** Checks each package, printing one line per package; false when any failed. */
 export function changelogCheck(repoRoot, packages, log = console.log) {
-  // A release slot is a copy without .git, but it sits inside the production checkout's ignored
-  // data folder, where git would answer for that checkout instead. Only a checkout of this folder counts.
+  // A release slot has no .git but sits inside the production checkout, so git would answer for it.
   const top = git(repoRoot, ["rev-parse", "--show-toplevel"]);
   const topLevel = top.error || top.status !== 0 ? "" : top.stdout.toString("utf8").trim();
   if (!topLevel || realpathSync(topLevel) !== realpathSync(repoRoot)) {

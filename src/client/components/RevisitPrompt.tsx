@@ -38,16 +38,13 @@ interface RevisitChoicesProps {
   task: RevisitTask;
   /** Ghost buttons sit in a row of other actions; filled ones stand alone in the task's prompt. */
   variant?: "secondary" | "ghost";
-  /** Opens the screen's RevisitLaterDialog, which the screen places outside its scroller and status regions. */
+  /** Opens the screen's RevisitLaterDialog, placed outside its scroller and status regions. */
   onLater: () => void;
   onSaved?: (task: Task) => void;
   onError?: (message: string) => void;
 }
 
-/**
- * The ways to answer a revisit date that has arrived: bring a set-aside task back, see it again
- * later, or drop the date. Every choice takes the task out of Needs you.
- */
+/** Answers a due revisit (resume, later, or drop it); every choice clears it from Needs you. */
 export function RevisitChoices({ task, variant = "secondary", onLater, onSaved, onError }: RevisitChoicesProps) {
   const { pending, save } = useSaveRevisit(task.id, onSaved);
   const report = (message: string) => onError?.(message);
@@ -102,7 +99,7 @@ export function RevisitLaterDialog({ task, onSaved, onClose }: {
   </Dialog>;
 }
 
-/** Shown at the top of a task whose revisit date has arrived, so the date can be answered where the task is read. */
+/** Shown atop a task whose revisit date has arrived, so it is answered where the task is read. */
 export default function RevisitPrompt({ task, onSaved }: { task: RevisitTask; onSaved?: (task: Task) => void }) {
   const [error, setError] = useState("");
   const [choosingLater, setChoosingLater] = useState(false);

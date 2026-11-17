@@ -125,7 +125,7 @@ function connectWebSocket(ticket: VoiceConversationTicket, handlers: VoiceTransp
         fail("WebSocket closed before it was ready");
         return;
       }
-      // Only a socket that actually carried the conversation reports a close; failed handshakes just reject.
+      // Only a socket that carried the conversation reports a close; failed handshakes reject.
       if (!closedByClient) handlers.onClose("websocket closed");
     };
   });
@@ -221,8 +221,7 @@ function connectHttp(ticket: VoiceConversationTicket, handlers: VoiceTransportHa
         reject(new Error("Voice event stream failed"));
         return;
       }
-      // EventSource retries network drops by itself (the server reattaches), but gives up for good
-      // on HTTP errors such as a conversation the server no longer knows.
+      // EventSource retries network drops itself but gives up for good on HTTP errors.
       if (!closed && source.readyState === EventSource.CLOSED) {
         closed = true;
         if (flushTimer !== undefined) window.clearTimeout(flushTimer);
@@ -249,7 +248,7 @@ export async function connectVoiceTransport(
       return transport;
     } catch (error) {
       if (preference === "websocket") throw error;
-      // A proxy that rejects upgrades will keep rejecting them; reconnect straight over HTTP for a while.
+      // A proxy that rejects upgrades keeps doing so; use HTTP for a while.
       webSocketRetryAt = Date.now() + WS_RETRY_AFTER_FAILURE_MS;
     }
   }

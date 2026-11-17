@@ -3,16 +3,11 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isRecord } from "../shared/is-record.js";
 
-/**
- * When a chat's context budget last changed size through the Bridge, kept beside its session
- * state so it outlives the server process: a switch to another model, or a session handle with a
- * different experimental Fusion context limit. A routed chat's meter sets aside step windows from
- * before then (`SessionUsageMetrics.budgetChangedAt`).
- */
+/** When the chat's context budget last changed size; meters skip step windows before it. */
 export const BRIDGE_CONTEXT_BUDGET_FILE = "bridge-context-budget.json";
 
 export interface ContextBudgetRecord {
-  /** The Fusion context limit the chat's latest session handle came with; unset is the runtime's own. */
+  /** Fusion context limit of the chat's latest session handle; unset means the runtime's own. */
   fusionContextTokens?: number;
   /** ISO time the budget last changed size. */
   changedAt?: string;
@@ -44,7 +39,7 @@ export function recordModelChange(sessionStateDir: string, at: Date): void {
   writeContextBudget(sessionStateDir, { ...readContextBudget(sessionStateDir), changedAt: at.toISOString() });
 }
 
-/** Notes the Fusion context limit a new session handle came with; a different one changes the budget. */
+/** Records a new session handle's Fusion context limit; a different one changes the budget. */
 export function recordFusionContextLimit(sessionStateDir: string, tokens: number | undefined, at: Date): void {
   const record = readContextBudget(sessionStateDir);
   if (record.fusionContextTokens === tokens) return;

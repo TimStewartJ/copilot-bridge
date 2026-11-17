@@ -1,7 +1,3 @@
-// The week (or single-day) grid: an all-day row, a row that counts agent runs when their layer is
-// hidden, and 24 hours of timed items laid into lanes. Events can be dragged to another time or
-// day, and their bottom edge dragged to change when they end; imported events only open. Other
-// dates open where they live.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { CalendarColors, CalendarItem, CalendarResponse } from "../../shared/calendar";
 import { DS, cx } from "../design/tokens";

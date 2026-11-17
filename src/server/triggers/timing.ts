@@ -11,7 +11,7 @@ export const TRIGGER_MAX_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
 export const TRIGGER_MAX_AT_HORIZON_SECONDS = 365 * 24 * 60 * 60;
 /** Recurring chat triggers stop after this unless they set maxRuns or expiresAt. */
 export const TRIGGER_DEFAULT_CHAT_EXPIRY_SECONDS = 7 * 24 * 60 * 60;
-/** A task trigger's at/cron occurrence later than this (the Bridge was down) is skipped, not run late. */
+/** A task trigger's at/cron slot missed by more than this (Bridge down) is skipped, not run. */
 export const TRIGGER_MISSED_RUN_GRACE_MS = 60 * 60 * 1000;
 /** Cron slots, window and probe budget used to find the shortest gap of an expression. */
 const CRON_GAP_SAMPLE = 60;
@@ -35,7 +35,7 @@ export function getServerTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
-/** Timing as tools and the API take it: exactly one of delaySeconds, runAt, intervalSeconds or cron. */
+/** Timing input: exactly one of delaySeconds, runAt, intervalSeconds or cron. */
 export interface TriggerWhenInput {
   delaySeconds?: unknown;
   runAt?: unknown;
@@ -49,7 +49,7 @@ export function hasTriggerWhenInput(input: TriggerWhenInput): boolean {
     || input.intervalSeconds !== undefined || input.cron !== undefined;
 }
 
-/** The shortest gap between the coming slots of a cron expression, in seconds (looked at over the next eight days). */
+/** Shortest gap in seconds between a cron expression's slots over the next eight days. */
 export function shortestCronGapSeconds(cron: string, timezone: string, now = new Date()): number | undefined {
   let probes = 0;
   const preview = createCronPreviewIterator(cron, timezone, now.getTime() + 1, now.getTime() + CRON_GAP_WINDOW_MS, () => ++probes <= CRON_GAP_PROBES);
@@ -145,20 +145,20 @@ export function nextRunAfter(when: TriggerWhen, settledAt: Date, scheduledFor?: 
     case "at": return undefined;
     case "every": return new Date(settledAt.getTime() + when.seconds * 1000).toISOString();
     case "cron": {
-      // Never earlier than the slot just served, so a quick run cannot land on the same minute again.
+      // Never before the slot just served, so a quick run cannot hit the same minute again.
       const after = scheduledFor ? Math.max(settledAt.getTime(), Date.parse(scheduledFor)) : settledAt.getTime();
       return computeNextRunAt(when.cron, when.timezone, new Date(after));
     }
   }
 }
 
-/** Whether a due occurrence is too late to run: task-lane at/cron slots missed while the Bridge was down. */
+/** Whether a due task-lane at/cron slot was missed while the Bridge was down. */
 export function isMissedOccurrence(when: TriggerWhen, lane: TriggerLane, nextRunAt: string, now = new Date()): boolean {
   if (lane !== "task" || when.kind === "every") return false;
   return now.getTime() - Date.parse(nextRunAt) > TRIGGER_MISSED_RUN_GRACE_MS;
 }
 
-/** A short description such as "every 15 min", "at 2026-11-20T17:00:00.000Z" or "cron 0 8 * * 1-5 (America/Los_Angeles)". */
+/** A short description such as "every 15 min" or "cron 0 8 * * 1-5 (America/Los_Angeles)". */
 export function describeTriggerWhen(when: TriggerWhen): string {
   switch (when.kind) {
     case "at": return `at ${when.at}`;

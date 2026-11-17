@@ -14,9 +14,7 @@ export default defineProject({
       "src/server/__tests__/pre-deploy-checkpoint.test.ts",
       "src/server/__tests__/staging-tools*.test.ts",
     ],
-    // Use threads pool instead of forks. Forks-on-Windows + node:sqlite +
-    // high-volume server test output intermittently kills worker child
-    // processes through IPC. Threads avoid that worker process boundary.
+    // On Windows, node:sqlite plus heavy test output sometimes kills forked workers via IPC.
     pool: "threads",
   },
 });

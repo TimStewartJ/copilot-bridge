@@ -199,7 +199,7 @@ describe("bridge context sections", () => {
       "<playbook>\nNo playbook is chosen for this chat yet.\n</playbook>",
     ]);
     expect([...emptyBridgeContextHashes().values()]).toEqual(detached.map((section) => section.hash));
-    // Linked notes that were emptied differ from the starting point, so a chat is told after a restart.
+    // Emptied linked notes differ from the start, so a chat is told after a restart.
     expect(sectionContent({}, createTask({ notes: "" }), "task_notes")).toBe("<task_notes>\nThis task has no notes.\n</task_notes>");
   });
 

@@ -3,12 +3,7 @@ import { AlertTriangle, Archive, Loader2, Trash2, X } from "lucide-react";
 import type { SessionDisposition, Task, TaskDeletionPreview } from "../api";
 import { DS, cx } from "../design/tokens";
 
-/**
- * Above this many sessions a delete is warned about rather than blocked: each
- * session costs a backend round-trip plus a recursive directory removal, so the
- * run can outlast the HTTP response. The work is resumable, so the warning
- * explains the wait instead of forbidding it.
- */
+/** Warn, not block: each session is a round-trip plus rm -r, so it can outlast the response. */
 export const SLOW_SESSION_DELETE_THRESHOLD = 250;
 
 interface ConfirmTaskDeleteDialogProps {
@@ -194,12 +189,7 @@ export default function ConfirmTaskDeleteDialog({
   );
 }
 
-/**
- * Polls the preview endpoint so a long delete shows progress instead of a
- * spinner. A big delete can outlive its HTTP response, so this keeps tracking
- * the server-side work after the request itself has given up; `taskGone`
- * reports the completion the lost response would have carried.
- */
+/** Poll so a long delete shows progress and is tracked after its response is lost (taskGone). */
 export function useTaskDeletionProgress(
   taskId: string | undefined,
   active: boolean,
@@ -219,8 +209,7 @@ export function useTaskDeletionProgress(
         const next = await fetchPreview(taskId);
         if (!cancelled) setState({ remaining: next.sessionCount, taskGone: false });
       } catch (err) {
-        // A 404 means the task is gone, i.e. the delete finished. Any other
-        // failure is transient — keep polling rather than declare success.
+        // 404 means the delete finished; any other failure is transient, so keep polling.
         const status = (err as { status?: number } | null)?.status;
         if (!cancelled && status === 404) setState({ remaining: 0, taskGone: true });
       }

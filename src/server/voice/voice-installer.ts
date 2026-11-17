@@ -1,9 +1,4 @@
-// Installs the voice engine on demand: pinned native npm packages and speech models,
-// verified against published digests, into the voice data directory.
-//
-// Packages come through the machine's npm client and models over HTTPS. A verified archive
-// that is already in the downloads folder is used as it is, so a host that can reach neither
-// source can still be set up by copying the files in by hand.
+// Installs pinned, digest-verified voice assets; a verified file in downloads is reused (offline).
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -94,7 +89,7 @@ export interface VoiceInstallerOptions {
   extract?: ExtractArchive;
   /** Defaults to the machine's npm client, found beside Node or on PATH. */
   npmClient?: NpmClient;
-  /** Delay between retries of a file move that a scanner is blocking. Tests pass a no-op so they never sleep. */
+  /** Delay between retries of a file move a scanner is blocking; tests pass a no-op. */
   wait?: (delayMs: number) => Promise<void>;
   logger?: Pick<Console, "log" | "warn" | "error">;
 }
@@ -109,13 +104,13 @@ function assetDigest(asset: VoiceAsset): string {
   return asset.kind === "model" ? `sha256:${asset.sha256}` : asset.integrity;
 }
 
-/** Matches what `npm pack` and a browser download name the file, so a hand-copied archive is found. */
+/** Same name `npm pack` and a browser download use, so a hand-copied archive is found. */
 function archiveFileName(asset: VoiceAsset): string {
   if (asset.kind === "npm") return `${asset.name}-${asset.version}.tgz`;
   return asset.fileName ?? basename(new URL(asset.url).pathname);
 }
 
-/** Node reports every connection problem as "fetch failed"; the actual reason is on the cause chain. */
+/** Node reports every connection problem as "fetch failed"; the reason is on the cause chain. */
 function describeNetworkError(error: unknown): string {
   let reason = error instanceof Error ? error.message : String(error);
   let cause = (error as { cause?: unknown } | undefined)?.cause;
@@ -128,7 +123,7 @@ function describeNetworkError(error: unknown): string {
   return reason;
 }
 
-/** Cleanup never fails an install that otherwise worked; a virus scanner may still hold the files. */
+/** Never fails an install that worked; a virus scanner may still hold the files. */
 async function removeQuietly(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true }).catch(() => undefined);
 }
@@ -182,7 +177,7 @@ export class VoiceInstaller {
     const speechModels = SPEECH_MODEL_ASSETS.map(describe);
     const totalBytes = assets.reduce((sum, asset) => sum + asset.sizeBytes, 0);
     const remainingBytes = assets.filter((asset) => !asset.installed).reduce((sum, asset) => sum + asset.sizeBytes, 0);
-    // A setup from when another recognizer was the default keeps working while the default downloads.
+    // Any installed recognizer keeps the setup working while the default downloads.
     const ready = speechModels.some((asset) => asset.installed)
       && assets.every((asset) => asset.installed || speechModels.some((speech) => speech.id === asset.id));
     return {
@@ -340,7 +335,7 @@ export class VoiceInstaller {
     const archive = join(downloadsDir, fileName);
     let rejectedCopy = false;
     if (existsSync(archive)) {
-      // Copied in by hand for a host that can't download it, or kept from a run whose unpack step failed.
+      // Copied in by hand, or kept from a run whose unpack step failed.
       if (await this.matchesDigest(asset, archive, report)) {
         this.logger.log(`[voice-install] Using ${fileName} from the downloads folder`);
         return archive;
@@ -393,7 +388,7 @@ export class VoiceInstaller {
     } finally {
       await removeQuietly(staging);
     }
-    // Only a finished install gives up the verified archive, so a failed unpack never costs a second download.
+    // Only a finished install drops the archive, so a failed unpack never costs a second download.
     await removeQuietly(archive);
   }
 

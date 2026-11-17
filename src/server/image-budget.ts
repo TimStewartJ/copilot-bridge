@@ -8,27 +8,7 @@ import { readJsonlLines } from "./jsonl-lines.js";
 import { getSdkAgentId } from "./sdk-event-identity.js";
 import { imageCompactAtBytes, type ImageBudgetSettings } from "../shared/image-budget.js";
 
-/**
- * Keeps a conversation on a model with a request-size ceiling (setting `imageBudget`, default claude-* at 30 MB)
- * from growing past it with images.
- *
- * Why: Copilot sometimes serves Claude through Google Vertex, which rejects requests over about 30 MB with a
- * bodyless 400. Since CLI 1.0.89 the CLI shrinks images in Claude requests to stay under about 32 MiB, the direct
- * Anthropic limit, so a request between 30 MB and 33.5 MB still goes out. It compacts and retries only on a 413; a
- * 400 ends the turn, so the chat is stuck for good. Even /compact fails, because the summary request carries the same
- * images.
- *
- * Remove this module (and its hooks in SessionManager and SessionRunner) once Copilot returns a 413 for these
- * requests, or the CLI keeps Claude requests under the backend's real limit. The two "cannot get past" tests in
- * `image-budget.native.test.ts` (OpenAI completions wire and Claude messages wire) start failing when the CLI
- * recovers by itself.
- *
- * How: estimate the images in the main conversation from session events. The runtime does not report which images
- * are still in context, so the estimate errs high: it adds every image a main-agent tool result or user message
- * carried, and a successful compaction removes what existed when it started. At two thirds of the ceiling the turn is
- * stopped at a tool boundary, compacted and continued, because the runtime applies a compaction only when a new
- * message starts a run.
- */
+/** Vertex 400s Claude requests over ~30 MB; compact early. Remove once Copilot returns 413. */
 
 type ImageBudgetRecord =
   | { kind: "images"; id?: string; bytes: number }
@@ -63,16 +43,16 @@ const UNCOMPACTED_CONTINUE_PROMPT = [
   "</bridge_notice>",
 ].join("\n");
 
-/** After an attempt, the estimate must grow this much before the next one, so a high estimate cannot loop. */
+/** Growth needed after an attempt before the next one, so a high estimate cannot loop. */
 const REARM_GROWTH_BYTES = 2_000_000;
 /** Consecutive failed attempts after which a session is no longer paused. */
 const MAX_CONSECUTIVE_FAILURES = 2;
 /** How long a pause waits for the stopped turn to end. */
 const SETTLE_TIMEOUT_MS = 30_000;
-/** How long a pause waits for a compaction the runtime started itself (the compaction RPC's own bound). */
+/** How long a pause waits for the runtime's own compaction (the compaction RPC's bound). */
 const COMPACTION_TIMEOUT_MS = 10 * 60_000;
 
-/** Sub-agents keep their own conversation; their events carry an agent id and a parent tool call. */
+/** Sub-agents keep their own conversation; their events carry an agent id or parent tool call. */
 function isMainAgentEvent(event: unknown): boolean {
   if (!event || typeof event !== "object" || getSdkAgentId(event)) return false;
   return typeof (event as { data?: { parentToolCallId?: unknown } }).data?.parentToolCallId !== "string";
@@ -187,16 +167,13 @@ export interface ImageBudgetSession {
 export interface ImageBudgetHost {
   getSettings(): ImageBudgetSettings | undefined;
   getEventsPath(sessionId: string): string;
-  /** Takes the session so nothing else starts or steers a turn; false when it is busy with something else. */
+  /** Takes the session so nothing else starts or steers a turn; false when busy otherwise. */
   hold(sessionId: string): boolean;
-  /** Whether a turn is running, and whether Bridge may stop it (not automated quiet turns or Helm). */
+  /** Whether a turn runs and Bridge may stop it (never quiet automated turns or Helm). */
   runningTurn(sessionId: string): "none" | "stoppable" | "keep";
-  /** Stops the running turn without counting as the user's Stop, and resolves once Bridge's run for it has ended. */
+  /** Stops the turn (not as the user's Stop); resolves once Bridge's run for it has ended. */
   stopTurn(sessionId: string): Promise<void>;
-  /**
-   * In one step: drops what the stopped turn left behind, releases the session, and starts the continuation (only if
-   * `session` is still the cached handle). `attention` asks the user to look at a turn that was stopped but not continued.
-   */
+  /** Atomically drops the stopped turn's leftovers, releases, continues (if still cached). */
   finish(sessionId: string, session: ImageBudgetSession, outcome: FinishOutcome): void;
   recordSpan?(name: string, duration: number, sessionId: string, metadata: Record<string, unknown>): void;
 }
@@ -239,7 +216,7 @@ export class ImageBudgetController {
     if (this.entries.get(sessionId)?.session === session) this.entries.delete(sessionId);
   }
 
-  /** Rebuilds the estimate after the persisted history was cut back (undo, quiet-tail truncation). */
+  /** Rebuilds the estimate after persisted history was cut back (undo, tail truncation). */
   reload(sessionId: string): void {
     const entry = this.entries.get(sessionId);
     if (entry) this.load(sessionId, entry.session);
@@ -371,7 +348,7 @@ export class ImageBudgetController {
       outcome = "failed";
       console.log(`[image-budget] [${sessionId.slice(0, 8)}] About ${(bytes / 1e6).toFixed(1)} MB of images on ${model}; ${stopped ? "pausing the turn to compact" : "compacting"}`);
       if (stopped) {
-        // The stopped turn's own idle can arrive only after the compaction; the continuation must start after it.
+        // The stopped turn's idle may follow the compaction; the continuation must wait for it.
         stoppedTurnIdle = new Promise<void>((resolve) => {
           unsubscribe = session.on?.((event) => { if (event?.type === "session.idle" && isMainAgentEvent(event)) resolve(); });
         });
@@ -393,14 +370,14 @@ export class ImageBudgetController {
       outcome = runtimeCompacting ? "skipped" : "failed";
       if (!runtimeCompacting) console.warn(`[image-budget] [${sessionId.slice(0, 8)}] Compaction failed: ${detail}`);
     } finally {
-      // The idle follows the end of whichever compaction is running, which for the runtime's own can take minutes.
+      // The idle follows the running compaction, which can take minutes for the runtime's own.
       if (compactionAttempted && stoppedTurnIdle) {
         await Promise.race([stoppedTurnIdle, delay(runtimeCompacting ? COMPACTION_TIMEOUT_MS : SETTLE_TIMEOUT_MS)]);
       }
       unsubscribe?.();
       if (this.pauses.get(sessionId) === pause) this.pauses.delete(sessionId);
       if (held) {
-        // A turn is continued only after an attempted compaction; a stop that did not settle is left to the user.
+        // Continue only after an attempted compaction; an unsettled stop is left to the user.
         const continues = stopped && !pause.cancelled && compactionAttempted;
         const summarized = outcome === "compacted" || runtimeCompacting;
         this.host.finish(sessionId, session, {

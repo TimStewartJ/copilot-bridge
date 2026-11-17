@@ -3,9 +3,7 @@ import { existsSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { initializeDashboardRetirementSchema } from "./dashboard-retirement-schema.js";
 
-// Runs only as an off-main-thread preboot command. No request handler imports this module.
-// Removes every table of the retired dashboard (and the version 1 archive of it). Runs on each start so
-// tables recreated by an older release after a rollback are removed again.
+// Preboot worker only; runs every start so tables an older release recreates are dropped again.
 const dataDir = process.argv[2];
 if (!dataDir) throw new Error("A data directory is required for dashboard retirement");
 const databasePath = join(dataDir, "bridge.db");
@@ -27,8 +25,7 @@ if (existsSync(databasePath)) {
       db.exec("BEGIN IMMEDIATE");
       try {
         initializeDashboardRetirementSchema(db);
-        // Retry keys and provenance of accepted checklist items are live data: keep them before the old table goes.
-        // A key another item already owns is skipped (and reported) rather than failing startup on the UNIQUE constraint.
+        // Copy live keys first; skip a key another item owns instead of failing startup on UNIQUE.
         let skippedKeys = 0;
         if (hasTable("focus_action_details")) {
           const claimed = `EXISTS(SELECT 1 FROM checklist_item_details k WHERE k.stableKey=d.stableKey AND k.itemId!=c.id)`;
@@ -64,7 +61,7 @@ if (existsSync(databasePath)) {
       } catch (error) { db.exec("ROLLBACK"); throw error; }
     }
   } finally { db.close(); }
-  // The pre-retirement backup made by version 1 holds the removed records; delete it once they are gone.
+  // Version 1's backup holds the removed records; delete it once they are gone.
   const versionOneBackups = join(dataDir, "backups", "dashboard-retirement");
   for (const name of ["before-v1.db", "before-v1.pending.db"]) {
     const backup = join(versionOneBackups, name);

@@ -1,8 +1,4 @@
-// Chat grades (Settings › Usage): Copilot's trajectory classifiers run over chats the user picks by
-// date, model and origin, and their labels counted per model. Classifier, label and value names come
-// from the Copilot runtime and are open strings: show them as text.
-
-/** Which chats a view or a grading run covers. */
+/** Which chats a view or grading run covers. Classifier, label and value names are open strings. */
 export interface ChatGradesFilters {
   /** First and last local day (YYYY-MM-DD) a chat was active; open when absent. */
   from?: string;
@@ -13,7 +9,7 @@ export interface ChatGradesFilters {
   includeScheduled?: boolean;
 }
 
-/** Why a chat has no grade: no log, a log too big to send, a log the runtime rejected, or a failed call. */
+/** Why a chat has no grade: no log, log too big, log the runtime rejected, or a failed call. */
 export type ChatGradeSkipReason = "missing" | "too-large" | "invalid" | "error";
 
 /** A model used in the date range, with how many chats in the range it did most of the work of. */
@@ -43,7 +39,7 @@ export interface ChatGradesModelSeries {
   model: string;
   /** Graded chats with at least one counted unit. */
   chats: number;
-  /** Units counted (tasks, messages, chats: whatever the classifier's scope is); the sum of `values`. */
+  /** Units counted (whatever the classifier's scope is); the sum of `values`. */
   units: number;
   /** Input and output tokens the judge models used for this classifier on these chats. */
   judgeTokens: number;

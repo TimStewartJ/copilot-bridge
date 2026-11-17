@@ -20,11 +20,7 @@ const RELEASE_SLOT_MANIFEST = "release-slot.json";
 const ACTIVE_RELEASE_FILE = "active-release.json";
 const RELEASE_SLOT_KEEP_RECENT = 5;
 const TEMP_DIR_SUFFIX = ".tmp";
-/**
- * Upper bound on how long a release temp directory may sit untouched while its
- * recorded PID is still alive before we treat that PID as reused. Generously
- * larger than the default 1000-second build timeout.
- */
+/** Past this idle age a live recorded PID counts as reused; well above the 1000 s build timeout. */
 const TEMP_DIR_MAX_LIVE_AGE_MS = 60 * 60_000;
 const RELEASE_SLOT_RENAME_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 1_500] as const;
 const RETRYABLE_RELEASE_SLOT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
@@ -140,14 +136,7 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-/**
- * Last time the release temp directory itself changed. A build in progress adds
- * and removes entries in this directory (dependency install, dist output), so
- * this doubles as a progress signal that does not depend on the recorded PID.
- *
- * Deliberately `mtime` only: `ctime` advances on any metadata touch and
- * `birthtime` is unreliable across filesystems, so neither reflects progress.
- */
+/** mtime shows build progress; ctime moves on any metadata touch and birthtime is unreliable. */
 function tempDirectoryLastActivityMs(root: string): number | undefined {
   try {
     const { mtimeMs } = statSync(root);
@@ -157,16 +146,7 @@ function tempDirectoryLastActivityMs(root: string): number | undefined {
   }
 }
 
-/**
- * Decide whether a release temp directory still belongs to a live build.
- *
- * PID existence alone is not proof of ownership: the operating system reuses
- * PIDs, so an unrelated long-lived process can inherit the number recorded in
- * `.<slot>.<pid>.tmp` and pin a large abandoned tree forever. We therefore
- * combine the PID check with a bounded activity age — a real build is bounded by
- * the build timeout, so a "live" PID whose tree has been untouched for far
- * longer is PID reuse, not an in-flight build.
- */
+/** PIDs get reused, so a live PID protects the dir only while it changed within the max age. */
 function isReleaseTempDirectoryProtected(
   root: string,
   pid: number | undefined,

@@ -7,8 +7,7 @@ export default defineProject({
     name: "client",
     include: ["src/client/**/*.test.ts"],
     exclude: [NATIVE_TEST_FILES],
-    // Client React DOM tests are expected to use src/client/test-react-harness.ts
-    // so each file owns DOM setup, React act boundaries, and root cleanup.
+    // Safe because React DOM tests use src/client/test-react-harness.ts, which owns per-file setup.
     fileParallelism: true,
   },
 });

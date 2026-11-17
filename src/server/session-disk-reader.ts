@@ -52,10 +52,7 @@ const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_SINGLE_READ_MAX_BYTES = 1024 * 1024;
 const RECENT_MESSAGES_MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const EVENT_LOG_STATS_SCAN_CHUNK_BYTES = 256 * 1024;
-/**
- * Cached folds are far larger than the plain stats they replaced (they carry turn checkpoints), and
- * only a handful of sessions are ever read concurrently, so this is deliberately small.
- */
+/** Small on purpose: folds carry turn checkpoints and few sessions are read at once. */
 const EVENT_LOG_STATS_CACHE_MAX_ENTRIES = 32;
 const EVENT_LOG_STATS_CACHE_VERSION = 7;
 /** Bytes hashed at the head and at the resume point to detect event-log rewrites. */
@@ -89,10 +86,7 @@ export interface ReadMessagesFromDiskResult {
   hasMore: boolean;
   lastVisibleActivityAt?: string;
   coverage: SessionHistoryCoverage;
-  /**
-   * Every sub-agent the session has run, from the whole log and not only the part `messages` was
-   * read from, so a step can be shown under its agent even when the launch is far above the window.
-   */
+  /** All sub-agents in the log, so a step shows under its agent even if launched off-window. */
   agents: TranscriptAgent[];
 }
 
@@ -149,10 +143,7 @@ interface CursorCheckpoint {
   turnStartOffset?: number;
 }
 
-/**
- * Serializable fold state for the event-log stats scan. Kept separate from the scanner so a
- * scan can resume from a previously scanned byte offset when the log only grew.
- */
+/** Serializable fold state, apart from the scanner so a grown log resumes from its last offset. */
 interface EventLogStatsScannerState {
   eventCount: number;
   candidateEventCount: number;
@@ -196,11 +187,7 @@ const eventLogStatsCache = new Map<string, EventLogStatsCacheEntry>();
 /** Bumped by {@link clearEventLogStatsCache} so in-flight scans cannot republish stale folds. */
 let eventLogStatsCacheGeneration = 0;
 
-/**
- * Optional durable backing for the fold cache. The in-memory map is the hot path; the
- * persistence layer only has to survive restarts so the first open of a large log after
- * a cutover resumes from the last folded offset instead of rescanning everything.
- */
+/** Durable fold cache so the first open after a restart resumes from the last offset. */
 export interface EventLogStatsPersistence {
   load(eventsPath: string, sessionId: string): EventLogStatsCacheEntry | undefined;
   save(entry: EventLogStatsCacheEntry): void;
@@ -216,10 +203,7 @@ export function setEventLogStatsPersistence(persistence: EventLogStatsPersistenc
 
 /** Yield to the event loop after this much synchronous folding so other work interleaves. */
 const EVENT_LOG_STATS_SCAN_SLICE_MS = 12;
-/**
- * Cold scans of large logs are CPU-bound even when sliced; several at once (every session
- * opened right after a restart) would still starve the loop, so they queue behind this cap.
- */
+/** Sliced cold scans still starve the loop when many run at once (after a restart), so cap them. */
 const EVENT_LOG_STATS_SCAN_MAX_CONCURRENT = 2;
 /** Scans shorter than this never wait for a slot: they are cheaper than the queueing. */
 const EVENT_LOG_STATS_SCAN_GATE_MIN_BYTES = 4 * 1024 * 1024;
@@ -331,10 +315,7 @@ function getToolName(event: any): string {
   return typeof name === "string" ? name : "unknown";
 }
 
-/**
- * Parses every line of a tail window. Events the transcript never reads keep their envelope,
- * because a fork boundary can be any event.
- */
+/** Parses a tail window; events the transcript skips keep their envelope, as any can be a fork. */
 function parseTailEvents(content: string): {
   events: any[];
   malformedCandidateCount: number;
@@ -474,11 +455,7 @@ function cloneEventLogStatsScannerState(
   };
 }
 
-/**
- * Folds event-log lines into {@link EventLogStatsScannerState}. The fold is resumable: feeding
- * lines from a byte offset onto a previously captured state is equivalent to scanning the whole
- * file, so an appended log only costs the appended bytes.
- */
+/** Must stay resumable: folding from an offset onto saved state equals a full scan. */
 function createEventLogStatsScanner(sessionId: string, initialState?: EventLogStatsScannerState) {
   const state = initialState ?? createEventLogStatsScannerState();
   const openVisibleToolCallIds = new Set(state.openVisibleToolCallIds);
@@ -596,11 +573,7 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
   return { processLine, syncState };
 }
 
-/**
- * Collapse checkpoints that can never be selected again into the base checkpoint. Any future
- * `cursorOffset` is at least `scannedBytes - RECENT_MESSAGES_MAX_TAIL_BYTES`, so older
- * checkpoints only matter through the most recent one below that bound.
- */
+/** Future cursors are >= scannedBytes - RECENT_MESSAGES_MAX_TAIL_BYTES, so older ones collapse. */
 function pruneCursorCheckpoints(state: EventLogStatsScannerState, scannedBytes: number): void {
   const minUsefulOffset = scannedBytes - RECENT_MESSAGES_MAX_TAIL_BYTES;
   let collapseCount = 0;
@@ -618,10 +591,7 @@ function pruneCursorCheckpoints(state: EventLogStatsScannerState, scannedBytes: 
   state.checkpoints = state.checkpoints.slice(collapseCount);
 }
 
-/**
- * The cursor in effect just before `cursorOffset`: the last checkpoint written by an earlier line.
- * Undefined when the backstop has already collapsed that checkpoint into a later base.
- */
+/** Last checkpoint before `cursorOffset`; undefined if the backstop merged it into a later base. */
 function resolveTranscriptCheckpoint(
   state: EventLogStatsScannerState,
   cursorOffset: number,
@@ -689,10 +659,7 @@ function scanEventLogStatsFromBuffer(
   return buildEventLogStats(scanner.syncState(), cursorOffset);
 }
 
-/**
- * Fingerprint the already-scanned region by sampling its head, midpoint, and end. A pure append
- * leaves all three unchanged; an in-place rewrite almost certainly disturbs at least one.
- */
+/** Samples head, middle and end of the scanned region: appends keep them, rewrites change one. */
 async function readScannedRegionFingerprint(
   file: Awaited<ReturnType<typeof open>>,
   scannedBytes: number,
@@ -713,12 +680,7 @@ async function readScannedRegionFingerprint(
   return hash.digest("hex");
 }
 
-/**
- * Scan `eventsPath` up to `upToBytes`, resuming from the cached fold when the log only grew.
- * Split records accumulate chunk fragments and are joined once, avoiding repeated prefix copies.
- * Head/tail fingerprints over the already-scanned region detect rewrites (compaction, undo,
- * fork) that would otherwise make a resumed fold wrong.
- */
+/** Resumes the cached fold if the log only grew; fingerprints catch rewrites (compaction, undo). */
 async function scanEventLogStats(
   eventsPath: string,
   sessionId: string,
@@ -747,8 +709,7 @@ async function scanEventLogStats(
       }
     }
 
-    // Folding is synchronous CPU work; the reader hands the loop back regularly so HTTP requests,
-    // SSE heartbeats, and other sessions keep moving while a large log is scanned.
+    // Folding is sync CPU work, so yield often to keep requests and heartbeats moving.
     const fold = async (from: EventLogStatsScannerState | undefined, start: number) => {
       // Large cold scans queue behind a small concurrency cap; small or resumed ones run freely.
       if (!releaseSlot && upToBytes - start >= EVENT_LOG_STATS_SCAN_GATE_MIN_BYTES) {
@@ -764,15 +725,13 @@ async function scanEventLogStats(
       );
       // Cache only complete lines: a trailing partial line is completed by a later append.
       const complete = cloneEventLogStatsScannerState(scanner.syncState());
-      // The tail transform also consumes a final line without a trailing newline, so the returned
-      // stats must include it even though it is never folded into the cached state.
+      // Tail transforms read an unterminated last line: count it, but keep it out of the cache.
       if (trailing) scanner.processLine(trailing.record, trailing.offset);
       return { complete, state: scanner.syncState(), scannedBytes: completeEnd };
     };
     let folded = await fold(state, startOffset);
     if (folded.state.cursor.agentTurnsStamped && folded.state.cursor.guessedAgentTurn) {
-      // The log began stamping its agents' turns after the fold had guessed at some. A whole-history
-      // transform reads such a log as stamped from its first event, so fold it again that way.
+      // Stamping began after we guessed some turns; full reads treat the log as stamped, so refold.
       startOffset = 0;
       folded = await fold(createEventLogStatsScannerState(true), 0);
     }
@@ -815,8 +774,7 @@ async function readMessagesFromDiskFull(
   const events: any[] = [];
   let malformedEventCount = 0;
   let parseMs = 0;
-  // Streamed rather than read into one string: a history can be hundreds of MB. Events the
-  // transcript never reads keep only their envelope.
+  // Streamed (histories reach hundreds of MB); events the transcript skips keep only an envelope.
   const addRecord = (record: Buffer): void => {
     const parseStartedAt = performance.now();
     const line = withoutCarriageReturn(record).toString("utf-8");
@@ -923,11 +881,7 @@ export function getSessionHistoryCoverage(events: readonly unknown[]): SessionHi
   };
 }
 
-/**
- * One session as its folder describes it, or undefined when the folder has no readable workspace.yaml.
- * With `failOnReadError`, undefined only says the folder or the file is not there; anything else
- * that stops the read is thrown, for a caller that would act on a session being gone.
- */
+/** With failOnReadError, undefined means missing; other read errors throw. */
 async function readSessionFromDisk(
   deps: SessionDiskReaderDeps,
   sessionStateDir: string,
@@ -975,12 +929,7 @@ export interface SessionsFromDiskOptions {
   failOnReadError?: boolean;
 }
 
-/**
- * The given sessions, read from their own folders: the ones that still have one, in the order
- * asked for. A caller that knows which sessions it means uses this instead of listing every folder.
- * A caller that ends or prunes something for a session that is left out passes `failOnReadError`,
- * so a folder it could not read this time is not taken for one that is gone.
- */
+/** Pass failOnReadError when acting on absence, so an unreadable folder isn't taken as gone. */
 export async function readSessionsFromDisk(
   deps: SessionDiskReaderDeps,
   sessionIds: readonly string[],
@@ -995,11 +944,7 @@ export async function readSessionsFromDisk(
   return sessions.filter((session) => session !== undefined);
 }
 
-/**
- * Session listing from the session-state folders - reads workspace.yaml instead of SDK RPC.
- * `skip` names the sessions the caller already has or has ruled out; without it, archived
- * sessions are ruled out here unless `includeArchived`. Only the remaining folders are read.
- */
+/** Lists sessions from workspace.yaml; skipped (or archived, by default) folders aren't read. */
 export async function listSessionsFromDisk(
   deps: SessionDiskReaderDeps,
   options: { includeArchived?: boolean; skip?: ReadonlySet<string> } = {},
@@ -1048,11 +993,7 @@ export async function listSessionsFromDisk(
   return sessions;
 }
 
-/**
- * Read messages directly from events.jsonl on disk - no SDK resume needed.
- * The common latest-page path uses a bounded tail read plus lightweight stats
- * scan so giant histories do not need full event transformation before slicing.
- */
+/** Reads history from events.jsonl; the latest page uses a bounded tail read. */
 export async function readMessagesFromDisk(
   deps: SessionDiskReaderDeps,
   sessionId: string,
@@ -1230,10 +1171,7 @@ export async function readMessagesFromDisk(
   };
 }
 
-/**
- * The stats fold only parses transcript events, so its latest event id can lag behind a later
- * envelope-only event. The tail window reaches the end of the log and holds every envelope.
- */
+/** The fold skips envelope-only events, so take the latest id from the tail, which has them all. */
 function withLatestEventId(coverage: SessionHistoryCoverage, tailEvents: readonly unknown[]): SessionHistoryCoverage {
   for (let index = tailEvents.length - 1; index >= 0; index -= 1) {
     const latestEventId = getSdkEventId(tailEvents[index]);
@@ -1335,21 +1273,13 @@ export async function readMessagesAroundEventFromDisk(
   };
 }
 
-// ── Disk-only event log reads ──────────────────────────────────────────────
-//
-// The Bridge never asks the agent backend for a session's full event history
-// over RPC: a single `session.getMessages` response for a large transcript
-// (tens of MB) tears down the one stdio JSON-RPC connection shared by every
-// live session. events.jsonl is the persisted source of truth, so every
-// history read below streams from disk with bounded memory instead.
-
-/** Hard cap on bytes a bounded tail read may hold in memory at once. */
+/** Memory cap for a tail read. Never use RPC getMessages: a big reply kills the shared stdio. */
 export const SESSION_EVENT_LOG_TAIL_MAX_BYTES = resolvePositiveIntegerEnv(
   "BRIDGE_SESSION_EVENT_LOG_TAIL_MAX_BYTES",
   16 * 1024 * 1024,
 );
 const SESSION_EVENT_LOG_TAIL_INITIAL_BYTES = 256 * 1024;
-/** Largest single event line the streaming index scan will buffer before treating the log as malformed. */
+/** Largest event line the streaming index scan buffers before calling the log malformed. */
 const SESSION_EVENT_LOG_MAX_LINE_BYTES = 64 * 1024 * 1024;
 
 function resolvePositiveIntegerEnv(name: string, fallback: number): number {
@@ -1397,12 +1327,7 @@ function parseEventLines(content: string): { events: unknown[]; malformedLineCou
   return { events, malformedLineCount };
 }
 
-/**
- * Read the newest events from a session's events.jsonl, growing the window
- * from the end of the file until `maxEvents`/`hasEnough` is satisfied, the
- * whole file is covered, or the byte cap is hit. Never loads more than
- * `maxBytes` into memory.
- */
+/** Grows a window from the end until enough events or the whole file; never holds over maxBytes. */
 export async function readSessionEventsTail(
   eventsPath: string,
   options: SessionEventsTailOptions = {},
@@ -1460,23 +1385,20 @@ export async function readSessionEventsTail(
 export interface SessionEventIndexMatch {
   /** Zero-based position of the event in the log. */
   index: number;
-  /** Number of events persisted after the match (the count a truncation at this event removes, plus one for itself). */
+  /** Events after the match; a truncation at this event removes this many plus one. */
   eventsAfter: number;
   totalEvents: number;
   event: unknown;
 }
 
 export interface FindSessionEventIndexOptions {
-  /** Observe every parsed event that precedes the match (not invoked for the match itself or anything after). */
+  /** Sees each parsed event before the match, not the match or anything after it. */
   onEventBefore?: (event: unknown, index: number) => void;
   /** Custom matcher; defaults to comparing the persisted event `id`. */
   matches?: (event: unknown) => boolean;
 }
 
-/**
- * Locate one event in events.jsonl by streaming the file line by line with
- * bounded memory. Returns `undefined` when no event matches.
- */
+/** Streams events.jsonl with bounded memory to find one event; undefined when none matches. */
 export async function findSessionEventIndex(
   eventsPath: string,
   eventId: string,
@@ -1536,11 +1458,7 @@ function isPlainUserMessageEvent(event: any): boolean {
   return typeof content === "string" && content.trim().length > 0;
 }
 
-/**
- * Newest `limit` user-authored prompts from events.jsonl (oldest first),
- * read from a bounded tail window. Agent-injected and skill/system-sourced
- * user messages are excluded.
- */
+/** Newest user-authored prompts (oldest first) from a tail window; injected ones are skipped. */
 export async function readRecentUserMessages(
   eventsPath: string,
   limit: number,

@@ -39,7 +39,7 @@ export function triggerStatusKind(status: TriggerStatus): DsStatusKind {
   }
 }
 
-/** When it runs, for people: a one-time trigger shows its local time instead of the server's ISO string. */
+/** When it runs; a one-time trigger shows local time, not the server's ISO string. */
 export function formatTriggerWhen(when: TriggerWhen, whenLabel: string): string {
   if (when.kind === "at") return `Once, ${new Date(when.at).toLocaleString()}`;
   return whenLabel.charAt(0).toUpperCase() + whenLabel.slice(1);

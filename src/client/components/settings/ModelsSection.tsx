@@ -1,6 +1,3 @@
-// Settings › Models: the three tiers (Fast, Standard, Deep) and what each kind of work runs on.
-// Tiers are the composer's three presets; this is the only place they are edited. Every role picks
-// a tier or a model of its own ("Custom"), edited in the same place for every role.
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RotateCw } from "lucide-react";
@@ -53,7 +50,7 @@ const ROLE_GROUPS: ReadonlyArray<{ label: string; roles: readonly ModelRole[] }>
   { label: "Agent work", roles: ["background", "subagents", "reviewers", "helper"] },
 ];
 
-/** New chats and Trigger workers keep a model of their own in their older settings; empty means this. */
+/** New chats and Trigger workers keep their own model in older settings; empty means this. */
 const EMPTY_CUSTOM_LABEL: Partial<Record<ModelRole, string>> = {
   chat: "Copilot's default",
   background: "Cheapest available",
@@ -65,9 +62,9 @@ interface ModelChoice {
   contextTier?: CopilotContextTier;
 }
 
-/** Says which tier rubber-duck uses in Claude and in GPT chats: the strongest from the other family. */
+/** Which tier rubber-duck uses in Claude and GPT chats: the strongest of the other family. */
 function describeSecondOpinion(presets: NonNullable<AppSettings["modelPresets"]>, models: readonly ModelInfo[]): string {
-  // The same rule the server applies: with a model list, a tier whose model is not on it is skipped.
+  // As on the server: with a model list, a tier whose model is not on it is skipped.
   const usable = (model: string) => models.length === 0 || models.some((entry) => entry.id === model);
   const tiers = [...MODEL_PRESET_SLOTS].reverse().flatMap((slot) => presets[slot]?.model && usable(presets[slot]!.model) ? [{ slot, model: presets[slot]!.model }] : []);
   const parts = (["claude", "gpt"] as const satisfies readonly ModelFamily[]).flatMap((family) => {
@@ -87,7 +84,7 @@ function roleValue(draft: AppSettings, role: ModelRole): RoleValue {
   if (isTierChoice(choice)) return choice.tier;
   if (choice) return "custom";
   if (role === "chat" || role === "background") return "custom";
-  // Nobody chose: it runs on its default tier. Only Reviewers has a choice of its own ("Same as chat").
+  // Unset runs on the default tier; only Reviewers has its own choice ("Same as chat").
   return defaultRoleTier(role) ?? "automatic";
 }
 
@@ -120,11 +117,7 @@ function shortSetup(choice: Partial<ModelChoice>, model: ModelInfo | undefined):
   return [formatReasoningEffortLabel(choice.reasoningEffort, model) ?? "Model default", size].filter(Boolean).join(" · ");
 }
 
-/**
- * Model, effort and context: a tier's, or a role's own. Effort and context are button rows, one
- * button per level the model offers. A new model keeps the effort and context only when it
- * offers them. `emptyLabel` names what no model means; without it a model is required.
- */
+/** emptyLabel names what no model means; without it a model is required. */
 function ModelChoiceFields({ idPrefix, name, models, value, onChange, emptyLabel, showEffort = true }: {
   idPrefix: string;
   name: string;
@@ -201,8 +194,7 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
       nextRoles[role] = { tier: value };
     } else {
       delete nextRoles[role];
-      // Custom starts from what the role runs on now. New chats and Trigger workers already
-      // hold it in their own settings, which a tier keeps up to date.
+      // Custom starts from the current model; new chats and Trigger workers already store theirs.
       if (value === "custom" && role !== "chat" && role !== "background") {
         const from = resolved.get(role);
         const tier = from?.tier ? presets[from.tier] : undefined;

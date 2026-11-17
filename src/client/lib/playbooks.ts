@@ -47,10 +47,7 @@ export function playbookIdLabel(id: string | undefined, playbooks?: readonly Pla
   return playbooks?.find((playbook) => playbook.id === id)?.label ?? id;
 }
 
-/**
- * Whether the picker offers "Follow task": only when the chat made its own choice, since clearing
- * it falls back to the task's or trigger's pin.
- */
+/** Offer "Follow task" only when the chat chose its playbook; clearing falls back to the pin. */
 export function canClearChatPlaybook(view: SessionPlaybookView | null | undefined): boolean {
   return view?.source === "user" || view?.source === "agent";
 }

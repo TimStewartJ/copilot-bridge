@@ -454,7 +454,7 @@ describe("resolveMoveContextTier", () => {
 
     expect(resolveMoveContextTier(undefined, undefined, largeOnly, NEW_MODEL)).toBe("long_context");
     expect(resolveMoveContextTier(undefined, undefined, smallOnly, NEW_MODEL)).toBeUndefined();
-    // A chat on a tiered model's standard tier stays standard even though the model's largest window is bigger.
+    // A chat on a tiered model's standard tier stays standard though the largest window is bigger.
     expect(resolveMoveContextTier(undefined, undefined, tieredOld, NEW_MODEL)).toBeUndefined();
     expect(resolveMoveContextTier(undefined, "default", tieredOld, NEW_MODEL)).toBeUndefined();
   });

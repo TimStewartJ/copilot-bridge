@@ -32,8 +32,7 @@ vi.mock("../server/browser-diagnostics.js", async (importOriginal) => {
   };
 });
 
-// The routes below run the real diagnostics, broker, session store and live gateway. Everything
-// they would ask of agent-browser or a browser process is answered here instead.
+// Routes run the real diagnostics, broker and stores; only agent-browser and browsers are faked.
 vi.mock("../server/agent-browser.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../server/agent-browser.js")>(),
   ab: vi.fn(),
@@ -312,7 +311,7 @@ describe("POST /api/browser/diagnostics/public/reset", () => {
     expect(existsSync(idleProfile)).toBe(false);
     expect(existsSync(path.join(leasedProfile, "Cookies"))).toBe(true);
     expect(existsSync(authenticatedCookies)).toBe(true);
-    // A browser left on a profile is closed before its data goes; none of them is the signed-in one.
+    // Browsers on a profile close before its data goes; the signed-in one is never closed.
     const closedProfiles = shutdownBridgeBrowserMock.mock.calls.map(([target]) => target?.profileDir);
     expect(closedProfiles).toContain(idleProfile);
     expect(closedProfiles).not.toContain(path.dirname(authenticatedCookies));

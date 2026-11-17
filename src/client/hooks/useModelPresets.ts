@@ -56,9 +56,9 @@ export interface ModelPresetMemory {
   resolveNewChatSelection: (models: readonly ModelInfo[]) => ModelPresetSelection | null;
   findSlotForModel: (modelId: string, models: readonly ModelInfo[]) => ModelPresetSlot | undefined;
   remember: (selection: RememberModelPresetSelection) => void;
-  /** Makes a chat's model, effort and context the tier's own (Settings › Models changes with it). */
+  /** Makes a chat's model, effort and context the tier's own, changing Settings › Models. */
   saveToTier: (selection: RememberModelPresetSelection) => void;
-  /** The model A/B test while it runs: a new chat nobody picked a model for starts on one of its tiers. */
+  /** The running A/B test: a new chat with no picked model starts on one of its tiers. */
   abTest?: ModelAbTestSettings;
 }
 
@@ -99,7 +99,7 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     selectModelInPreset({ slot, modelId, presets })
   ), [presets]);
 
-  // A new chat starts on the "New chats" tier from Settings › Models; with its own model, on that model.
+  // A new chat starts on the "New chats" tier, or on that role's own model if it has one.
   const newChatSlot = isTierChoice(settings?.modelRoles?.chat) ? settings.modelRoles.chat.tier : undefined;
   const resolveNewChatSelection = useCallback((models: readonly ModelInfo[]) => {
     if (!newChatSlot) return null;
@@ -120,11 +120,7 @@ export function useModelPresets(options?: { enabled?: boolean }): ModelPresetMem
     })
   ), [globalDefaultModelId, lastPresetSlot, presets]);
 
-  /**
-   * Remembers which tier was picked last. The tiers themselves (Fast, Standard, Deep) are shared by
-   * Helm, background work and sub-agents, so a choice made in one chat never rewrites them; they are
-   * edited only in Settings › Models.
-   */
+  /** Records the last tier only; tiers are shared, so only Settings › Models edits them. */
   const remember = useCallback(({ slot, modelId }: RememberModelPresetSelection) => {
     if (!modelId) return;
     const cachedSettings = queryClient.getQueryData<AppSettings>(queryKeys.settings);

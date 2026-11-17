@@ -120,13 +120,7 @@ function createWorkerWithScript(
   });
 }
 
-/**
- * The worker completes its lifecycle only after natural completion has run
- * every cleanup step (usage scan, span, session delete, directory and store
- * cleanup, capacity release). Awaiting that signal replaces wall-clock polling
- * of background cleanup that does real filesystem and SQLite work, and keeps
- * that work from outliving the test that started it.
- */
+/** Resolves after every cleanup step, so tests await it instead of polling the clock. */
 function createLifecycleProbe() {
   let markCompleted!: () => void;
   const completed = new Promise<void>((resolve) => {

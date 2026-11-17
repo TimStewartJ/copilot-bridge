@@ -1,10 +1,7 @@
 import { useCallback, useEffect } from "react";
 import { useOverlayParam } from "./useOverlayParam";
 
-/**
- * Manages a task text sheet's open/close/edit state via the `sheet` URL param, resetting on task
- * change. `name` picks the sheet: `?sheet=<name>` views it and `?sheet=<name>-edit` edits it.
- */
+/** Task text sheet state in the URL: `?sheet=<name>` views, `?sheet=<name>-edit` edits. */
 export function useNotesSheet(taskId: string | undefined, name: "notes" | "instructions" | "history" = "notes") {
   const { isOpen: sheetParamOpen, value, open, close: overlayClose } = useOverlayParam("sheet");
   const editValue = `${name}-edit`;

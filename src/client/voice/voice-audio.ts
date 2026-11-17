@@ -149,8 +149,7 @@ export class VoiceAudio {
     return { inputSampleRate: ctx.sampleRate, echoSafe, ...(echoSafeError ? { echoSafeError } : {}) };
   }
 
-  // Browser echo cancellation only uses <audio>/WebRTC playback as its reference, so speech is
-  // routed through a local peer connection into an <audio> element instead of straight out.
+  // Echo cancellation only hears <audio>/WebRTC playback, so speech goes out via a local peer.
   private async createLoopback(ctx: AudioContext): Promise<void> {
     const destination = ctx.createMediaStreamDestination();
     this.outGain!.connect(destination);

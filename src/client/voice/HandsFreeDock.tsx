@@ -1,6 +1,4 @@
-// What hands-free looks like now that it lives inside the app instead of taking it over: a
-// dock above the composer of the chat it is on, and a small pill everywhere else. The
-// transcript is the chat.
+// Hands-free UI: a dock above its chat's composer, a small pill elsewhere.
 import { useState } from "react";
 import { AlertTriangle, AudioLines, Download, Loader2, Mic, MicOff, Moon, PhoneOff, Send, Settings2, Sun, VolumeX, X } from "lucide-react";
 import type { VoiceModeController } from "./useVoiceMode";

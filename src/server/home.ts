@@ -72,8 +72,7 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
     }
     const linkedTasks = new Map<string, Task[]>();
     for (const task of allTasks) for (const id of task.sessionIds) linkedTasks.set(id, [...linkedTasks.get(id) ?? [], task]);
-    // The task a conversation is shown under: an active unmuted one, else an archived unmuted one when no
-    // linked task is still active. Archiving closes a task without silencing it; muting silences it.
+    // Shown under an active unmuted task, else an archived unmuted one; only muting silences.
     const owner = (sessionId: string): Task | undefined => {
       const linked = (linkedTasks.get(sessionId) ?? []).slice().sort((a, b) => taskRank.get(a.id)! - taskRank.get(b.id)!);
       return linked.find(task => task.status === "active" && !task.muted)

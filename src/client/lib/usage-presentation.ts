@@ -33,8 +33,7 @@ export function formatUsageCredits(value: number | null | undefined): string {
 }
 
 export function hasMeteredUsage(totals: Pick<CopilotUsageTotals, "meteredAiCredits" | "meteredTokens">): boolean {
-  // Unattributed session metering can have credits without a token count; a recorded free run
-  // has metered tokens and zero credits. Both are readings, unlike an older unmetered log.
+  // Credits without tokens, or tokens with zero credits (a free run), both count as readings.
   return totals.meteredAiCredits > 0 || totals.meteredTokens > 0;
 }
 

@@ -1,20 +1,12 @@
 import type { CopilotContextTier } from "./copilot-context.js";
 import type { ModelPresetSlot } from "./model-presets.js";
 
-/**
- * A model A/B test (Settings › Models). While it is on, each new chat and each scheduled run that
- * would follow New chats starts on tier A or tier B at random, and the Bridge records which one, so
- * the two can be compared on the same kind of work. A chat started on a model the user picked, and a
- * schedule with its own tier, are left out.
- */
+/** When on, new chats and runs following New chats start on tier A or B at random. */
 export interface ModelAbTestSettings {
   enabled: boolean;
   a: ModelPresetSlot;
   b: ModelPresetSlot;
-  /**
-   * When the current test began. The server sets it when the test is turned on or what an arm runs
-   * changes, and keeps it when the test is turned off so its results stay readable.
-   */
+  /** Reset when the test is turned on or an arm changes; kept when off so results stay readable. */
   startedAt?: string;
 }
 

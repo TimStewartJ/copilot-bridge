@@ -31,10 +31,7 @@ function useTaskPage(taskId: string) {
   return useTaskPageQuery(taskId).data;
 }
 
-/**
- * The page itself, drawn at phone width and shrunk to a thumbnail, as the chat's cards show an HTML
- * file. It only shows: taps go to the row around it.
- */
+/** The page drawn at phone width and shrunk to a thumbnail; display only, taps go to the row. */
 function PageThumbnail({ url }: { url: string }) {
   return (
     <span aria-hidden="true" className="relative h-12 w-9 shrink-0 overflow-hidden rounded-md border border-surface-edge bg-surface-inset">
@@ -51,7 +48,7 @@ function PageThumbnail({ url }: { url: string }) {
   );
 }
 
-/** The open page row: a thumbnail that opens the page full screen, and a button for a tab of its own. */
+/** A thumbnail that opens the page full screen, and a button that opens it in its own tab. */
 function PageRow({ taskId, taskTitle, updatedAt }: { taskId: string; taskTitle: string; updatedAt: string }) {
   const file = { url: `${taskPageUrl(taskId)}?v=${encodeURIComponent(updatedAt)}`, name: "page.html", title: taskTitle };
   const tabUrl = fileTabUrl(file);
@@ -85,20 +82,14 @@ function PageRow({ taskId, taskTitle, updatedAt }: { taskId: string; taskTitle: 
   );
 }
 
-/**
- * A task's page as a row among the task's linked things, when a chat has published one. A task has
- * one page, so the row opens it full screen, and the button at its end opens it in a tab of its own.
- */
+/** A task's published page as a row among its linked things (a task has at most one page). */
 export default function TaskPageSection({ taskId, taskTitle }: { taskId: string; taskTitle: string }) {
   const page = useTaskPage(taskId);
   if (!page) return null;
   return <PageRow taskId={taskId} taskTitle={taskTitle} updatedAt={page.updatedAt} />;
 }
 
-/**
- * The task's page in its Status, always one row tall so nothing below moves while it loads: the
- * page when there is one, otherwise a button that starts a chat to make it.
- */
+/** Always one row tall so nothing moves while loading: the page, or a button to make one. */
 export function TaskPageSlot({ taskId, taskTitle, onMakePage }: {
   taskId: string;
   taskTitle: string;

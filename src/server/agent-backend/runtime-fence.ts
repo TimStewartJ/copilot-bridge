@@ -17,13 +17,7 @@ export interface RuntimeFenceOptions {
   onPhase?: (observation: RuntimeFenceObservation) => void;
 }
 
-/**
- * Why an owned runtime could not be fenced. Retryable failures only mean the
- * process table could not be observed in time, so they prove nothing about
- * the runtime and a later attempt may still prove it gone. Everything else
- * (unknown ownership, unverifiable identities, processes that outlived their
- * kill) stays terminal.
- */
+/** Retryable only when the process table couldn't be read in time; all else is terminal. */
 export class RuntimeFenceError extends Error {
   constructor(message: string, readonly retryable: boolean) {
     super(message);

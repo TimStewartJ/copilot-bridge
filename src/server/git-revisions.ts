@@ -63,10 +63,7 @@ let cachedRemoteCommit:
     }
   | null = null;
 
-// The running commit is a process-lifetime boot snapshot, so it is read once per
-// module instance instead of once per reader. The read starts when the first reader is
-// created, at boot: a later read could capture a commit newer than the one this process
-// actually started from — which is exactly the drift `runningVsLocal` exists to report.
+// Read once at boot: a later read could see a newer commit and hide runningVsLocal's drift.
 let cachedRunningCommit: Promise<GitCommitSnapshot> | null = null;
 
 function runGit(args: string[], timeoutMs?: number): Promise<GitCommandResult> {

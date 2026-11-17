@@ -173,9 +173,7 @@ export class SessionNameAutogenerator {
     let historyMessageCount: number | undefined;
     let historyReadFailed = false;
     if (options.session && options.includeHistory !== false) {
-      // History comes from the persisted events.jsonl tail, never from a
-      // full-history RPC: large transcripts must not be pulled over the
-      // backend connection just to pick a title.
+      // Read the events.jsonl tail, never a full-history RPC that pulls a large transcript over.
       try {
         const historyMessages = await readRecentUserMessages(
           resolveSessionEventsPath(this.deps.getCopilotHome(), sessionId),

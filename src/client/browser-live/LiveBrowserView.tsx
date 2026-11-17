@@ -91,11 +91,6 @@ function loginText(login: BrowserLiveLogin): string {
   return login.failed ? "It could not be saved. Try again." : `${account}. Agents can then sign in again without asking you.`;
 }
 
-/**
- * The page an agent's browser is showing, live, and the controls to act in it. A mouse, a wheel and
- * a keyboard work on the page directly once it is clicked. On a touch screen one finger is the
- * mouse and two fingers scroll, and the text row below the page is where a phone keyboard types.
- */
 export function LiveBrowserView({
   browserSessionId,
   requestTicket,
@@ -144,10 +139,7 @@ export function LiveBrowserView({
 
   const mouse = useMemo(() => createMouseSender((message) => { connection.send(message); }), [connection]);
 
-  /**
-   * Scrolls by a distance in screen pixels. A zoomed view pans first; what it cannot take scrolls
-   * the remote page, scaled by `pagePerScreen` into the page's pixels.
-   */
+  /** A zoomed view pans first; the rest scrolls the page, scaled by `pagePerScreen`. */
   const scrollBy = useCallback((deltaX: number, deltaY: number, at: LivePoint, pagePerScreen: number, modifiers?: number) => {
     const stage = stageRef.current;
     let restX = deltaX;
@@ -190,7 +182,7 @@ export function LiveBrowserView({
     return () => observer.disconnect();
   }, []);
 
-  // Frames are drawn through one reused image, one at a time, so nothing piles up or is left behind.
+  // Frames draw one at a time through one reused image, so nothing piles up or is left behind.
   useEffect(() => {
     if (typeof Image === "undefined") return;
     const image = new Image();
@@ -225,7 +217,7 @@ export function LiveBrowserView({
     if (!surface) return;
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
-      // Ctrl with the wheel is a pinch on a trackpad. Passing it on would change the remote page's zoom for good.
+      // Ctrl+wheel is a trackpad pinch; passing it on would change the remote page's zoom for good.
       if (event.ctrlKey) return;
       const viewport = viewportRef.current;
       const point = pagePoint(event.clientX, event.clientY);
@@ -415,7 +407,7 @@ export function LiveBrowserView({
       )}
 
       {state.login && (
-        // What a password manager shows beside a sign-in form: keep what was typed, or use what is kept.
+        // Like a password manager: save what was typed, or fill in a saved login.
         <Notice
           tone={state.login.failed ? "warning" : state.login.state === "saved" ? "success" : "info"}
           title={loginTitle(state.login)}
@@ -478,12 +470,11 @@ export function LiveBrowserView({
           }}
           onContextMenu={(event) => event.preventDefault()}
           onPointerDown={(event) => {
-            // Stops the press from selecting text, starting a scroll, or moving focus off the text row.
+            // Keeps the press from selecting text, scrolling, or moving focus off the text row.
             event.preventDefault();
             const touchInput = event.pointerType === "touch";
             if (!touchInput) surfaceRef.current?.focus({ preventScroll: true });
-            // A tap leaves the text row its focus, and with it the phone's keyboard. The address
-            // field is done with once the page is touched.
+            // A tap keeps the text row's focus and phone keyboard, but leaves the address field.
             else if (document.activeElement === addressRef.current) addressRef.current?.blur();
             const point = pagePoint(event.clientX, event.clientY);
             if (!point) return;
@@ -536,8 +527,7 @@ export function LiveBrowserView({
             event.stopPropagation();
             if (route === "local") {
               if (key.key !== "Escape") return;
-              // Escape is the way out for a keyboard: the page takes Tab too. Focus moves on to the
-              // text row, the next control, so the rest of the view is a Tab away.
+              // The page takes Tab too, so Escape is the keyboard's way out, to the text row.
               event.preventDefault();
               textRowRef.current?.focus();
               return;
@@ -617,7 +607,7 @@ export function LiveBrowserView({
               for (const message of [...keyDownMessages(key), ...keyUpMessages(key)]) connection.send(message);
             }}
           />
-          {/* Pressing a key button must not take focus from the text row, or a phone hides its keyboard. */}
+          {/* Key buttons must not take focus from the text row, or a phone hides its keyboard. */}
           <IconButton label="Press Enter" variant="secondary" size="md" onMouseDown={keepFocus} onClick={() => pressNamedKey("Enter")}>
             <CornerDownLeft size={15} aria-hidden="true" />
           </IconButton>

@@ -35,11 +35,7 @@ export function LaunchOptionRow<T extends string>({
   );
 }
 
-/**
- * Model picker shared by the new-chat screen and the change-model dialog.
- * Loading/error presentation stays with the callers because they differ
- * intentionally (inline notice vs. retry box).
- */
+/** Shared model picker; callers own loading/error display because theirs differ on purpose. */
 export function LaunchModelSelect({
   id,
   ariaLabel,

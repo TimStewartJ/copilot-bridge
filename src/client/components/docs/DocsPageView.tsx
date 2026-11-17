@@ -215,8 +215,7 @@ export default function DocsPageView({ page, schema, hash, onEdit, onDelete }: D
       if (!target || !scrollToHeading(target.id, "auto")) container.scrollTo?.({ top: 0, behavior: "auto" });
     });
     return () => window.cancelAnimationFrame(frame);
-    // `headings` is deliberately not a dependency: it changes on every background refetch, and
-    // re-running then would yank the reader back to the fragment while they are mid-page.
+    // Not `headings`: it changes on every refetch and would yank the user back to the fragment.
   }, [page.path, hash, scrollToHeading]);
 
   const handleAnchorSelect = useCallback((anchor: string, source: "heading" | "link" | "toc") => {

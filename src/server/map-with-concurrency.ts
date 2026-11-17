@@ -3,11 +3,7 @@ export async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-/**
- * Map `items` with at most `concurrency` mappers in flight, preserving order.
- * Bounded fan-out keeps large filesystem scans from flooding the libuv threadpool
- * and starving unrelated reads; the periodic yield keeps the event loop responsive.
- */
+/** Ordered map with bounded concurrency so big fs scans don't flood the libuv threadpool. */
 export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,

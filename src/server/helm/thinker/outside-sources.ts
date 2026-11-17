@@ -1,8 +1,4 @@
-// Outside sources for Helm's looks: tools from MCP servers configured on this Bridge that Tim chose
-// in Settings › Helm (a mail reader, say). The Bridge is the MCP client here, not the Copilot
-// runtime, so a look's tool list is fixed before it starts, every call is seen (and recorded as
-// provenance), and every result is wrapped and capped by the Bridge itself whatever the server does.
-// Only local (stdio) servers, and only tools that declare themselves read-only, are offered.
+// Bridge is the MCP client here: it fixes, sees and caps every call; read-only stdio tools only.
 import { randomBytes } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -20,7 +16,7 @@ import {
 } from "../../platform.js";
 import { getProcessHost, type HostChild } from "../../process-host.js";
 
-/** One JSON-RPC message from a source may not be larger than this; a bigger one ends the connection. */
+/** Largest JSON-RPC message a source may send; a bigger one ends the connection. */
 export const SOURCE_MAX_FRAME_BYTES = 2 * 1024 * 1024;
 /** Characters of one tool result the look gets; the rest is cut with a note. */
 export const SOURCE_MAX_RESULT_CHARS = 40_000;
@@ -62,12 +58,7 @@ export function sourceUnsupportedReason(server: McpServer): string | undefined {
   return isLocalMcpServerConfig(server.config) ? undefined : "Only local (command) MCP servers can be Helm sources.";
 }
 
-/**
- * MCP over a child process's stdin and stdout, started through the Bridge's process host (never
- * node:child_process on the server thread). Messages are newline-delimited JSON; a line longer
- * than SOURCE_MAX_FRAME_BYTES ends the connection before anything is parsed. Closing ends the
- * whole process tree, including a child whose start finished after the close.
- */
+/** MCP over a process-host child's stdio; an oversize line ends it, close kills the whole tree. */
 export class HostStdioTransport implements Transport {
   onclose?: () => void;
   onerror?: (error: Error) => void;
@@ -138,7 +129,7 @@ export class HostStdioTransport implements Transport {
     });
   }
 
-  /** Ends the server and everything it started. Waits for a start still in flight, within the termination budget. */
+  /** Ends the server and all it started, waiting (within budget) for a start in flight. */
   close(): Promise<void> {
     this.closed = true;
     this.closing ??= (async () => {
@@ -150,7 +141,7 @@ export class HostStdioTransport implements Transport {
 
   private invocation(): { file: string; args: string[]; verbatim: boolean } {
     const args = this.config.args ?? [];
-    // A Windows .cmd/.bat launcher needs cmd.exe; everything else starts directly, never through a shell.
+    // A Windows .cmd/.bat launcher needs cmd.exe; everything else starts without a shell.
     if (process.platform === "win32" && /\.(cmd|bat)$/i.test(this.config.command)) {
       const shell = windowsShellInvocation(this.config.command, args);
       if (!shell) throw new SourceError("This command line cannot be started safely on Windows.");
@@ -206,8 +197,7 @@ export class HostStdioTransport implements Transport {
     void this.close();
   }
 
-  // The tree is recorded and ended while the server still runs: a server that exits when its input
-  // closes would otherwise leave what it started behind, out of reach once it is gone.
+  // Record the tree while the server runs: once it exits, its children are out of reach.
   private async stop(): Promise<void> {
     const child = this.child;
     if (!child) return;
@@ -219,7 +209,7 @@ export class HostStdioTransport implements Transport {
       if (root) {
         const tree = await sampleProcessTree(root.pid, deadline).catch(() => null);
         await terminateProcessTree(root, deadline).catch(() => undefined);
-        // Anything that outlived its parent's termination is ended by the identity recorded before it.
+        // Descendants that outlived the parent are ended by their recorded identity.
         for (const descendant of tree?.descendants ?? []) {
           await terminateProcessTree(descendant, deadline).catch(() => undefined);
         }
@@ -280,7 +270,7 @@ export const connectSource: SourceConnector = async (server, signal) => {
   };
   const onAbort = () => void close();
   signal.addEventListener("abort", onAbort, { once: true });
-  // One deadline for the whole start, the process launch included: the SDK's own timeout begins after it.
+  // One deadline covers the launch too; the SDK's own timeout only starts after it.
   const startup = AbortSignal.any([signal, AbortSignal.timeout(CONNECT_TIMEOUT_MS)]);
   const startupStopped = new Promise<never>((_, reject) => {
     const stop = () => reject(new SourceError(signal.aborted ? "Stopped." : `It did not answer within ${CONNECT_TIMEOUT_MS / 1000} s.`));
@@ -354,14 +344,14 @@ export class RunSources {
 
   private constructor() {}
 
-  /** Connects every chosen source in parallel. A source that fails is listed with its error; the rest still work. */
+  /** Connects chosen sources in parallel; a failed one is listed with its error, the rest work. */
   static async open(input: Parameters<RunSources["connect"]>[0]): Promise<RunSources> {
     const sources = RunSources.create();
     await sources.connect(input);
     return sources;
   }
 
-  /** Sources not connected yet: hand them to whoever must be able to close them before connecting. */
+  /** Unconnected sources, for a caller that must be able to close them before they connect. */
   static create(): RunSources {
     return new RunSources();
   }
@@ -412,12 +402,12 @@ export class RunSources {
     sources.statuses.sort((a, b) => (order.get(a.serverId) ?? 0) - (order.get(b.serverId) ?? 0));
   }
 
-  /** Server ids whose tools returned something in this run, an error message included: provenance. */
+  /** Server ids whose tools returned anything this run, errors included: provenance. */
   get usedServerIds(): string[] {
     return [...this.used];
   }
 
-  /** Server ids read successfully at least once in this run: what counts as having read the source. */
+  /** Server ids read successfully at least once this run: what counts as having read it. */
   get readServerIds(): string[] {
     return [...this.succeeded];
   }
@@ -426,7 +416,7 @@ export class RunSources {
     return this.statuses.length === 0;
   }
 
-  /** Calls one allowed tool and wraps what it returned. Refuses anything not chosen for this run. */
+  /** Calls one tool chosen for this run and wraps the result; refuses any other. */
   async call(sourceName: unknown, toolName: unknown, args: unknown): Promise<SourceCallResult> {
     if (this.closed) throw new SourceError("This look has ended; its sources are closed.");
     const status = this.statuses.find((candidate) => candidate.name === sourceName);
@@ -446,11 +436,11 @@ export class RunSources {
     return { text: wrapSourceText(status.name, text), isError: result.isError };
   }
 
-  /** Ends every connection and its processes, those still connecting too. Safe to call more than once. */
+  /** Ends every connection and its processes, connecting ones too. Idempotent. */
   close(): Promise<void> {
     this.controller.abort();
     this.closed ??= (async () => {
-      // A connection still opening cleans up after itself once aborted; wait for that before closing the rest.
+      // Opening connections clean up once aborted; wait for that before closing the rest.
       await Promise.allSettled([...this.pending]);
       await Promise.all([...this.connections.values()].map((connection) => connection.close().catch(() => undefined)));
     })();

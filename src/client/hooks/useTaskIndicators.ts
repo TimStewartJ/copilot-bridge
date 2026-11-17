@@ -28,10 +28,7 @@ export interface TabAttentionSummary {
   needsUserInputCount: number;
 }
 
-/**
- * Summarize unmuted tasks that have unread activity or need an answer. Archived tasks count too:
- * archiving marks a task's conversations read, so anything unread there arrived afterwards.
- */
+/** Archived tasks count too: archiving marks chats read, so anything unread came afterwards. */
 export function summarizeTaskTabAttention(
   tasks: Task[],
   taskIndicators: Map<string, TaskIndicator>,
@@ -50,7 +47,7 @@ export function summarizeTaskTabAttention(
   return { count, needsUserInputCount };
 }
 
-/** How many of these tasks hold unread conversations, for the header of a collapsed section. Muted tasks stay silent. */
+/** Unmuted tasks with unread chats, for a collapsed section's header. */
 export function countUnreadTasks(tasks: readonly Task[], taskIndicators: Map<string, TaskIndicator>): number {
   return tasks.filter((task) => !task.muted && (taskIndicators.get(task.id)?.unreadCount ?? 0) > 0).length;
 }
@@ -95,10 +92,7 @@ export function describeTabAttention(
   return `${attention}; ${summary.needsUserInputCount} ${answerVerb} an answer`;
 }
 
-/**
- * Latest activity of loaded archived sessions, per linked task. Tasks list only their active
- * sessions, so archived ones are matched through their own links.
- */
+/** Tasks list only active sessions, so archived ones are matched through their own links. */
 export function getArchivedActivityByTask(sessions: Iterable<Session>): Map<string, string> {
   const latestByTask = new Map<string, string>();
   for (const session of sessions) {
@@ -113,7 +107,7 @@ export function getArchivedActivityByTask(sessions: Iterable<Session>): Map<stri
   return latestByTask;
 }
 
-/** Max of task.updatedAt and the latest session activity across its loaded linked sessions (including archived). */
+/** Latest of task.updatedAt and its loaded linked sessions' activity, archived included. */
 export function getTaskLastActivity(
   task: Task,
   sessionMap: Map<string, Session>,
@@ -190,10 +184,7 @@ export function getTaskIndicator(
   };
 }
 
-/**
- * Derives active/unread indicators per task from linked sessions. Muted tasks
- * keep their counts, but do not raise task-level unread indicators.
- */
+/** Muted tasks keep their counts but raise no task-level unread indicator. */
 export default function useTaskIndicators(
   tasks: Task[],
   sessions: Session[],
@@ -222,7 +213,7 @@ export default function useTaskIndicators(
   return indicators;
 }
 
-/** Count unread sessions for a specific task (excludes archived sessions and the active session). */
+/** Unread sessions of a task, excluding archived ones and the active session. */
 export function countTaskUnread(
   task: Task,
   sessionMap: Map<string, Session>,

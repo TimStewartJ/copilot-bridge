@@ -3,11 +3,7 @@ import { join } from "node:path";
 
 export const RETENTION_DAY_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Artifacts touched more recently than this are never deleted, so a sweep can
- * never remove a log another process is still appending to (on POSIX an unlink
- * would silently redirect the writer's output into an unreachable inode).
- */
+/** Recently touched files are kept: on POSIX a writer would go on writing to an unlinked inode. */
 export const DEFAULT_RETENTION_GRACE_MS = 15 * 60_000;
 
 const REMOVE_CONCURRENCY = 32;
@@ -79,11 +75,7 @@ export function resolveLogRetentionPolicy(options: ResolveLogRetentionPolicyOpti
   };
 }
 
-/**
- * Selects artifacts to delete: everything older than the age cap, plus everything
- * past the newest `maxCount` survivors. Protected artifacts are kept and excluded
- * from the count budget so an active job never pushes its own log out of range.
- */
+/** Protected entries are kept and skip the count budget, so an active job keeps its own log. */
 export function selectRetentionDeletions<T extends RetentionEntry>(
   entries: readonly T[],
   policy: LogRetentionPolicy,
@@ -133,12 +125,7 @@ function isMissingDirectoryError(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
-/**
- * Removes files in bounded batches so a large first sweep yields to the event
- * loop. Files modified inside the grace window are left for a later pass, and
- * per-file failures (Windows `EPERM`/`EBUSY` on open handles) are counted and
- * retried by the next sweep instead of aborting it.
- */
+/** Batched; skips the grace window; per-file failures (Windows EPERM) wait for the next sweep. */
 export async function removeRetainedFiles(
   paths: readonly string[],
   options: { nowMs?: number; graceMs?: number } = {},
@@ -217,10 +204,7 @@ export async function pruneRetainedLogFiles(
   return { dir: options.dir, scanned: entries.length, ...removal };
 }
 
-/**
- * Rate-limits background sweeps per directory and shares one in-flight sweep
- * between callers, so startup and post-write sweeps never stack up.
- */
+/** Rate-limits sweeps per directory and shares one in-flight sweep, so sweeps never stack up. */
 export function createRetentionSweepScheduler<T>(
   sweep: (key: string) => Promise<T>,
   options: { minIntervalMs: number; now?: () => number },

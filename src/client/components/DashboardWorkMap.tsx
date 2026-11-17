@@ -32,10 +32,7 @@ const SKELETON_ROWS = [
   { depth: 0, width: "42%" },
 ];
 
-/**
- * Stands in for the map while it loads with nothing to show: the step the server is on, how far
- * through the whole build that is, and rows in the shape of the tree that is coming.
- */
+/** Loading stand-in: the server's current step, overall progress, and rows shaped like the tree. */
 function WorkMapLoading({ progress }: { progress: WorkMapProgress | null }) {
   const label = progress?.label ?? "Loading the work map";
   const stepDone = progress && progress.total > 0 ? Math.min(1, progress.done / progress.total) : 0;
@@ -115,8 +112,7 @@ export default function DashboardWorkMap({
   const hasActiveFilters = Boolean(search || assignedToMeOnly || openAdoOnly || gapsOnly || includeArchived);
 
   return (
-    // Not a tab stop. A click on a row would focus the whole panel, and the Shift press of a
-    // range selection would then draw the focus ring around all of it.
+    // Not a tab stop, or a row click focuses the panel and Shift-select rings all of it.
     <section
       id={getDashboardPanelId("work-map")}
       role="tabpanel"

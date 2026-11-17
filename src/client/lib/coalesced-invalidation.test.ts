@@ -13,7 +13,7 @@ import { createDeferredTaskChangeInvalidator } from "./task-change-invalidation"
 const ACTIVE_SESSIONS = queryKeys.sessions({ includeArchived: false });
 const ARCHIVED_SESSIONS = queryKeys.sessions({ includeArchived: true });
 
-/** A request counter for one query key. Every fetch stays open until the test answers it; its data is its number. */
+/** Request counter for a key; each fetch waits for the test to answer and returns its number. */
 function createEndpoint(queryKey: QueryKey) {
   const answers: Array<() => void> = [];
   return {

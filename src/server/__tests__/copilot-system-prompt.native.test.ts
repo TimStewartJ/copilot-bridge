@@ -16,9 +16,7 @@ import type { Task } from "../task-store.js";
 import { makeTestDir, registerTestAppCleanup, setupTestDb } from "./helpers.js";
 import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
-// Guards the system prompt the pinned Copilot CLI actually assembles from the Bridge's
-// section overrides. The CLI renders sections itself, so builder unit tests cannot see
-// what reaches the model: a renamed section or a group override silently changes it.
+// The CLI renders sections itself; only this sees what actually reaches the model.
 
 function systemPromptOf(request: Record<string, unknown> | undefined): string {
   const messages = Array.isArray(request?.messages) ? request.messages : [];
@@ -73,11 +71,7 @@ async function fixture(signal: AbortSignal, completeAutopilot = false) {
       }
     });
   });
-  // Normal client mode, as in production: "empty" mode changes the coauthor and
-  // custom-instruction defaults this test must observe.
-  // Vitest runs from the repository root, like the production server runs from the Bridge
-  // checkout. The Bridge workspace option must keep that repository's instructions out of
-  // sessions whose own folder has none.
+  // Production client options, not "empty" mode: the asserts depend on their defaults.
   const workspace = join(home, "bridge-workspace");
   const client = new CopilotClient({
     ...buildCopilotClientOptions({ ...process.env, COPILOT_HOME: home, BRIDGE_WORKSPACE_DIR: workspace }),

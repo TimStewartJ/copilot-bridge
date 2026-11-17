@@ -42,11 +42,7 @@ export function hasVisualSource(visual: VisualArtifact): boolean {
 
 const EMPTY_SOURCE_STATE: VisualSourceState = { source: "", loading: false, error: null };
 
-/**
- * The state a visual's source is in right now, before any fetch this render would start. A source
- * another view already fetched is ready at once, and one still to fetch reads as loading, so a
- * renderer never sees a passing empty source and mistakes it for an empty spec.
- */
+/** Cached is ready, unfetched is loading, so an empty source never passes for an empty spec. */
 function currentSourceState(
   kind: VisualArtifact["kind"],
   url: string | undefined,

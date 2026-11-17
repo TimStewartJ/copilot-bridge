@@ -37,7 +37,7 @@ const undoSessionTurnMock = vi.hoisted(() => vi.fn());
 const chatInputMock = vi.hoisted(() => vi.fn());
 const mcpStatusBarMock = vi.hoisted(() => vi.fn());
 const useSessionUsageMetricsQueryMock = vi.hoisted(() => vi.fn());
-/** Called with the message each time a bubble actually renders; the bubble is memoized like the real one. */
+/** Called with the message on each real bubble render; the mock is memoized like the real one. */
 const messageBubbleRenderMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../useSessionStream", () => ({
@@ -284,8 +284,7 @@ function createDeferred<T>() {
 let ChatView: typeof import("./ChatView").default;
 
 beforeAll(async () => {
-  // Warm the large component graph outside the first test timeout while
-  // preserving the DOM-before-React-DOM import ordering required by the harness.
+  // Warm the import outside the first test's timeout, keeping the harness's DOM-first import order.
   const harness = await createReactDomHarness();
   try {
     ({ default: ChatView } = await import("./ChatView"));
@@ -306,10 +305,7 @@ function findButtonContainingText(root: any, text: string): any {
   return button;
 }
 
-/**
- * Work between two replies renders as one collapsed line. Open every block, then every row inside
- * it, so a test can read what the timeline holds.
- */
+/** Opens every collapsed block, then every row in it, so a test can read the whole timeline. */
 async function expandActivity(root: any, act: Act): Promise<void> {
   for (let pass = 0; pass < 3; pass += 1) {
     const collapsed = findAllByTag(root, "BUTTON").filter((candidate) => {
@@ -364,7 +360,7 @@ function setElementTop(element: any, top: number) {
   element.getBoundingClientRect = () => verticalRect(top);
 }
 
-/** Stands in for the browser's ResizeObserver. `notify(element)` reports that the element changed size. */
+/** A ResizeObserver stand-in; `notify(element)` reports that the element changed size. */
 function stubResizeObserver() {
   const observers: Array<{ callback: () => void; elements: unknown[] }> = [];
   vi.stubGlobal("ResizeObserver", class {
@@ -432,9 +428,6 @@ async function renderChatView(
   const initialMessagesFastResult = fetchMessagesFastResult instanceof Promise
     ? fetchMessagesFastResult
     : Promise.resolve(fetchMessagesFastResult);
-  // fetchMessagesFast serves both the initial/background load (no `before`) and
-  // older-page pagination (`before` set). Route older pages to a dedicated mock so
-  // tests can assert and stub older-page reads independently of the initial load.
   fetchMessagesFastMock.mockImplementation((sessionId: string, opts?: { before?: number; aroundEventId?: string }) => {
     if (opts?.before != null && !opts.aroundEventId) return fetchOlderMessagesFastMock(sessionId, opts);
     return initialMessagesFastResult;
@@ -873,15 +866,13 @@ describe("ChatView external session use", () => {
       await waitUntilAct(act, () => ensureConnectedMock.mock.calls.length === 1);
       expect(ensureConnectedMock).toHaveBeenCalledWith("session-1");
 
-      // The server announced committed history mid-run. Re-reading disk is right; tearing the
-      // stream down and rebuilding it for every tool call is what made the run flicker.
+      // Committed history mid-run re-reads disk; rebuilding the stream would make the run flicker.
       await render({ streamOverrides: { historyEpoch: 1 } });
       await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 2);
       await waitUntilAct(act, () => ensureConnectedMock.mock.calls.length === 2);
       expect(reconnectMock).not.toHaveBeenCalled();
 
-      // A tab that slept may hold a stream that died unnoticed, so waking replaces it. The read
-      // that finds out takes its turn after the one that just ran.
+      // Waking replaces a stream that may have died unnoticed, in a read queued after the last one.
       await act(async () => {
         visibilityHandler?.();
         await waitTick();
@@ -1219,11 +1210,7 @@ describe("ChatView navigation landing position", () => {
   const CLIENT_HEIGHT = 400;
   const BOTTOM_SCROLL_TOP = SCROLL_HEIGHT - CLIENT_HEIGHT;
 
-  /**
-   * Landing position is measured inside the layout effect of the commit that first paints history,
-   * so geometry has to exist before that element is created. Stub it at creation time and key
-   * message rects off the anchor attribute the transcript already renders.
-   */
+  /** Stub at creation: landing is measured in the layout effect of the first history paint. */
   function stubChatGeometry(messageTops: Record<string, number>) {
     const doc = globalThis.document as any;
     const originalCreateElement = doc.createElement;
@@ -1250,8 +1237,7 @@ describe("ChatView navigation landing position", () => {
     { messages = landingMessages(), docReturnScrollTop }: { messages?: ChatEntry[]; docReturnScrollTop?: number } = {},
   ) {
     const history = createDeferred<FetchMessagesFastResult>();
-    // The DOM shim restores document properties on install, so stub after the harness mounts and
-    // before history paints the scroll container.
+    // The DOM shim resets document properties on install: stub after mount, before history paints.
     const view = await renderChatView({
       fetchMessagesFastResult: history.promise,
       streamOverrides: { isStreaming: false, streamStatus: null, pendingOrigin: null },
@@ -1322,7 +1308,7 @@ describe("ChatView navigation landing position", () => {
       streamOverrides: { isStreaming: true, streamStatus: "thinking", streamingContent: "", pendingOrigin: "message" },
     } as const;
 
-    /** Lands on the reply at 900, then reports the view at `scrollTop` with the reply `replyTop` below its top edge. */
+    /** Lands on the reply at 900, then reports `scrollTop` with the reply at `replyTop`. */
     async function renderParkedThenScrolled(scrollTop: number, replyTop: number) {
       const messageTops = { "newest-entry": -700 };
       const view = await renderSettledSession(messageTops);
@@ -1337,8 +1323,7 @@ describe("ChatView navigation landing position", () => {
     }
 
     it("still shows new work when the browser moved the view to hold the reply in place", async () => {
-      // Images above the reply loaded and grew by 300px. A browser that anchors scrolling scrolls
-      // by as much, so the reply has not moved for the reader.
+      // Images above grew 300px and scroll anchoring scrolled as much, so the reply did not move.
       const view = await renderParkedThenScrolled(1200, 0);
 
       try {
@@ -1368,8 +1353,7 @@ describe("ChatView navigation landing position", () => {
   });
 
   it("lands on the newest reply when switching to a cached session with the same message ids", async () => {
-    // Message ids are per-session, so two sessions routinely share the newest anchor key. Cached
-    // navigation must still re-run the landing effect instead of leaving the reader at the tail.
+    // Ids are per-session, so sessions can share the newest anchor key; landing must still re-run.
     const view = await renderSettledSession({ "newest-entry": -700 });
 
     try {
@@ -1394,7 +1378,7 @@ describe("ChatView history pagination", () => {
     return Array.from({ length: to - from }, (_, index) => createMessage(`entry-${from + index}`));
   }
 
-  /** A rect whose top follows the scroller, so tests can move content by changing its layout top. */
+  /** A rect whose top follows the scroller; tests move content by changing its layout top. */
   function placeInScroller(element: any, scroller: any, layoutTop: () => number, height: number) {
     element.getBoundingClientRect = () => verticalRect(layoutTop() - scroller.scrollTop, height);
   }
@@ -1482,8 +1466,7 @@ describe("ChatView history pagination", () => {
   });
 
   it("holds the reader's place when the reply they are reading is not a message", async () => {
-    // A finished run's summary is a completion card, and the reader is partway down a long one:
-    // nothing in or below their view is a message.
+    // Partway down a long completion card: nothing in or below the view is a message.
     const view = await renderPaginatedSession([
       createMessage("entry-3"),
       {
@@ -1554,8 +1537,7 @@ describe("ChatView history pagination", () => {
     });
 
     it("measures against the reply when the block grows above what is on screen", async () => {
-      // Same turn, so the block stays, and the viewport top cuts through it: the earlier step
-      // lands inside it, above the reader, and its own top does not move.
+      // Same block, cut by the viewport top: the earlier step lands inside it, above the reader.
       const view = await renderRunInView(() => "turn-1");
 
       try {
@@ -1575,8 +1557,7 @@ describe("ChatView history pagination", () => {
   });
 
   it("leaves a row the viewport top cuts through alone once the browser has held a line in it", async () => {
-    // Deep in one long reply, the only row in view. The page puts 700px above it and it grows 60px
-    // itself, above the view. A browser that anchors scrolling follows the line being read: 760px.
+    // One reply in view; 700px lands above and it grows 60px above the view: anchoring adds 760.
     const view = await renderPaginatedSession(createMessages(4, 5), 5);
     fetchOlderMessagesFastMock.mockResolvedValueOnce({ messages: createMessages(0, 4), hasMore: false, total: 5 });
 
@@ -1603,14 +1584,8 @@ describe("ChatView history pagination", () => {
     }
   });
 
-  // ViewportKeeper's own handling of late height changes is covered in chat/TranscriptViewport.test.ts.
-  // These cases prove ChatView feeds it the reader's scrolling: scroll events and when they stopped.
+  // ViewportKeeper is tested in chat/TranscriptViewport.test.ts; here ChatView feeds it scrolls.
   describe("content above the reader that changes height long after it rendered", () => {
-    /**
-     * Six rows of 150px, the reader at the top of the fifth, in a browser that does not anchor
-     * scrolling. `grow` makes the second row taller, as an image in it finishing loading would,
-     * which pushes the rows after it down.
-     */
     async function renderSixRows() {
       vi.useFakeTimers();
       const resizes = stubResizeObserver();
@@ -1666,7 +1641,7 @@ describe("ChatView history pagination", () => {
     });
   });
 
-  // Which scroll positions and directions ask for a page is covered in chat/transcript-scroll-policy.test.ts.
+  // Which scrolls ask for a page is tested in chat/transcript-scroll-policy.test.ts.
   it("prefetches the previous page once the reader scrolls up within a screen of the top", async () => {
     const view = await renderPaginatedSession(createMessages(3, 5), 5);
 
@@ -1683,8 +1658,7 @@ describe("ChatView history pagination", () => {
   });
 
   it("keeps filling when a page adds nothing above a reader parked at the very top", async () => {
-    // A page of steps that all fold into a run already on screen changes no heights, so the
-    // reader is still at the top with nothing new to scroll to.
+    // Steps that fold into a run on screen change no heights, so the reader stays at the top.
     const view = await renderPaginatedSession(createMessages(6, 8), 8);
     fetchOlderMessagesFastMock
       .mockResolvedValueOnce({ messages: createMessages(3, 6), hasMore: true, total: 8 })
@@ -1891,8 +1865,7 @@ describe("ChatView history pagination", () => {
 
     try {
       const { dom, act, render } = view;
-      // Hold responses back like a real network would, so every read the run's end triggers is
-      // issued before any of them lands.
+      // Hold responses back, so every read the run's end triggers is issued before any lands.
       const reads: Array<{ limit: number; respond: () => void }> = [];
       fetchMessagesFastMock.mockImplementation((_sessionId: string, request: { limit: number }) => {
         const response = createDeferred<FetchMessagesFastResult>();
@@ -1908,7 +1881,7 @@ describe("ChatView history pagination", () => {
         return response.promise;
       });
 
-      // What the stream hook does on a terminal event: report the run settled, go idle, advance the epoch.
+      // As the stream hook does on a terminal event: report settled, go idle, advance the epoch.
       const onSettled = useSessionStreamMock.mock.calls.at(-1)?.[1] as () => void;
       await act(async () => {
         onSettled();
@@ -1946,8 +1919,7 @@ describe("ChatView history pagination", () => {
       const { dom, act } = view;
       await waitUntilAct(act, () => dom.container.textContent?.includes("entry-199") ?? false);
       expect(newestReads()).toEqual([{ limit: 120 }]);
-      // Anything may have happened to the session since it was cached, so entries the read did
-      // not cover are dropped rather than kept above it.
+      // The session may have changed since caching, so entries the read missed are dropped.
       expect(() => findMessageWrapperByAnchorKey(dom.container, "entry-79")).toThrow();
       expect(findMessageWrapperByAnchorKey(dom.container, "entry-80")).toBeDefined();
     } finally {
@@ -2714,7 +2686,7 @@ describe("ChatView steering sends", () => {
       });
       await advanceTimersByTimeAct(act, 300);
       expect(dom.container.textContent).toContain("disk-refresh-marker");
-      // History holds the message, so its saved entry is the one bubble, before the request settles.
+      // History holds the message, so its entry is the one bubble before the request settles.
       expect(findBubbles()).toHaveLength(1);
       expect(findBubbles()[0]?.getAttribute("data-delivery-state")).toBe("sent");
       expect(findMessageWrapperByAnchorKey(dom.container, "canonical-before-acceptance")).toBeDefined();
@@ -3109,8 +3081,7 @@ describe("ChatView steering sends", () => {
       streamOverrides: {
         liveAssistantSegments: [
           {
-            // Committed, but its disk entry sits above the loaded window — the watermark must
-            // retire it rather than letting it re-render below the canonical tail.
+            // Its entry is above the loaded window; the watermark must keep it off the tail.
             id: "assistant-event-1",
             content: "older snapshot message",
             sourceEventId: "assistant-event-1",
@@ -3288,8 +3259,7 @@ describe("ChatView steering sends", () => {
       expect(dom.container.textContent).toContain("Old tool");
       expect(dom.container.textContent).toContain("current question");
 
-      // Disk history keeps its own ordering; the live overlay is appended after it, even when
-      // provider turn ids repeat across runs.
+      // The live overlay follows disk history, even when provider turn ids repeat across runs.
       const renderedText = dom.container.textContent ?? "";
       expect(renderedText.indexOf("Old tool")).toBeGreaterThan(renderedText.indexOf("previous reply"));
       expect(renderedText.indexOf("current question")).toBeGreaterThan(renderedText.indexOf("Old tool"));
@@ -3642,7 +3612,7 @@ describe("ChatView sub-agents", () => {
     };
   }
 
-  /** A step an agent took. It names the call that launched the agent, which is not among the loaded entries. */
+  /** An agent's step, naming a launch call that is not among the loaded entries. */
   function agentStep(id: string, agent: string, startSeconds: number, endSeconds?: number): ChatEntry {
     return {
       id,
@@ -3728,14 +3698,14 @@ describe("ChatView sub-agents", () => {
     });
 
     try {
-      // With nothing of its own to show, the line under the transcript says so, once the pause holds.
+      // With nothing of its own to show, the line under the transcript says so once paused.
       await waitUntilAct(act, () => dom.container.textContent?.includes("Waiting on the agents.") ?? false, { label: "history" });
       await advanceTimersByTimeAct(act, 400);
       await waitUntilAct(act, () => dom.container.textContent?.includes("Waiting on 2 agents") ?? false, { label: "waiting line" });
       const status = findAllByTag(dom.container, "DIV").find((candidate) => candidate.getAttribute?.("data-live-status"));
       expect(status?.textContent).toBe("Waiting on 2 agentsmoves-agent and saves-agent");
 
-      // An agent takes a step. The stretch it lands in carries the same words, and does not name the step.
+      // An agent steps; its stretch carries the same words and does not name the step.
       await render({
         streamOverrides: {
           liveTools: [{
@@ -3809,8 +3779,7 @@ describe("ChatView sub-agents", () => {
         isStreaming: true,
         streamStatus: "streaming",
         hadVisibleOutput: true,
-        // What the stream holds after the agent says something: an update to its launching call,
-        // which this stream never saw start.
+        // After the agent speaks: an update to its launch call, which this stream never saw start.
         liveTools: [{
           toolCallId: "task-moves",
           name: "unknown",
@@ -3849,7 +3818,7 @@ describe("ChatView sub-agents", () => {
 
     try {
       await waitUntilAct(act, () => dom.container.textContent?.includes("Load older messages") ?? false);
-      // The older page was read while the agent was still working, and lands after the read that says it finished.
+      // The older page, read while the agent worked, lands after the read saying it finished.
       fetchOlderMessagesFastMock.mockResolvedValueOnce({
         messages: [{ id: "entry-199", role: "assistant", content: "An earlier reply.", sourceEventId: "assistant-0", timestamp: at(-60) }],
         hasMore: true,
@@ -4452,8 +4421,7 @@ describe("ChatView disk-authoritative synchronization", () => {
         await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length > 0);
         const callsBefore = fetchMessagesFastMock.mock.calls.length;
 
-        // A long autopilot run emits an advance per committed event; the view must not storm
-        // the disk reader with one refresh per event.
+        // An advance per committed event must not storm the disk reader with one refresh each.
         for (let seq = 1; seq <= 25; seq += 1) {
           await render({ streamOverrides: { historyEpoch: seq } });
           await advanceTimersByTimeAct(act, 5);
@@ -4562,8 +4530,7 @@ describe("ChatView disk-authoritative synchronization", () => {
       await waitUntilAct(act, () => fetchMessagesFastMock.mock.calls.length === 1);
       fetchMessagesFastMock.mockClear();
 
-      // The stream hook resets one render after the session changes, so the next chat's first
-      // render still carries the previous chat's run.
+      // The stream hook resets a render late, so the next chat's first render has the old run.
       await render({ sessionId: "session-2", composerKey: "session-2" });
       await render({
         sessionId: "session-2",
@@ -4642,7 +4609,7 @@ describe("ChatView disk-authoritative synchronization", () => {
         button.getAttribute?.("aria-expanded") === "false"
       )));
       await expandActivity(dom.container, act);
-      // Substituted onto the disk entry, not appended beside it: one row, already carrying the result.
+      // Merged onto the disk entry, not appended: one row, already with the result.
       const text = dom.container.textContent ?? "";
       expect(text).toContain("RESULT-VISIBLE-NOW");
       expect(text.indexOf("Shared tool")).toBeGreaterThanOrEqual(0);

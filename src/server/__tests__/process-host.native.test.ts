@@ -15,8 +15,7 @@ afterAll(async () => {
 
 describe("Bridge process host in the native project", () => {
   it("runs the native project on the production backend", () => {
-    // vitest.native.config.ts selects it. Without this, a config change would silently move every
-    // native test (process trees, staged backends, runtime fencing) onto the inline backend.
+    // Guards vitest.native.config.ts from silently moving native tests onto the inline backend.
     expect(getProcessHost().mode).toBe("worker");
   });
 
@@ -34,8 +33,7 @@ describe("Bridge process host in the native project", () => {
 });
 
 describe("worker entry for hosts from before the move", () => {
-  // The launcher and the job runner keep the host they started with. After a deploy that host
-  // still starts its worker threads from src/server/process-host-worker.ts, under its old flag.
+  // A running launcher or job runner still starts workers from the old path and flag after deploy.
   it("serves the old path and flag with the unchanged message protocol", async () => {
     const { entry, execArgv } = resolveWorkerEntry("process-host-worker");
     const worker = new Worker(entry, { workerData: { bridgeProcessHostWorker: true }, ...(execArgv ? { execArgv } : {}) });

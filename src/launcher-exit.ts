@@ -105,10 +105,7 @@ async function runStopStateMachine(
   return { ok: false, reason: result.status };
 }
 
-/**
- * Stop a managed child exactly once. Concurrent and later callers share the
- * same state-machine result, preventing duplicate force actions.
- */
+/** Stop a managed child once; concurrent and later callers share the result, so no double force. */
 export function stopLauncherChild(
   child: LauncherChild,
   dependencies: LauncherChildShutdownDependencies,
@@ -148,9 +145,7 @@ export async function drainLauncherChildren(
   dependencies: LauncherChildShutdownDependencies,
   deadline: Deadline,
 ): Promise<LauncherShutdownOutcome> {
-  // Shutting-down state is set before this function is entered, so launcher
-  // spawn gates prevent new children. One microtask lets already-entered spawn
-  // callbacks publish their child before the terminal snapshot.
+  // One microtask lets spawn callbacks already in flight register their child before the snapshot.
   await Promise.resolve();
   const children = uniqueChildren(getChildren());
   const outcomes = await Promise.all(

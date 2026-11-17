@@ -129,7 +129,7 @@ describe("HelmService conversations", () => {
     expect(sessionManager.createSession).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-opus-5", reasoningEffort: "high" }));
     // The retired model and efforts are kept for Tether; nothing reads them.
     expect(ctx.settingsStore.getSettings().modelRoles?.helm).toBeUndefined();
-    // The hub sends exactly these eleven fields, including an empty model, and reads them back unchanged.
+    // The hub sends exactly these fields, empty model included, and reads them back unchanged.
     const hubFixture = {
       model: "", typedReasoningEffort: "high", spokenReasoningEffort: "low",
       glossary: "SELFTEST names", voice: "af_heart", speed: 1.15, patience: 0.7,
@@ -395,7 +395,7 @@ describe("Helm session profiles", () => {
     // Helm's own bridge_overview replaces a same-named one, and the chat keeps every other tool.
     expect(names.filter((name: string) => name === "bridge_overview")).toHaveLength(1);
     expect(names).toEqual(expect.arrayContaining(["task_list", "send_to_session", "helm_brief", "read_bridge"]));
-    // Its reused, size-capped wrappers of Bridge tools are for the looks; the chat has the originals.
+    // The size-capped wrappers of Bridge tools are for looks; the chat has the originals.
     expect(names.filter((name: string) => name === "task_list")).toHaveLength(1);
     expect(new Set(names).size).toBe(names.length);
     expect(applied.excludedTools).toEqual(["report_intent", "ask_user", "playbook_select", "verify_complete"]);
@@ -411,7 +411,7 @@ describe("Helm session profiles", () => {
       taskStore: {
         listTasks: () => [
           { id: "t-bridge", title: "Copilot Bridge", status: "active", deferred: false, priority: 0, updatedAt: "2026-09-01T00:00:00.000Z", sessionIds: ["s-bridge"] },
-          // Its revisit date has passed and nothing else moves it: it needs the user, whatever its thread line says.
+          // Revisit passed and nothing moves it: it needs the user, whatever its thread line says.
           { id: "t-gift", title: "Gift list", status: "active", deferred: false, priority: 0, updatedAt: "2026-08-01T00:00:00.000Z", sessionIds: [], nextAction: "Order the gift", waitingOn: "Sam" },
           { id: "t-trip", title: "Trip plans", status: "active", deferred: false, priority: 0, updatedAt: "2026-09-10T00:00:00.000Z", sessionIds: [], nextAction: "Book the hotel", nextTouchAt: "2026-09-01T12:00:00.000Z" },
         ],
@@ -443,7 +443,7 @@ describe("Helm session profiles", () => {
       "- [Copilot Bridge](bridge://task/t-bridge): [an agent's] Calendar import in review. [from Mail]",
       "- [Gift list](bridge://task/t-gift): Waiting on Sam's sizes.",
     ]);
-    // A conversation that replied before this process started already has it, unless it was lost since.
+    // A conversation that replied before this process started has it, unless lost since.
     store.recordReply(conversation.sessionId, "2026-09-18T09:01:00.000Z");
     expect(profile.conversationContext?.(conversation.sessionId, { afterLoss: false })).toBeUndefined();
     expect(profile.conversationContext?.(conversation.sessionId, { afterLoss: true })).toBe(index);

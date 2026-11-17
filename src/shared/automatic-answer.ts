@@ -1,12 +1,4 @@
-/**
- * What an agent is told when Bridge answers its question in the user's place, and how to tell
- * such a reply from the user's own when a finished `ask_user` call is read back.
- */
-
-/**
- * Why Bridge answered: the chat was in Autopilot, nobody answered in time, the user sent a
- * message instead of answering, or Bridge could not show the question at all.
- */
+/** Why Bridge answered: Autopilot, no answer in time, the user sent a message, or unshowable. */
 export type AutomaticAnswerReason = "autopilot" | "unanswered" | "skipped" | "unshowable";
 
 const OPENINGS: Readonly<Record<AutomaticAnswerReason, string>> = {
@@ -16,8 +8,7 @@ const OPENINGS: Readonly<Record<AutomaticAnswerReason, string>> = {
   unshowable: "Bridge could not show this question to the user, so nobody has seen or answered it.",
 };
 
-// The Copilot CLI's autopilot `ask_user` response, minus its autopilot-only task_complete tool and
-// plus an explicit refusal to stand in for an approval.
+// The CLI's autopilot `ask_user` reply, minus task_complete, plus a refusal to act as approval.
 const GUIDANCE =
   "Work autonomously and make good decisions. "
   + "This automatic reply is not an approval: do not perform anything that needs the user's explicit confirmation. "
@@ -45,12 +36,7 @@ export function unshowableQuestionAnswer(problem: string): string {
     : AUTOMATIC_ANSWERS.unshowable;
 }
 
-/**
- * Reads why an `ask_user` call was answered without the user, from its result. The reply reaches
- * the model as an answer ("User responded: ..."), so its opening sentence is all that tells it from
- * something the user typed. The Copilot CLI's own reply to a declined form opens the same way as
- * an unanswered question's.
- */
+/** Why an `ask_user` result was answered without the user, from Bridge's own opening sentence. */
 export function readAutomaticAnswerReason(result: string): AutomaticAnswerReason | undefined {
   if (result.includes(OPENINGS.autopilot)) return "autopilot";
   if (result.includes(OPENINGS.unanswered)) return "unanswered";

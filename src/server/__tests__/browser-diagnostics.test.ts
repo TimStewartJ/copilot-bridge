@@ -19,8 +19,7 @@ vi.mock("node:child_process", () => ({
   execFile: execFileMock,
 }));
 
-// src/test-support/vitest-setup.ts replaces the host lookups of browser-launch for every test
-// file. This file replaces them again with mocks a test can steer.
+// vitest-setup.ts already mocks browser-launch's host lookups; these mocks can be steered.
 const isExecutableFile = vi.fn<(file: string) => Promise<boolean>>();
 const readJsonFile = vi.fn<(file: string) => Promise<unknown>>();
 const readModifiedAt = vi.fn<(file: string) => Promise<number | undefined>>();
@@ -43,17 +42,13 @@ type CommandAnswer = { stdout?: string; stderr?: string } | { fail: { stdout?: s
 /** What `agent-browser --version` prints. Undefined makes the command fail. */
 let agentBrowserVersionOutput: string | undefined;
 
-/**
- * Answers every command the browser layer runs: a mocked process that is never answered leaves
- * its caller waiting for good. `respond` decides the commands a test cares about; the rest get
- * the version, or empty output, which reads as "closed", "no processes" and "nothing to say".
- */
+/** Answers every command (an unanswered mock hangs its caller): respond(), else version or "". */
 function answerCommands(respond: (command: SeenCommand) => CommandAnswer | undefined = () => undefined): SeenCommand[] {
   const seen: SeenCommand[] = [];
   execFileMock.mockImplementation((file: string, args: string[], options: any, cb: ExecFileCallback) => {
     const command = { file, args, env: options?.env };
     seen.push(command);
-    // Matched by its arguments: on Windows the executable is a resolved path or goes through a shell.
+    // Match by arguments: on Windows the executable is a resolved path or runs via a shell.
     const answer = respond(command) ?? (args[0] === "--version"
       ? agentBrowserVersionOutput === undefined
         ? { fail: { stderr: "agent-browser: not found" } }
@@ -83,11 +78,7 @@ function neutralBinary(name: string): string {
   return path.join(path.sep, "srv", "acme", name);
 }
 
-/**
- * Runs work that waits on production retry delays without spending them: the delays run on fake
- * timers, and each round also yields to the real event loop for the file I/O in between. Ends
- * with the work, or with the test (`signal`) when the work never ends.
- */
+/** Runs `start` with fake retry delays, yielding to real I/O each round; aborts on `signal`. */
 async function settleThroughDelays<T>(signal: AbortSignal, start: () => Promise<T>): Promise<T> {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {

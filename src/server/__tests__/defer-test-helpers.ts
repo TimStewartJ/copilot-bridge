@@ -7,15 +7,11 @@ export interface MockDeferSessionManagerOptions {
   busySessions?: Set<string>;
   startWorkError?: Error;
   persistedUserMessage?: boolean;
-  /** What a worker reports when the test supplies none: one-time triggers finish, recurring ones continue. */
+  /** Worker report when the test gives none: one-time triggers finish, recurring ones continue. */
   defaultAction?: "finish" | "continue";
 }
 
-/**
- * A hand-built session manager for the trigger and outbox runners. A trigger worker run, unless a test
- * sets `runDeferWorker`, records itself in `_started` and returns `defaultAction`; a message delivered
- * into a chat records itself there too, so scheduling tests can assert on what ran without caring how.
- */
+/** Fake session manager for trigger runners; runs and deliveries are recorded in `_started`. */
 export function makeMockDeferSessionManager(options: MockDeferSessionManagerOptions = {}) {
   const {
     sessions = [],

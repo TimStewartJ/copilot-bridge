@@ -19,11 +19,7 @@ export type Section = { group: TaskGroup | null; tasks: Task[] };
 /** `data.type` of a group's drop area, so collision detection can tell it from a task row. */
 export const TASK_GROUP_DROPPABLE = "task-group";
 
-/**
- * Task rows win over the group box around them: with plain closestCenter a row dragged inside its
- * own group often lands on the group box and nothing moves. A group is the target only when the
- * pointer is over one with no rows showing (empty or collapsed), so tasks can still be dropped in.
- */
+/** Rows beat the group box closestCenter often hits; a group wins only when it shows no rows. */
 export const taskListCollisionDetection: CollisionDetection = (args) => {
   const isGroup = (container: (typeof args.droppableContainers)[number]) =>
     container.data.current?.type === TASK_GROUP_DROPPABLE;

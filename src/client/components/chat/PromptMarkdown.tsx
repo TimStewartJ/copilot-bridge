@@ -6,10 +6,7 @@ import { APP_PROSE } from "../shared/prose-classes";
 
 interface PromptMarkdownProps {
   content: string;
-  /**
-   * Text from outside the agent (an MCP server asking for input) is shown exactly as sent: a
-   * prompt that asks the reader to act must not be able to dress a link up as something else.
-   */
+  /** False for outside text (MCP input requests): shown as sent so links cannot be disguised. */
   trusted: boolean;
 }
 

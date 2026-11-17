@@ -25,7 +25,7 @@ export interface VoiceJob {
   /** The longest detected speech with no words, and where it starts. Saved with the transcript. */
   speechGapSeconds?: number;
   speechGapStart?: number;
-  /** Set when the transcript was held for review. Kept after it reaches the draft, for retention and analysis. */
+  /** Set when held for review; kept after it reaches the draft, for retention and analysis. */
   reviewReason?: VoiceReviewReason;
   createdAt: string;
   updatedAt: string;
@@ -135,7 +135,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
     });
   }
 
-  /** Only a failed or held job can be recovered; an in-flight one must stay resumable after a restart. */
+  /** Only failed or held jobs recover; in-flight ones must stay resumable after a restart. */
   function markRecovered(id: string): StoredVoiceJob | undefined {
     const existing = getVoiceJob(id);
     if (!existing || (existing.status !== "error" && existing.status !== "held")) return existing;
@@ -188,11 +188,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
     return Number(result.changes ?? 0);
   }
 
-  /**
-   * A failed job with no transcript has nothing left to recover, so any newer job for the same
-   * composer supersedes it. A failed job that still holds a transcript stays visible until the
-   * client puts the transcript back and marks it recovered.
-   */
+  /** A failed job without a transcript is superseded by newer ones; one with a transcript stays. */
   function findLatestRelevantForComposer(composerKey: string): StoredVoiceJob | undefined {
     const placeholders = RELEVANT_STATUSES.map(() => "?").join(", ");
     const row = db.prepare(`

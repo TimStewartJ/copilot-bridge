@@ -1,23 +1,11 @@
-// The only module in the server runtime that opens the Copilot CLI's session store
-// (<copilot home>/session-store.db).
-//
-// The CLI rewrites that database constantly, and it lives in the user's profile rather than in
-// the Bridge's data directory. On Windows an antivirus scan holds the open of a recently written
-// file until the scan is done. Under machine load one such open was measured taking 11.8 s, and
-// node:sqlite is synchronous, so on the server's main thread it froze HTTP, health probes and
-// session event acknowledgements for that long. A delete also waits up to five seconds for the
-// CLI's write lock. cli-session-store.ts therefore loads this module as a worker thread. The
-// inline backend (tests, operational fallback) calls the same function on its own thread.
-//
-// Constraints: as for process-host-worker.ts, no runtime imports from the codebase and only
-// erasable TypeScript syntax.
+// Opened only in a worker: AV scans can block opens >10s. No runtime imports; erasable TS only.
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parentPort, workerData } from "node:worker_threads";
 
-/** Marks a thread started by cli-session-store.ts. Other worker threads (Vitest's) import this module too. */
+/** Marks a cli-session-store.ts thread; Vitest's worker threads import this module too. */
 export const CLI_SESSION_STORE_WORKER_FLAG = "bridgeCliSessionStoreWorker";
 
 export interface CopilotCliCatalogSession {
@@ -31,11 +19,7 @@ export interface CopilotCliCatalogSession {
   hostType?: string;
 }
 
-/**
- * Narrows a catalog list in the worker. The catalog holds every session the CLI has indexed, and
- * each row sent back is deserialised on the server's main thread, so a reader names the sessions
- * it wants (`ids`) or already has ruled out (`excludeIds`) instead of filtering afterwards.
- */
+/** Filter in the worker: every returned row is deserialised on the main thread. */
 export interface CliCatalogListFilter {
   ids?: readonly string[];
   excludeIds?: readonly string[];
@@ -51,7 +35,7 @@ export type CliSessionStoreRequest =
   | { op: "delete"; copilotHome: string; sessionId: string }
   | { op: "sweep"; copilotHome: string; idPrefix: string; cutoffTimestampMs: number };
 
-/** What a catalog read found. `sessions` is set on a "hit" of "list" (the rows asked for) and "get" (one row). */
+/** A catalog read; `sessions` is set on a "hit" (rows for "list", one row for "get"). */
 export interface CliCatalogRead {
   result: "missing" | "unsupported_schema" | "hit" | "miss";
   sessions?: CopilotCliCatalogSession[];
@@ -247,7 +231,7 @@ function sweepLeakedSessionStoreRows(opts: { copilotHome: string; idPrefix: stri
   return staleIds;
 }
 
-/** Runs one request to completion on the calling thread: a CliCatalogRead, the swept IDs, or nothing. */
+/** Runs one request on the calling thread: a CliCatalogRead, the swept IDs, or nothing. */
 export function runCliSessionStoreRequest(request: CliSessionStoreRequest): unknown {
   if (request.op === "delete") return deleteSessionStoreRows(request.copilotHome, request.sessionId);
   if (request.op === "sweep") return sweepLeakedSessionStoreRows(request);

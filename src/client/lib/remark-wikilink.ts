@@ -1,14 +1,4 @@
-/**
- * Remark plugin that transforms [[wikilink]] syntax into mdast link nodes.
- *
- * Supported forms:
- *   [[page-name]]           → link to "page-name", display text "page-name"
- *   [[path/to/page]]        → link to "path/to/page", display text "page"
- *   [[target|Custom Label]] → link to "target", display text "Custom Label"
- *
- * Links are emitted with a `wiki:` URL scheme so the custom anchor renderer
- * can distinguish them from regular markdown links.
- */
+// [[target]] and [[target|Label]] become wiki: links so the anchor renderer can tell them apart.
 import type { Root, Text, PhrasingContent } from "mdast";
 import { visit } from "unist-util-visit";
 

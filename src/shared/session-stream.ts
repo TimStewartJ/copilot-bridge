@@ -19,11 +19,7 @@ export function normalizeProviderRetryState(value: unknown): ProviderRetryState 
   return { phase: value.phase, retryAt: value.retryAt };
 }
 
-/**
- * A run outcome the bridge produced that `events.jsonl` does not represent — an error message, a
- * stopped/interrupted marker, or output from a slash command that never reached the SDK. Rendered
- * as a notice beneath the transcript so committed history stays disk-authoritative.
- */
+/** A Bridge-made outcome not in events.jsonl (error, stop, slash output), shown under the chat. */
 export interface RunNotice {
   kind: RunNoticeKind;
   content?: string;

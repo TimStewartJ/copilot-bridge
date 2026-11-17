@@ -1,5 +1,4 @@
-// Global event bus for cross-session status changes
-// Pushes run-state/title/intent events to all connected SSE clients
+// Pushes cross-session run-state, title and intent events to all connected SSE clients.
 
 import type { TriggerSummary } from "./triggers/types.js";
 import type { ManagementJobStatus, ManagementJobType } from "./management-job-store.js";

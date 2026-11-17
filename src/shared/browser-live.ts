@@ -1,20 +1,12 @@
-/**
- * Live view of a Bridge browser session: the user watches the page an agent is working on and
- * can act in it (solve a check, sign in). The server relays between the client and the stream
- * that agent-browser serves for the session.
- */
+/** Live view: user watches and acts in an agent's browser session via agent-browser's stream. */
 
-/** The WebSocket path of the live view, under the API base. */
 export const BROWSER_LIVE_WS_PATH = "/api/browser/live/ws";
 /** Where a view posts the files for a file chooser, as multipart `files`, with `?chooser=<id>`. */
 export const BROWSER_LIVE_FILES_PATH = "/api/browser/live/files";
 /** What one file chooser takes at most. */
 export const BROWSER_LIVE_FILE_LIMITS = { files: 20, bytes: 100 * 1024 * 1024 } as const;
 
-/**
- * Whether the installed agent-browser can show a browser and pass input to it, as last seen: by
- * a check, or by a live view that worked or could not start. Absent until one of those happened.
- */
+/** Whether agent-browser can show a browser and take input, as a check or live view last saw. */
 export interface BrowserLiveCheck {
   ok: boolean;
   checkedAt: string;
@@ -29,11 +21,7 @@ export interface BrowserLiveTicket {
   expiresAt: string;
 }
 
-/**
- * Present on a pending form when it is an agent's request for the user to act in a browser
- * session. The form itself has one choice field whose values are BROWSER_HANDOFF_ANSWERS, so a
- * client that does not know about handoffs still shows something answerable.
- */
+/** The form also has a BROWSER_HANDOFF_ANSWERS choice so clients unaware of handoffs can answer. */
 export interface BrowserHandoffView {
   browserSessionId: string;
   /** What the agent needs the user to do, in the agent's words. */
@@ -58,10 +46,7 @@ export interface BrowserLiveFrameMessage {
   data: string;
 }
 
-/**
- * The page's real size in CSS pixels. Pointer positions are sent in these units: the position
- * inside the displayed image, scaled from the image's displayed size to this size.
- */
+/** The page's size in CSS pixels; pointer positions are scaled from the shown image to it. */
 export interface BrowserLiveViewportMessage {
   type: "viewport";
   width: number;
@@ -95,11 +80,7 @@ export interface BrowserLiveTabsMessage {
   tabs: BrowserLiveTab[];
 }
 
-/**
- * The page opened its file chooser. A browser draws that outside the page, so the view asks the
- * person for the files on their own device and posts them to BROWSER_LIVE_FILES_PATH. A chooser
- * is answered once; a later one replaces it, and it ends with the view's connection.
- */
+/** The page opened a file chooser; the view posts files to BROWSER_LIVE_FILES_PATH. */
 export interface BrowserLiveFileChooserMessage {
   type: "file_chooser";
   /** Names the chooser when the files are posted. */
@@ -110,15 +91,7 @@ export interface BrowserLiveFileChooserMessage {
   accept?: string;
 }
 
-/**
- * What the view offers to do with a sign-in, as a password manager would:
- * - save: the person typed one into the page and can keep it for agents. `replaces` when one is
- *   kept for the site already.
- * - saved: it was kept.
- * - fill: the page shows a sign-in form whose login is kept, and the view can sign in with it.
- * - none: nothing to offer.
- * `failed` says that what the person last asked for did not work. A password is never part of it.
- */
+/** Password-manager offer: save (replaces: one exists), saved, fill, none; never a password. */
 export interface BrowserLiveLoginMessage {
   type: "login";
   state: "none" | "save" | "saved" | "fill";
@@ -154,12 +127,7 @@ export interface BrowserLiveMouseMessage {
   modifiers?: number;
 }
 
-/**
- * A key press is a `keyDown` and a `keyUp` carrying `key`, `code` and `windowsVirtualKeyCode`
- * (the DOM event's `keyCode`); without the key code, keys such as Backspace and the arrows do
- * nothing. Text is a `char` event with `text`, which may hold several characters; the server
- * hands them to the browser one at a time, as the browser requires.
- */
+/** keyDown/keyUp need windowsVirtualKeyCode or Backspace and arrows do nothing. */
 export interface BrowserLiveKeyboardMessage {
   type: "input_keyboard";
   eventType: "keyDown" | "keyUp" | "char";
@@ -240,10 +208,7 @@ const MAX_URL_LENGTH = 2048;
 /** How agent-browser names a tab: t1, t2, … */
 const TAB_ID = /^t\d{1,6}$/;
 
-/**
- * The address as the browser will open it, when it is one of a web page. Everything else a
- * browser can open (files of the host, its own settings pages, scripts) is refused.
- */
+/** The URL as the browser will open it; anything but a web page (files, settings) is refused. */
 export function normalizeBrowserLiveUrl(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > MAX_URL_LENGTH) return undefined;
   try {
@@ -268,11 +233,7 @@ function shortString(value: unknown): string | undefined {
   return typeof value === "string" && value.length <= MAX_KEY_NAME_LENGTH ? value : undefined;
 }
 
-/**
- * The live-view message in what a client sent, rebuilt from the fields the protocol defines and
- * nothing else. Undefined for anything that is not a well-formed message; what a client sends
- * goes on to the browser's input, so nothing is passed through as it came.
- */
+/** Rebuilds only protocol fields since input reaches the browser; undefined if malformed. */
 export function parseBrowserLiveClientMessage(value: unknown): BrowserLiveClientMessage | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const input = value as Record<string, unknown>;

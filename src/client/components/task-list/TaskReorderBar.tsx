@@ -3,13 +3,13 @@ import { Button } from "../../design/primitives";
 import { DS, cx } from "../../design/tokens";
 
 interface UseTaskReorderModeOptions {
-  /** Whether reordering is possible right now. Reorder mode ends by itself when this turns false. */
+  /** Whether reordering is possible now; reorder mode ends by itself when this turns false. */
   enabled: boolean;
   /** Whether a drag is in progress; Escape then cancels the drag and leaves the mode on. */
   dragging: boolean;
-  /** Called when the mode ends, so a long-press click guard from entering it cannot eat the next tap. */
+  /** Called when the mode ends, so the long-press click guard cannot eat the next tap. */
   onExit?: () => void;
-  /** Where keyboard focus goes after Done or Escape; the handles and Done button it was on are gone. */
+  /** Where focus goes after Done or Escape; the handles and Done button it was on are gone. */
   returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
@@ -34,7 +34,7 @@ export function useTaskReorderMode({ enabled, dragging, onExit, returnFocusRef }
     window.requestAnimationFrame(() => returnFocusRefRef.current?.current?.focus());
   }, [exit]);
 
-  // Reordering became impossible (list collapsed, tab switched, tasks gone): leave focus where it is.
+  // Reordering became impossible (list collapsed, tab switched): leave focus where it is.
   useEffect(() => {
     if (reordering && !enabled) exit();
   }, [enabled, reordering, exit]);
@@ -45,8 +45,7 @@ export function useTaskReorderMode({ enabled, dragging, onExit, returnFocusRef }
       if (event.key !== "Escape" || draggingRef.current) return;
       stop();
     };
-    // Capture on window runs before dnd-kit's own Escape handler, which cancels the drag and lets
-    // React clear `dragging` before a bubbling listener would see the key.
+    // Capture runs before dnd-kit's Escape handler, which would clear `dragging` before bubbling.
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [reordering, stop]);

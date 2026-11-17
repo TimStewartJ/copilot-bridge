@@ -4,10 +4,7 @@ type SpokenLineKind = "prose" | "structure" | "fence";
 
 const DIVIDER_LINE_RE = /^\s*([-*_])\1{2,}\s*$/;
 
-/**
- * Decides what a line is from as little of its start as possible, so prose can be spoken the
- * moment it begins streaming. Undefined means "not enough characters yet".
- */
+/** Classifies a line from as little of its start as possible; undefined means "need more". */
 function classifyLineStart(line: string, context: { inFence: boolean; afterStructure: boolean }): SpokenLineKind | undefined {
   const trimmed = line.trimStart();
   const indent = line.length - trimmed.length;
@@ -43,15 +40,7 @@ function classifyLineStart(line: string, context: { inFence: boolean; afterStruc
   return "prose";
 }
 
-/**
- * Picks the speakable part out of a streamed reply: sentences are spoken, structure is shown.
- * Lists, tables, headings, quotes and code are withheld from speech, and so is everything after
- * a divider line ("---"). This is deliberately structural rather than a convention the model
- * has to follow, because fast models often don't.
- *
- * Feed it text deltas as they arrive and speak what `push` returns. One filter handles one
- * message: call `flush` when the message ends, then `reset` before the next.
- */
+/** Speaks prose, not structure or anything after ---; per message: push, flush, then reset. */
 export class SpokenTextFilter {
   private line = "";
   private kind: SpokenLineKind | undefined;
@@ -65,7 +54,7 @@ export class SpokenTextFilter {
     return this.withheldValue;
   }
 
-  /** Takes the next piece of the message and returns the part of it to speak, which may be empty. */
+  /** Takes the next piece of the message and returns the part to speak, possibly empty. */
   push(delta: string): string {
     let spoken = "";
     for (const char of delta) spoken += this.accept(char);

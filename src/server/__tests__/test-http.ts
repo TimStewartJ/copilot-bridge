@@ -40,8 +40,7 @@ const server = createServer((req, res) => {
     res.destroy(error instanceof Error ? error : new Error(String(error)));
   }
 });
-// Full-suite contention can leave the shared client idle beyond Node's 5s
-// default, racing the next request against server-side socket cleanup.
+// Under full-suite load the client can idle past Node's 5s default and race socket cleanup.
 server.keepAliveTimeout = TEST_HTTP_IDLE_TIMEOUT_MS;
 server.headersTimeout = TEST_HTTP_IDLE_TIMEOUT_MS + 5_000;
 

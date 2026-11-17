@@ -2,16 +2,7 @@
 import ts from "typescript";
 import type { DesignViolation } from "./audit";
 
-/**
- * The "long-copy" rule: user-visible text stays short (README.md, "Copy"). A label, a state and a
- * control explain themselves; a sentence is for a consequence the reader would otherwise get wrong,
- * an error, or an interaction that cannot work without it, and even then it is short.
- *
- * Word count is a tripwire, not the whole rule: it catches the intros, help lines and footnotes
- * that pile up, and leaves short tutorial lines to review against the README. Prose is measured as
- * the reader sees it, so text split around inline markup (`<code>`, links) or joined with `+` counts
- * as one piece. Text built at run time from data cannot be checked here.
- */
+/** Word count is a tripwire for README's Copy rule; prose is counted as shown, across markup. */
 
 export const LONG_COPY_MAX_WORDS = 12;
 
@@ -19,7 +10,7 @@ export const LONG_COPY_MESSAGE = `Text over ${LONG_COPY_MAX_WORDS} words. Let th
 
 const COPY_OK_RE = /copy-ok:\s*\S/;
 
-/** Attributes that are never shown as body text. `title` is handled apart: it is a tooltip except on VISIBLE_TITLE_COMPONENTS. */
+/** Never body text; `title` is apart: a tooltip except on VISIBLE_TITLE_COMPONENTS. */
 const EXEMPT_ATTRIBUTES = new Set([
   "className", "class", "style", "key", "id", "htmlFor", "href", "src", "alt", "role", "type", "name", "value",
   "placeholder", "autoComplete", "inputMode", "d", "viewBox", "to", "rel", "target", "lang", "accept",
@@ -121,7 +112,7 @@ export function findLongCopy(file: string, content: string): DesignViolation[] {
     });
   };
 
-  /** Contiguous prose among JSX children: text, literal expressions and inline elements, broken by block elements. */
+  /** Contiguous prose among JSX children (text, literals, inline elements) up to a block. */
   const checkJsxChildren = (element: ts.JsxElement | ts.JsxFragment) => {
     // A {/* copy-ok: … */} anywhere among the element's own children marks all of its prose.
     if (element.children.some((child) => ts.isJsxExpression(child) && !child.expression && COPY_OK_RE.test(child.getText(source)))) return;

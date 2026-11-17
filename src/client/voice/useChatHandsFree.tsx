@@ -1,6 +1,4 @@
-// Hands-free for one chat: the button that starts it, the one-time setup panel, and the dock that
-// shows while it is on. Every chat, Helm included, starts it from this composer button. One chat
-// listens at a time, so starting it here moves it from wherever it was.
+// Hands-free button, setup panel and dock for a chat; one chat listens at a time.
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AudioLines, Loader2 } from "lucide-react";
 import { useHandsFree } from "./HandsFreeProvider";
@@ -34,7 +32,7 @@ export function useChatHandsFree(sessionId: string | null, options: { ensureSess
   }, [handsFree.active]);
   const connecting = handsFree.phase === "connecting";
 
-  // Know whether the speech engine is installed before the first tap, so the tap can start audio at once.
+  // Check the speech engine before the first tap, so the tap can start audio at once.
   const { refreshStatus } = handsFree;
   useEffect(() => {
     void refreshStatus();

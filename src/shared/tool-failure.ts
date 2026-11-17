@@ -139,15 +139,14 @@ function failureText(value: unknown, depth = 0): string {
   }).join(" ").slice(0, 8_192);
 }
 
-/** Classifies an already-failed execution, not arbitrary successful tool output or debug discovery logs. */
+/** Classifies an already-failed execution, not successful tool output or debug logs. */
 export function classifyToolFailure(result: unknown): ToolFailure {
   const text = failureText(result);
   const details = failureDetails(result, text);
   const codeCategory = Object.entries(CODE_CATEGORIES)
     .find(([code]) => code.toLowerCase() === String(details.errorCode).toLowerCase())?.[1];
   let category: ToolFailureCategory = "unknown";
-  // The runtime offers a connecting server's tools from a saved list and checks that list on first use. Its
-  // message ends with the reason (a timeout, a closed transport, an error code), which must not pick the category.
+  // Test first: this message ends with a reason (timeout, code) that must not set the category.
   if (/MCP tool catalog changed before tool/i.test(text)) category = "catalog-changed";
   else if (/tool.{0,30}initializ|initialization.{0,30}(?:pending|incomplete|not ready)|tools? (?:are |is )?not ready/i.test(text)) category = "initialization";
   else if (details.statusCode === 429) category = "throttled";

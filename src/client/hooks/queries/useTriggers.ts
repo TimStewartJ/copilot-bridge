@@ -59,7 +59,7 @@ function performTriggerAction(action: TriggerAction, id: string): Promise<unknow
   }
 }
 
-/** Run, pause, resume, cancel, reactivate or delete a trigger, then refresh every trigger list and the chats. */
+/** Act on a trigger, then refresh every trigger list and the chats. */
 export function useTriggerActionMutation() {
   const queryClient = useQueryClient();
   return useMutation({

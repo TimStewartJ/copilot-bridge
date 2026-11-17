@@ -1,5 +1,4 @@
-// Triggers: the Bridge's one kind of automation. A trigger says when it runs, an optional command
-// that decides without a model whether it fires, and what it does when it fires.
+// Triggers, the Bridge's one automation: timing, an optional model-free check, and an action.
 
 import type { DeferCheckpoint } from "../../shared/defer-checkpoint.js";
 import type { ModelPresetSlot } from "../../shared/model-presets.js";
@@ -21,7 +20,7 @@ export type TriggerWhen =
   | { kind: "cron"; cron: string; timezone: string };
 
 export type TriggerAction =
-  /** Wake the chat that owns the trigger: through a temporary worker, or by sending the prompt straight in. */
+  /** Wake the owning chat through a temporary worker, or by sending the prompt straight in. */
   | { kind: "chat"; via: "worker" | "message" }
   /** Start a fresh chat in the task that owns the trigger. */
   | { kind: "new_chat"; modelTier?: ModelPresetSlot; playbook?: string; keepChats?: number }

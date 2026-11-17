@@ -1,6 +1,4 @@
-// The Bridges Helm reads, for its looks and its chat: this one (through its own stores) and peers (through their
-// REST API on the tailnet). Peers are only ever reached at the URL Tim configured, never by
-// following a redirect, and nothing on a peer changes except on Tim's click.
+// Bridges Helm reads: this one, and peers only at Tim's configured URL, never via a redirect.
 import type { AppContext } from "../../app-context.js";
 import type { HomeInput, HomeSection, HomeSnapshot } from "../../../shared/home.js";
 import type { TaskOverview } from "../../../shared/task-overview.js";
@@ -175,7 +173,7 @@ export function createPeerSource(peer: HelmPeer, options: { readOnly: boolean; f
   };
 }
 
-/** Web link to a task or conversation on a source: an in-app path here, an absolute URL on a peer. */
+/** Link to a task or conversation: an in-app path here, an absolute URL on a peer. */
 export function sourceLink(source: Pick<HelmSource, "webBase">, target: { sessionId?: string; taskId?: string }): string | undefined {
   const path = target.sessionId ? `/sessions/${encodeURIComponent(target.sessionId)}` : target.taskId ? `/tasks/${encodeURIComponent(target.taskId)}` : undefined;
   if (!path) return undefined;

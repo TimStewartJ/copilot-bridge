@@ -1,10 +1,6 @@
 import { EVIDENCE_KINDS, isEvidenceKind, type EvidenceKind } from "./workflow-vocabulary.js";
 
-/**
- * What `verify_complete` records: the agent's evidence that a piece of work is done. The server
- * validates and stores it; the chat reads the same arguments back from the tool call to draw the
- * verified card, so both sides use the reader below.
- */
+/** verify_complete evidence; server and chat card both read tool args with the reader below. */
 
 export const COMPLETION_TOOL_NAME = "verify_complete";
 
@@ -59,7 +55,7 @@ export function isCompletionStatus(value: unknown): value is CompletionStatus {
   return typeof value === "string" && (COMPLETION_STATUSES as readonly string[]).includes(value);
 }
 
-/** Any failed check fails the report; an in-scope check left unrun makes it partial. Notes never change it. */
+/** A failed check fails the report; an unrun in-scope check makes it partial; notes never count. */
 export function deriveCompletionStatus(evidence: readonly Pick<CompletionEvidence, "result">[], unverified: readonly string[]): CompletionStatus {
   if (evidence.some((item) => item.result === "fail")) return "failed";
   if (unverified.length > 0 || evidence.some((item) => item.result === "not_run")) return "partial";

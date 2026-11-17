@@ -29,7 +29,7 @@ function localDayStart(value: string | null | undefined, dayOffset = 0): Date | 
   return new Date(year, month, day + dayOffset);
 }
 
-/** The same time `months` months earlier, kept inside the target month (31 March less one month is 28 or 29 February). */
+/** `months` months earlier, clamped to the target month (31 March less one is end of February). */
 function monthsBefore(now: Date, months: number): Date {
   const date = new Date(now);
   const day = date.getDate();

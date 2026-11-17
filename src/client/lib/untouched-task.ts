@@ -1,10 +1,6 @@
 import type { Task } from "../api";
 
-/**
- * Whether a task looks unused from what the browser holds: never edited, nothing linked.
- * It only decides whether to try deleting without the confirmation dialog. The server
- * makes the real check, which also covers triggers, checklist items and history.
- */
+/** Client-side guess to skip the delete confirmation; the server makes the real check. */
 export function looksUntouched(task: Task): boolean {
   return task.status === "active"
     && task.updatedAt === task.createdAt

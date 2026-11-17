@@ -10,7 +10,7 @@ import { makeTestDir } from "./helpers.js";
 // The quoting exists for cmd.exe and a `.cmd` launcher, and only those can say whether it holds.
 const windows = process.platform === "win32";
 
-/** What npm writes beside a globally installed package's command (cmd-shim), for a script `echo-args.js`. */
+/** The cmd-shim npm writes beside a global package's command, here for `echo-args.js`. */
 const NPM_LAUNCHER = [
   "@ECHO off",
   "GOTO start",
@@ -84,8 +84,7 @@ const ARGUMENTS = [
 
 describe.runIf(windows)("an argument quoted for the Windows command shell", () => {
   let directory = "";
-  // Not the launchers' folder: they are then found through PATH alone, as agent-browser is, and
-  // a launcher misled about its own folder does not find the script beside it.
+  // Not the launchers' folder, so they are found through PATH alone, as agent-browser is.
   let workingDirectory = "";
   let env: NodeJS.ProcessEnv = {};
 
@@ -99,8 +98,7 @@ describe.runIf(windows)("an argument quoted for the Windows command shell", () =
     );
     writeFileSync(path.join(directory, "plain-launcher.cmd"), PLAIN_LAUNCHER);
     writeFileSync(path.join(directory, "npm-launcher.cmd"), NPM_LAUNCHER);
-    // Windows names the variable `Path`, and a copy of the environment can hold it under more than
-    // one spelling, of which a new process gets the first in sorted order. Exactly one is passed on.
+    // An env copy can hold several spellings of `Path` and a child gets the first sorted; pass one.
     const pathNames = Object.keys(process.env).filter((name) => name.toUpperCase() === "PATH").sort();
     const others = Object.entries(process.env).filter(([name]) => !pathNames.includes(name));
     env = {

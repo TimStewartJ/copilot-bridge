@@ -72,9 +72,7 @@ if (shouldTrustProxyHeaders()) {
 // Register Express app with staging tools so they can mount/unmount staged routers
 registerExpressApp(app);
 
-// Remote clients reach the bridge through a relay (dev tunnel) where bytes on the wire
-// dominate latency: compress JSON/static responses and let GET API polls revalidate
-// with If-None-Match so unchanged payloads cost a 304 instead of a full body.
+// Relays make bytes the bottleneck: compress, and let GET polls revalidate to a 304.
 app.use(createResponseCompressionMiddleware());
 
 const runtimePaths = resolveRuntimePaths(process.env);
@@ -95,11 +93,7 @@ const shutdownCoordinator = createServerShutdownCoordinator(defaultContext, {
 const apiServices = createApiServices(defaultContext, { shutdownCoordinator });
 app.use("/api", createApiCacheControlMiddleware(), createApiRouter(defaultContext, apiServices));
 
-// ── Static files (Vite build output) ──────────────────────────────
-
-// Staging previews whose built assets vanished (deployed, cleaned up, mid-rebuild)
-// must stop routing before the API handler can lazily start a backend for them, and
-// the disappearance itself is the event that triggers reconciliation.
+// Before the API handler: a missing preview must 404 and rediscover, not lazily start a backend.
 app.use("/staging/:prefix", (req, res, next) => {
   if (!isRegisteredStagingPreviewMissing(req.params.prefix)) return next();
   void defaultContext.stagingPreviewDiscovery?.requestDiscovery();
@@ -149,13 +143,7 @@ app.get("/{*splat}", (_req, res) => {
   res.sendFile("index.html", { root: distPath });
 });
 
-// ── Start ─────────────────────────────────────────────────────────
-
-/**
- * Sweeps Bridge-written log artifacts that would otherwise grow forever:
- * validation command logs (control root, plus the data dir deploy validation
- * uses when they differ) and management job logs/rows.
- */
+/** Sweeps validation command logs and management job logs and rows, which would grow forever. */
 async function pruneBridgeLogArtifacts(): Promise<void> {
   const validationLogDirs = new Set([
     getValidationCommandLogDir(PRODUCTION_ROOT),
@@ -239,12 +227,8 @@ async function main(): Promise<void> {
   }
   defaultContext.voiceJobManager.resumePendingJobs();
 
-  // Prune old telemetry data and bounded on-disk log artifacts, then keep doing
-  // it on a timer. Deliberately not awaited: the first sweep on a long-unpruned
-  // host can delete tens of thousands of files.
   startRequestTelemetryInflightReporter(defaultContext.telemetryStore);
-  // Process creation runs on worker threads, so a slow one no longer freezes this loop. Record
-  // the slow ones anyway: they show when the operating system is struggling to start processes.
+  // Slow process launches no longer block this loop, but recording them shows a struggling OS.
   setProcessLaunchObserver(({ kind, file, createMs, queuedMs }) => {
     if (createMs < SLOW_PROCESS_CREATE_MS && queuedMs < SLOW_PROCESS_CREATE_MS) return;
     defaultContext.telemetryStore?.recordSpan({
@@ -254,12 +238,11 @@ async function main(): Promise<void> {
       source: "server",
     });
   });
+  // Not awaited: a first sweep on a long-unpruned host can delete tens of thousands of files.
   void storageMaintenance.runOnce();
   storageMaintenance.start();
 
-  // Queue continue prompts for runs a server kill or crash cut off, before the runner starts.
-  // Production boot only: the staged preview server shares the hook below but must never
-  // resume sessions from its copied database.
+  // Queue continues for runs a crash cut off; production only, never from a preview's copied DB.
   let resumedSessionIds: string[] = [];
   try {
     const { deferredPromptStore, interruptedRunStore } = defaultContext;
@@ -273,8 +256,7 @@ async function main(): Promise<void> {
           sessionManager.markSessionAttention(sessionId);
         },
       }, interruptedRunStore);
-      // What happens to these runs is decided here: the notice about cut-off commands below must
-      // not start one that waits for its later resume, or one that is left for the user.
+      // The cut-off commands notice must not start a run awaiting resume or left for the user.
       resumedSessionIds = [
         ...recovery.resumed,
         ...recovery.retryScheduled.map((retry) => retry.sessionId),
@@ -293,8 +275,7 @@ async function main(): Promise<void> {
     console.error("[restart-resume] Boot recovery failed:", error);
   }
 
-  // Commands that were still running in a session's shell when the last server stopped went with
-  // it. Record that for their agents, and tell an agent that was most likely waiting for one now.
+  // Shell commands died with the last server: record that, and tell an agent likely waiting on one.
   try {
     const { backgroundCommandStore, deferredPromptStore } = defaultContext;
     if (backgroundCommandStore) {
@@ -324,7 +305,7 @@ async function main(): Promise<void> {
   // Start triggers and the chat outbox after the session manager is ready
   initializeTriggerAndDeliveryRunners(defaultContext);
 
-  // A hibernation the user asked for before the last server stopped: for a deploy, or because it died.
+  // A hibernation the user asked for before the last server stopped (deploy or crash).
   try {
     await restoreHibernateHandoff(defaultContext, runtimePaths.dataDir);
   } catch (error) {
@@ -342,12 +323,10 @@ async function main(): Promise<void> {
     console.error("[session-overlay] Initial maintenance failed:", error);
   }
 
-  // Watch active management jobs before scanning disk: a preview finishing between
-  // the scan and the resume would otherwise never be observed.
+  // Watch jobs before scanning disk, or a preview finishing between scan and resume is missed.
   defaultContext.stagingPreviewDiscovery = startStagingPreviewDiscovery({
     store: defaultContext.managementJobStore,
-    // The runner process queues each result for its session; this covers one it did not queue
-    // and wakes the delivery runner now instead of at its next watchdog sweep.
+    // Covers results the runner did not queue, and wakes delivery now instead of at the next sweep.
     onJobsCompleted: () => {
       defaultContext.managementJobStore?.reconcileResultDeliveries();
       defaultContext.deferredPromptRunner?.poke();
@@ -390,7 +369,7 @@ async function main(): Promise<void> {
     server.once("error", reject);
   });
 
-  // Stage artifact pruning and backend warmup can be slow; do it after listen so health checks pass.
+  // Pruning and backend warmup can be slow; run after listen so health checks pass.
   void pruneOrphanedWorktrees().catch((error) => {
     console.error("[web] Staging preview restore/prune failed:", error);
   });
@@ -401,7 +380,7 @@ function gracefulExit(signal: string): void {
   void shutdownCoordinator.request(`${signal} received`);
 }
 
-/** WebSocket upgrades: voice mode and live browser views on this server, or forwarded to a staged preview backend. */
+/** WebSocket upgrades: voice and live browser views here, others forwarded to a staged preview. */
 function handleServerUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
   let pathname = "/";
   try {

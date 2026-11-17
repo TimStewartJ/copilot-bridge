@@ -13,11 +13,7 @@ import { createTriggerChatRunner } from "../server/triggers/chat-runner.js";
 import { enforceTriggerChatRetention } from "../server/triggers/retention.js";
 import { createTriggerStore } from "../server/triggers/store.js";
 
-/**
- * The trigger runner decides whether a chat still exists by reading that chat's own folder and
- * archived flag at the moment it is about to run the chat's trigger. These tests use real folders,
- * the real store and the real disk read, and only stand in for the worker that would run the trigger.
- */
+/** Real folders, store and disk reads; only the worker that runs the trigger is faked. */
 function createWorld() {
   const db = setupTestDb();
   const copilotHome = makeTestDir("trigger-runner-existence");
@@ -59,7 +55,7 @@ function createWorld() {
   return {
     bus, ran, sessionManager, sessionMetaStore, writeSession, setArchived, triggers,
     removeSession: (sessionId: string) => rmSync(sessionDir(sessionId), { recursive: true, force: true }),
-    /** The folder is there but its workspace.yaml cannot be read: a directory stands in its place. */
+    /** The folder exists but a directory stands in place of its workspace.yaml. */
     makeUnreadable: (sessionId: string) => {
       rmSync(join(sessionDir(sessionId), "workspace.yaml"));
       mkdirSync(join(sessionDir(sessionId), "workspace.yaml"));

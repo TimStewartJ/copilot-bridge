@@ -15,10 +15,7 @@ import { DS, cx } from "../design/tokens";
 
 const RESULT_PREVIEW_CHARS = 2000;
 
-/**
- * A shell command or SQL query is easier to read as itself than as an escaped JSON string, so it
- * gets its own section and only the remaining arguments are shown as JSON.
- */
+/** A shell command or SQL query reads better as itself; only the other arguments show as JSON. */
 function splitPrimaryInput(args: ToolArgs | undefined): {
   primary?: { label: string; text: string };
   rest: ToolArgs | undefined;
@@ -153,7 +150,7 @@ export default memo(function ToolCallBlock({ toolCall, childNodes = [], renderCh
             <AskUserRecordView toolCall={toolCall} record={askRecord} variant="detail" waiting={running} />
           ) : (
             <>
-              {/* Progress is what a call has said so far; once it has a result, that says it better. */}
+              {/* Progress is what a call said so far; a result, once in, says it better. */}
               {progressText && !result && (
                 <DetailSection label="Latest progress">
                   <pre className={`${DETAIL_PRE_CLASS} max-h-32`}>{progressText}</pre>

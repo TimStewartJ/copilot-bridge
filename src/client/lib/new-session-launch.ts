@@ -55,11 +55,7 @@ export function buildNewSessionCreateOptions({
   };
 }
 
-/**
- * Effort choices for a model, shared by the new-chat screen and the
- * change-model dialog. Models without effort metadata get an inert placeholder
- * so the row still renders.
- */
+/** Effort choices; models without effort metadata get an inert placeholder so the row renders. */
 export function buildReasoningEffortOptions(
   supportedEfforts: readonly string[] | undefined,
   model?: Pick<ModelInfo, "reasoningEffortLabels"> | null,
@@ -73,10 +69,7 @@ export function buildReasoningEffortOptions(
   }));
 }
 
-/**
- * Context-tier choices for a model. Models without a distinct long-context tier
- * get an inert placeholder that names the only available context window.
- */
+/** Context tiers; without a long-context tier, a placeholder names the only context window. */
 export function buildContextTierOptions(
   model: ModelInfo | undefined,
 ): LaunchOption<CopilotContextTier>[] {

@@ -17,10 +17,7 @@ import { createEventLogStatsFoldStore } from "../server/event-log-stats-fold-sto
 import { runAndCountEventLoopYields } from "../server/__tests__/event-loop-test-utils.js";
 import { createTestBus, makeTestDir, setupTestDb } from "../server/__tests__/helpers.js";
 
-/**
- * Lets a test hold record scans of chosen byte ranges open. The event-log stats scan calls
- * `scanJsonlRecords` only after it has its scan slot, so a held scan keeps its slot taken.
- */
+/** Holds scans of chosen byte ranges open; a held scan keeps its scan slot taken. */
 const scanHold = vi.hoisted(() => ({
   current: undefined as undefined | { heldEnds: ReadonlySet<number>; onHold: () => void; release: Promise<void> },
 }));
@@ -307,7 +304,7 @@ describe("readMessagesFromDisk latest-page path", () => {
       event(`${prefix}m${index}`, "assistant.message", { content: `answer ${index}` }),
       event(`${prefix}e${index}`, "assistant.turn_end"),
     ]).flat();
-    // An older runtime: nothing says whose turn "g0" is, and with an agent running it is guessed the agent's.
+    // Older runtime: nothing says whose turn "g0" is, so with an agent running it is the agent's.
     const unstamped = [
       event("t0", "assistant.turn_start"),
       event("s0", "tool.execution_start", { toolCallId: "call-old", toolName: "task", arguments: { prompt: "sub" } }),
@@ -747,7 +744,7 @@ describe("readMessagesFromDisk latest-page path", () => {
         data: { toolCallId: moves.toolCallId, agentName: "general-purpose", agentDisplayName: "moves-agent", executionMode: "background" },
       },
       { type: "tool.execution_complete", timestamp: at(0, 2), data: { toolCallId: moves.toolCallId, success: true, result: { content: "Agent started" } } },
-      // The runtime says this turn is the agent's. Nothing below repeats that before the main agent's next turn.
+      // The runtime says this turn is the agent's; nothing repeats it before the main's next turn.
       { type: "assistant.turn_start", id: "moves-turn-0", agentId: moves.agentId, timestamp: at(0, 3), data: { parentToolCallId: moves.toolCallId } },
       { type: "assistant.turn_end", timestamp: at(0, 4), data: { turnId: "provider-main-0" } },
     ];
@@ -776,7 +773,7 @@ describe("readMessagesFromDisk latest-page path", () => {
       { type: "subagent.started", agentId: "agent-saves", timestamp: at(4, 1), data: { toolCallId: "task-saves", agentName: "general-purpose", agentDisplayName: "saves-agent", executionMode: "background" } },
       { type: "tool.execution_complete", timestamp: at(4, 1), data: { toolCallId: "task-saves", success: true, result: { content: "Agent started" } } },
       { type: "assistant.turn_end", timestamp: at(4, 2), data: { turnId: "provider-main-1" } },
-      // With two agents running, a runtime that did not say whose turn this is would have it guessed an agent's.
+      // Without an owner stamp, two running agents would make this turn guessed an agent's.
       { type: "assistant.turn_start", id: "main-turn-2", timestamp: at(4, 3), data: { turnId: "provider-main-2" } },
       { type: "tool.execution_start", timestamp: at(4, 4), data: { toolCallId: "main-view", toolName: "view", arguments: { path: "/repo/README.md" } } },
       { type: "tool.execution_complete", timestamp: at(4, 5), data: { toolCallId: "main-view", success: true, result: { content: "ok" } } },
@@ -813,7 +810,7 @@ describe("readMessagesFromDisk latest-page path", () => {
       },
       expect.objectContaining({ toolCallId: "task-saves", name: "saves-agent", status: "running", toolCount: 0 }),
     ]);
-    // An agent's steps name the call that launched it; the main agent's stay in the main agent's turn.
+    // An agent's steps name its launching call; the main agent's stay in the main turn.
     expect(result.messages[0]).toMatchObject({ type: "tool", toolCall: { toolCallId: "moves-step-12", parentToolCallId: "task-moves" } });
     const mainStep = result.messages.at(-1);
     expect(mainStep).toMatchObject({ type: "tool", turnId: "provider-main-2", turnInstanceId: "main-turn-2", toolCall: { toolCallId: "main-view" } });
@@ -1009,7 +1006,7 @@ describe("readMessagesFromDisk latest-page path", () => {
     const copilotHome = makeTestDir("session-disk-reader-generated-image");
     const sessionId = "generated-image";
     const savedPath = join(copilotHome, "session-state", sessionId, "images", "image-1.png");
-    // Later messages fill more than a whole-file read (1 MB), so the image's entries are only counted by the scan.
+    // Later messages exceed a whole-file read (1 MB), so only the scan counts the image's entries.
     const later = Array.from({ length: 300 }, (_, index) => ({
       type: "user.message",
       timestamp: "2026-04-30T10:01:00.000Z",
@@ -1553,8 +1550,7 @@ describe("event-log stats fold persistence and scan scheduling", () => {
     expect(persisted?.scannedBytes).toBeGreaterThan(0);
     expect(persisted?.state.totalEntries).toBe(first.total);
 
-    // Simulate a server restart: the in-memory map is gone, the table is not. We must NOT
-    // go through clearEventLogStatsCache() here because that also clears persistence.
+    // Restart: unset persistence first, since clearEventLogStatsCache() also clears the table.
     setEventLogStatsPersistence(undefined);
     clearEventLogStatsCache();
     setEventLogStatsPersistence(store);
@@ -1630,8 +1626,7 @@ describe("event-log stats fold persistence and scan scheduling", () => {
     expect(heldEnds.has(statSync(writeLargeLog(copilotHome, smallId, tracePadding())).size)).toBe(false);
     const { deps, spans } = createDeps(copilotHome);
 
-    // Hold every admitted large scan until the other two have reached the gate; otherwise a slow
-    // start (a loaded machine) lets them arrive after a slot frees and nothing ever queues.
+    // Hold admitted scans until all three reach the gate, or a slow start means nothing queues.
     let releaseHold!: () => void;
     let scansAtHold = 0;
     let maxActiveAtScan = 0;

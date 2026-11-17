@@ -1,7 +1,3 @@
-/**
- * Small presentational primitives shared across the Docs view, so every button, field and
- * dialog in it looks and behaves the same.
- */
 import {
   forwardRef,
   useEffect,
@@ -23,7 +19,7 @@ import { useModalDialog } from "../shared/useModalDialog";
 
 export { cx } from "../../design/tokens";
 
-/** Live width of an element, for layout decisions that depend on the pane rather than the window. */
+/** Live width of an element, for layout that depends on the pane rather than the window. */
 export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
   const [width, setWidth] = useState(0);
   // Measured before the first paint: a layout that depends on this must not visibly reflow.

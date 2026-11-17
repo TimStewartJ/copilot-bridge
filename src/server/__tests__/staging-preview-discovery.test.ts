@@ -330,8 +330,7 @@ describe("staging preview discovery", () => {
       discover: spy.discover,
       pollIntervalMs: POLL_INTERVAL_MS,
       maxIdleWatchMs: 60 * 60_000,
-      // Both windows are shorter than the row's age: only adoption-anchored
-      // windows can keep this job watched.
+      // Both windows are shorter than the row's age: only adoption-anchored ones keep it watched.
       maxTotalWatchMs: 60 * 60_000,
       staleHeartbeatMs: 5 * 60_000,
     });
@@ -626,9 +625,7 @@ describe("staging preview discovery across processes", () => {
   });
 
   it("settle() waits for real async discovery work a timer tick started", async () => {
-    // Model the production shape: discover() starts work that outlives the
-    // microtask queue the timer advance drains. An external gate stands in for
-    // real I/O (fs, SQLite on another connection, child-process teardown).
+    // discover() outlives the drained microtasks; the gate stands in for real I/O.
     let releaseDiscover!: () => void;
     let discoverFinished = false;
     const discover = vi.fn(async () => {
@@ -649,11 +646,8 @@ describe("staging preview discovery across processes", () => {
     controller.watchJob(queued);
     runnerStore.succeed(queued.id, {});
 
-    // Deliberately a bare timer advance: this test proves the advance alone is
-    // insufficient and that settle() is what waits for the gated work.
+    // A bare timer advance on purpose: it alone must not finish the gated work; settle() does.
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
-    // The tick fired and entered discover(), but the work is still in flight:
-    // a timer advance alone must not be mistaken for completion.
     expect(discover).toHaveBeenCalledTimes(1);
     expect(discoverFinished).toBe(false);
     expect(controller.hasScheduledWork()).toBe(true);

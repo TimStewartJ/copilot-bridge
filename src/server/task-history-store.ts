@@ -86,7 +86,7 @@ export function createTaskHistoryStore(db: DatabaseSync) {
     return (result.changes ?? 0) > 0;
   }
 
-  /** Entries a scheduled run wrote before the scheduler recorded which schedule owns the session. */
+  /** Entries a scheduled run wrote before the scheduler recorded the session's schedule. */
   function attributeToSchedule(sessionId: string, scheduleId: string, scheduleName: string): number {
     const result = db.prepare(`
       UPDATE task_history_entries SET scheduleId = ?, scheduleName = ?

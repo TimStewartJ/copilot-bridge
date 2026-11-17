@@ -1,5 +1,4 @@
-// Cross-platform test utilities — no node:fs imports so this file is safe
-// to use from client/server tests alongside vi.mock("node:fs").
+// No node:fs imports, so tests that vi.mock("node:fs") can use these helpers.
 
 import { join, posix, resolve, win32 } from "node:path";
 import { platform, tmpdir } from "node:os";

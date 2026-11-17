@@ -1,7 +1,5 @@
-// How to read a short utterance from a speech recognizer: noise, the wake phrase, a listener's
-// reaction, or a real interruption. The word lists are English.
+// Reads a short recognized utterance as noise, wake phrase, reaction or interruption; English only.
 
-/** Lowercases an utterance and strips punctuation, so it can be compared as plain words. */
 export function normalizeUtterance(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}'\s-]/gu, " ").replace(/\s+/g, " ").trim();
 }
@@ -34,18 +32,15 @@ function cleanWords(words: readonly string[]): string[] {
   return words.map((word) => word.trim()).filter(Boolean);
 }
 
-/** A letter, digit or underscore in any script. `\b` only knows ASCII, so word edges are spelled out with this. */
+/** A word character in any script; `\b` only knows ASCII. */
 const WORD_CHARACTER = "[\\p{L}\\p{N}_]";
-/**
- * The start of a word, for patterns that are only tested. It consumes the character before the
- * word instead of looking behind, which Safari could not do before 16.4.
- */
+/** Word start for test-only patterns, without lookbehind (Safari < 16.4 lacks it). */
 const WORD_START = "(?:^|[^\\p{L}\\p{N}_])";
 
 const DEFAULT_WAKE_GREETINGS = ["hey", "hi", "hello", "okay", "ok", "yo", "oi", "hay"];
 
 export interface WakePhraseOptions {
-  /** What the assistant answers to, including the ways a recognizer mishears it ("bridge", "bridget", "brij"). */
+  /** Names the assistant answers to, with common mishearings ("bridge", "bridget", "brij"). */
   names: readonly string[];
   /** Words that may come before the name. Default: hey, hi, hello, okay, ok, yo, oi, hay. */
   greetings?: readonly string[];
@@ -57,12 +52,9 @@ export interface WakeMatch {
 }
 
 export interface WakePhraseMatcher {
-  /** Detects the wake phrase at the start of an utterance: "hey <name> ..." or just "<name> ...". */
+  /** Detects a leading wake phrase: "hey <name> ..." or just "<name> ...". */
   match(text: string): WakeMatch | undefined;
-  /**
-   * Removes a leading "hey <name>" from an utterance spoken while the assistant is already
-   * listening. A bare name is kept, because it may be the subject of the sentence.
-   */
+  /** Removes a leading "hey <name>"; a bare name stays, as it may be the sentence's subject. */
   stripLeading(text: string): string;
 }
 
@@ -104,21 +96,18 @@ const INTERRUPT_PATTERNS = [
 
 const LONG_SPEECH_MS = 2_500;
 
-/**
- * "stop": a real interruption, so stop speaking and listen. "ignore": a reaction or noise, so
- * keep speaking. "undecided": too little heard so far, so keep speaking and ask again.
- */
+/** "stop": stop and listen; "ignore": keep speaking; "undecided": keep speaking, ask again. */
 export type BargeInVerdict = "stop" | "ignore" | "undecided";
 
 export interface BargeInSpeech {
   /** How long the user has been speaking, in milliseconds. */
   speechMs: number;
-  /** True when `text` is the recognizer's final transcript of the utterance, false for a partial one. */
+  /** True when `text` is the recognizer's final transcript, false for a partial one. */
   final: boolean;
 }
 
 export interface BargeInClassifierOptions {
-  /** Phrases that always interrupt, on top of the built-in ones: typically the wake phrase ("hey computer"). */
+  /** Extra phrases that always interrupt, typically the wake phrase ("hey computer"). */
   interruptPhrases?: readonly string[];
   /** Words treated as reactions, on top of the built-in ones. */
   backchannelWords?: readonly string[];
@@ -128,10 +117,7 @@ export interface BargeInClassifierOptions {
 
 export type BargeInClassifier = (text: string, speech: BargeInSpeech) => BargeInVerdict;
 
-/**
- * Builds a classifier that decides whether speech heard while the assistant is talking is a real
- * interruption or a reaction ("yeah", "really?", laughter) that should not cut it off.
- */
+/** Tells a real interruption from a reaction ("yeah", "really?", laughter) while speaking. */
 export function createBargeInClassifier(options: BargeInClassifierOptions = {}): BargeInClassifier {
   const extraPhrases = cleanWords((options.interruptPhrases ?? []).map(normalizeUtterance)).map(escapeRegExp);
   const interrupt = new RegExp(

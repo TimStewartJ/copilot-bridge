@@ -246,8 +246,7 @@ describe("tool call tree helpers", () => {
       },
     ];
 
-    // The agent's call shares a turn id with the main agent's later call, and must not pull that
-    // call up above the reply it followed.
+    // A shared turn id must not pull the main agent's later call above the reply it followed.
     expect(segmentChatEntries(entries)).toMatchObject([
       { type: "message", entry: { content: "Delegating work" } },
       { type: "tool-segment", turnId: "turn-1", entries: [{ id: "agent-a" }, { id: "agent-b" }] },
@@ -307,8 +306,7 @@ describe("tool call tree helpers", () => {
   });
 
   it("leaves a run of sub-agent calls as one segment, whatever turns the agents were in", () => {
-    // The entries a real run produced: two agents side by side. Agent one finished a turn while
-    // agent two was mid-turn, so agent two's next two calls carry no turn of their own.
+    // Real run: agent one ended a turn while agent two was mid-turn, so two's next calls lack one.
     const child = (id: string, parent: string, turnInstanceId?: string): ChatEntry => ({
       id,
       type: "tool",
@@ -421,9 +419,6 @@ describe("tool call tree helpers", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// tool-args helpers (merged from tool-args.test.ts)
-// ---------------------------------------------------------------------------
 import { formatToolArgsDetails, hasToolArgs } from "./tool-args";
 
 describe("tool arg helpers", () => {
@@ -442,9 +437,6 @@ describe("tool arg helpers", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// tool-call-status helpers (merged from tool-call-status.test.ts)
-// ---------------------------------------------------------------------------
 import { getToolCallStatus, getToolCallStatusLabel } from "./tool-call-status";
 
 describe("tool call status helpers", () => {

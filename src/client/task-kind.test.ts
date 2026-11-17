@@ -20,9 +20,6 @@ describe("getTaskKindUpdate", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// task helpers (merged from task-helpers.test.ts)
-// ---------------------------------------------------------------------------
 import type { Task, TaskGroup } from "./api";
 import { buildGroupSections, sortTasksByStatusAndOrder } from "./task-helpers";
 

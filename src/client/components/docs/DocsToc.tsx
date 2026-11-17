@@ -6,10 +6,7 @@ import { DS } from "../../design/tokens";
 /** A heading counts as "current" once it has scrolled to within this distance of the top. */
 const ACTIVE_OFFSET_PX = 96;
 
-/**
- * Tracks which heading the reader is in. Scroll handling is throttled to one measurement per
- * frame, and the markdown itself never re-renders when the active heading changes.
- */
+/** The heading the user is in; measures once per frame and never re-renders the markdown. */
 export function useActiveHeading(containerRef: RefObject<HTMLElement | null>, headings: DocHeading[]): string | null {
   const [activeId, setActiveId] = useState<string | null>(headings[0]?.id ?? null);
   const signature = headings.map((heading) => heading.id).join("\n");

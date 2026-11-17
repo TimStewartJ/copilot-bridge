@@ -46,14 +46,11 @@ export function verificationAnchorId(toolCallId: string): string {
   return `verification-${toolCallId}`;
 }
 
-/**
- * The card for a recorded `verify_complete` call: the evidence from its arguments, the status and
- * playbook label from its result. A rejected or unfinished call has no card.
- */
+/** Evidence comes from the arguments, status from the result; rejected calls get no card. */
 export function readVerificationRecord(toolCall: Pick<ToolCall, "name" | "args" | "result" | "success">): VerificationRecord | null {
   if (!isCompletionToolName(toolCall.name) || toolCall.success === false) return null;
   const result = readResult(toolCall.result);
-  // The result is the tool's JSON; when it cannot be read, a successful call still recorded the arguments.
+  // An unreadable result still counts if the call succeeded, since the arguments were recorded.
   if (result ? result.success !== true : toolCall.success !== true) return null;
   const input = readCompletionInput(toolCall.args);
   if (!input.ok) return null;
@@ -73,7 +70,7 @@ export function readVerificationRecord(toolCall: Pick<ToolCall, "name" | "args" 
   };
 }
 
-/** A root-level `verify_complete` call that recorded a report, so it reads as a card, not a step. */
+/** A root-level `verify_complete` that recorded a report reads as a card, not a step. */
 export function isRecordedCompletionCall(toolCall: ToolCall): boolean {
   if (toolCall.parentToolCallId || toolCall.isSubAgent) return false;
   return readVerificationRecord(toolCall) !== null;

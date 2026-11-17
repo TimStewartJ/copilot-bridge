@@ -198,7 +198,7 @@ export interface TriggerSummary {
   nextRunAt: string | null;
 }
 
-/** What a trigger does when it fires: wake its chat (worker, message) or start a chat or task in its task. */
+/** On firing: wake its chat (worker, message) or start a chat or task in its task. */
 export type TriggerThen = "worker" | "message" | "new_chat" | "new_task";
 export type TriggerStatus = "active" | "running" | "paused" | "completed" | "cancelled" | "expired" | "failed";
 export type TriggerWhen =
@@ -301,7 +301,7 @@ export interface TaskTriggers {
   triggers: TriggerView[];
 }
 
-/** Exactly one timing field: delaySeconds, runAt, intervalSeconds or cron (timezone only with cron). */
+/** Exactly one of delaySeconds, runAt, intervalSeconds or cron; timezone only with cron. */
 export interface TriggerTimingInput {
   delaySeconds?: number;
   runAt?: string;
@@ -377,7 +377,7 @@ export interface Session {
   externallyInUse?: boolean;
   isOptimistic?: boolean;
   optimisticUntil?: number;
-  /** Client only: intentText is this client's dictation placeholder, not an intent the agent reported. */
+  /** Client only: intentText is this client's dictation placeholder, not an agent's intent. */
   voiceIntent?: boolean;
 }
 
@@ -424,11 +424,7 @@ export interface ToolCall {
   /** Set on sub-agent pseudo-tool entries (the group header) */
   isSubAgent?: boolean;
   agentInstructions?: AgentInstruction[];
-  /**
-   * Client-only: the agent this call launched, as the session's history records it. With it the
-   * row shows the agent's own state and working time instead of those of the launching call, which
-   * for a background agent returns the moment the agent is started.
-   */
+  /** Client-only: the launched agent; a background launch call returns at once. */
   agent?: TranscriptAgent;
   childToolCalls?: ToolCall[];
   /** ISO timestamp when the tool call started */
@@ -582,11 +578,7 @@ export interface ChatSkillEntry {
   timestamp?: string;
 }
 
-/**
- * The model's thinking ahead of a reply or tool call. It has no `sourceEventId` of its own:
- * `reasoning.messageEventId` is the `assistant.message` event that persisted it, which a live
- * block carries as its `sourceEventId` so the two can be matched exactly.
- */
+/** No own sourceEventId: live blocks match reasoning.messageEventId via their sourceEventId. */
 export interface ChatReasoningEntry {
   id?: string;
   type: "reasoning";
@@ -651,12 +643,12 @@ export interface Task {
   createdAt: string;
   completedAt?: string;
   updatedAt: string;
-  /** Linked sessions that are not archived. Archived links are only counted; page them from the task. */
+  /** Linked sessions not archived; archived ones are only counted, page them from the task. */
   activeSessionIds: string[];
   /** Every linked session, archived ones included. */
   sessionCount: number;
   archivedSessionCount: number;
-  /** Changes whenever a session is linked or unlinked. Use it to key task-scoped session queries. */
+  /** Changes when a session is linked or unlinked; key task-scoped session queries on it. */
   sessionLinksRevision: string;
   workItems: WorkItemRef[];
   pullRequests: PRRef[];
@@ -842,10 +834,7 @@ export class ApiError extends Error {
   }
 }
 
-/**
- * Shared DELETE helper. Rejects with an `ApiError` on any non-OK response so
- * mutation hooks never treat a 4xx/5xx as a successful removal.
- */
+/** Rejects with an `ApiError` on any non-OK response, so a 4xx/5xx never counts as removed. */
 async function requestDelete(path: string): Promise<void> {
   const res = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
   if (res.ok) return;
@@ -1136,8 +1125,6 @@ export async function patchSession(id: string, updates: { archived: boolean }): 
   }
 }
 
-// ── Session model ─────────────────────────────────────────────────
-
 /** "starting": the browser's own guess for a chat it just created, until the server answers. */
 export type SessionModelSource = "live" | "events" | "unknown" | "starting";
 export type { CopilotContextTier };
@@ -1159,10 +1146,7 @@ export interface SessionModelSwitchConfirmation {
 
 export type SessionModelCompactionDecision = "compact" | "cancel";
 
-/**
- * `confirmation_required` means the conversation exceeds the target model's
- * prompt limit; retry with a compaction decision, as the Copilot CLI does.
- */
+/** `confirmation_required`: too long for the target model; retry with a compaction decision. */
 export type SessionModelSwitchResult =
   | {
       status?: "applied";
@@ -1208,11 +1192,7 @@ export async function fetchSessionModelState(sessionId: string): Promise<Session
   return apiFetch<SessionModelState>(`/api/sessions/${sessionId}/model`);
 }
 
-/**
- * Explicitly switch the model for a single session.
- * Omit reasoningEffort to keep the session's current reasoning effort when known.
- * Pass a compaction decision to answer a previous `confirmation_required` result.
- */
+/** Omit reasoningEffort to keep the current one; compactionDecision answers a confirmation. */
 export async function patchSessionModel(
   sessionId: string,
   model: string,
@@ -1237,9 +1217,7 @@ export async function patchSessionModel(
   return res.json();
 }
 
-// ── Moving chats from one model to another ────────────────────────
-
-/** How many chats that are not archived use each model. Reads every chat's model, so it takes seconds. */
+/** Unarchived chats per model; reads every chat's model, so it takes seconds. */
 export function fetchSessionModelUsage(options: { refresh?: boolean } = {}): Promise<SessionModelUsage> {
   return apiFetch<SessionModelUsage>(
     `/api/session-model-move/models${options.refresh ? "?refresh=true" : ""}`,
@@ -1253,7 +1231,7 @@ export function fetchSessionModelMove(): Promise<SessionModelMoveState> {
   return apiFetch<SessionModelMoveState>("/api/session-model-move", undefined, { reportTelemetry: false });
 }
 
-/** Starts moving every chat that is not archived from one model to another; the move runs on the server. */
+/** Starts a server-side move of every unarchived chat from one model to another. */
 export async function startSessionModelMove(request: SessionModelMoveRequest): Promise<SessionModelMoveJob> {
   const result = await apiFetch<{ job: SessionModelMoveJob }>("/api/session-model-move", request);
   return result.job;
@@ -1283,7 +1261,7 @@ export async function discardUnsentMessage(sessionId: string, messageId: string)
   }
 }
 
-/** Sends a message the agent never got again, as a new message (`clientMessageId`) at the end of the chat. */
+/** Resends a message the agent never got as a new one (`clientMessageId`) at the chat's end. */
 export function resendUnsentMessage(
   sessionId: string,
   messageId: string,
@@ -1364,11 +1342,7 @@ export async function undoSessionTurn(
 
 export interface ChatMessageAcceptedResponse {
   status: "accepted";
-  /**
-   * "queued": the session could not take the message yet; the server sends it once it can.
-   * "hands-free": a Helm message that will also be answered out loud.
-   * "stopped": Stop came before the agent had it; the chat keeps it as not sent.
-   */
+  /** queued: sent when it can; hands-free: also answered aloud; stopped: kept as not sent. */
   mode?: "steered" | "queued" | "command" | "hands-free" | "stopped";
 }
 
@@ -1443,10 +1417,7 @@ export interface MessagesFastResponse {
   warm: boolean;
   lastVisibleActivityAt?: string;
   coverage: SessionHistoryCoverage;
-  /**
-   * Every sub-agent the session has run, whichever part of its history `messages` holds. A step
-   * names its agent by `toolCall.parentToolCallId`, which is an agent's `toolCallId` here.
-   */
+  /** Every sub-agent the session ran; a step's `parentToolCallId` is an agent's `toolCallId`. */
   agents?: TranscriptAgent[];
 }
 
@@ -1722,9 +1693,7 @@ export async function patchTask(
   return data.task;
 }
 
-/** Counts backing the task delete-confirmation dialog. Server-computed: the
- *  client's session list is noise-filtered and excludes archived sessions, so
- *  it cannot derive these itself. */
+/** Server-computed: the client's session list is filtered and lacks archived sessions. */
 export interface TaskDeletionPreview {
   sessionCount: number;
   archivedCount: number;
@@ -1752,16 +1721,7 @@ export async function getTaskDeletionPreview(id: string): Promise<TaskDeletionPr
   return data.preview;
 }
 
-/**
- * Deletes a task. `sessionDisposition` decides what happens to linked sessions;
- * without it the server refuses (409 `confirmation_required`) unless the task
- * has none, so a task can never silently orphan its sessions. `ifUntouched`
- * makes that parameterless delete stricter: the server also refuses when the
- * task has been edited or has anything attached.
- *
- * Rejects with an `ApiError` whose `details` carry the server's error body
- * (`preview`, `sessionErrors`) so callers can re-render the dialog.
- */
+/** No sessionDisposition: 409 if sessions are linked; ifUntouched: also if edited or attached. */
 export async function deleteTask(
   id: string,
   opts?: { sessionDisposition?: SessionDisposition; fingerprint?: string; ifUntouched?: boolean },
@@ -1837,7 +1797,6 @@ export async function createTaskSession(
   return data.sessionId;
 }
 
-/** Starts a chat that proposes tidying the task's instructions and notes; returns its id. */
 // ── Task pages ────────────────────────────────────────────────────
 
 export interface TaskPageInfo {
@@ -1861,6 +1820,7 @@ export function taskPageUrl(taskId: string): string {
   return `${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/page.html`;
 }
 
+/** Starts a chat that proposes tidying the task's instructions and notes; returns its id. */
 export async function startTaskTidy(taskId: string): Promise<{ sessionId: string; error?: string }> {
   return apiFetch<{ sessionId: string; error?: string }>(`/api/tasks/${encodeURIComponent(taskId)}/tidy`, {});
 }
@@ -2535,8 +2495,7 @@ export interface ProvidersConfig {
 export type ThemePreference = "light" | "dark" | "system";
 /** "system" follows the device prefers-reduced-motion setting; the others override it. */
 export type MotionPreference = "system" | "reduce" | "full";
-// Reasoning-effort ids are fully SDK-driven (per-model `supportedReasoningEfforts`),
-// so this is an open string alias rather than a fixed enumeration.
+// Open string: the SDK lists each model's `supportedReasoningEfforts`.
 export type ReasoningEffort = string;
 
 export interface BrowserSettings {
@@ -2605,7 +2564,7 @@ export interface AppSettings {
   contextTier?: CopilotContextTier;
   modelPresets?: ModelPresets;
   lastModelPreset?: ModelPresetSlot;
-  /** Which tier or model each kind of work runs on (Settings › Models); a missing role is Automatic. */
+  /** Tier or model per kind of work (Settings › Models); a missing role is Automatic. */
   modelRoles?: ModelRoles;
   /** New chats start on one of two tiers at random; the server sets `startedAt`. */
   modelAbTest?: ModelAbTestSettings;
@@ -2645,8 +2604,7 @@ export function serializeSettingsPatch(updates: AppSettingsUpdates): string {
   if ("responseStyle" in updates && updates.responseStyle === undefined) {
     normalized.responseStyle = {};
   }
-  // JSON.stringify drops undefined, so any other explicit clear (providers, browser, identity, an
-  // undo back to "unset") is sent as null, which the server treats as "remove this setting".
+  // JSON.stringify drops undefined, so other clears go as null, which the server reads as remove.
   for (const key of Object.keys(normalized)) {
     if (normalized[key] === undefined) normalized[key] = null;
   }
@@ -2945,14 +2903,11 @@ export async function fetchTranscriptionStatus(): Promise<TranscriptionStatus> {
 
 interface RecordingUploadOptions {
   signal?: AbortSignal;
-  /** Fraction of the recording sent so far; reaches 1 when the whole upload has left the browser. */
+  /** Fraction of the recording sent; reaches 1 once the whole upload has left the browser. */
   onUploadProgress?: (fraction: number) => void;
 }
 
-/**
- * Posts a recording and reports how much of it has been sent, which `fetch` cannot do. A recording
- * is megabytes of uncompressed audio, so on a slow connection the user needs to see it moving.
- */
+/** XHR, not `fetch`, to report upload progress: recordings are megabytes of uncompressed audio. */
 function uploadRecording<T>(path: string, form: FormData, { signal, onUploadProgress }: RecordingUploadOptions): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -2991,7 +2946,7 @@ function uploadRecording<T>(path: string, form: FormData, { signal, onUploadProg
   });
 }
 
-/** The server reads the format from the bytes; the name only keeps a stored recording recognisable. */
+/** The server reads the format from the bytes; the name only labels a stored recording. */
 function recordingFilename(audio: Blob): string {
   return audio.type === "audio/ogg" ? "voice-input.ogg" : "voice-input.wav";
 }
@@ -3165,10 +3120,7 @@ export async function cancelSessionAgent(
   );
 }
 
-/**
- * Takes an agent that is not working off the session's list for good, ending it first when it
- * waits for a follow-up. Rejects with the server's reason when the agent was not dismissed.
- */
+/** Takes a non-working agent off the session's list for good; rejects with the server's reason. */
 export async function dismissSessionAgent(
   sessionId: string,
   agentId: string,
@@ -3198,7 +3150,7 @@ export async function fetchModelAbTestReport(signal?: AbortSignal): Promise<Mode
   return apiFetch<ModelAbTestReport>("/api/model-ab-test", undefined, { signal });
 }
 
-/** The chats matching the filters, their grades and the grading run (Settings › Usage › Chat grades). */
+/** The chats matching the filters, their grades and the grading run (Settings › Usage). */
 export async function fetchChatGrades(filters: ChatGradesFilters, signal?: AbortSignal): Promise<ChatGradesView> {
   const params = new URLSearchParams();
   if (filters.from) params.set("from", filters.from);
@@ -3209,7 +3161,7 @@ export async function fetchChatGrades(filters: ChatGradesFilters, signal?: Abort
   return apiFetch<ChatGradesView>(`/api/chat-grades${query ? `?${query}` : ""}`, undefined, { signal });
 }
 
-/** Starts grading the matching chats with Copilot's trajectory classifiers; billed as AI credits. */
+/** Grades the matching chats with Copilot's trajectory classifiers; billed as AI credits. */
 export async function startChatGrading(filters: ChatGradesFilters, regrade: boolean): Promise<ChatGradesRunStatus> {
   return apiFetch<ChatGradesRunStatus>("/api/chat-grades/runs", { ...filters, regrade }, { method: "POST" });
 }
@@ -3537,10 +3489,7 @@ export async function writeDocPage(path: string, content: string): Promise<{ pat
   return sendDocsMutation(`/api/docs/pages/${encodeDocPath(path)}`, "PUT", { content });
 }
 
-/**
- * Saves a page from structured fields. The server serializes the frontmatter, and refuses the
- * save with a `DocConflictError` when `baseModified` is no longer the page's latest revision.
- */
+/** Throws `DocConflictError` when `baseModified` is no longer the page's latest revision. */
 export async function saveDocPage(
   path: string,
   input: { frontmatter: Record<string, unknown>; body: string; baseModified?: string },

@@ -1,5 +1,4 @@
-// HTTP routes for task pages. The page is agent-written HTML, so it is served in the same sandbox
-// as every other HTML document an agent writes.
+// Task page routes; the page is agent-written HTML, so it gets the usual HTML sandbox.
 import type { Router } from "express";
 import type { AppContext } from "./app-context.js";
 import type { TaskPageStore } from "./task-page-store.js";

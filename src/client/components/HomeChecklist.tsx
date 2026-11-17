@@ -47,7 +47,7 @@ export function groupHomeChecklist(items: readonly HomeAction[]): ChecklistGroup
 
 interface DateBucket { key: string; label: string; tone?: "danger" | "warning"; items: HomeAction[] }
 
-/** Buckets items by when they are due: overdue, today, the next two weeks, later, undated. Order within stays as given. */
+/** Buckets by due date (overdue, today, two weeks, later, undated), keeping the given order. */
 export function groupHomeChecklistByDate(items: readonly HomeAction[], today: string): DateBucket[] {
   const buckets: DateBucket[] = [
     { key: "overdue", label: "Overdue", tone: "danger", items: [] }, { key: "today", label: "Due today", tone: "warning", items: [] },
@@ -63,7 +63,7 @@ export function groupHomeChecklistByDate(items: readonly HomeAction[], today: st
 
 interface RecentlyDone { item: HomeAction; index: number; expires: number }
 
-/** Keeps just-completed items in their place until their Undo window closes, even after a refetch drops them. */
+/** Keeps just-done items in place until their Undo window closes, even if a refetch drops them. */
 export function mergeRecentlyDone(items: readonly HomeAction[], recent: readonly RecentlyDone[]): HomeAction[] {
   const ids = new Set(recent.map(entry => entry.item.id));
   const merged = items.filter(item => !ids.has(item.id));
@@ -73,7 +73,7 @@ export function mergeRecentlyDone(items: readonly HomeAction[], recent: readonly
 
 interface Props {
   mode: "overview" | "full";
-  /** Home groups by due date so to-dos stay separate from task status; the full list keeps task grouping. */
+  /** Home groups by due date, apart from task status; the full list groups by task. */
   grouping?: "task" | "date";
   items: HomeAction[];
   counts: HomeActionCounts;
@@ -163,7 +163,7 @@ export default function HomeChecklist({ mode, grouping = "task", items, counts, 
 function ChecklistRow({ item, mode, today, done, busy, onComplete, onUndo, onReschedule, source }: {
   item: HomeAction; mode: Props["mode"]; today: string; done: boolean; busy: boolean;
   onComplete: () => void; onUndo: () => void; onReschedule: (deadline: string | null) => void;
-  /** Where the to-do comes from, shown as secondary text when rows are not grouped under their task. */
+  /** The to-do's source, shown as secondary text when rows are not grouped by task. */
   source?: { title?: string; onOpen?: () => void };
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -204,7 +204,8 @@ function ChecklistRow({ item, mode, today, done, busy, onComplete, onUndo, onRes
     </div>
     {!done && <>
       <IconButton label={item.deadline ? "Change date" : "Set a date"} disabled={busy} className="mt-0.5"
-        onClick={() => { const input = dateRef.current; if (!input) return; input.focus(); try { input.showPicker(); } catch { /* focus alone opens it on mobile */ } }}>
+        // Where showPicker() throws, focus alone opens the picker on mobile.
+        onClick={() => { const input = dateRef.current; if (!input) return; input.focus(); try { input.showPicker(); } catch {} }}>
         <CalendarDays size={14} />
       </IconButton>
       {/* opacity-0 rather than sr-only: showPicker() needs a rendered box on mobile */}

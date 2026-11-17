@@ -3,25 +3,13 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SERVER_DIR, SRC_DIR, display, walkImportGraph } from "./runtime-import-graph.js";
 
-// Creating a process is a synchronous call on the calling thread (CreateProcessW on Windows),
-// and under machine load it has taken tens of seconds. When the server's main thread made that
-// call, its event loop served nothing for the duration: health probes failed, the launcher
-// killed the server, and sessions lost their tool-permission acknowledgements. Every process
-// creation in the server runtime therefore goes through process-host.ts, which performs it on
-// a worker thread (the mechanism is the in-tree package src/packages/spawn-offthread). Deleting
-// or copying a directory tree synchronously is the same kind of call:
-// it holds its thread for the whole operation, and a worktree is tens of thousands of files.
-// `staging_cleanup` froze the live server for 2.4 s that way. Opening a file another program keeps
-// writing is a third: on Windows an antivirus scan holds the open until it is done, and
-// node:sqlite is synchronous. Reading the Copilot CLI's session store on the main thread froze
-// the live server for 12.2 s. This test walks the real import graph so no rule can erode silently.
+// No spawns, sync tree ops or busy-file opens on the main thread: each froze the live server.
 
 const RUNTIME_ENTRY_POINTS = ["index.ts", "staging-preview-server.ts"].map((name) => join(SERVER_DIR, name));
 const ONLY_PROCESS_CREATOR = join(SRC_DIR, "packages", "spawn-offthread", "src", "worker.ts");
 const PROCESS_CREATING_EXPORTS = new Set(["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]);
 
-// Modules the server loads that may still delete or copy a tree synchronously, and why that
-// cannot stall the server. Everything else goes through getProcessHost().removeTree().
+// Modules allowed sync tree deletes or copies, and why that cannot stall the server.
 const SYNC_TREE_OPERATIONS_ALLOWED: Record<string, string> = {
   "packages/spawn-offthread/src/worker.ts": "the worker thread that performs the server's tree deletes",
   "server/dependency-sync.ts": "dependency installs run in the launcher and the job runner",
@@ -32,15 +20,14 @@ const SYNC_TREE_OPERATIONS_ALLOWED: Record<string, string> = {
 };
 const SYNC_TREE_CALL = /\b(rmSync|cpSync|rmdirSync)\s*\(/g;
 
-// Modules the server loads that may open a SQLite database themselves, and why that cannot stall
-// the server. The Copilot CLI's session store goes through cli-session-store.ts instead.
+// Modules allowed to open SQLite themselves, and why that cannot stall the server.
 const SQLITE_OPENERS_ALLOWED: Record<string, string> = {
   "server/db.ts": "the Bridge's own database, in its data directory, opened once at boot and kept open",
   "server/cli-session-store-worker.ts": "the worker thread that reads and writes the Copilot CLI's session store",
   "server/staging-backend-manager.ts": "reads the production database while seeding preview data, which the job runner does",
 };
 
-/** Synchronous calls in `source` that delete or copy a whole tree: cpSync, rmdirSync, and rmSync with `recursive`. */
+/** Sync whole-tree deletes or copies in `source`: cpSync, rmdirSync, rmSync with `recursive`. */
 function syncTreeOperations(source: string): string[] {
   const found: string[] = [];
   for (const match of source.matchAll(SYNC_TREE_CALL)) {

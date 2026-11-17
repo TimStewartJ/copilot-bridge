@@ -59,6 +59,10 @@ jobs:
         shell: pwsh
         run: npm run test:agent-text-audit
 
+      - name: Comment audit
+        shell: pwsh
+        run: npm run test:comment-audit
+
       - name: Design system audit
         shell: pwsh
         run: npm run test:design-audit

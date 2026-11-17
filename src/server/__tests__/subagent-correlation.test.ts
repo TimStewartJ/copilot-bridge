@@ -54,9 +54,7 @@ describe("subagent failure correlation (replay fold)", () => {
   });
 
   it("does not retroactively fail a background launch that already completed", () => {
-    // Real shape observed in sessions b00ff146 / da61e0da: `mode: background` completes the launch
-    // successfully, then the agent fails much later. The launch genuinely succeeded, and the live
-    // fold has no look-ahead, so replay must agree.
+    // The launch succeeded before the agent failed; live fold can't look ahead, so replay agrees.
     const toolCall = onlyToolCall([
       toolStart(AGENT_TOOL_CALL, "2026-08-01T10:00:00.000Z", { mode: "background" }),
       subagentStarted(AGENT_TOOL_CALL, AGENT_INSTANCE, "2026-08-01T10:00:00.100Z"),
@@ -95,8 +93,7 @@ describe("subagent failure correlation (replay fold)", () => {
   });
 
   it("lets a real completion win over turn-terminal synthesis", () => {
-    // assistant.turn_end is a terminal turn event, but tool activity can still land after it,
-    // so the synthesized failure must stay provisional.
+    // Tool activity can land after assistant.turn_end, so a synthesized failure stays provisional.
     const toolCall = onlyToolCall([
       toolStart(AGENT_TOOL_CALL, "2026-08-01T10:00:00.000Z"),
       subagentStarted(AGENT_TOOL_CALL, AGENT_INSTANCE, "2026-08-01T10:00:00.100Z"),
@@ -108,6 +105,19 @@ describe("subagent failure correlation (replay fold)", () => {
 
     expect(toolCall.success).toBe(true);
     expect(toolCall.result).toBe("finished after turn end");
+  });
+
+  it("still takes a sub-agent failure that lands after turn-terminal synthesis", () => {
+    const toolCall = onlyToolCall([
+      toolStart(AGENT_TOOL_CALL, "2026-08-01T10:00:00.000Z"),
+      subagentStarted(AGENT_TOOL_CALL, AGENT_INSTANCE, "2026-08-01T10:00:00.100Z"),
+      { type: "assistant.turn_end", timestamp: "2026-08-01T10:00:01.000Z", data: {} },
+      subagentFailed(AGENT_TOOL_CALL, "CAPIError: 500", "2026-08-01T10:00:02.000Z"),
+      toolComplete(AGENT_TOOL_CALL, false, "2026-08-01T10:00:02.100Z"),
+    ]);
+
+    expect(toolCall.success).toBe(false);
+    expect(toolCall.result).toBe("CAPIError: 500");
   });
 
   it("keeps a synthesized failure when the turn aborts with no completion", () => {
@@ -136,8 +146,7 @@ describe("SubagentCorrelator sealing", () => {
   });
 
   it("still accepts sub-agent identity and response announced after the launch completes", () => {
-    // Background launches complete before `subagent.started` and the agent's answer arrive.
-    // Only the failure outcome is frozen.
+    // A background launch completes before `subagent.started` and the answer; only failure freezes.
     const correlator = new SubagentCorrelator();
     correlator.completeTool(AGENT_TOOL_CALL);
     correlator.startSubagent(AGENT_TOOL_CALL, AGENT_INSTANCE, { agentDisplayName: "Explore Agent" });
@@ -166,12 +175,10 @@ describe("SubagentCorrelator sealing", () => {
 });
 
 describe("shared tool visibility", () => {
-  // These inputs used to disagree between the server replay fold and the client live fold, so a
-  // self-rename rendered live and then vanished on reload.
+  // Server replay and client live folds must agree here, or a self-rename vanishes on reload.
 
   it("normalizes the target id the same way the session_rename handler does", () => {
-    // The handler runs the id through normalizeSessionTitle, which also strips surrounding
-    // quotes and collapses whitespace, so visibility must use the same normalization.
+    // The handler normalizes the id with normalizeSessionTitle (quotes, whitespace); so must this.
     expect(isHiddenTool("session_rename", { sessionId: "\"abc\"" }, "abc")).toBe(true);
     expect(isHiddenTool("session_rename", { sessionId: "'abc'" }, "abc")).toBe(true);
   });

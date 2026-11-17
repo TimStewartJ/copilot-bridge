@@ -521,7 +521,7 @@ describe("SessionManager account switch", () => {
     id, host: "https://github.com", login: `user-${id}`, plan: "business", organizations: [], active, usedPercent: null,
   });
 
-  /** A runtime whose active account is `activeId`; its helper sessions switch through `switchAccount`. */
+  /** A runtime whose active account is `activeId`; helper sessions switch via `switchAccount`. */
   function createAccountBackend(activeId: string, switchAccount = vi.fn(async (_id: string) => {})) {
     return Object.assign(createBackend([]), {
       listAccounts: vi.fn(async () => [account("a", activeId === "a"), account("b", activeId === "b")]),

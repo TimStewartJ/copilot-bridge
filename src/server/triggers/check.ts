@@ -1,6 +1,4 @@
-// Trigger checks: a command the Bridge runs on the trigger's schedule, with no model, to decide
-// whether the trigger fires. In "change" mode it fires when the output differs from the last check;
-// in "exit_code" mode the command decides: 0 quiet, 10 fire, 11 fire and stop, anything else failed.
+// Trigger checks: a command run with no model decides whether the trigger fires.
 
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
@@ -46,17 +44,14 @@ export interface TriggerCheckResult extends TriggerCheckOutput {
   fingerprint: string;
 }
 
-/** How a settled check ended: change mode records baseline/unchanged/changed, exit_code mode quiet/fired. */
+/** How a check ended: baseline/unchanged/changed in change mode, quiet/fired in exit_code mode. */
 export type TriggerCheckOutcome = "baseline" | "unchanged" | "changed" | "quiet" | "fired";
 
 export type TriggerCheckDecision =
   | { fire: false; outcome: "baseline" | "unchanged" | "quiet" }
   | { fire: true; outcome: "changed" | "fired"; stop: boolean };
 
-/**
- * Whether a check result fires its trigger. `previousFingerprint` is the last committed result's
- * (undefined before the first). Throws for an exit code the exit_code contract does not define.
- */
+/** Whether a result fires; throws for an exit code the exit_code contract does not define. */
 export function evaluateTriggerCheck(
   spec: Pick<TriggerCheckSpec, "fireOn" | "fireOnFirstRun">,
   result: Pick<TriggerCheckResult, "exitCode" | "fingerprint">,
@@ -174,27 +169,21 @@ function toResult(exitCode: number, stdout: string, stderr: string): TriggerChec
   };
 }
 
-/** The program to start for a check command, with `windowsVerbatimArguments` when `verbatim` is set. */
+/** The program a check starts; `verbatim` sets `windowsVerbatimArguments`. */
 export interface TriggerCheckInvocation {
   file: string;
   args: string[];
   verbatim: boolean;
 }
 
-// Extensions a check may start: programs directly, launchers through cmd.exe. Others need hosts of their own.
+// Programs run directly and launchers via cmd.exe; other extensions need their own hosts.
 const WINDOWS_RUNNABLE_EXTENSIONS = [".COM", ".EXE", ".BAT", ".CMD"];
 
 async function isFile(path: string): Promise<boolean> {
   return stat(path).then((info) => info.isFile(), () => false);
 }
 
-/**
- * How to start a check command. Elsewhere it starts as given. On Windows the name is looked up on
- * PATH with PATHEXT, as a shell would, because CreateProcess only adds `.exe`. A `.cmd` or `.bat`
- * launcher (az, npm and other CLIs) runs through cmd.exe with every argument quoted by
- * windowsShellInvocation, never as a shell string. A name that is not found is left for the start
- * to report as ENOENT.
- */
+/** Windows: look up PATH+PATHEXT (CreateProcess only adds .exe); .cmd/.bat go via cmd.exe. */
 export async function resolveTriggerCheckInvocation(
   command: readonly string[],
   cwd: string,
@@ -235,10 +224,7 @@ export async function resolveTriggerCheckInvocation(
   return { file: name, args, verbatim: false };
 }
 
-/**
- * Runs a check command off the main thread. A non-zero exit code is a result, not an error.
- * Throws when the command cannot start, times out, or prints more than the buffer holds.
- */
+/** Runs a check off the main thread; throws on start failure, timeout or output overflow. */
 export async function runTriggerCheck(spec: TriggerCheckSpec, cwd: string): Promise<TriggerCheckResult> {
   const file = spec.command[0]!;
   const invocation = await resolveTriggerCheckInvocation(spec.command, cwd);
@@ -280,7 +266,7 @@ function boundForPrompt(output: TriggerCheckOutput): TriggerCheckOutput {
   };
 }
 
-/** The block a worker, chat or new chat gets when a check fired. Output is quoted as JSON so it cannot act as instructions. */
+/** The block sent when a check fired; output is quoted as JSON so it cannot act as instructions. */
 export function formatTriggerCheckChange(change: TriggerCheckChange): string {
   const data = {
     command: change.command,

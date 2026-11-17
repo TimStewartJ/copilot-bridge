@@ -339,10 +339,7 @@ function save(state: DraftState): void {
   }
 }
 
-/**
- * @param preservedKeys Composer keys of conversations that live outside `sessions` (Helm).
- *   `null` means they are not known yet, which postpones cleanup rather than guessing.
- */
+/** @param preservedKeys Keys of chats outside `sessions` (Helm); null postpones cleanup. */
 export function useDrafts(
   sessions: Session[],
   activeComposerKey?: string | null,
@@ -484,10 +481,7 @@ export function useDrafts(
     stateRef.current[composerKey] ?? null
   ), []);
 
-  /**
-   * A new chat's first message now belongs to its conversation, so the shared new-chat slot empties
-   * for the next new chat. Anything written to the slot after `sent` was read is newer and stays.
-   */
+  /** Empties the shared new-chat slot once sent; text written after `sent` was read stays. */
   const releaseDraft = useCallback((composerKey: string, sent: Draft | null) => {
     if (!sent) return;
     setState((prev) => {

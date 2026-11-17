@@ -70,8 +70,8 @@ describe("test helper runtime isolation", () => {
   });
 
   it("restores env after scoped mutations", async () => {
-    process.env.BRIDGE_DATA_DIR = "original-data"; // xplat-audit-ignore-line: intentionally testing raw env restore behavior
-    process.env.TEST_ONLY_VAR = "original-value"; // xplat-audit-ignore-line: intentionally testing raw env restore behavior
+    process.env.BRIDGE_DATA_DIR = "original-data"; // xplat-audit-ignore-line: tests raw env restore
+    process.env.TEST_ONLY_VAR = "original-value"; // xplat-audit-ignore-line: tests raw env restore
 
     await withTestEnv(
       {
@@ -88,8 +88,8 @@ describe("test helper runtime isolation", () => {
 
     expect(process.env.BRIDGE_DATA_DIR).toBe("original-data");
     expect(process.env.TEST_ONLY_VAR).toBe("original-value");
-    delete process.env.BRIDGE_DATA_DIR; // xplat-audit-ignore-line: intentionally testing raw env restore behavior
-    delete process.env.TEST_ONLY_VAR; // xplat-audit-ignore-line: intentionally testing raw env restore behavior
+    delete process.env.BRIDGE_DATA_DIR; // xplat-audit-ignore-line: tests raw env restore
+    delete process.env.TEST_ONLY_VAR; // xplat-audit-ignore-line: tests raw env restore
   });
 
   it("creates isolated app runtime paths by default", () => {

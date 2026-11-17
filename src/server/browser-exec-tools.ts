@@ -1,5 +1,4 @@
-// browser_exec — structured freeform browser automation that runs through the
-// bridge-owned browser session wrappers instead of raw bash.
+// browser_exec: structured browser automation through Bridge-owned browser session wrappers.
 
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "./app-context.js";

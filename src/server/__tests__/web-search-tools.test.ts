@@ -59,7 +59,7 @@ type BrowserReply = string | { fails: string };
 
 /** What a search engine answers a query with, as far as the browser can tell. */
 interface EnginePage {
-  /** What the page check reads, as changes to an ordinary results page at the address that was opened. */
+  /** What the page check reads, as changes to an ordinary results page at the opened address. */
   signals?: Record<string, unknown>;
   /** The answer to the page check when it does not get to read the page; wins over `signals`. */
   pageCheck?: BrowserReply;
@@ -85,10 +85,7 @@ function resultsSnapshot(engine: string): string {
 /** A results area with too little in it to be search results. */
 const NO_RESULTS_SNAPSHOT = "heading No results\n- link Search help";
 
-/**
- * What the page-check script (`pageSignalsScript` in browser-page-check.ts) returns for a page,
- * as the JSON text it produces. Without overrides it is a page of search results.
- */
+/** The JSON `pageSignalsScript` returns for a page; without overrides, a page of search results. */
 function pageSignals(url: string, overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     url,
@@ -118,11 +115,7 @@ function engineOf(url: string): Engine | undefined {
   return undefined;
 }
 
-/**
- * Stands in for the agent-browser binary in front of the three search engines and records what
- * it was asked. An engine that `pages` says nothing about shows an ordinary page of results.
- * `pages` is read at each command, so a test can change an engine's answer between searches.
- */
+/** Fakes agent-browser over three engines; `pages` is read per command, so tests can change it. */
 function mockSearchEngines(pages: Partial<Record<Engine, EnginePage>> = {}): BrowserCall[] {
   const calls: BrowserCall[] = [];
   let engine: Engine | undefined;
@@ -156,12 +149,7 @@ function mockSearchEngines(pages: Partial<Record<Engine, EnginePage>> = {}): Bro
   return calls;
 }
 
-/**
- * Runs a search without its real waits: the page check gives a human check five seconds to pass
- * by itself. Only the timers are faked; every round lets the mocked commands and the waits make
- * progress until the search has settled. A test that has faked the clock itself keeps its clock,
- * which then moves by exactly the waits that passed.
- */
+/** Skips the 5 s human-check wait with fake timers; a test's own fake clock is kept. */
 async function withoutWaits<T>(search: () => T | Promise<T>): Promise<T> {
   const ownClock = vi.isFakeTimers();
   if (!ownClock) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -231,7 +219,7 @@ describe("browser_web_search tool", () => {
     return (query = "copilot bridge"): Promise<any> => withoutWaits(() => tool.handler({ query }, {} as any));
   }
 
-  /** The failure codes a provider's failures were recorded with. Diagnostics counts challenges by them. */
+  /** A provider's recorded failure codes; diagnostics counts challenges by them. */
   function failureCodes(telemetryStore: { recordSpan: ReturnType<typeof vi.fn> }, engine: Engine): string[] {
     return spans(telemetryStore, `browser.tool.browser_web_search.${engine}.failed`)
       .map((span) => span.metadata.failureCode);
@@ -302,8 +290,7 @@ describe("browser_web_search tool", () => {
 
       expect(firstResult).toMatchObject({ source: "bing", url: "https://www.bing.com/search?q=copilot%20bridge" });
       expect(openedEngines(calls)).toEqual(["google", "bing"]);
-      // The blocked page is not captured: there are no results on it to read. A check is read a
-      // second time after a moment, in case it passes by itself; a refusal is not.
+      // A blocked page is not captured; a check (not a refusal) is re-read once in case it clears.
       expect(calls.filter((call) => call.engine === "google").map((call) => call.command))
         .toEqual(["open", ...Array.from({ length: pageReads }, () => "eval")]);
       expect(failureCodes(telemetryStore, "google")).toEqual(["search.google_captcha"]);

@@ -231,7 +231,7 @@ const SEARCH_KINDS = new Set<SearchKind>(["all", "chat", "task", "doc"]);
 const SESSION_CREATION_DETAIL_WAIT_MS = 30_000;
 // Four-digit years only: SQLite's date functions cannot read the extended years Date.parse accepts.
 const SEARCH_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
-/** Work items a new task can be linked to in one request, as when several are selected on the work map. */
+/** Work items a new task can be linked to in one request, as from a work map selection. */
 const MAX_INITIAL_WORK_ITEMS = 100;
 const DEFAULT_SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 50;
@@ -321,7 +321,6 @@ function docsIndexMutationWarning(result: DocsFtsMutationResult | undefined): { 
     : {};
 }
 
-/** Resolve the .copilot home directory — uses ctx.copilotHome if set, otherwise homedir()/.copilot */
 function getCopilotHome(ctx: AppContext): string {
   return ctx.copilotHome ?? join(homedir(), ".copilot");
 }
@@ -1023,8 +1022,7 @@ export function createApiRouter(
     });
   });
 
-  // The files a person picked on their own device for a file chooser of a live browser view.
-  // They are written where the view's gateway says and handed to the page; see browser-live.ts.
+  // Files the user picked on their device for a live browser view's chooser; see browser-live.ts.
   router.post("/browser/live/files", async (req, res) => {
     if (rejectCrossSiteUiMutation(req, res, "Live browser file")) return;
     const live = getBrowserRuntime(ctx).live;
@@ -1089,11 +1087,7 @@ export function createApiRouter(
 
   const MAX_EXTERNAL_USE_SESSION_IDS = 500;
 
-  /**
-   * Tasks with a disposition run in flight. A large delete can outlive its HTTP
-   * response (tunnels cap requests well below the time thousands of session
-   * deletes take), so a retry can arrive while the first run is still going.
-   */
+  /** A big delete outlives its HTTP response, so a retry can arrive while the first run goes on. */
   const taskDeletionsInFlight = new Set<string>();
 
   function setSessionArchived(sessionId: string, archived: boolean) {
@@ -1111,17 +1105,11 @@ export function createApiRouter(
     return tasks.map((task) => toClientTask(task, summaries.get(task.id)));
   }
 
-  /**
-   * Counts and busy state backing the task delete-confirmation dialog. Also
-   * polled during a long delete so the dialog can show progress: `sessionCount`
-   * falls as sessions are removed, and the endpoint 404s once the task is gone.
-   */
+  /** Delete-dialog counts; also polled for progress while a delete runs. */
   function buildTaskDeletionPreview(taskId: string) {
     const counts = ctx.taskStore.getTaskSessionCounts(taskId);
     const sessionIds = ctx.taskStore.listSessionIdsForTask(taskId);
-    // Only genuinely in-flight sessions block deletion. Active deferred work is
-    // NOT a blocker here: unlike automatic retention archiving, an explicit
-    // delete already cancels and removes a session's deferred prompts and loops.
+    // Deferred work doesn't block: an explicit delete already cancels a session's deferred work.
     const busySessionIds = sessionIds.filter((id) => ctx.sessionManager.isSessionBusy(id));
     return {
       sessionCount: counts.total,
@@ -1149,9 +1137,7 @@ export function createApiRouter(
         () => sessionList.base(includeArchived),
         { includeArchived },
       );
-      // One turn of the event loop, so a client that left while this request waited (on the
-      // build, or in the queue behind other requests) has been noticed. Nobody reads its answer.
-      // The socket says so; `req.destroyed` is also true once a request body was read to its end.
+      // Yield a tick to see a gone client; use the socket, req.destroyed is true after a body read.
       await new Promise((resolve) => setImmediate(resolve));
       if (res.destroyed || req.socket.destroyed) return;
       const sessions = await timeRequestOperation(res, "sessions.overlay", () => sessionList.overlay(rows, includeArchived));
@@ -1301,7 +1287,7 @@ export function createApiRouter(
     }
   });
 
-  // GET /model-ab-test — the current model A/B test per arm: chats, scheduled runs and recorded cost.
+  // GET /model-ab-test — the current model A/B test per arm: chats, scheduled runs and cost.
   router.get("/model-ab-test", async (_req, res) => {
     try {
       const test = ctx.settingsStore.getSettings().modelAbTest;
@@ -1319,8 +1305,7 @@ export function createApiRouter(
     }
   });
 
-  // GET /chat-grades — chats matching the filters (`from`, `to`, `models`, `includeScheduled`), how
-  // many are graded, the models used in the range, the grading run, and the label counts per model.
+  // GET /chat-grades — matching chats, graded count, the grading run and label counts per model.
   router.get("/chat-grades", async (req, res) => {
     const parsed = parseChatGradesFilters(req.query);
     if ("error" in parsed) {
@@ -1339,8 +1324,7 @@ export function createApiRouter(
     }
   });
 
-  // POST /chat-grades/runs — grades the matching chats in the background (billed as AI credits): only
-  // chats without a grade unless `regrade` is true. One run at a time.
+  // POST /chat-grades/runs — grades ungraded matching chats (all with `regrade`); one at a time.
   router.post("/chat-grades/runs", async (req, res) => {
     const parsed = parseChatGradesFilters(req.body ?? {});
     if ("error" in parsed) {
@@ -1364,8 +1348,7 @@ export function createApiRouter(
     }
   });
 
-  // GET /copilot-usage/quota — live account counter from the backend SDK.
-  // Never fails the panel: an RPC error degrades to available:false.
+  // GET /copilot-usage/quota — live account counter; an RPC error degrades to available:false.
   router.get("/copilot-usage/quota", async (req, res) => {
     const refresh = req.query.refresh === "1";
     try {
@@ -1388,7 +1371,7 @@ export function createApiRouter(
     }
   });
 
-  // GET /copilot-accounts — the signed-in Copilot accounts (never their tokens) and which is active.
+  // GET /copilot-accounts — signed-in Copilot accounts (never their tokens) and the active one.
   router.get("/copilot-accounts", async (_req, res) => {
     try {
       res.json(await ctx.sessionManager.listCopilotAccounts());
@@ -1418,9 +1401,7 @@ export function createApiRouter(
     }
   });
 
-  // POST /shutdown — graceful shutdown: abort active sessions, stop SDK, exit.
-  // A restart passes ifIdle, so the server stops only while nothing is in flight. The check and the
-  // refusal of new work happen in this one tick, which is why a restart never cuts off a run.
+  // ifIdle (restart): shut down only when nothing is in flight.
   router.post("/shutdown", async (req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
     const body = req.body as { deadlineUnixMs?: unknown; ifIdle?: unknown } | undefined;
@@ -1437,7 +1418,7 @@ export function createApiRouter(
         console.error("[restart] Could not confirm runtime idle:", error);
         return res.status(503).json({ error: "Runtime idle could not be confirmed." });
       }
-      // New work may have arrived while the runtime answered. No await separates this check from shutdown.
+      // Work may have arrived meanwhile; no await may separate this check from shutdown.
       if (hasWork()) return busyResponse();
     }
     console.log("[web] Graceful shutdown requested via API");
@@ -1470,8 +1451,7 @@ export function createApiRouter(
     }
 
     if (delayMinutes <= 0) {
-      // Immediate: drop any pending scheduled hibernation, then fire shortly
-      // after the response flushes so the client still receives the ack.
+      // Immediate: cancel any scheduled hibernation, then fire after the response flushes.
       cancelHibernate();
       disarmHibernateOnIdle();
       console.log("[device] Hibernate requested via API (immediate)");
@@ -1506,9 +1486,7 @@ export function createApiRouter(
     res.json({ ...getHibernateStatus(), onIdle: getHibernateOnIdleStatus() });
   });
 
-  // POST /device/hibernate/on-idle — arm or disarm "hibernate once all sessions
-  // are idle". The watcher disarms itself before hibernating, so a wake leaves it off; a server
-  // restart or crash carries it over (device-hibernate-handoff.ts).
+  // Arm/disarm hibernate-on-idle; it disarms before hibernating and survives restarts.
   router.post("/device/hibernate/on-idle", (req, res) => {
     if (ctx.isStaging) return res.status(404).json({ error: "Not available in staging" });
 
@@ -1615,9 +1593,7 @@ export function createApiRouter(
     }
   });
 
-  // POST /server/restart — ask for a restart. It waits in the background until the Bridge is idle
-  // and refuses nothing meanwhile; asking again joins the pending restart. `force` is the user
-  // choosing not to wait: the server stops now, and `resume` continues its runs on the next one.
+  // Restart waits for idle; repeat asks join it. force stops now; resume continues runs after.
   router.post("/server/restart", async (req, res) => {
     if (rejectCrossSiteUiMutation(req, res, "Bridge restart")) return;
     if (ctx.isStaging) return res.status(404).json({ error: "Bridge restart is not available in staging previews." });
@@ -1647,15 +1623,14 @@ export function createApiRouter(
     ctx.globalBus.emit({ type: "server:restart-changed" });
     if (!forced) return res.status(202).json({ ok: true, waitingOn: getRestartBlockers(ctx) });
 
-    // Stopping the server is what interrupts its runs. The prompts that resume them are stored first,
-    // and shutdown starts in this same tick, so only the next server can deliver them.
+    // Resume prompts are stored before shutdown starts this tick; only the next server sends them.
     const interruptedRuns = ctx.sessionManager.getActiveRuns();
     let resumingRuns = 0;
     try {
       if (resume && deferredPromptStore) {
         resumingRuns = queueRestartRecoveryPrompts({ deferredPromptStore, globalBus: ctx.globalBus }, interruptedRuns);
       } else {
-        // Without this, a run whose abort outlasts shutdown keeps its marker and resumes at the next boot anyway.
+        // Else a run whose abort outlasts shutdown keeps its marker and resumes at next boot.
         for (const run of interruptedRuns) ctx.interruptedRunStore?.clear(run.sessionId);
       }
     } catch (error) {
@@ -1711,14 +1686,7 @@ export function createApiRouter(
     req.on("close", () => { close(); });
   });
 
-  /**
-   * Sends a file kept in a session: one the agent sent with send_attachment, or one the user
-   * attached to a prompt. Raster images are served for display and everything else as a download,
-   * which is all `fetch`, `<img>`, `<audio>` and `<video>` need to preview a file in the chat.
-   * `?inline` is for a browser showing the file by itself, in the chat's frame or a tab: a PDF or
-   * media as it is, and HTML or SVG under the policy that keeps it from acting as the Bridge.
-   * Anything else still downloads, and `?download` always does.
-   */
+  // Images inline, rest download; ?inline shows PDF/media, HTML/SVG sandboxed; ?download always.
   function sendSessionFile(req: express.Request, res: express.Response, file: Result<ResolvedOutboundAttachment>): void {
     if (!file.ok) {
       res.status(file.error.includes("unsafe") ? 403 : 404).json({ error: file.error });
@@ -1764,8 +1732,7 @@ export function createApiRouter(
     return sendSessionFile(req, res, resolveOutboundAttachment(getCopilotHome(ctx), req.params.id, attachmentId));
   });
 
-  // Files the user attached to a prompt. Sent images come back from history without their bytes,
-  // so the chat shows them from the copy the upload left in the session's files/ folder.
+  // History drops sent images' bytes, so the chat shows the upload's copy in the session's files/.
   router.get("/sessions/:id/files/:fileName", (req, res) => {
     if (!isCanonicalSessionId(req.params.id)) {
       return res.status(400).json({ error: "Valid sessionId is required" });
@@ -1818,8 +1785,7 @@ export function createApiRouter(
     res.json(meta.value);
   }
 
-  // Visual artifact routes — serve published visual artifacts by artifactId (UUID)
-  // GET /sessions/:id/visuals/:artifactId — serve artifact inline
+  // GET /sessions/:id/visuals/:artifactId — serve a published visual artifact inline
   router.get("/sessions/:id/visuals/:artifactId", (req, res) => {
     if (!isCanonicalSessionId(req.params.id)) {
       return res.status(400).json({ error: "Valid sessionId is required" });
@@ -1855,8 +1821,7 @@ export function createApiRouter(
     return sendVisualMeta(sessionVisualOwner(req.params.id), artifactId, res);
   });
 
-  // Fast message loading — reads events.jsonl directly from disk, no SDK resume needed
-  /** Messages the agent never got, shown in the chat as not sent. A failed read hides them, nothing more. */
+  /** Messages the agent never got, shown as not sent; a failed read only hides them. */
   function readUnsentMessages(sessionId: string): UnsentMessageView[] {
     try {
       return ctx.unsentMessageStore?.list(sessionId) ?? [];
@@ -2073,11 +2038,7 @@ export function createApiRouter(
     }
   });
 
-  // Reasoning efforts are SDK-driven. Validate a requested effort against the
-  // target model's advertised `supportedReasoningEfforts` (an explicit empty
-  // array means the model exposes none), falling back to the union across all
-  // models when that model isn't in the catalog, and skipping validation only
-  // when SDK metadata is unavailable — the SDK still enforces the final contract.
+  // Efforts the model lists (union if model unknown); null skips the check, the SDK still enforces.
   async function resolveAllowedReasoningEfforts(modelId: string): Promise<Set<string> | null> {
     const listModels = ctx.sessionManager?.listModels;
     if (typeof listModels !== "function") return null;
@@ -2188,7 +2149,7 @@ export function createApiRouter(
     res.json({ playbook: ctx.sessionManager.getSessionPlaybook(sessionId) ?? null });
   });
 
-  // PUT /sessions/:id/playbook — the user picks a playbook (or "none"); null returns to the task's pin
+  // PUT /sessions/:id/playbook — the user's pick (or "none"); null falls back to the task's pin
   router.put("/sessions/:id/playbook", async (req, res) => {
     const sessionId = req.params.id;
     if (!isCanonicalSessionId(sessionId)) {
@@ -2298,8 +2259,7 @@ export function createApiRouter(
     res.json({ job: sessionModelMover.getJob() ?? null });
   });
 
-  // POST /session-model-move — switch every chat that is not archived from one model to another.
-  // Answers 202 with the job once the chats are counted; the move itself runs in the background.
+  // POST /session-model-move — move unarchived chats to a model; 202 once counted, then background.
   router.post("/session-model-move", async (req, res) => {
     if (rejectCrossSiteUiMutation(req, res, "Moving chats to another model")) return;
     const parsed = parseSessionModelMoveRequest(req.body);
@@ -2523,8 +2483,7 @@ export function createApiRouter(
     }
   });
 
-  // POST /chat — starts work, optionally waiting until the prompt reaches the SDK session
-  // Tim's own words in a conversation are the engagement signal for task states. Best effort only.
+  // The user's own messages are the engagement signal for task states; best effort only.
   const noteUserMessage = (sessionId: unknown) => {
     if (typeof sessionId !== "string" || !sessionId) return;
     try { ctx.taskStore.recordUserMessage(sessionId); }
@@ -2792,9 +2751,7 @@ export function createApiRouter(
       if (connection.closed) return;
       const bus = ctx.eventBusRegistry.getBus(sessionId);
 
-      // Bridge is working on the session outside any run (image summary, model switch, undo). There
-      // is no run to stream, but reporting the session finished would send the client straight back
-      // here, so stay open and follow the hold until it ends.
+      // Held outside a run: stay open, as reporting 'finished' sends the client straight back.
       if ((!bus || bus.complete) && ctx.sessionManager.getSessionHold(sessionId)) {
         const sendHold = () => {
           const reason = ctx.sessionManager.getSessionHold(sessionId);
@@ -2873,13 +2830,7 @@ export function createApiRouter(
       });
       unsub = subscription.unsubscribe;
 
-      // `subscribeWithSnapshot` is the linearization barrier: it registers the
-      // listener before capturing state, so anything after it is buffered. The
-      // barrier's copy of the pending prompts is the one buffered cancellations
-      // refer to, and it is drawn from the same listing index the manager reads —
-      // so it is authoritative and nothing may overwrite it here. Settling the
-      // manager first only ensures a draining terminal cleanup has finished
-      // before the client sees the snapshot.
+      // Buffered cancels refer to the snapshot's pending prompts; never overwrite them here.
       try {
         await ctx.sessionManager.hydratePendingInteractions(sessionId);
       } catch (error) {
@@ -2963,10 +2914,7 @@ export function createApiRouter(
     }
   });
 
-  // GET /sessions/:id/agents — authoritative per-session background/child agent
-  // snapshot. Triggers a live refresh from the cached SDK session when present.
-  // Sensitive free-text fields are truncated; `source` conveys freshness so the
-  // client never presents stale data as live.
+  // Agents for a session; `source` tells the client whether the list is live or cached.
   router.get("/sessions/:id/agents", async (req, res) => {
     try {
       const snapshot = await timeRequestOperation(
@@ -2986,8 +2934,7 @@ export function createApiRouter(
     }
   });
 
-  // GET /sessions/:id/agents/:agentId — one agent with its brief and latest report in full, for
-  // the row a reader opened. The list above carries only the first part of each.
+  // GET /sessions/:id/agents/:agentId — one agent's full brief and report; the list has excerpts.
   router.get("/sessions/:id/agents/:agentId", async (req, res) => {
     try {
       const snapshot = await timeRequestOperation(
@@ -3008,8 +2955,7 @@ export function createApiRouter(
     }
   });
 
-  // POST /sessions/:id/agents/:agentId/cancel — request cancellation of a
-  // background agent task.
+  // POST /sessions/:id/agents/:agentId/cancel — request cancellation of a background agent task.
   router.post("/sessions/:id/agents/:agentId/cancel", async (req, res) => {
     try {
       const result = await ctx.sessionManager.cancelSessionAgent(req.params.id, req.params.agentId);
@@ -3022,9 +2968,7 @@ export function createApiRouter(
     }
   });
 
-  // POST /sessions/:id/agents/:agentId/dismiss — take an agent that is not working off the
-  // session's list for good, which frees its place among the live contexts. An idle agent is
-  // ended first. Cancel leaves the agent listed; this does not.
+  // Removes a non-working agent for good, freeing a live slot; cancel leaves it listed.
   router.post("/sessions/:id/agents/:agentId/dismiss", async (req, res) => {
     try {
       const result = await ctx.sessionManager.dismissSessionAgent(req.params.id, req.params.agentId);
@@ -3260,8 +3204,7 @@ export function createApiRouter(
     res.json({ task: toClientTaskResponse({ ...task, tags }) });
   });
 
-  // A task's archived sessions, newest first, one page at a time. The task panel reads these
-  // instead of the global archived list, which holds every archived session in Bridge.
+  // A task's archived sessions, newest first and paged, so the panel skips the global archive list.
   router.get("/tasks/:id/archived-sessions", async (req, res) => {
     try {
       const task = ctx.taskStore.getTask(req.params.id);
@@ -3418,7 +3361,7 @@ export function createApiRouter(
       if ((task.instructions ?? "") !== previousInstructions) {
         ctx.sessionManager.invalidateTaskSessionConfig(task.id, "task instructions changed");
       }
-      // Closing a task settles what its conversations had already said, so only what arrives afterwards counts as new.
+      // Closing a task settles its chats' past messages; only later ones count as new.
       if (previous?.status === "active" && task.status === "archived") {
         try {
           const settled = ctx.taskStore.listOpenSessionIdsWithoutActiveTask(task.id);
@@ -3517,12 +3460,7 @@ export function createApiRouter(
     const preview = buildTaskDeletionPreview(taskId);
 
     if (disposition === undefined) {
-      // Deleting a task used to silently detach its sessions. Rather than pick a
-      // default that could archive or destroy thousands of sessions on behalf of
-      // a caller that never asked, make the choice explicit — but keep the
-      // parameterless call working when there is nothing to decide.
-      // `ifUntouched` narrows that to a task nobody has used: the UI sends it to
-      // delete a task made by mistake without showing its confirmation dialog.
+      // Need an explicit disposition unless nothing to decide; ifUntouched lets the UI skip it.
       const nothingToDecide = req.query.ifUntouched === "true"
         ? isTaskUntouched(ctx, task)
         : preview.sessionCount === 0;
@@ -3576,8 +3514,7 @@ export function createApiRouter(
         onSessionsChanged: (reason) => sessionList.invalidate(reason),
       });
       if (!result.taskDeleted) {
-        // Sessions are disposed before the task, so a partial failure leaves the
-        // task intact and the whole operation safely retryable.
+        // Sessions go before the task, so a partial failure keeps the task and stays retryable.
         return res.status(409).json({
           error: "session_disposition_failed",
           message: "Some sessions could not be deleted; the task was kept so you can retry.",
@@ -4550,8 +4487,7 @@ export function createApiRouter(
     if (rejectCrossSiteUiMutation(req, res, "Saved login")) return;
     try {
       const { broker, logins } = getBrowserRuntime(ctx);
-      // The vault is reached through agent-browser, under the signed-in browser's name. It
-      // touches no page, so it does not wait for the browser or count as a use of it.
+      // The vault touches no page, so it neither waits for the browser nor counts as a use.
       const removed = await logins.remove(req.params.id, {
         browserTarget: broker.getAuthenticatedTarget(),
         telemetryStore: ctx.telemetryStore,
@@ -4636,17 +4572,13 @@ export function createApiRouter(
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
       const contextTierChanged = prev.contextTier !== updated.contextTier;
 
-      // Plugin changes can't be hot-swapped on a live session — evict so the next
-      // resume rebuilds with the new config. The Fusion context limit and image
-      // generation are applied on resume too. Sub-agent models (Helpers, Reviewers,
-      // tiers) reach a loaded chat the next time it is resumed.
+      // These can't change on a live session; evict so the next resume uses the new config.
       if (computerUseChanged || imageGenerationChanged || fusionContextChanged) {
         const changed = computerUseChanged ? "Computer use" : imageGenerationChanged ? "Image generation" : "Fusion context limit";
         console.log(`[settings] ${changed} changed — evicting cached sessions for re-resume`);
         void ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged || contextTierChanged) {
-        // Model/reasoning changes apply to future sessions only. Existing cached
-        // sessions keep the model already persisted in their SDK state.
+        // Model changes apply to future sessions; cached ones keep the model in their SDK state.
         const reasons = [
           modelChanged ? "model" : null,
           reasoningChanged ? "reasoning effort" : null,
@@ -4779,10 +4711,7 @@ export function createApiRouter(
       }
     };
 
-    /**
-     * An editor names the revision it started from. Agents write docs while a page is open for
-     * editing, so a save based on an older revision is refused instead of silently undoing theirs.
-     */
+    // A save from an older revision is refused so it can't silently undo an agent's later write.
     const docsEditConflict = (pagePath: string, baseModified: unknown) => {
       if (typeof baseModified !== "string" || !baseModified) return null;
       const current = docs.readPage(pagePath);
@@ -4881,8 +4810,7 @@ export function createApiRouter(
         const raw = (req.params as any).path;
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
         const { content, frontmatter, body, baseModified } = req.body ?? {};
-        // The docs editor sends structured { frontmatter, body } so YAML is serialized here;
-        // agents and older callers send the raw file as { content }.
+        // The editor sends { frontmatter, body } to serialize here; agents send raw { content }.
         let rawContent: string;
         if (typeof content === "string") rawContent = content;
         else if (isRecord(frontmatter) && typeof body === "string") rawContent = serializeDocContent(frontmatter, body);
@@ -4917,7 +4845,7 @@ export function createApiRouter(
       }
     });
 
-    // DB collection routes — use wildcard (*) to support nested folders (e.g. areas/cooking/recipes)
+    // DB collection routes use a wildcard (*) for nested folders, e.g. areas/cooking/recipes
     const paramPath = (raw: any): string => Array.isArray(raw) ? raw.join("/") : String(raw);
 
     router.get("/docs/schema/*folder", (req, res) => {

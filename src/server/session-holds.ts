@@ -1,7 +1,4 @@
-/**
- * Work Bridge does on a session outside any agent run (a "hold"). While one is in progress the
- * session is busy, but it has no run to stream or steer.
- */
+/** Work outside any agent run that keeps a session busy with no run to stream or steer. */
 export type SessionHoldReason = "model-switching" | "history-undo" | "image-compaction";
 
 /** What a session's live view shows while it is held. */
@@ -33,7 +30,7 @@ export class SessionHolds {
     this.notify(sessionId);
   }
 
-  /** Ends the hold; false when the session was not held. Callers notify once follow-up work has started. */
+  /** Ends the hold; false if it was not held. Callers notify once follow-up work has started. */
   end(sessionId: string): boolean {
     return this.reasons.delete(sessionId);
   }

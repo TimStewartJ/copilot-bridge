@@ -26,7 +26,7 @@ export interface BuildWorkMapOptions {
 }
 
 const prKey = (pr: { repoId: string; prId: number }) => `${pr.repoId}:${pr.prId}`;
-/** Connect, read links, follow parents, read details. A waiting client shows which one the build is on. */
+/** Connect, read links, follow parents, read details; a waiting client shows the current one. */
 const BUILD_STEPS = 4;
 
 function add<K>(map: Map<K, string[]>, key: K, value: string): void {
@@ -35,7 +35,7 @@ function add<K>(map: Map<K, string[]>, key: K, value: string): void {
   else if (!values.includes(value)) values.push(value);
 }
 
-/** The part of the tasks the map is built from: each task that links ADO work, and what it links. */
+/** Each task that links ADO work, and what it links: the map's only input from tasks. */
 function linkedWork(tasks: Task[]): Array<{ task: WorkMapTask; workItemIds: string[]; pullRequests: PRRef[] }> {
   return tasks.flatMap((task) => {
     const workItemIds = task.workItems.filter((item) => item.provider === "ado").map((item) => item.id);
@@ -58,10 +58,7 @@ function linkedWork(tasks: Task[]): Array<{ task: WorkMapTask; workItemIds: stri
   });
 }
 
-/**
- * Joins the Bridge tasks that link ADO work with what ADO says about that work: the pull requests
- * linked to each work item, and the work items above and beside it in the ADO hierarchy.
- */
+/** Joins tasks that link ADO work with each item's linked PRs, parents and siblings in ADO. */
 export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<WorkMapData> {
   const { ado } = options;
   if (!ado) {
@@ -138,8 +135,7 @@ export async function buildWorkMapData(options: BuildWorkMapOptions): Promise<Wo
     ids.flatMap((id) => (relations.get(id) ?? []).filter((relation) => wanted(relation.type)).map((relation) => relation.workItemId)),
   )].filter((id) => !known.has(id));
 
-  // Follow parent links to the top, one level per read. Each work item is read once, so a cycle
-  // in ADO ends the walk instead of repeating it.
+  // Each work item is read once, so a cycle in ADO ends the walk instead of repeating it.
   step("Following parent links");
   const ancestorIds: string[] = [];
   const linkedIdSet = new Set(linkedIds);
@@ -201,16 +197,13 @@ interface WorkMapBuild {
   progress: () => WorkMapProgress | null;
 }
 
-/**
- * Runs builds of the map. Requests that ask for the same map while it is being built share that
- * build, and a waiting client can ask how far the build for its filters is.
- */
+/** Requests for a map already being built share that build and can ask how far it is. */
 export function createWorkMapBuilds() {
   const builds = new Map<string, WorkMapBuild>();
   return {
-    /** `filters` names the client's filter combination. `fresh` never joins a build that is already running. */
+    /** `filters` names the client's filter combination; `fresh` never joins a running build. */
     run(filters: string, options: Omit<BuildWorkMapOptions, "report">, fresh = false): Promise<WorkMapData> {
-      // A build started before a task changed, or for another ADO project, does not answer this request.
+      // A build started before a task changed, or for another ADO project, does not answer this.
       const inputs = JSON.stringify([options.ado?.org, options.ado?.project, options.assignedToMe, linkedWork(options.tasks)]);
       const running = builds.get(filters);
       if (running && !fresh && running.inputs === inputs) return running.data;

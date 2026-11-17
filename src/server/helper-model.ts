@@ -2,15 +2,12 @@ import { isRecord } from "../shared/is-record.js";
 import { resolveSupportedReasoningEffort } from "../shared/reasoning-effort.js";
 import type { AgentModelInfo } from "./agent-backend/index.js";
 
-// Picks the model for the Bridge's small helper sessions (session titles, the deferred-work
-// worker's default, Helm) from what the model list says about each model, never from its name.
-
 /** The effort helper sessions run at unless a caller asks for another: skip reasoning entirely. */
 export const HELPER_REASONING_EFFORT = "none";
 
 export interface HelperModelSelection {
   model: string;
-  /** Undefined when the model has no effort control, so the session keeps the model's own setting. */
+  /** Undefined when the model has no effort control, so it keeps its own setting. */
   reasoningEffort?: string;
 }
 
@@ -26,11 +23,7 @@ function isEnabled(model: AgentModelInfo): boolean {
   return typeof policy.state === "string" && policy.state.toLowerCase() === "enabled";
 }
 
-/**
- * What one request costs relative to other models, or undefined when the model list gives no
- * usable price. A router such as "auto" and placeholder entries (batch size 0) have none, so they
- * are never picked.
- */
+/** Relative per-request cost; undefined for unpriced models (auto, batch size 0): never picked. */
 export function helperModelCost(model: AgentModelInfo): number | undefined {
   const billing = isRecord(model.billing) ? model.billing : undefined;
   const multiplier = finiteNumber(billing?.multiplier);
@@ -55,11 +48,7 @@ function supportsEffort(model: AgentModelInfo, effort: string): boolean {
   return (model.supportedReasoningEfforts as readonly string[] | undefined)?.includes(effort) === true;
 }
 
-/**
- * The cheapest enabled, priced model that can run without reasoning, falling back to the cheapest
- * enabled, priced model when none can. The effort is the wanted one (default "none") or the
- * nearest the model supports below it, otherwise its lowest.
- */
+/** Cheapest priced model that can skip reasoning, else cheapest; effort: wanted or next below. */
 export function selectHelperModel(
   models: readonly AgentModelInfo[],
   wantedEffort: string = HELPER_REASONING_EFFORT,

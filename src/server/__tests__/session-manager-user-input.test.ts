@@ -15,9 +15,7 @@ function createManager(pending: PendingUserInputRequestView[] = []) {
   const eventBusRegistry = createEventBusRegistry();
   const runtimePaths = makeTestRuntimePaths("user-input-manager");
   const bus = eventBusRegistry.getOrCreateBus("session-1");
-  // The runtime owns the requests but cannot enumerate them, so Bridge's
-  // event-derived listing index is the only listing source. Seed it the way
-  // `session-runner` does when the runtime raises `user_input.requested`.
+  // The runtime can't list requests; seed Bridge's event-derived index as session-runner does.
   for (const request of pending) bus.emitUserInputRequested(request);
   const respondToUserInput = vi.fn(async (requestId: string) => {
     const index = pending.findIndex((request) => request.requestId === requestId);

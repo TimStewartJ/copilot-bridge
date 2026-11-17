@@ -1,7 +1,4 @@
-// The calendar as one list: the Bridge's own events (repeats expanded) beside the dates the rest of
-// the Bridge keeps. Read-only; each derived item changes where it lives (a checklist item, a task's
-// revisit, a schedule). Windows are local dates in the viewer's zone, so "Tuesday" means the
-// viewer's Tuesday, and everything is filtered here rather than left to the client.
+// Read-only merged calendar; windows are local dates in the viewer's zone, filtered here.
 
 import {
   addCalendarDays,
@@ -55,12 +52,12 @@ export interface CalendarQuery {
   now?: Date;
 }
 
-/** Most occurrences one repeating event may add to a window; a daily year-long event fills about 430. */
+/** Most occurrences one repeating event may add to a window; a daily year-long one fills ~430. */
 const MAX_OCCURRENCES_PER_SERIES = 1000;
 const MAX_EVENT_ITEMS = 1500;
 /** Runs listed one by one per schedule per day; the rest only count. */
 const RUNS_LISTED_PER_DAY = 3;
-/** Runs resolved to instants per schedule-local day, enough to place every run of a quarter-hourly schedule exactly. */
+/** Runs resolved per schedule-local day: enough for a quarter-hourly schedule. */
 const RUNS_RESOLVED_PER_DAY = 96;
 const MAX_RUN_LOOKAHEAD_DAYS = 400;
 const OVERDUE_LIMIT = 50;
@@ -78,7 +75,7 @@ function localDateOf(instant: number, timezone: string): string {
   return dateKeyOf(wallTimeIn(new Date(instant), timezone));
 }
 
-/** The nth start date of a repeat, counted from the first so months never drift; null when it does not exist (Feb 30). */
+/** The nth repeat date, counted from the first so months never drift; null if none (Feb 30). */
 function nthDate(anchor: string, every: NonNullable<CalendarEvent["repeat"]>["every"], step: number, n: number): string | null {
   if (every === "day" || every === "week") return addCalendarDays(anchor, n * step * (every === "week" ? 7 : 1));
   const { year, month, day } = dateParts(anchor);
@@ -164,10 +161,7 @@ function parseClock(value: string): { hour: number; minute: number } | null {
 
 interface RunPlan { id: string; title: string; taskId?: string; triggerId?: string; cron?: string; runAt?: string; timezone?: string; remaining?: number; expiresAtMs?: number }
 
-/**
- * Upcoming runs: forecasts from now, never history. A schedule with a run limit stops once the
- * runs from now on (including those before the window) have used it up.
- */
+/** Forecast runs from now; a run limit also counts runs from now that fall before the window. */
 function forecastRuns(plans: RunPlan[], window: Window, viewerZone: string, nowMs: number): { items: CalendarItem[]; counts: Record<string, number> } {
   const items: CalendarItem[] = [];
   const counts: Record<string, number> = {};
@@ -188,12 +182,12 @@ function forecastRuns(plans: RunPlan[], window: Window, viewerZone: string, nowM
     const zone = plan.timezone ?? viewerZone;
     let remaining = plan.remaining ?? Infinity;
     const limited = Number.isFinite(remaining);
-    // A run limit is spent from now on, so a limited schedule is walked from today; others start at the window.
+    // A run limit is spent from now on, so a limited schedule is walked from today.
     const firstDay = localDateOf(limited ? nowMs : Math.max(nowMs, window.startMs - 86_400_000), zone);
     const lastDay = addCalendarDays(localDateOf(window.endMs, zone), 1);
     const days = Math.min(MAX_RUN_LOOKAHEAD_DAYS, daysBetween(firstDay, lastDay));
     const before = plan.expiresAtMs === undefined ? undefined : plan.expiresAtMs;
-    // Viewer days and schedule days can differ, so the listing limit is kept per viewer day across the walk.
+    // Viewer and schedule days can differ, so the listing limit is kept per viewer day.
     const listedPerDay = new Map<string, number>();
     for (let offset = 0; offset <= days && remaining > 0; offset += 1) {
       const day = addCalendarDays(firstDay, offset);
@@ -216,7 +210,7 @@ function forecastRuns(plans: RunPlan[], window: Window, viewerZone: string, nowM
         }
         continue;
       }
-      // A very busy day (more runs than are resolved): list the first, count the day under its first run's date.
+      // A busy day (more runs than resolved): list the first, count the day under its date.
       const inWindow = resolved.filter((at) => at >= window.startMs && at < window.endMs);
       if (inWindow.length === 0) continue;
       const viewerDay = localDateOf(inWindow[0], viewerZone);

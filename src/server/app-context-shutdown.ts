@@ -1,9 +1,4 @@
-// Graceful shutdown for AppContext-owned services.
-//
-// Deliberately kept free of app-context-factory.js imports: the factory pulls in
-// every store, the session manager, and the whole MCP tool registry. Consumers
-// that only need to shut a context down (shutdown-coordinator, api-router) must
-// not pay for that graph.
+// No app-context-factory imports: it pulls in every store and the MCP tool registry.
 
 import type { AppContext } from "./app-context.js";
 import { shutdownBrowserLive } from "./browser-runtime.js";

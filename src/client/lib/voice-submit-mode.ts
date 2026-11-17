@@ -22,10 +22,7 @@ export interface VoiceSubmitModeContext {
   uploadingCount?: number;
 }
 
-/**
- * How a finished recording reaches the agent; it always does. Alone in a ready composer it goes as
- * a server job, safe to leave. Otherwise it joins the composer first and is sent from there.
- */
+/** Alone in a ready composer, a recording goes as a server job; otherwise it joins the composer. */
 export function resolveVoiceSubmitMode({
   text,
   attachmentCount,

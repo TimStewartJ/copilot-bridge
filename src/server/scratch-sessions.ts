@@ -4,12 +4,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { join } from "node:path";
 import { WEB_CLIENT_HEADER } from "../shared/web-client.js";
 
-/**
- * Scratch chats are the chats a script starts through the REST API, such as an agent probing how
- * the Bridge behaves. They work like any chat and open by URL, but no list, search or notification
- * shows them, and maintenance deletes them once they have been idle for a day. Chats the web
- * client starts, and those agents start in-process with session_start, are ordinary chats.
- */
+/** Scratch chats: REST-started by scripts, hidden from lists, deleted after a day idle. */
 export const SCRATCH_SESSION_ID_PREFIX = "5c7a7c40";
 export const SCRATCH_SESSION_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -22,11 +17,7 @@ export function isScratchSessionId(sessionId: string): boolean {
   return sessionId.startsWith(`${SCRATCH_SESSION_ID_PREFIX}-`);
 }
 
-/**
- * Whether a request comes from the web client. Browsers add Sec-Fetch-Site to every request and
- * page scripts cannot set it, so tabs opened before the client sent WEB_CLIENT_HEADER still count.
- * Node's fetch, curl and Python send neither.
- */
+/** Script can't set Sec-Fetch-Site, so tabs that predate WEB_CLIENT_HEADER still count. */
 export function isWebClientRequest(headers: IncomingHttpHeaders): boolean {
   return headers["sec-fetch-site"] !== undefined || headers[WEB_CLIENT_HEADER.toLowerCase()] !== undefined;
 }

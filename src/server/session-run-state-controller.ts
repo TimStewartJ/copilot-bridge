@@ -5,7 +5,7 @@ import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
 
 export type SessionRunState = "busy" | "stalled" | "idle";
 
-/** Why a prompt never reached the runtime: the user stopped it, the Bridge shut down, or the turn failed. */
+/** Why a prompt never reached the runtime: user stop, Bridge shutdown, or a failed turn. */
 export type PromptDeliveryFailure = "aborted" | "shutdown" | "error";
 
 export type PromptDeliveryResult =
@@ -19,7 +19,7 @@ export interface SessionRunRecord {
   stalledAt?: number;
   pendingPrompt?: string;
   promptAccepted?: boolean;
-  /** "quiet" for automated defer turns; drives whether a backend recovery re-sends a continue prompt. */
+  /** "quiet" for automated defer turns; decides if backend recovery re-sends a continue prompt. */
   attentionMode?: "normal" | "quiet";
 }
 
@@ -28,10 +28,7 @@ export interface SessionRunController {
   promptDelivery: Promise<PromptDeliveryResult>;
   isCompleted(): boolean;
   markPromptAccepted(): void;
-  /**
-   * Called once, synchronously, when the run ends before its prompt was accepted, ahead of the
-   * terminal event (which closes the stream), so what it publishes still reaches the browser.
-   */
+  /** Runs once if the prompt was never accepted, before the stream-closing terminal event. */
   onPromptUndelivered(handler: (result: Extract<PromptDeliveryResult, { status: "failed" }>) => void): void;
   /** The run will send a prompt and has not yet: a Stop now has no runtime turn to stop. */
   markSendPending(): void;
@@ -148,8 +145,7 @@ export class SessionRunStateController {
     };
     const persistTerminalSnapshot = (sourceEventId?: string) => {
       const terminal = bus.getTerminalState();
-      // Only bridge-native outcomes need persisting: everything else is replayable from
-      // events.jsonl, which is the sole authority for committed transcript content.
+      // Persist only bridge-native outcomes; events.jsonl is the authority for the rest.
       if (!terminal.terminalType || !terminal.runNotice) {
         this.deps.clearTerminalOverlay(sessionId);
         return;
@@ -353,7 +349,7 @@ export class SessionRunStateController {
     });
   }
 
-  /** Marker persistence is best-effort: a storage failure must never fail or wedge the run itself. */
+  /** Best-effort: a marker storage failure must never fail or wedge the run itself. */
   private runMarkerHook(sessionId: string, action: "persist" | "clear", hook: () => void): void {
     try {
       hook();

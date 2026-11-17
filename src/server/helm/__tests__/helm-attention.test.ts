@@ -61,7 +61,7 @@ describe("taskAttention", () => {
     ["Helm calls it an agent's, but nothing works on it", { nextAction: "Send amounts by 11/14", helm: { owner: "agent" } }, true, ["Sat, Nov 14 in the next step is tomorrow"]],
     ["its next step is due tomorrow", { nextAction: "Send amounts by 11/14" }, true, ["Sat, Nov 14 in the next step is tomorrow"]],
     ["Bridge says it needs him", { state: "needs_you", reasons: ["revisit"], nextTouchAt: "2026-11-10T01:00:00.000Z" }, true, ["its revisit date (Mon, Nov 9) has passed"]],
-    // Dates in checklist text and notes are mostly history unless they lie ahead; a checklist deadline is a due date.
+    // Past dates in checklist text and notes are history; a checklist deadline is a due date.
     ["only history mentions dates", { nextAction: "Lock cards", checklist: [{ text: "Moved from column K on Nov 12" }], notes: "Status as of 2026-11-13" }, true, []],
     ["a checklist deadline passed", { nextAction: "Lock cards", checklist: [{ text: "Pay the fee", deadline: "2026-11-10" }] }, true, ["Tue, Nov 10 in checklist “Pay the fee” has passed"]],
     ["a checklist item must happen before a trip", { nextAction: "Move billing", checklist: [{ text: "Move billing before the Dec 12 charge (ideally before the trip, Nov 21)", deadline: "2026-12-11" }] }, true, ["Sat, Nov 21 in checklist “Move billing before the Dec 12 charge (ideally before the t…” comes before Mission trip (from Sun, Nov 22)"]],

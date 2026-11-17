@@ -4,11 +4,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SRC_DIR, readImports } from "./runtime-import-graph.js";
 
-// A release package installs only the packages listed in scripts/release-runtime-dependencies.json.
-// The server once started importing `ws` without it being listed: every packaged server crashed at
-// startup, and only the release workflows, which run after a push, start a package to notice. The
-// launcher starts the server and job runner by path, and the server starts its workers by path, so
-// this checks every non-test module except the client, which Vite bundles.
+// Shipped modules may import only packages in scripts/release-runtime-dependencies.json.
 
 const REPO_ROOT = resolve(SRC_DIR, "..");
 
@@ -17,6 +13,7 @@ const SOURCE_CHECKOUT_ONLY: Record<string, string> = {
   "server/preview-smoke.ts": "npm run preview:smoke checks a staging preview from a source checkout",
   "server/xplat-test-audit.ts": "npm run test:xplat-audit audits the tests of a source checkout",
   "server/agent-text-audit.ts": "npm run test:agent-text-audit audits the source of a checkout",
+  "server/comment-audit.ts": "npm run test:comment-audit audits the source of a checkout",
 };
 
 const readJson = (path: string): unknown => JSON.parse(readFileSync(join(REPO_ROOT, path), "utf-8"));

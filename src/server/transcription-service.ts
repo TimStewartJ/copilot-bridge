@@ -1,4 +1,4 @@
-// Chat mic transcription, backed by the local speech engine that also powers Helm's hands-free mode.
+// Chat mic transcription on the local speech engine that also powers Helm's hands-free mode.
 import type { VoiceClipChunk, VoiceClipTranscription } from "./voice/voice-engine-protocol.js";
 import type { VoiceInstallStatus } from "./voice/voice-installer.js";
 import type { SpeechCoverage } from "../shared/chat-mic.js";

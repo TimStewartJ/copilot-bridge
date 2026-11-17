@@ -294,10 +294,7 @@ function findStagingJob(
   return active ?? null;
 }
 
-/**
- * Older finished jobs this new job replaces for its session: the same kind of work on the same
- * worktree (or any earlier self-update). Their unsent results would only be stale news.
- */
+/** Older finished jobs of the same kind and worktree (any self-update): their results are stale. */
 function findSupersededJobIds(
   db: DatabaseSync,
   type: ManagementJobType,
@@ -375,12 +372,7 @@ function retentionTimestampMs(value: string | null, fallbackMs: number): number 
   return Number.isFinite(parsed) ? parsed : fallbackMs;
 }
 
-/**
- * Deletes the selected rows in one transaction, re-checking terminal status so a
- * job another process just claimed or re-queued is never removed. Rows go first
- * so a crash can only leave an orphan log for the next sweep — never a surviving
- * row whose log has already been deleted.
- */
+/** Recheck status in the transaction; rows go before logs so a crash leaves only an orphan log. */
 function deleteTerminalManagementJobRows(db: DatabaseSync, ids: readonly string[]): Set<string> {
   if (ids.length === 0) return new Set();
   return runImmediateTransaction(db, () => {
@@ -769,9 +761,7 @@ export function createManagementJobStore(
           .all() as unknown as Array<{ logPath: string }>)
           .map((row) => basename(row.logPath)),
       );
-      // Unreferenced logs have no reason to exist, so they are all removed rather
-      // than retained under the job caps. That also retries anything the row pass
-      // above skipped for the grace window or failed to unlink.
+      // Orphan logs all go (caps 0); this also retries files the row pass skipped.
       const orphans = await pruneRetainedLogFiles({
         dir: logDir,
         policy: { maxAgeMs: 0, maxCount: 0 },

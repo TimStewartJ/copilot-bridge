@@ -1,6 +1,4 @@
-// How the Bridge starts its browsers: which executable, with which arguments, in which
-// agent-browser session. The Bridge sets all of it through the environment of every
-// agent-browser command, so this is the one place that decides it.
+// The one place that picks browser executable, args and session for every agent-browser command.
 
 import { homedir, platform } from "node:os";
 import path from "node:path";
@@ -18,16 +16,9 @@ export interface BrowserTarget {
   profileDir: string;
   executablePath?: string;
   headed?: boolean;
-  /**
-   * How long the session's agent-browser daemon may go without a command before it closes its
-   * browser and exits by itself. It counts from the last command it received, so it has to be
-   * longer than any single command.
-   */
+  /** Counts from the last command, so it must exceed any single command's duration. */
   idleTimeoutMs?: number;
-  /**
-   * Shutting the target down also stops its agent-browser daemon. Set for browsers the Bridge
-   * closes after each use, whose daemon would otherwise idle until its own timeout.
-   */
+  /** Shutdown also stops the daemon, which would idle on for a browser closed after each use. */
   stopDaemonOnShutdown?: boolean;
 }
 
@@ -50,19 +41,12 @@ export interface ResolvedBrowserLaunchArgs {
 
 type PlatformName = ReturnType<typeof platform>;
 
-/**
- * Chrome no longer falls back to software WebGL by itself, so a host without a GPU has no WebGL
- * at all, which no real desktop looks like. The flag only allows the fallback; a working GPU is
- * still used.
- */
+/** Allows software WebGL without a GPU, as no WebGL looks unlike any desktop; a GPU still wins. */
 const BRIDGE_BROWSER_ARGS = ["--enable-unsafe-swiftshader"] as const;
 /** While this Blink feature is on, `navigator.webdriver` is true and most bot checks stop there. */
 const AUTOMATION_CONTROLLED = "AutomationControlled";
 const DISABLE_BLINK_FEATURES = "--disable-blink-features=";
-/**
- * A browser started without a URL opens its new-tab page. In Edge that is a news feed, which
- * loads on every launch and keeps a processor busy for as long as the tab exists.
- */
+/** Edge's new-tab page is a news feed that keeps a processor busy for as long as it is open. */
 const BLANK_START_PAGE = "about:blank";
 
 const SYSTEM_BROWSER_CACHE_MS = 60_000;
@@ -87,11 +71,7 @@ export function getBrowserLaunchConfig(settings?: {
   };
 }
 
-/**
- * Where the regular, self-updating browsers are installed, best first. A browser that is on
- * the release channel and keeps itself current is what sites expect to see; the Chrome for
- * Testing build agent-browser downloads identifies itself as such and never updates.
- */
+/** Release-channel, self-updating browsers, best first; sites distrust Chrome for Testing. */
 export function systemBrowserCandidates(
   platformName: PlatformName,
   env: NodeJS.ProcessEnv,
@@ -154,11 +134,7 @@ function findDownloadedBrowserCached(): Promise<string | undefined> {
   return downloadedBrowser.path;
 }
 
-/**
- * The executable a Bridge browser runs: the configured one, else the system's own browser, else
- * the newest Chrome for Testing agent-browser downloaded. The Bridge names the download itself
- * rather than leaving the choice to agent-browser, so it knows which version runs.
- */
+/** Settings, env, system browser, then newest downloaded CfT; we pick so we know the version. */
 export async function resolveBrowserExecutable(
   launchConfig: BrowserLaunchConfig = {},
   env: NodeJS.ProcessEnv = process.env,
@@ -180,11 +156,7 @@ function userAgentPlatform(platformName: PlatformName): string {
   return "X11; Linux x86_64";
 }
 
-/**
- * The User-Agent a person's copy of this browser sends. Headless mode replaces `Chrome/` with
- * `HeadlessChrome/`, which sites block on sight. Undefined when the version is unknown: a
- * User-Agent that names the wrong version is a surer sign of automation than the real one.
- */
+/** Real User-Agent, no HeadlessChrome; undefined if version unknown, as a wrong one flags bots. */
 export function browserUserAgent(build: BrowserBuildDiagnostics, platformName: PlatformName = platform()): string | undefined {
   const major = build.version?.match(/(\d+)(?:\.\d+)+/)?.[1];
   if (!major) return undefined;
@@ -238,11 +210,7 @@ export function composeBrowserLaunchArgs(inherited: readonly string[]): string[]
   return args;
 }
 
-/**
- * The `args` of agent-browser's own configuration files. The Bridge always sets
- * AGENT_BROWSER_ARGS, which replaces them, so it has to carry them over itself: a deployment
- * that needs `--no-sandbox` usually says so there.
- */
+/** AGENT_BROWSER_ARGS replaces config-file args, so carry those over (e.g. --no-sandbox). */
 async function readAgentBrowserConfigArgs(env: NodeJS.ProcessEnv): Promise<string[] | undefined> {
   const explicit = normalizeConfiguredPath(env.AGENT_BROWSER_CONFIG);
   // The project file overrides the user's, as it does in agent-browser.

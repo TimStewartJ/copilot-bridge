@@ -9,9 +9,7 @@ import { getReleaseSlotsDir } from "./release-slots.js";
 import { resolveDefaultWorkspaceDir, type RuntimePaths } from "./runtime-paths.js";
 import { getWorkspaceAvailability, type WorkspaceAvailability } from "./session-workspace-availability.js";
 
-// The Bridge-owned working directory for sessions without a project folder. It must sit
-// outside every git work tree: the Copilot CLI loads AGENTS.md and other repository
-// instructions from the git root of a session's cwd.
+// Must sit outside any git work tree: the CLI loads AGENTS.md from the cwd's git root.
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
@@ -27,13 +25,7 @@ export function isNeutralWorkspaceCwd(cwd: string | undefined, runtimePaths: Neu
   return !!cwd && !!neutral && pathsEqual(cwd, neutral);
 }
 
-/**
- * A cwd the CLI recorded only because the session was started without one: the Bridge
- * checkout, the server process cwd, or a release slot. Explicit choices are pinned in the
- * session workspace store, so an unpinned recorded cwd in one of these places is never a
- * user decision the Bridge can distinguish, and resolving it again would reload the
- * Bridge's own repository instructions.
- */
+/** A cwd the CLI recorded by default; never a user choice, and reusing it loads our repo rules. */
 export function isImplicitHostCwd(
   cwd: string | undefined,
   runtimePaths: NeutralWorkspacePaths,
@@ -44,11 +36,7 @@ export function isImplicitHostCwd(
   return !!runtimePaths?.dataDir && isPathAtOrUnder(getReleaseSlotsDir(runtimePaths.dataDir), cwd);
 }
 
-/**
- * Returns the neutral workspace, recreating it if it disappeared after startup. The path is
- * returned even when it cannot be created so session creation fails on an invalid cwd
- * instead of silently inheriting the server's process cwd.
- */
+/** Returns the path even if mkdir fails, so session creation errors instead of using our cwd. */
 export function ensureNeutralWorkspaceDir(runtimePaths: NeutralWorkspacePaths): string | undefined {
   const dir = getNeutralWorkspaceDir(runtimePaths);
   if (!dir) return undefined;
@@ -62,10 +50,7 @@ export function ensureNeutralWorkspaceDir(runtimePaths: NeutralWorkspacePaths): 
   return dir;
 }
 
-/**
- * Availability that never discards the neutral workspace: a missing neutral folder is
- * recreated instead of letting resolution fall through to another cwd.
- */
+/** Recreates a missing neutral folder instead of falling through to another cwd. */
 export function getNeutralAwareAvailability(
   cwd: string | undefined,
   runtimePaths: NeutralWorkspacePaths,
@@ -90,7 +75,7 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-/** Finds the nearest ancestor (inclusive) that contains a `.git` entry, after resolving symlinks. */
+/** Nearest ancestor (inclusive) with a `.git` entry, after resolving symlinks. */
 export async function findEnclosingGitRoot(dir: string): Promise<string | undefined> {
   let current = await realpath(dir);
   const { root } = parse(current);
@@ -108,12 +93,7 @@ export interface PrepareNeutralWorkspaceOptions {
   log?: Pick<Console, "warn" | "error">;
 }
 
-/**
- * Creates the neutral workspace at startup and verifies it is outside every git work tree.
- * A configured or default location inside a repository is rejected in favour of the next
- * candidate, and `runtimePaths` is updated to the chosen directory. Throws when no candidate
- * is safe.
- */
+/** Picks the first candidate outside any git work tree and updates runtimePaths; throws if none. */
 export async function prepareNeutralWorkspaceDir(
   runtimePaths: RuntimePaths,
   options: PrepareNeutralWorkspaceOptions = {},
@@ -149,7 +129,6 @@ export async function prepareNeutralWorkspaceDir(
     return candidate;
   }
 
-  // Running sessions from inside a repository would load its instructions into every
-  // no-folder session, which is the failure this workspace exists to prevent.
+  // Inside a repository, every no-folder session would load that repository's instructions.
   throw new Error(`No Bridge workspace candidate is outside a git work tree: ${candidates.join(", ")}`);
 }

@@ -118,8 +118,7 @@ export async function sendMaterializedFirstPrompt({
       ...(clientMessageId ? { clientMessageId } : {}),
     });
   } catch (error) {
-    // Only an answer from the server says the message was not taken. With no answer (the
-    // connection dropped) it may well be running, so the chat stays and the send can be retried.
+    // Only a server answer means the message was not taken; a dropped connection keeps the chat.
     if (error instanceof ApiError) {
       try {
         await onRejected?.(error);

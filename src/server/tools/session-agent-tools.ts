@@ -7,10 +7,7 @@ import {
 } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
 
-// The runtime gives an agent tools to launch, read and message other agents, and none to end one.
-// An agent that was replaced kept working through messages queued for it, and every agent the
-// runtime lists counts as a live context whether it works or not. These two tools let the agent
-// that launched the others end them.
+// The runtime can't end agents, and idle listed agents still hold a live context.
 
 const LISTED_AGENTS_IN_FAILURE = 12;
 const AGENT_PARAMETER = {
@@ -62,10 +59,7 @@ async function findAgent(
   };
 }
 
-/**
- * The runtime drops an agent that has ended once its result was read, so an agent that was
- * stopped and then read is often gone before anyone dismisses it.
- */
+// The runtime drops an ended agent once its result is read, often before any dismissal.
 const ALREADY_GONE_HINT = "An agent that had ended leaves the list by itself once it is read, and then needs no dismissal.";
 
 export function createSessionAgentToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {

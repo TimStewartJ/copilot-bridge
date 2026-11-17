@@ -1,5 +1,4 @@
-// The attention checks on this Bridge's own tasks, read straight from its stores. Used for the
-// thinker's packet, the task index a Helm chat starts with, and helm_brief.
+// The attention checks on this Bridge's own tasks, read straight from its stores.
 import type { AppContext } from "../app-context.js";
 import { buildTaskOverview } from "../task-overview.js";
 import type { TaskOverviewRow } from "../../shared/task-overview.js";
@@ -15,10 +14,7 @@ export function localThreads(ctx: Partial<Pick<AppContext, "helmThinker">>): Map
     .map((entry) => [entry.key!.slice(LOCAL_THREAD.length), entry]));
 }
 
-/**
- * Helm's line was written before the task's next step, waiting-for or revisit date last changed (or
- * before lines recorded them). A line Tim corrected is his own words and Helm can't rewrite it, so it never is.
- */
+/** Helm's line predates the task's current next step/waiting/revisit; Tim's own lines never are. */
 export function threadOutOfDate(entry: Pick<HelmMemoryEntry, "basis" | "author">, task: { nextAction?: string | null; waitingOn?: string | null; nextTouchAt?: string | null }): boolean {
   return entry.author !== "user" && entry.basis !== taskBasis(task);
 }
@@ -65,10 +61,7 @@ export interface LiveTaskAttention {
   attention: TaskAttention;
 }
 
-/**
- * Every live local task with its attention, those needing Tim first. Synchronous: a conversation's
- * first message is built without waiting. A task counts as worked on when one of its conversations is busy.
- */
+/** Live tasks with attention, needs-Tim first; sync so a chat's first message needn't wait. */
 export function liveLocalAttention(ctx: AppContext, now = new Date()): LiveTaskAttention[] {
   const inputs = localAttentionInputs(ctx, now);
   const overview = buildTaskOverview(ctx, null, now.getTime());

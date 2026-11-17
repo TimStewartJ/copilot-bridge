@@ -12,14 +12,7 @@ export interface SetSessionsArchivedResult {
   errors: Record<string, string>;
 }
 
-/**
- * Archives or restores sessions and announces it once. Each `session:archived` event drops the
- * session list caches and makes every open client fetch the list and the tasks again, so a change
- * to many sessions must not announce them one by one.
- *
- * Synchronous on purpose: listeners (deferred work is cancelled from this event) run in the same
- * turn as the writes.
- */
+/** Announce once: each event makes every client refetch; sync so listeners run in the same turn. */
 export function setSessionsArchived(
   deps: SessionArchiveDeps,
   sessionIds: Iterable<string>,

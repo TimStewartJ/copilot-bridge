@@ -2,9 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The repository is public. These rules name what is allowed rather than what is not, so a package
-// host or Azure DevOps org nobody thought of still fails and no private value has to live here.
-// Private terms belong in the deploy guards' denylist, which stays outside the repository.
+// Allowlist on purpose: private terms must not live in this public repo (deploy denylist has them).
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PUBLIC_NPM_HOST = "registry.npmjs.org";
@@ -17,8 +15,7 @@ const ADO_ORG_PATTERNS = [
   /\bdev\.azure\.com\/([A-Za-z0-9_-]+)/g,
   /(?<![\w.-])([A-Za-z0-9_-]+)\.visualstudio\.com/g,
 ];
-// npm records the host it downloaded from, so an install through a mirror writes the mirror's
-// address here. The package path after the host is the same on the public registry.
+// A mirror install records the mirror's host here; the package path after it matches the registry.
 const OFF_HOST_RESOLVED =
   /("resolved":\s*")https?:\/\/(?!registry\.npmjs\.org\/)[^"]*?\/((?:@[^/"]+\/)?[^/"]+\/-\/[^/"]+\.tgz)(")/g;
 

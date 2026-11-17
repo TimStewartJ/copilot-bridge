@@ -20,11 +20,6 @@ import { DS, cx } from "../design/tokens";
 import { fileExtension, filePreviewKind, fileTabUrl, imageTabUrl, isVectorImage, showFile, type PreviewFile } from "./file-preview";
 import type { ViewerImage } from "./image-viewer";
 
-/**
- * How files and images look wherever a chat shows them: in the composer before sending, on a sent
- * prompt, and when the agent hands a file back with send_attachment. One look for all three so a
- * file reads as the same object on its way in and on its way out.
- */
 
 type IconComponent = ComponentType<{ size?: number; className?: string; "aria-hidden"?: boolean }>;
 
@@ -102,10 +97,7 @@ function isSessionUpload(path: string, sessionId: string): boolean {
     && parts[n - 4] === "session-state";
 }
 
-/**
- * The URL an attachment can be shown from, when it is an image. The CLI records a sent image
- * without its bytes, so history images come from the copy the upload left in the session.
- */
+/** An image attachment's URL; history has no bytes, so it uses the upload's copy in the session. */
 export function attachmentImageSrc(att: Attachment, sessionId?: string): string | null {
   if (att.type === "blob" && att.mimeType.startsWith("image/")) {
     if (att.data) return `data:${att.mimeType};base64,${att.data}`;
@@ -153,10 +145,7 @@ function NewTabLink({ href, name, size = 14, className }: { href: string; name: 
   );
 }
 
-/**
- * Opens an image in a new tab from the corner of its tile. Tiles are close together on a phone,
- * which has no hover to hide this, so there it is left to the image viewer's bar.
- */
+/** A tile's open-in-new-tab corner; phones (no hover, tight tiles) use the viewer's bar instead. */
 export function ImageTabCorner({ src, name }: { src: string; name: string }) {
   const href = imageTabUrl(src);
   if (!href) return null;
@@ -211,7 +200,7 @@ export function FileCard({ name, mimeType, size, href, onOpen, tabUrl, compact =
     compact ? "h-14 w-60" : "w-72",
   );
   if (onOpen) {
-    // A link cannot sit inside a button, so the open action lies over the card with the link above it.
+    // A link cannot sit in a button, so the open button covers the card with the link above it.
     return (
       <div className={cx(frame, "relative transition-colors hover:bg-surface-selected")}>
         {body}
@@ -251,19 +240,16 @@ interface PreviewCaptionProps {
   /** What it is, in a few quiet words: "PDF", "Chart · 12 KB". */
   meta: string;
   note?: string;
-  /** Opens it full screen. Left out for content that needs no larger view, such as an audio player. */
+  /** Opens it full screen; left out when no larger view helps, such as an audio player. */
   onExpand?: () => void;
-  /** Where a new tab shows it. Left out for content a tab would not show, such as a diagram's source. */
+  /** Where a new tab shows it; left out when a tab cannot, such as a diagram's source. */
   tabUrl?: string;
   downloadUrl: string;
   downloadName: string;
   className?: string;
 }
 
-/**
- * The line under a file or a visual shown in the chat: what it is, with Expand, New tab and Download
- * beside it, so the content above stays the only thing in the frame.
- */
+/** The line under a chat file or visual, holding its actions so the frame shows only content. */
 export function PreviewCaption({ Icon, title, meta, note, onExpand, tabUrl, downloadUrl, downloadName, className }: PreviewCaptionProps) {
   const actionClass = cx(DS.button.base, DS.button.icon.sm, DS.button.variant.ghost);
   return (
@@ -303,7 +289,7 @@ export interface GalleryImage {
   alt?: string;
 }
 
-/** Opens a file full screen: an image in the image viewer, anything else the chat can show in the file viewer. */
+/** Opens a file full screen: images in the image viewer, anything else in the file viewer. */
 export function openFile(file: PreviewFile): void {
   if (filePreviewKind(file.name) === "image") showImages([{ src: file.url, name: file.name }], 0);
   else showFile(file);
@@ -322,10 +308,7 @@ interface ImageGalleryProps {
   align?: "start" | "end";
 }
 
-/**
- * Images sent with a message, shown as a chat app shows them: one image at a readable size, several
- * as a tidy grid of square tiles. Any of them opens full screen, growing out of its thumbnail.
- */
+/** One image at a readable size, several as square tiles; each opens full screen from its thumb. */
 export function ImageGallery({ images, align = "start" }: ImageGalleryProps) {
   const thumbRefs = useRef<Array<HTMLImageElement | null>>([]);
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());

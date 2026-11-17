@@ -3,17 +3,9 @@ import { useEffect, useId, useRef } from "react";
 export interface ModalDialogOptions {
   /** Called when the modal should close, e.g. when Escape is pressed. */
   onDismiss: () => void;
-  /**
-   * Whether the overlay is currently rendered. Pass the same condition the
-   * parent uses to render the overlay so a conditionally rendered dialog can
-   * still call this hook unconditionally.
-   */
+  /** The parent's render condition, so a conditional dialog can still call this hook always. */
   open?: boolean;
-  /**
-   * Set to false while the dialog must not be dismissed (e.g. while
-   * submitting). The dialog stays topmost and keeps swallowing Escape so an
-   * overlay underneath it never closes instead.
-   */
+  /** False while it must not close (e.g. submitting); it still eats Escape for overlays below. */
   dismissible?: boolean;
   /** Accessible name for overlays without a visible heading to reference. */
   label?: string;
@@ -45,8 +37,7 @@ let escapeListenerAttached = false;
 function handleEscapeKeyDown(event: KeyboardEvent) {
   if (event.key !== "Escape" || event.defaultPrevented) return;
   const topmost = modalStack[modalStack.length - 1];
-  // Only the topmost participating dialog reacts, and a non-dismissible one
-  // still consumes Escape rather than letting the overlay beneath it close.
+  // Only the topmost dialog reacts; a non-dismissible one still eats Escape so none below closes.
   if (!topmost || !topmost.dismissible) return;
   topmost.onDismiss();
 }
@@ -66,11 +57,7 @@ function removeModal(entry: ModalStackEntry) {
   escapeListenerAttached = false;
 }
 
-/**
- * Gives an overlay real modal dialog semantics: `role="dialog"`,
- * `aria-modal="true"`, an accessible name, and Escape-key dismissal that only
- * closes the topmost overlay when overlays stack.
- */
+/** Modal dialog semantics: role, aria-modal, a name, and Escape that closes only the topmost. */
 export function useModalDialog({
   onDismiss,
   open = true,

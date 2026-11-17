@@ -1,17 +1,7 @@
 import { ApiError, type AppSettings, type AppSettingsUpdates } from "../api";
 import { sameSettingValue } from "./settings-draft";
 
-/**
- * The one path every settings write takes: Settings, Helm and model presets.
- *
- * Settings save as they change. The writer keeps the last server-acknowledged settings
- * (`confirmed`) and the user's changes that the server has not acknowledged yet (`local`). The
- * settings everyone reads, including the react-query cache, are `confirmed` with `local` on top.
- * One PATCH is in flight at a time; changes made meanwhile wait and go out together afterwards.
- *
- * Patches are per top-level key, because the server replaces structured values such as
- * `responseStyle` or `browser` whole rather than merging them.
- */
+// Every settings write goes here; patch whole top-level keys, as the server replaces nested values.
 
 export type SettingsKey = Exclude<keyof AppSettings, "mcpServers">;
 
@@ -20,7 +10,7 @@ export type SettingsWriteStatus =
   | { kind: "saving"; keys: SettingsKey[] }
   | { kind: "saved"; keys: SettingsKey[]; canUndo: boolean; at: number };
 
-/** The last write that failed. It stays until those settings are saved, changed again or retried. */
+/** The last failed write; it stays until those settings are saved, changed again or retried. */
 export interface SettingsWriteError {
   keys: SettingsKey[];
   message: string;
@@ -170,8 +160,7 @@ export function createSettingsWriter(deps: SettingsWriterDeps): SettingsWriter {
 
   deps.subscribeCache((settings) => {
     if (!settings || settings === lastWritten) return;
-    // A refetch or another writer. While a write of ours is in flight its response replaces this,
-    // so put the intended settings back in the cache and look again once everything is sent.
+    // Our in-flight write's response will replace this, so restore our settings and recheck later.
     if (inflight) {
       fetchedDuringWrite = true;
       emit();
@@ -205,11 +194,7 @@ export function createSettingsWriter(deps: SettingsWriterDeps): SettingsWriter {
     return local.has(key) || Boolean(inflight?.keys.includes(key));
   }
 
-  /**
-   * Settle callers of patch(). A caller is rejected when a failed write carried its values, and
-   * resolved once each of its keys was acknowledged with its value or is no longer waiting at all
-   * (a later change replaced it and has settled).
-   */
+  /** Rejects waiters a failed write carried; resolves once each key is acked or superseded. */
   function settleWaiters(write?: { patch: AppSettingsUpdates; keys: SettingsKey[]; error?: unknown }) {
     const remaining: Waiter[] = [];
     for (const waiter of waiters) {
@@ -311,8 +296,7 @@ export function createSettingsWriter(deps: SettingsWriterDeps): SettingsWriter {
         return;
       }
       conflictRetried = false;
-      // The response may be lost even though the server committed, so ask what it now holds
-      // before deciding what to put back.
+      // The server may have committed despite the error, so read what it holds before restoring.
       await adoptServerSettings();
       for (const key of write.keys) {
         if (sameSettingValue(local.get(key), (write.patch as Record<string, unknown>)[key])) local.delete(key);
@@ -335,11 +319,7 @@ export function createSettingsWriter(deps: SettingsWriterDeps): SettingsWriter {
     flush();
   }
 
-  /**
-   * While nothing is waiting, the cache holds exactly what the writer last showed, so it is the
-   * best view of the server. Reading it here also picks up a cache that was seeded or replaced
-   * without a fetch.
-   */
+  /** When idle the cache is the best view of the server, even if seeded without a fetch. */
   function syncIdleFromCache(): void {
     if (inflight || local.size > 0) return;
     const cached = deps.readCache();
@@ -391,8 +371,7 @@ export function createSettingsWriter(deps: SettingsWriterDeps): SettingsWriter {
       const result = new Promise<AppSettings>((resolve, reject) => {
         waiters.push({ keys, values, acked: new Set(), resolve, reject });
       });
-      // An explicit write says what the server should hold, so it is sent even when the cached
-      // settings already show the same values; the cache may be behind the server.
+      // Sent even if the cache already matches, since the cache may be behind the server.
       writeExplicit(values);
       return result;
     },

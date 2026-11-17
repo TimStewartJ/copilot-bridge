@@ -4,7 +4,7 @@ type EditableLike = { tagName?: string; isContentEditable?: boolean };
 
 const ELEMENT_NODE = 1;
 const TEXT_NODE = 3;
-// Past this many elements the copy keeps only plain text, so a huge selection does not stall the page.
+// Past this many elements the copy is plain text, so a huge selection does not stall the page.
 const MAX_COPIED_ELEMENTS = 5_000;
 const TEXT_FIELD_TAGS = new Set(["INPUT", "TEXTAREA"]);
 const DROPPED_TAGS = new Set([
@@ -116,7 +116,7 @@ class RangeSerializer {
     const shell = this.doc.createElement(name);
     for (const attribute of KEPT_ATTRIBUTES[tag] ?? []) {
       const isUrl = attribute === "href" || attribute === "src";
-      // Resolved properties give absolute URLs, so links and images still work once pasted elsewhere.
+      // Properties give absolute URLs, so links and images still work once pasted elsewhere.
       const value = isUrl ? (element as unknown as Record<string, unknown>)[attribute] : element.getAttribute(attribute);
       if (typeof value !== "string" || !value || (isUrl && !SAFE_URL.test(value))) continue;
       shell.setAttribute(attribute, value);
@@ -133,10 +133,7 @@ class RangeSerializer {
   }
 }
 
-/**
- * The selection as HTML that keeps its structure (headings, lists, tables, emphasis, links, code)
- * but none of the Bridge's styling. Empty when the selection is too large to rebuild quickly.
- */
+/** The selection as structural HTML without Bridge styling; empty when too large to rebuild. */
 export function cleanSelectionHtml(selection: SelectionLike): string {
   try {
     let html = "";
@@ -150,11 +147,7 @@ export function cleanSelectionHtml(selection: SelectionLike): string {
   }
 }
 
-/**
- * Copies a selection without the Bridge's fonts, colors and backgrounds, so it
- * pastes into a mail or document in that document's own style.
- * Text fields already copy plain text, and a handler that set its own data first wins.
- */
+/** Strips Bridge styles from copies; skips text fields and copies another handler already set. */
 export function handleCleanCopy(
   event: CopyEventLike,
   getSelection: () => SelectionLike | null = () => window.getSelection(),

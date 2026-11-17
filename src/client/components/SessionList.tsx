@@ -95,7 +95,7 @@ const styles = {
   },
 } as const;
 
-/** A "+ New chat" label with the plus drawn as an icon, so the button matches every other create action. */
+/** "+ New chat" with the plus drawn as an icon, matching every other create action. */
 function NewLabel({ label }: { label: string }) {
   const text = label.replace(/^\+\s*/, "");
   return (
@@ -228,12 +228,12 @@ interface SessionListProps {
   /** Fetches the next page of archived sessions; called when the drawn rows run out. */
   onLoadMoreArchived?: () => void;
   archivedLoadingMore?: boolean;
-  /** Loading archived sessions failed; offer a retry instead of an endless skeleton or an empty list. */
+  /** Loading archived sessions failed; offer a retry, not an endless skeleton or empty list. */
   archivedError?: boolean;
   onRetryArchived?: () => void;
   // Hide the new-session button (e.g. when the parent already provides one)
   showNewButton?: boolean;
-  /** Draw only this many active sessions until the reader asks for the rest; the open one always shows. */
+  /** Draw only this many active sessions until asked for the rest; the open one always shows. */
   activeLimit?: number;
 }
 
@@ -322,7 +322,7 @@ export default function SessionList({
 
   const activeSessions = sessions.filter((sess) => !sess.archived && !archivingIds?.has(sess.sessionId));
   const archivedSessions = sessions.filter((sess) => sess.archived);
-  // Select mode always draws every active session, so a bulk action never acts on rows the reader cannot see.
+  // Select mode draws every active session so a bulk action never hits rows the user cannot see.
   const limitActive = activeLimit !== undefined && !showAllActive && !selectMode && activeSessions.length > activeLimit;
   const visibleActiveSessions = limitActive
     ? activeSessions.filter((sess, index) => index < activeLimit || sess.sessionId === activeSessionId)

@@ -15,7 +15,7 @@ export function textMatchesSearchQuery(text: string, query: string): boolean {
 }
 import { stripMarkdownInline } from "../components/docs/docs-model";
 
-/** Notes and documents are Markdown; chat excerpts stay literal so code matches are not rewritten. */
+/** Notes and docs are Markdown; chat excerpts stay literal so code matches are not rewritten. */
 export function formatSearchExcerpt(text: string, query = ""): string {
   const plain = stripMarkdownInline(text
     .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-+*]\s+(?:\[[ xX]\]\s+)?)/gm, "")

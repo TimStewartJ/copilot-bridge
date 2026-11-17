@@ -3,10 +3,7 @@ import { classifyToolFailure } from "../../shared/tool-failure";
 
 export const MCP_CONNECTION_GUIDANCE = "Tool permissions are separate from connection status.";
 
-/**
- * Whether a session's status line reports a problem, for a mark on the control that opens it where
- * the line itself is folded away. Loading and connecting are not problems; they settle by themselves.
- */
+/** Whether the status line has a problem, to mark its control when folded; loading is not one. */
 export function statusLineHasProblem({ servers, statusState, toolReadiness, toolFailureCount }: {
   servers: McpServerStatus[];
   statusState: "loading" | "ready" | "error" | "stale";

@@ -880,8 +880,7 @@ describe("SessionList change model dialog", () => {
           label: "session model patch",
         });
 
-        // The unsupported remembered effort is dropped, so the dialog keeps the
-        // session's current effort (omitted from the save); Sonnet has no long context.
+        // The unsupported remembered effort is dropped (save omits it); Sonnet has no long context.
         expect(apiMocks.patchSessionModel).toHaveBeenCalledWith(
           "session-1",
           "claude-sonnet-5",

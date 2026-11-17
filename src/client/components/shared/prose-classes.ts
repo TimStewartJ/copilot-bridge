@@ -1,17 +1,4 @@
-/**
- * Shared prose/markdown styling constants.
- *
- * APP_PROSE — compact markdown for sheets, modals, and message bubbles.
- *   Consumers must add `prose-pre:bg-*` and `prose-th:bg-*` to match
- *   their container background (e.g. bg-bg-secondary for sheets on a
- *   bg-bg-primary container, or bg-bg-primary for message bubbles on
- *   a bg-bg-surface container).
- *
- * The Docs view styles its full-page markdown with the .docs-prose rules in index.css.
- *
- * AGENT_PROSE — smaller still, for an agent's brief and report opened beneath its row in the
- *   transcript or the agents list.
- */
+/** APP_PROSE users add prose-pre:bg-* and prose-th:bg-* matching their container background. */
 
 export const AGENT_PROSE = "ds-prose prose prose-invert prose-xs max-w-none text-xs leading-relaxed text-text-secondary prose-headings:mb-1 prose-headings:mt-2 prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-pre:rounded prose-pre:bg-bg-primary prose-pre:p-2 prose-pre:text-[11px] prose-code:text-[11px]";
 

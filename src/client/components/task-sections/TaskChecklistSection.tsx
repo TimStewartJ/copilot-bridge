@@ -8,10 +8,7 @@ import { CheckCircle2, Flag, Plus } from "lucide-react";
 import { extractWhen } from "../../../shared/typed-date";
 import { DS, cx } from "../../design/tokens";
 
-/**
- * A date said at the end of a new item ("Renew passport by fri") becomes its deadline. Only a date:
- * a deadline has no time, so a phrase with one stays in the text rather than lose the time.
- */
+/** A trailing date ("Renew passport by fri") becomes the deadline; one with a time stays text. */
 export function readDeadlinePhrase(text: string, now = new Date()): { text: string; deadline: string; phrase: string } | null {
   const found = extractWhen(text.trim(), now);
   if (!found || found.when.time) return null;
@@ -36,10 +33,7 @@ export interface TaskChecklistSectionProps {
   variant?: "panel" | "card";
   highlightId?: string | null;
   isReadyToComplete?: boolean;
-  /**
-   * Panel only: whether the add field shows. The panel hides it once nothing is open and reveals
-   * it from the section's Add button.
-   */
+  /** Panel only: whether the add field shows (hidden once nothing is open, shown by Add). */
   showComposer?: boolean;
   onComposerDone?: () => void;
 }

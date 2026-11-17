@@ -1,15 +1,11 @@
-// Whose move a task is, read from its live fields rather than from Helm's own thread line. Helm
-// once called a task "agent-run; stay out" while its next step was Tim's and its deadline had
-// passed, and both the brief and the chat followed that line. These checks read only data (fields,
-// dates, the calendar and the structured part of Helm's line, never its wording), and Helm's view
-// can add a task to what needs Tim but never take one off.
+// Whose move a task is, from data only; Helm's line can add to needs-Tim, never take a task off.
 import { createHash } from "node:crypto";
 import type { CalendarEvent } from "../../shared/calendar.js";
 import type { HelmThreadOwner } from "../../shared/helm-thinker.js";
 import type { TaskState } from "../../shared/task-state.js";
 import type { TaskOverviewRow } from "../../shared/task-overview.js";
 
-/** A stretch of several days on the calendar (a trip, a retreat): work due by then must happen before it. */
+/** A multi-day stretch away (a trip): work due by then must happen before it. */
 export interface AttentionAbsence {
   title: string;
   /** Local dates, YYYY-MM-DD, both inclusive. */
@@ -25,7 +21,7 @@ export interface AttentionTask {
   nextAction?: string;
   waitingOn?: string;
   nextTouchAt?: string;
-  /** When waiting-for was last set: a date in it after this is a due date, one before it a record. */
+  /** When waiting-for was set: a later date in it is a due date, an earlier one a record. */
   waitingSince?: string;
   /** The structured part of Helm's thread line for the task. */
   helm?: { owner?: HelmThreadOwner | null; holdUntil?: string | null };
@@ -40,9 +36,9 @@ export interface AttentionTask {
 export interface TaskAttention {
   /** Nothing but Tim moves the task next: its fields say so, or Helm says it is his. */
   onTim: boolean;
-  /** Its fields alone say so: no agent is working on it and it waits on no one else. Helm can't overrule this. */
+  /** No agent works on it and it waits on no one else; Helm can't overrule this. */
   fromFields: boolean;
-  /** Why it needs Tim now: dates passed, due within days, or before a stretch away. Empty when nothing presses. */
+  /** Why it needs the user now (date passed, due soon, before a trip); empty if nothing presses. */
   reasons: string[];
   /** The earliest date behind the reasons, for ordering. */
   soonest?: string;
@@ -52,7 +48,7 @@ export interface TaskAttention {
 export interface AttentionInputs {
   timeZone: string;
   absences: AttentionAbsence[];
-  /** Notes and open checklist items of a task on this Bridge. Peers have neither; their due checklist items stand in. */
+  /** Notes and open checklist items of a local task; a peer's due checklist items stand in. */
   local?: (taskId: string) => { notes?: string; checklist?: Array<{ text: string; deadline?: string }> } | undefined;
   /** The structured part of Helm's thread line for a task on this Bridge. */
   helm?: (taskId: string) => AttentionTask["helm"];
@@ -67,7 +63,7 @@ export interface AttentionContext {
 const DAY_MS = 86_400_000;
 /** A date this many days ahead or fewer is due soon. */
 export const SOON_DAYS = 3;
-/** A stretch away that starts within this many days makes what is due before or during it press now. */
+/** A stretch away starting within this many days makes work due before or during it press now. */
 export const ABSENCE_LOOKAHEAD_DAYS = 14;
 /** Passed dates older than this are history, not a missed deadline. */
 const PASSED_LOOKBACK_DAYS = 30;
@@ -119,7 +115,7 @@ function fullYear(raw: string | undefined): number | undefined {
   return raw.length === 2 ? 2000 + value : value;
 }
 
-/** Calendar dates written in text: 2026-11-20, 11/20, 11/20/26, Nov 20, November 20, 2026, 20 Nov. */
+/** Dates in text: 2026-11-20, 11/20, 11/20/26, Nov 20, November 20, 2026, 20 Nov. */
 export function extractDates(text: string | undefined, today: string): string[] {
   return [...new Set(findDates(text, today).map((found) => found.key))].sort();
 }
@@ -180,7 +176,7 @@ export function upcomingAbsences(events: readonly CalendarEvent[], context: { no
   return absences.sort((a, b) => a.start.localeCompare(b.start));
 }
 
-/** A fingerprint of the fields a thread line was written from; when they change, the line is out of date. */
+/** Fingerprint of a thread line's source fields; when it changes, the line is out of date. */
 export function taskBasis(task: { nextAction?: string | null; waitingOn?: string | null; nextTouchAt?: string | null }): string {
   const parts = [task.nextAction, task.waitingOn, task.nextTouchAt].map((value) => value?.replace(/\s+/g, " ").trim() ?? "");
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
@@ -192,8 +188,7 @@ export function taskAttention(task: AttentionTask, context: AttentionContext): T
   const today = localDateKey(context.now, context.timeZone);
   const todayDay = keyToDay(today);
   const waiting = task.waitingOn?.trim() ?? "";
-  // A wait ends on a date it was due by: one after the wait was set ("by 11/12"), not one it
-  // records ("emailed 11/10"). Without the time it was set, its dates are not read as due.
+  // Only dates after the wait was set are due dates ("by 11/12", not "emailed 11/10").
   const setOn = task.waitingSince && Number.isFinite(Date.parse(task.waitingSince)) ? localDateKey(task.waitingSince, context.timeZone) : undefined;
   const waitDates = setOn ? extractDates(waiting, today).filter((day) => day > setOn) : [];
   const waitOver = waitDates.length > 0 && waitDates.every((day) => day < today && keyToDay(today) - keyToDay(day) <= PASSED_LOOKBACK_DAYS);
@@ -221,8 +216,7 @@ export function taskAttention(task: AttentionTask, context: AttentionContext): T
     dated.push({ day: hold, text: hold === today ? "Helm's pause on it ends today" : `Helm's pause on it ended ${formatDay(hold)}` });
   }
 
-  // Past dates count only where they read as a due date: the next step and a checklist deadline. In
-  // checklist text and notes they are mostly history ("moved on Nov 12", "status as of today").
+  // Past dates count only in the next step and checklist deadlines; elsewhere they are history.
   const sources: Array<{ text: string | undefined; label: string; pastCounts: boolean; minOffset: number; deadline?: string }> = [
     { text: task.nextAction, label: "the next step", pastCounts: true, minOffset: 0 },
     ...(waitOver ? [] : [{ text: waiting, label: "what it waits for", pastCounts: false, minOffset: 0 }]),
@@ -256,7 +250,7 @@ export function taskAttention(task: AttentionTask, context: AttentionContext): T
     }
   }
   dated.sort((a, b) => a.day.localeCompare(b.day));
-  // One reason per date: the first found, which is the most direct (revisit, wait, next step, checklist, notes).
+  // One reason per date: the first found is the most direct (revisit, wait, step, checklist).
   const byDay = dated.filter((reason, index) => dated.findIndex((other) => other.day === reason.day) === index);
   const reasons = [...new Set([...undated, ...byDay.map((reason) => reason.text)])].slice(0, MAX_REASONS);
   return { onTim: true, fromFields, reasons, ...(dated[0] ? { soonest: dated[0].day } : {}) };
@@ -274,7 +268,7 @@ export function byAttention<T extends { attention: TaskAttention }>(a: T, b: T):
   return (a.attention.soonest ?? "9999").localeCompare(b.attention.soonest ?? "9999");
 }
 
-/** A task row's attention; checklist stands in for open items when the Bridge cannot list them (a peer). */
+/** A task row's attention; `checklist` stands in for open items a peer cannot list. */
 export function attentionOfRow(
   row: Pick<TaskOverviewRow, "id" | "state" | "reasons" | "deferred" | "muted" | "nextAction" | "waitingOn" | "nextTouchAt" | "waitingSince" | "busyCount">,
   inputs: AttentionInputs,

@@ -1,10 +1,6 @@
 import { useEffect } from "react";
 
-/**
- * Keep `document.title` in sync with the supplied title.
- * A nullish title is a no-op so a route owner further down the tree can keep
- * ownership of the tab title without the parent fighting it.
- */
+/** A nullish title leaves `document.title` alone, so a deeper route can own the tab title. */
 export function useDocumentTitle(title: string | null | undefined): void {
   useEffect(() => {
     if (typeof document === "undefined") return;

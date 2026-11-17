@@ -1,29 +1,11 @@
-// Task deletion — the single owner of "delete a task and everything it owns".
-//
-// Task deletion has to reach past the `tasks` row: entity tags live in a
-// separate table with no foreign key, and `triggers.taskId` has no foreign key
-// either, so the task's triggers would otherwise survive it and keep running.
-// `TaskStore` removes all of that in one transaction; this helper owns the side
-// effects that cannot be transactional (events). Routing every deletion entry point through
-// here keeps that cleanup identical no matter who triggers it.
-//
-// Linked sessions are NOT owned by the task, so the caller must say what should
-// happen to them. Before dispositions existed, deleting a task silently
-// detached its sessions: the `task_sessions` rows vanished with the parent row
-// and the sessions themselves were left with no task to give them context.
+// Single path for task deletion: triggers and tags have no FK; callers choose what chats get.
 
 import type { AppContext } from "./app-context.js";
 import type { Task } from "./task-store.js";
 
 export type SessionDisposition = "archive" | "delete";
 
-/**
- * True for a task nobody has used: unchanged since it was created, with nothing
- * attached. Deleting one loses nothing, so the UI deletes it without asking.
- *
- * Every edit, link and unlink bumps `updatedAt`, so equal timestamps cover the
- * task's own fields. What hangs off the task in other stores is checked here.
- */
+/** Deleted without asking; updatedAt covers own fields, other stores are checked here. */
 export function isTaskUntouched(ctx: AppContext, task: Task): boolean {
   return task.status === "active"
     && task.updatedAt === task.createdAt
@@ -38,18 +20,9 @@ export function isTaskUntouched(ctx: AppContext, task: Task): boolean {
 
 export interface TaskDeletionOptions {
   sessionDisposition: SessionDisposition;
-  /**
-   * Deletes a session and every Bridge-owned row keyed to it. Required for the
-   * "delete" disposition. Injected rather than imported because the canonical
-   * implementation lives in the API router closure, where the enriched-session
-   * cache it invalidates is held.
-   */
+  /** Injected: the real one lives in the API router, which owns the cache it invalidates. */
   deleteSession?: (sessionId: string) => Promise<void>;
-  /**
-   * Invoked once after a bulk session mutation instead of once per session.
-   * A task can link thousands of sessions, so per-session cache invalidation
-   * and SSE events would flood both the bus and every connected client.
-   */
+  /** Called once per bulk change: a task can link thousands of chats. */
   onSessionsChanged?: (reason: string) => void;
 }
 
@@ -58,10 +31,7 @@ export interface TaskDeletionResult {
   deletedTriggerIds: string[];
   archivedSessionIds: string[];
   deletedSessionIds: string[];
-  /**
-   * Sessions another task also links. Deleting a session unlinks it everywhere,
-   * so these are left alone and merely lose their link to the deleted task.
-   */
+  /** Sessions another task also links; they are kept and only lose this task's link. */
   unlinkedSharedSessionIds: string[];
   /** Per-session failures. Non-empty means the task was NOT deleted. */
   sessionErrors: Record<string, string>;
@@ -89,11 +59,7 @@ export async function deleteTaskWithOwnedState(
     const { deletedTriggerIds, archivedSessionIds } =
       ctx.taskStore.archiveSessionsAndDeleteTask(taskId);
     if (archivedSessionIds.length > 0) {
-      // Archiving normally cancels a chat's triggers and queued messages through
-      // the per-session `session:archived` event the runners subscribe to. The
-      // bulk path deliberately does not emit thousands of those, so the
-      // cancellation has to happen explicitly or an archived chat could still
-      // be woken by a trigger.
+      // No per-chat session:archived here, so cancel triggers and queued prompts explicitly.
       for (const sessionId of archivedSessionIds) {
         ctx.deferredPromptStore?.cancelForSession(sessionId);
         ctx.deferredPromptStore?.cancelManagementJobDeliveriesForSession(sessionId);
@@ -119,8 +85,7 @@ export async function deleteTaskWithOwnedState(
     throw new Error('deleteSession is required for the "delete" session disposition');
   }
 
-  // Session IDs must be read before the task row goes: `task_sessions` is
-  // ON DELETE CASCADE, so the link set is unrecoverable afterwards.
+  // Read links before the task row goes: `task_sessions` cascades on delete.
   const linkedSessionIds = ctx.taskStore.listSessionIdsForTask(taskId);
   const exclusiveSessionIds = new Set(ctx.taskStore.listExclusiveSessionIdsForTask(taskId));
   const unlinkedSharedSessionIds = linkedSessionIds.filter((id) => !exclusiveSessionIds.has(id));
@@ -138,16 +103,12 @@ export async function deleteTaskWithOwnedState(
   }
 
   if (deletedSessionIds.length > 0 || Object.keys(sessionErrors).length > 0) {
-    // A backend-only delete failure still removes the local session rows and
-    // task links, so any attempt — not just a clean success — can leave other
-    // clients holding a stale session list.
+    // Even a failed attempt can remove local rows, so other clients must refresh.
     onSessionsChanged?.("task-deletion:sessions-deleted");
     ctx.globalBus.emit({ type: "sessions:changed" });
   }
 
-  // Sessions are disposed before the task so a partial failure leaves the task
-  // intact and the operation retryable. Deleting the task first would drop the
-  // link rows and strand whatever sessions had not been reached yet.
+  // Chats go first: a partial failure keeps the task and its links, so a retry can finish.
   if (Object.keys(sessionErrors).length > 0) {
     return {
       deletedTriggerIds: [],
@@ -159,10 +120,7 @@ export async function deleteTaskWithOwnedState(
     };
   }
 
-  // A delete can run for minutes, and nothing stops a session being linked to
-  // the task while it does. The cascade would drop that new link silently —
-  // exactly the orphaning this whole path exists to prevent — so re-check the
-  // link set and keep the task if anything unexpected appeared.
+  // A chat linked mid-delete would lose its link to the cascade; keep the task if one appeared.
   const expectedRemaining = new Set(unlinkedSharedSessionIds);
   const newlyLinked = ctx.taskStore
     .listSessionIdsForTask(taskId)

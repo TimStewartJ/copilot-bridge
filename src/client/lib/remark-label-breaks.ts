@@ -1,16 +1,4 @@
-/**
- * Remark plugin for the Docs view's one deliberate departure from plain Markdown line handling.
- *
- * Docs are written hard-wrapped at ~100 columns, so a newline inside a paragraph must stay a
- * space (the `remark-breaks` behaviour chat uses would chop every sentence at the wrap column).
- * The exception is the "label block" authors put at the top of a page:
- *
- *   **Status:** shipped
- *   **Repo:** E:\project
- *
- * Those lines are meant as separate lines. A newline directly before a bold label that ends in a
- * colon therefore becomes a hard break.
- */
+/** Docs are hard-wrapped, so newlines stay spaces, except before a bold label ending in a colon. */
 import type { Paragraph, PhrasingContent, Root, Strong } from "mdast";
 import { visit } from "unist-util-visit";
 

@@ -1,6 +1,4 @@
-// Speech engine child process. Loads the runtime-installed native speech packages
-// (sherpa-onnx, onnxruntime) so a native crash or heavy CPU work never takes down Bridge.
-// Model groups load on demand: the chat mic only needs speech recognition, voice mode needs all three.
+// Speech engine child process, so a native crash or heavy CPU never takes down the Bridge.
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -25,14 +23,11 @@ import { createSmartTurnDetector, type SmartTurnDetector } from "../../packages/
 
 const SAMPLE_RATE = 16_000;
 const VAD_WINDOW = 512;
-/** A clip scan yields after this many windows: about two seconds of audio, a few milliseconds of work. */
+/** A clip scan yields after this many windows: about two seconds of audio. */
 const VAD_YIELD_WINDOWS = 64;
-/** Clips this short are still decoded when the detector hears no speech, in case it missed quiet talking. */
+/** Clips this short are decoded even with no speech detected, in case it missed quiet talking. */
 const CLIP_FALLBACK_MAX_SAMPLES = 30 * SAMPLE_RATE;
-/**
- * The recognizer's ONNX sessions allocate per request instead of keeping a growing arena: peak
- * resident memory on a five-minute clip fell from 1.14 GB to under 1 GB, at no cost in speed.
- */
+/** Allocate per request instead of a growing arena: lower peak memory on long clips, same speed. */
 const ASR_SESSION_CONFIG = "EnableCpuMemArena=0\nEnableMemPattern=0\n";
 
 interface SherpaVad {
@@ -128,7 +123,7 @@ const loading = new Map<VoiceEngineCapability, Promise<number>>();
 const asrQueues: Record<AsrPriority, AsrJob[]> = { live: [], clip: [] };
 let asrRunning = false;
 let ttsChain: Promise<unknown> = Promise.resolve();
-/** Recordings run one at a time, from reading the file to the last chunk: they share one speech detector. */
+/** Recordings run one at a time, file read to last chunk: they share one speech detector. */
 let clipChain: Promise<unknown> = Promise.resolve();
 let clipVad: SherpaVad | undefined;
 
@@ -163,9 +158,7 @@ async function init(initOptions: VoiceEngineInitOptions): Promise<VoiceEngineRea
   options = initOptions;
   const scheduling = await preferHighPerformanceScheduling();
   const requireFromEngine = createRequire(join(initOptions.engineDir, "package.json"));
-  // Both packages bundle an onnxruntime shared library under the same name. Windows reuses
-  // whichever is loaded first, and onnxruntime-node's binding cannot bind to sherpa's
-  // older copy, so onnxruntime-node must be required first even when Smart Turn is not needed yet.
+  // Load ort first, always: Windows reuses the first onnxruntime DLL and sherpa's is older.
   ort = requireFromEngine("onnxruntime-node") as OrtModule;
   sherpa = requireFromEngine("sherpa-onnx-node") as SherpaModule;
   return {
@@ -360,10 +353,7 @@ async function pumpAsr(): Promise<void> {
   }
 }
 
-/**
- * Transcribes speech of any length. The recognizer drops whole sentences from input much longer
- * than a chunk, so it only ever sees chunk-sized pieces, however long the speech ran without a pause.
- */
+/** Feeds only chunk-sized pieces: on much longer input the recognizer drops whole sentences. */
 async function decodeSpeech(
   samples: Float32Array,
   speech: readonly SampleRange[],

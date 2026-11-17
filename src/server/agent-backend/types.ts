@@ -1,34 +1,4 @@
-// AgentBackend abstraction over the coding-agent SDK in use.
-//
-// Today the Bridge talks to `@github/copilot-sdk` directly. This module
-// introduces a thin interface that wraps the SDK surface actually consumed by
-// SessionManager and SessionRunner so future backends (Claude Code, Codex,
-// ACP) can slot in without rewriting the core run loop.
-//
-// The Copilot adapter retains raw task-operation ownership across timeouts and
-// exposes handle-release acknowledgements and verified runtime fencing. Event payload
-// shapes, session-object semantics, and raw `rpc` escape-hatch access all stay
-// Copilot-flavoured until Step 3 forces normalization when a second backend
-// lands.
-//
-// SDK surface enumerated for Step 1 (sourced from `session-manager.ts` and
-// `session-runner.ts`):
-//
-//   CopilotClient methods:
-//     start, stop, forceStop, listModels, listSessions,
-//     createSession, resumeSession, deleteSession, getSessionMetadata,
-//     rpc?.sessions?.fork (raw escape hatch, session fork)
-//
-//   CopilotSession methods/properties:
-//     sessionId, send, abort, setModel, disconnect (optional),
-//     on (returns unsubscribe); never getEvents (history is read from disk),
-//     rpc (raw escape hatch: mcp.list, mcp.oauth.login, model.getCurrent,
-//          history.truncate, name.get/set)
-//
-// The `rpc` escape hatch is documented and preserved verbatim in Step 1 so
-// the structural refactor stays behavior-preserving. Step 3 will replace
-// these raw accesses with first-class methods on the interface once a second
-// backend forces the shape question.
+// Backend-neutral interface over the agent SDK; payloads stay Copilot-shaped for now.
 
 import type {
   CopilotClient,
@@ -44,19 +14,11 @@ import type { CopilotModelContextMetadata } from "../../shared/copilot-context.j
 import type { SubagentPlan } from "../../shared/subagent-settings.js";
 import type { RuntimeFenceOptions } from "./runtime-fence.js";
 
-/**
- * Declares which optional features a backend supports. Consumers (UI, run
- * loop) should consult this map and degrade gracefully when a backend
- * cannot back a given feature.
- *
- * Step 1 ships only one backend (Copilot) where every flag is `true`. The
- * surface exists so Steps 3-5 can wire a second backend with reduced
- * capabilities without rippling type changes through callers.
- */
+/** Optional features a backend supports; consumers degrade when a flag is false. */
 export interface AgentCapabilities {
-  /** Backend supports `resumeSession(id, ...)` returning a live session that can stream new events. */
+  /** `resumeSession(id, ...)` returns a live session that can stream new events. */
   resumeSession: boolean;
-  /** Tool-call argument JSON is streamed incrementally (assistant.streaming_delta with input_json_delta). */
+  /** Tool-call argument JSON is streamed incrementally (input_json_delta). */
   streamingToolInput: boolean;
   /** Backend emits usage/cost data per turn (input_tokens, output_tokens, cached, cost). */
   costUsage: boolean;
@@ -64,7 +26,7 @@ export interface AgentCapabilities {
   subAgents: boolean;
   /** Backend accepts image attachments alongside prompts. */
   images: boolean;
-  /** Backend supports writing additional messages to stdin mid-turn (Claude Code's stream-json input mode). */
+  /** Backend accepts more messages on stdin mid-turn (stream-json input mode). */
   bidirectionalStdin: boolean;
   /** Backend emits external_tool.requested / external_tool.completed events for MCP tool calls. */
   externalToolEvents: boolean;
@@ -78,12 +40,7 @@ export interface AgentCapabilities {
   toolMetadataWarmup?: boolean;
 }
 
-/**
- * Re-exports the SDK's info shapes so backend-neutral callers can rely on the
- * abstraction's module path instead of importing `@github/copilot-sdk`
- * directly. Step 3 may replace these with backend-neutral shapes; for Step 1
- * they are aliases.
- */
+/** Re-exported SDK shapes, so callers import from here and not @github/copilot-sdk. */
 export type AgentModelInfo = Omit<ModelInfo, "supportedReasoningEfforts" | "defaultReasoningEffort">
   & Pick<CopilotModelContextMetadata, "selectionMode" | "reasoningEffortLabels">
   & {
@@ -97,41 +54,18 @@ export type AgentPermissionRequest = PermissionRequest;
 export type AgentPermissionDecision = PermissionRequestResult;
 export type AgentPermissionPolicy = PermissionHandler;
 
-/**
- * Loose alias for the configuration object passed to createSession /
- * resumeSession. The Copilot SDK has a deep type here that mixes
- * SectionOverride entries, MCP server descriptors, identity, and tool
- * arrays. Step 1 keeps this opaque (`unknown`) at the AgentBackend
- * boundary because session-config-builder.ts still produces a
- * Copilot-shaped config; Step 3 will introduce a normalized config type.
- */
+/** Loose create/resume config; still Copilot-shaped, as session-config-builder.ts produces it. */
 export interface AgentSessionConfig {
-  /**
-   * Ask the backend to surface native pending-interaction events without
-   * installing an in-process responder. Backends that do not support this
-   * marker may ignore it.
-   */
+  /** Surface native pending-interaction events without an in-process responder; may be ignored. */
   pendingInteractionEvents?: boolean;
-  /**
-   * Bridge-owned sub-agent models. Backends apply them after every create and
-   * resume, because the runtime override does not persist, and again when the
-   * session's own model changes, because rubber-duck's model depends on it.
-   */
+  /** Applied after every create/resume (the runtime doesn't persist it) and on model changes. */
   subagents?: SubagentPlan;
-  /**
-   * Experimental prompt-token limit for a session on Copilot Fusion (the runtime's `auto` model).
-   * The Copilot backend applies it on create, resume and every switch to Fusion; other models and
-   * backends ignore it.
-   */
+  /** Experimental Fusion prompt-token limit, applied on create, resume and switch to Fusion. */
   fusionContextTokens?: number;
   [key: string]: unknown;
 }
 
-/**
- * Options for `AgentSession.send(...)`. Mirrors the Copilot SDK's send
- * argument; kept loose because Claude Code / Codex carry different
- * attachment + mode shapes.
- */
+/** Options for `AgentSession.send(...)`; loose, as backends shape attachments differently. */
 export interface AgentSendArgs {
   prompt: string;
   attachments?: unknown[];
@@ -140,17 +74,10 @@ export interface AgentSendArgs {
   [extra: string]: unknown;
 }
 
-/**
- * Response to the runtime's model-switch compaction preflight. Omitting it asks
- * the runtime to report `confirmation_required` when the conversation does not
- * fit the target model's prompt limit.
- */
+/** Answer to the switch preflight; if omitted the runtime may report `confirmation_required`. */
 export type AgentModelCompactionDecision = "compact" | "cancel";
 
-/**
- * Options for `AgentSession.setModel(...)`. Copilot SDK accepts an optional
- * `{ reasoningEffort, contextTier, compactionDecision }` second argument.
- */
+/** Options for `AgentSession.setModel(...)`. */
 export interface AgentSetModelOptions {
   reasoningEffort?: string;
   contextTier?: string;
@@ -160,7 +87,7 @@ export interface AgentSetModelOptions {
 
 type CopilotModelSwitchTo = CopilotSession["rpc"]["model"]["switchTo"];
 
-/** Copilot runtime `session.model.switchTo` result, including the compaction preflight projection. */
+/** Copilot runtime `session.model.switchTo` result, including the compaction preflight. */
 export type AgentModelSwitchResult = Awaited<ReturnType<CopilotModelSwitchTo>>;
 
 type CopilotHistoryCompact = CopilotSession["rpc"]["history"]["compact"];
@@ -172,10 +99,7 @@ export type AgentModelSwitchConfirmation = NonNullable<AgentModelSwitchResult["c
 
 type CopilotClassifyTrajectory = CopilotClient["rpc"]["taskAnalytics"]["classifyTrajectory"];
 
-/**
- * Copilot runtime `taskAnalytics.classifyTrajectory` result: the runtime's retrospective classifiers
- * run over a recorded chat. Model-derived and untrusted: measurements only, never a decision input.
- */
+/** Trajectory classifier result for a chat: model-derived, for measurement, never for decisions. */
 export type AgentTrajectoryClassifyResult = Awaited<ReturnType<CopilotClassifyTrajectory>>;
 export type AgentTrajectoryClassification = AgentTrajectoryClassifyResult["classifications"][number];
 
@@ -238,12 +162,6 @@ export type AgentSlashCommandResult =
     options: Array<{ label?: string; value?: string; description?: string }>;
   };
 
-/**
- * Subscription callback for live session events. Step 1 keeps the payload
- * `unknown`; the existing session-runner pattern-matches on Copilot event
- * type discriminators (e.g. "assistant.turn_end"). Step 3 will normalize
- * these into a discriminated union when a second backend lands.
- */
 export interface AgentUserInputRequest {
   question: string;
   choices?: string[];
@@ -369,80 +287,39 @@ export interface AgentSessionRelease {
 
 /** The runtime's own account of what a session is doing right now. */
 export interface AgentSessionActivity {
-  /**
-   * The main agent is processing a turn or a background continuation. False while it is idle,
-   * even if a background agent or an attached shell is still running.
-   */
+  /** The main agent is in a turn or continuation; false when idle, even with background work. */
   processing: boolean;
 }
 
-/**
- * Live or resumed session object. Mirrors `CopilotSession`'s feature surface
- * through typed methods.
- *
- * This is a **required facade**, not a capability map: an implementation must
- * define every required method, and method presence says nothing about whether the
- * underlying runtime can actually serve the call. A backend that cannot serve a
- * capability reports it through the return contract:
- *
- * - methods whose result includes `| undefined` resolve `undefined`;
- * - release reports an unsupported or uncertain outcome;
- * - every other method throws.
- *
- * Callers must therefore branch on the result of required operations, not their presence.
- * A `typeof` probe against this interface is always true and detects nothing —
- * the wrapper method exists even when the RPC behind it does not.
- *
- * `sessionId` (not `id`) is preserved as the property name to match the
- * SDK and avoid rippling renames across api-router, push-notification,
- * schedule-retention, and other call sites that already read
- * `.sessionId` from session summaries. Step 3 may consolidate to `id`.
- */
+/** Required facade: methods always exist; unsupported calls resolve undefined or throw. */
 export interface AgentSession {
+  // No full-history RPC: one big reply kills the shared connection. Read events.jsonl instead.
   readonly sessionId: string;
 
   send(args: AgentSendArgs): Promise<unknown>;
-  /**
-   * Send a message and block until the agent finishes (resolves on
-   * `session.idle`). Pass null to wait without a timeout.
-   */
+  /** Sends and resolves on `session.idle`; pass null to wait without a timeout. */
   sendAndWait(args: AgentSendArgs, timeoutMs?: number | null): Promise<unknown>;
   abort(): Promise<unknown>;
   /** Returns the runtime switch result when the backend exposes it. */
   setModel(model: string, opts?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined>;
   setReasoningEffort(reasoningEffort: string): Promise<void>;
-  /**
-   * Makes a signed-in account the runtime's active one. It is saved at once and new sessions use
-   * it; runtime-wide reads (current auth, model list, quota) follow only after a runtime restart.
-   */
+  /** Makes an account active for new sessions; runtime-wide reads follow only after a restart. */
   switchAccount?(accountId: string): Promise<void>;
   /** Optional compatibility facade; lifecycle owners use release(). */
   disconnect?(): Promise<unknown> | void;
-  /**
-   * Raw, single-flight handle-release acknowledgement after outstanding task RPCs
-   * settle. Never deletes history and does not establish process quiescence.
-   */
+  /** Single-flight handle release after task RPCs settle; keeps history, proves no quiescence. */
   release(): Promise<AgentSessionRelease>;
 
   /** Subscribe to live session events. Returns an unsubscribe function. */
   on(handler: AgentSessionEventHandler): () => void;
 
-  // Intentionally no full-history read (`getEvents` / `session.getMessages`):
-  // the Bridge reads persisted history from events.jsonl on disk. A single
-  // full-history RPC response for a large transcript tears down the shared
-  // backend connection. See session-disk-reader.ts.
-
   /** Resolve an ask_user request. False means another responder already won or the ID is stale. */
   respondToUserInput(requestId: string, response: AgentUserInputResponse): Promise<boolean>;
 
-  /** Resolve an elicitation request. False means another responder already won or the ID is stale. */
+  /** Resolve an elicitation request. False means another responder won or the ID is stale. */
   tryRespondToElicitation(requestId: string, response: AgentElicitationResponse): Promise<boolean>;
 
-  /**
-   * Ask the user a form on the Bridge's own behalf, from inside a tool. The runtime reports it
-   * like any other pending question, and the promise settles with whatever answers it. Absent on
-   * backends that cannot.
-   */
+  /** Asks the user a form on the Bridge's behalf from inside a tool; absent where unsupported. */
   requestElicitation?(request: { message: string; requestedSchema: unknown }): Promise<AgentElicitationResponse>;
 
   /** Switch the session's send mode. */
@@ -463,26 +340,16 @@ export interface AgentSession {
   /** Fetch accumulated live usage metrics. Resolves `undefined` when unsupported. */
   getUsageMetrics(): Promise<AgentUsageMetrics | undefined>;
 
-  /**
-   * Ask the runtime whether the main agent is working. This is the authority on whether a run is
-   * still going: events.jsonl is shared with sub-agents and cannot show whether the main agent
-   * will start another turn. Resolves `undefined` when unsupported.
-   */
+  /** Authority on whether a run goes on: events.jsonl is shared with sub-agents and can't tell. */
   getActivity(): Promise<AgentSessionActivity | undefined>;
 
-  /**
-   * The runtime's current split of the context window. Resolves `undefined` when unsupported or
-   * before the session has built its system prompt and tool list.
-   */
+  /** The context window split; `undefined` if unsupported or before the prompt and tools exist. */
   getContextInfo(): Promise<AgentContextInfo | undefined>;
 
   /** Truncate the session's persisted event history at the named event. */
   truncateHistory(opts: { eventId: string }): Promise<{ eventsRemoved?: number } | undefined>;
 
-  /**
-   * Summarizes the conversation with the current model. Safe while a turn runs: the runtime compacts in
-   * the background and keeps what was added after compaction started. Resolves `undefined` when unsupported.
-   */
+  /** Safe mid-turn: the runtime compacts in the background and keeps later additions. */
   compactHistory?(opts?: { customInstructions?: string }): Promise<AgentCompactionResult | undefined>;
 
   /** List MCP servers configured for the session. Resolves `undefined` when unsupported. */
@@ -503,11 +370,7 @@ export interface AgentSession {
   /** Persist a new session title/name. */
   setName(opts: { name: string }): Promise<unknown>;
 
-  /**
-   * List background tasks (agents + shells) the backend is tracking for this
-   * session. Legacy backends may return `undefined` when unsupported; the
-   * Copilot adapter rejects unsupported and malformed task lifecycle responses.
-   */
+  /** Background agents and shells. Copilot rejects bad replies; others may resolve undefined. */
   listTasks(): Promise<{ tasks?: AgentBackgroundTask[] } | undefined>;
 
   /** Request cancellation of a tracked background task. */
@@ -517,12 +380,7 @@ export interface AgentSession {
   removeTask(id: string): Promise<{ removed: boolean } | undefined>;
 }
 
-/**
- * Backend-neutral projection of one SDK background task. Mirrors the Copilot
- * SDK `TaskInfo` (agent variant) but trimmed to the fields the Bridge consumes.
- * `kind` distinguishes agent tasks from detached shells; the agent surface only
- * renders `kind: "agent"`.
- */
+/** Trimmed SDK TaskInfo; `kind` splits agents from shells, and only agents are rendered. */
 export type AgentBackgroundTask = {
   kind: "agent" | "shell";
   id: string;
@@ -548,17 +406,13 @@ export type AgentBackgroundTask = {
   latestResponse?: string;
   /** Shell tasks only: the command line. */
   command?: string;
-  /** Shell tasks only: attached | detached. An attached command dies with its session's runtime handle. */
+  /** Shell tasks only: attached | detached. Attached dies with its session's runtime handle. */
   attachmentMode?: string;
   /** Shell tasks only: the operating system's ID for the process running the command. */
   pid?: number;
 } & Record<string, unknown>;
 
-/**
- * Loose MCP server status shape returned by `listMcpServers`. The Copilot
- * SDK populates extra fields; this captures the ones the Bridge actually
- * consumes.
- */
+/** The `listMcpServers` fields the Bridge reads; the SDK adds more. */
 export type AgentMcpServerStatus = {
   name: string;
   status?: string;
@@ -585,20 +439,11 @@ export interface AgentMcpOauthLoginOptions {
   [extra: string]: unknown;
 }
 
-/**
- * Lightweight summary returned by `listSessions()`. The Copilot SDK
- * returns an array of metadata objects with at least a `sessionId`; the
- * Bridge consumes a handful of fields on top of that, so this type
- * stays open-ended.
- */
 export type AgentSessionSummary = {
   sessionId: string;
 } & Record<string, unknown>;
 
-/**
- * Why the backend was replaced. Most are a lost RPC channel; `cleanup-stalled` is the Bridge
- * replacing a runtime that reported no failure because a session would not release.
- */
+/** Why the backend was replaced; `cleanup-stalled` means a session would not release. */
 export type AgentBackendDisconnectReason =
   | "connection-closed"
   | "connection-error"
@@ -625,10 +470,7 @@ export interface AgentBackendConnectionStatus {
   lastDisconnect?: AgentBackendDisconnect;
 }
 
-/**
- * Backend handle that owns a coding-agent SDK client process and exposes
- * the operations Bridge uses to manage sessions.
- */
+/** Owns a coding-agent SDK client process and the operations the Bridge manages sessions with. */
 export interface AgentBackend {
   /** Stable id of the backend implementation, e.g. "copilot". */
   readonly id: "copilot" | (string & {});
@@ -636,11 +478,7 @@ export interface AgentBackend {
   /** Capability flags surfaced to the UI / run loop for graceful degradation. */
   readonly capabilities: AgentCapabilities;
 
-  /**
-   * Backend-native handler for permission requests during session execution.
-   * Backends that configure native automatic approvals can return undefined.
-   * Step 3 will replace the Copilot-shaped alias with a backend-neutral type.
-   */
+  /** Native permission handler; undefined when the backend approves natively. */
   readonly permissionPolicy: AgentPermissionPolicy | undefined;
 
   /** Boot the underlying CLI process and JSON-RPC channel. */
@@ -651,28 +489,19 @@ export interface AgentBackend {
 
   /** Force-stop. Optional because not every SDK exposes one. */
   forceStop?(): Promise<unknown>;
-  /** Authoritative, single-flight runtime-ownership boundary. Rejects when ownership cannot be proved. */
+  /** Single-flight runtime-ownership boundary; rejects when ownership cannot be proved. */
   fence(options?: RuntimeFenceOptions): Promise<void>;
 
-  /**
-   * Subscribe to the loss of the backend RPC channel (connection closed,
-   * runtime process exited, or an RPC timed out and a liveness probe failed).
-   * Fires at most once per backend instance and never for an intentional
-   * stop. Returns an unsubscribe function.
-   */
+  /** Fires at most once on channel loss, never for an intentional stop. */
   onDisconnect?(handler: (info: AgentBackendDisconnect) => void): () => void;
 
   /** Current transport state for health reporting. */
   getConnectionStatus?(): AgentBackendConnectionStatus;
 
-  /** Observational ping that settles within the ping limit: never starts or recovers a backend, or declares it disconnected. */
+  /** Observe-only ping within the ping limit: never starts, recovers or disconnects a backend. */
   diagnosticPing?(): Promise<"responsive" | "timeout" | "failed" | "skipped">;
 
-  /**
-   * Cheap liveness probe of the RPC channel. Resolves false when the channel
-   * is not connected or does not answer within `timeoutMs`; a failed probe
-   * also fires `onDisconnect`.
-   */
+  /** RPC liveness probe; false if down or silent past `timeoutMs`, which fires onDisconnect. */
   probeHealth?(timeoutMs?: number, reason?: string): Promise<boolean>;
 
   /** List models available to the active backend account/subscription. */
@@ -681,10 +510,7 @@ export interface AgentBackend {
   /** List existing sessions known to the backend. */
   listSessions(): Promise<AgentSessionSummary[]>;
 
-  /**
-   * Return sessions held by another backend process. Optional because older
-   * runtimes may not expose the experimental sessions.checkInUse RPC.
-   */
+  /** Sessions held by another backend process; needs the experimental sessions.checkInUse RPC. */
   checkSessionsInUse?(sessionIds: readonly string[]): Promise<Set<string> | undefined>;
 
   /** Create a brand-new session. */
@@ -699,49 +525,26 @@ export interface AgentBackend {
   /** Fetch backend-stored metadata for a session. */
   getSessionMetadata(sessionId: string): Promise<unknown>;
 
-  /**
-   * Fork an existing session at a specific event. Optional — older SDK
-   * builds may lack the `sessions.fork` RPC.
-   */
+  /** Fork a session at an event; older SDK builds lack the `sessions.fork` RPC. */
   forkSession?(
     sourceSessionId: string,
     opts?: { toEventId?: string },
   ): Promise<{ sessionId: string }>;
 
-  /**
-   * Live quota/usage counter for the authenticated account. Optional — older
-   * SDK builds may lack the `account.getQuota` RPC. The payload is
-   * backend-shaped and normalized by the caller.
-   */
+  /** Live quota for the signed-in account, backend-shaped; the caller normalizes it. */
   getAccountQuota?(): Promise<unknown>;
 
-  /**
-   * Current authentication state, including the backend's raw account
-   * passthrough. Optional for the same reason as `getAccountQuota`.
-   */
+  /** Current authentication state, including the backend's raw account passthrough. */
   getAccountAuth?(): Promise<unknown>;
 
-  /**
-   * The raw Copilot user response fetched from GitHub now, for the current
-   * account. The backend's own copy is only fetched at startup, so this is
-   * what makes a quota refresh return fresh numbers.
-   */
+  /** Fetches the Copilot user now (the backend's copy is from startup) for a fresh quota. */
   fetchAccountCopilotUser?(): Promise<unknown>;
 
   /** The accounts the runtime has signed in, without their tokens. */
   listAccounts?(): Promise<CopilotAccount[]>;
 
-  /**
-   * Runs the runtime's trajectory classifiers over a recorded chat on the signed-in account. Billed
-   * unless `validateOnly`. Optional because older runtimes lack the experimental RPC.
-   */
+  /** Runs the trajectory classifiers on a chat; billed unless `validateOnly`. Optional: new RPC. */
   classifyTrajectory?(request: AgentTrajectoryClassifyRequest): Promise<AgentTrajectoryClassifyResult>;
 }
 
-/**
- * Factory signature for tests and the staging backend manager: produce an
- * AgentBackend. Backend-specific configuration (env, client options) is
- * owned by the concrete factory implementation, not threaded through this
- * seam.
- */
 export type AgentBackendFactory = () => AgentBackend;

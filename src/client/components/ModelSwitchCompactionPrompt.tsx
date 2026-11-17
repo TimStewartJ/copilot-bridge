@@ -23,10 +23,7 @@ interface ModelSwitchCompactionPromptProps {
   onKeepCurrentModel: () => void;
 }
 
-/**
- * Mirrors the Copilot CLI: when a conversation exceeds the target model's
- * prompt limit, offer to compact and switch or keep the current model.
- */
+/** As in the Copilot CLI: too long for the target model, so compact and switch, or stay. */
 export default function ModelSwitchCompactionPrompt({
   confirmation,
   compacting,

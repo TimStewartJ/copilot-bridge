@@ -1,23 +1,7 @@
 import { getToolExecutionDisplayText } from "./tool-results.js";
 import type { AgentInstruction } from "../shared/subagent.js";
 
-// Sub-agent correlation shared by the two server-side folds of the SDK event stream:
-// the live fold (`session-runner.ts`, single-pass, emits SSE deltas) and the replay fold
-// (`event-transform.ts`, two-pass, reads events.jsonl). Both must derive the same display name,
-// success and result text for a tool call, but they cannot share a traversal: the live fold has
-// no look-ahead and carries side effects, while the replay fold depends on look-ahead and must
-// stay pure. Only the derivation is shared here.
-//
-// Ordering rule ("seal on completion"): a tool call stops accepting *failure* updates once its
-// real `tool.execution_complete` arrives. Background sub-agents complete their *launch*
-// successfully and can fail minutes later, so a late `subagent.failed` must not retroactively
-// fail the launch. Both folds ingest chronologically, so sealing yields identical results in
-// single-pass and two-pass form. Turn-terminal synthesis deliberately does NOT seal, because a
-// real completion can still arrive after `assistant.turn_end`.
-//
-// Sealing is scoped to failures only. Sub-agent identity and response text legitimately arrive
-// after a background launch completes, and both folds have always surfaced them, so they are
-// still recorded late.
+// Seal only failures, only on real completion (not turn-end synthesis); identity/response may lag.
 
 export interface SubagentResolution {
   /** True once a sub-agent start, or an authoritative sub-agent failure, is known. */
@@ -85,10 +69,7 @@ export class SubagentCorrelator {
   /** Tool calls whose real completion has been seen; they no longer accept failure updates. */
   private readonly sealed = new Set<string>();
 
-  /**
-   * Returns the entry for a tool call, or undefined when it is sealed. Sealed and forgotten tool
-   * calls are never resurrected by a failure.
-   */
+  /** The tool call's entry, or undefined when sealed; a failure never revives a sealed call. */
   private mutableEntry(toolCallId: string, create: boolean): CorrelationEntry | undefined {
     if (this.sealed.has(toolCallId)) return undefined;
     const existing = this.entries.get(toolCallId);
@@ -98,14 +79,7 @@ export class SubagentCorrelator {
     return created;
   }
 
-  /**
-   * `subagent.started`: `toolCallId` is the spawning tool call, `agentId` the instance id.
-   *
-   * Identity is deliberately recorded even after the tool call is sealed. Background launches
-   * complete before their `subagent.started` arrives, and the live fold emits a follow-up
-   * `tool_update` that renames the finished entry, so replay must accept it too. Only the failure
-   * outcome is frozen by sealing.
-   */
+  /** Accepted after sealing: a background launch completes before its start event arrives. */
   startSubagent(toolCallId: string, agentId: string | undefined, data: unknown): void {
     let entry = this.entries.get(toolCallId);
     if (!entry) {
@@ -125,12 +99,7 @@ export class SubagentCorrelator {
     }
   }
 
-  /**
-   * `assistant.message` carrying `parentToolCallId`: the sub-agent's response text.
-   *
-   * Like identity, this is accepted after sealing. A background agent answers long after its
-   * launch tool completed, and replay has always surfaced that answer on the launch entry.
-   */
+  /** Accepted after sealing: a background agent answers long after its launch completed. */
   recordResponse(parentToolCallId: string, content: unknown): void {
     const text = nonEmptyString(content);
     if (!text) return;
@@ -174,11 +143,7 @@ export class SubagentCorrelator {
     if (entry) entry.error = text;
   }
 
-  /**
-   * `session.error` carrying an envelope `agentId`. The id is only correlated when it maps to a
-   * known sub-agent, so an unrelated error can never poison a normal tool call that happens to
-   * share an id.
-   */
+  /** `session.error` with an `agentId`; only a known sub-agent's id is correlated. */
   recordAgentError(agentId: string, message: unknown): void {
     const text = nonEmptyString(message);
     const toolCallId = this.resolveAgentToolCallId(agentId);
@@ -190,8 +155,7 @@ export class SubagentCorrelator {
   resolveAgentToolCallId(agentId: string): string | undefined {
     const mapped = this.agentToToolCall.get(agentId);
     if (mapped) return mapped;
-    // Historically the runtime set `agentId` equal to the spawning `toolCallId`. Accept that only
-    // when the id already identifies a tracked sub-agent.
+    // Older runtimes reuse the spawning `toolCallId` as `agentId`; accept it for tracked agents.
     return this.entries.get(agentId)?.started ? agentId : undefined;
   }
 
@@ -216,11 +180,7 @@ export class SubagentCorrelator {
     };
   }
 
-  /**
-   * Drop retained payload for a finished tool call. The live fold calls this to avoid holding
-   * sub-agent response text for the lifetime of a run; the replay fold retains everything because
-   * its second pass still needs it. The sealed marker survives so late events cannot resurrect it.
-   */
+  /** Live fold only (frees response text); replay needs it for pass two. Sealed set survives. */
   forget(toolCallId: string): void {
     const entry = this.entries.get(toolCallId);
     if (entry?.agentId) {
@@ -269,11 +229,7 @@ export function buildSubagentInstructions(
   return instructions.length > 0 ? instructions : undefined;
 }
 
-/**
- * The single place that turns a tool completion plus its sub-agent correlation into what the user
- * sees. A correlated sub-agent failure replaces both the success flag and the generic tool result
- * text, which is otherwise an unhelpful "Agent completed but produced no response."
- */
+/** A correlated sub-agent failure overrides success and the generic no-response text. */
 export function resolveToolOutcome(
   resolution: SubagentResolution,
   completion: ToolCompletionRecord | undefined,

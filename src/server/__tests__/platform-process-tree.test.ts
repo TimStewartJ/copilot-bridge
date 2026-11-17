@@ -91,7 +91,8 @@ function isDirectoryLinkCapabilityError(error: unknown): boolean {
 }
 
 function probeDirectoryLinkCapability(): boolean {
-  const root = mkdtempSync(join(tmpdir(), "bridge-directory-link-probe-")); // xplat-audit-ignore-line
+  // xplat-audit-ignore-next-line
+  const root = mkdtempSync(join(tmpdir(), "bridge-directory-link-probe-"));
   try {
     const target = join(root, "target");
     const link = join(root, "link");
@@ -115,7 +116,7 @@ afterEach(() => {
   restorePlatform();
 });
 
-/** Runs a termination whose verification keeps finding survivors, on fake timers past the exit settle window. */
+/** Runs a termination that keeps finding survivors, on fake timers past the exit settle window. */
 async function withExitSettleElapsed<T>(run: () => Promise<T>): Promise<T> {
   vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
   try {
@@ -439,7 +440,7 @@ describe("process tree platform helpers", () => {
       mockExec((command, _args, _options, callback) => {
         if (command === "mock-native-process-snapshot") {
           snapshots++;
-          // Before the kill, the tree; right after it, the root and one leaf are still listed; then gone.
+          // Before the kill, the tree; right after, the root and one leaf; then nothing.
           callback(null, snapshots === 1 ? "100 1 1000\r\n101 100 1001\r\n102 100 1002"
             : snapshots === 2 ? "100 1 1000\r\n102 100 1002" : "", "");
           return;

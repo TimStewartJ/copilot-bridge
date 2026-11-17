@@ -1,7 +1,4 @@
-/**
- * Pure helpers behind the Docs view: tree indexing, navigation, link resolution, headings,
- * collection sorting/filtering and formatting. Nothing here touches React or the DOM.
- */
+// Pure helpers behind the Docs view; nothing here touches React or the DOM.
 import type { DbEntry, DbSchema, DocTreeNode } from "../../api";
 
 // ── Tree ──────────────────────────────────────────────────────────
@@ -128,11 +125,7 @@ function lettersOnly(value: string): string {
   return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
-/**
- * Pages are often titled "Project — Topic" and filed under a "project" folder. Inside the tree
- * that prefix only repeats the folder above it and pushes the useful half of the title out of
- * view, so it is dropped there. The full title is still used everywhere else.
- */
+/** In the tree only, drop a title prefix that repeats the parent folder. */
 export function compactTreeLabel(label: string, folderLabels: readonly string[]): string {
   const folders = folderLabels.map(lettersOnly).filter((folder) => folder.length >= 3);
   if (folders.length === 0) return label;
@@ -150,11 +143,7 @@ export function compactTreeLabel(label: string, folderLabels: readonly string[])
   return label;
 }
 
-/**
- * Rows currently visible in the sidebar, in order, for rendering and arrow-key navigation.
- * Collections are leaves here: their entries are browsed (filtered, sorted) in the table view,
- * which keeps a thousand-entry collection from flooding the tree.
- */
+/** Collections are leaves; entries live in the table view so big ones do not flood the tree. */
 export function flattenVisibleTree(roots: DocTreeNode[], expanded: ReadonlySet<string>): DocsTreeRow[] {
   const rows: DocsTreeRow[] = [];
   const walk = (node: DocTreeNode, depth: number, parent: DocTreeNode | null) => {
@@ -189,10 +178,7 @@ export interface DocsCrumb {
   target: DocsTarget | null;
 }
 
-/**
- * Breadcrumbs for a location. Every ancestor is navigable: a folder without an index page still
- * has an overview, and a collection opens its table.
- */
+/** Every ancestor is navigable: a folder without an index has an overview, a collection a table. */
 export function buildBreadcrumbs(path: string, index: DocsTreeIndex, currentLabel?: string): DocsCrumb[] {
   const parts = path.split("/").filter(Boolean);
   const crumbs: DocsCrumb[] = [];
@@ -238,7 +224,7 @@ function timeValue(value: string | undefined): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-/** Recently changed pages. Collection entries are rows of data; a bulk import must not bury the pages. */
+/** Recently changed pages, without collection entries so a bulk import cannot bury them. */
 export function recentPages(index: DocsTreeIndex, limit: number): DocsPageRef[] {
   return index.pages
     .filter((page) => !page.isEntry && timeValue(page.modified) > 0)
@@ -318,10 +304,7 @@ function normalizeForMatch(value: string): string {
   return value.toLowerCase().replace(/[-_/]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-/**
- * Title and path matches from the already-loaded tree. Full-text search only matches whole
- * words, so this is what makes a half-typed title find its page immediately.
- */
+/** Matches the loaded tree, so a half-typed title finds its page (full-text needs whole words). */
 export function matchPagesByTitle(index: DocsTreeIndex, query: string, limit = 8): DocsPageRef[] {
   const needle = normalizeForMatch(query);
   if (!needle) return [];
@@ -357,10 +340,7 @@ function tidySnippetText(text: string): string {
     .replace(/\s+/g, " ");
 }
 
-/**
- * Splits a search snippet on the server's `<mark>` markers. Everything else is kept as literal
- * text, so page content that happens to contain markup is never interpreted as HTML.
- */
+/** Splits a snippet on the server's `<mark>` markers; the rest stays literal text, never HTML. */
 export function parseSnippet(snippet: string): SnippetSegment[] {
   const segments: SnippetSegment[] = [];
   const pattern = /<mark>([\s\S]*?)<\/mark>/g;
@@ -376,8 +356,6 @@ export function parseSnippet(snippet: string): SnippetSegment[] {
     .map((segment) => ({ ...segment, text: tidySnippetText(segment.text) }))
     .filter((segment) => segment.text.length > 0);
 }
-
-// ── Links ─────────────────────────────────────────────────────────
 
 /** Resolves a relative markdown link against the page (or folder index) it appears in. */
 export function resolveRelativeDocPath(currentPath: string, href: string, currentIsDirectory: boolean): string {
@@ -524,10 +502,7 @@ export function leadingTitle(markdown: string): string | null {
   return stripMarkdownInline(lines[index].match(LEADING_TITLE_PATTERN)![1]) || null;
 }
 
-/**
- * The page header already shows the title, and nearly every page opens by restating it as an
- * H1. Drop that leading H1 so the title is not printed twice.
- */
+/** Drops a leading H1, which nearly always repeats the title the page header already shows. */
 export function stripLeadingTitle(markdown: string): string {
   const lines = markdown.split(/\r?\n/);
   const index = leadingTitleLine(lines);
@@ -557,8 +532,7 @@ export function formatDocDate(value: string | undefined | null): string {
   if (!value) return "";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return String(value);
-  // A calendar date ("2026-09-17", or YAML's midnight-UTC reading of one) names a day, not an
-  // instant. Formatting it in local time would show the day before anywhere west of Greenwich.
+  // A date-only value names a day; local time would show the day before west of Greenwich.
   const timeZone = DATE_ONLY_PATTERN.test(value) ? "UTC" : undefined;
   return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone });
 }
@@ -582,8 +556,6 @@ export function formatRelativeTime(value: string | undefined | null, now: number
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
-
-// ── New pages ─────────────────────────────────────────────────────
 
 /** Mirrors the server's slug rule so the path preview matches what gets created. */
 export function slugifyPageName(title: string): string {
@@ -764,10 +736,7 @@ export function entryFormValues(schema: DbSchema, source: Record<string, unknown
   return values;
 }
 
-/**
- * Turns form state into the fields payload. Creating omits blanks; updating sends `null` for a
- * cleared field, which the server stores as empty rather than rejecting an empty string.
- */
+/** Create omits blanks; update sends `null` for a cleared field, stored as empty by the server. */
 export function entryFieldsPayload(
   schema: DbSchema,
   values: EntryFormValues,

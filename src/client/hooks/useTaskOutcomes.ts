@@ -8,7 +8,7 @@ import { haptic } from "../lib/haptics";
 
 export interface OutcomeReceipt { message: string; undo: Array<{ id: string; patch: TaskPatch }> }
 
-/** Applies quiet-task outcomes through the normal task PATCH, keeping an exact undo of the prior values. */
+/** Applies quiet-task outcomes through the task PATCH, keeping an exact undo. */
 export function useTaskOutcomes() {
   const client = useQueryClient();
   const [pending, setPending] = useState(false);
@@ -28,7 +28,7 @@ export function useTaskOutcomes() {
     try {
       for (const row of rows) {
         const patches = outcome === "set_aside" ? setAsidePatches(row, revisitAt) : outcomePatches(row, outcome);
-        // This hook shows its own receipt with a full undo; keep the global toast from offering a partial one.
+        // Our receipt has a full undo; stop the global toast offering a partial one.
         if (outcome === "finished") claimTaskCompletionFeedback([row.id]);
         await patchTask(row.id, patches.apply);
         undo.push({ id: row.id, patch: patches.undo });

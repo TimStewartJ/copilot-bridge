@@ -22,7 +22,7 @@ import type { TelemetryStore } from "../telemetry-store.js";
 import type { RuntimePaths } from "../runtime-paths.js";
 import { setupTestDb, createTestBus, makeAgentSessionStub, makeTestDir, makeTestRuntimePaths } from "./helpers.js";
 
-// Captured before any test installs fake timers: real file I/O only finishes on the real event loop.
+// Captured before any test fakes timers: real file I/O only finishes on the real event loop.
 const realSetImmediate = setImmediate;
 
 describe("SessionManager run state", () => {
@@ -116,7 +116,7 @@ describe("SessionManager run state", () => {
       }),
       invokeSlashCommand: vi.fn(),
       listSlashCommands: vi.fn(),
-      // `undefined` is a runtime that cannot say what it is doing, so the watchdog leaves the run alone.
+      // `undefined`: the runtime cannot say what it is doing, so the watchdog leaves the run be.
       getActivity: vi.fn(async (): Promise<{ processing: boolean } | undefined> => undefined),
       listTasks: vi.fn(async (): Promise<{ tasks: any[] }> => ({ tasks: [] })),
       abort: vi.fn().mockResolvedValue(undefined),
@@ -153,9 +153,7 @@ describe("SessionManager run state", () => {
   }
 
   async function flushMicrotasks() {
-    // Deep enough to drain the agent-registry reap the resume path now awaits:
-    // session doubles expose the full AgentSession facade, so `listTasks` runs
-    // for real instead of short-circuiting on a missing method.
+    // 80 rounds: enough to drain the agent-registry reap the resume path awaits.
     for (let i = 0; i < 80; i++) await Promise.resolve();
   }
 
@@ -166,7 +164,7 @@ describe("SessionManager run state", () => {
     return span.metadata ?? {};
   }
 
-  /** Starts a run whose prompt the runtime has accepted, with its events.jsonl under a temp Copilot home. */
+  /** Starts a run whose prompt the runtime accepted, logging under a temp Copilot home. */
   async function startDeliveredRun(name: string) {
     const created = createManager({ copilotHome: makeTestDir(name), telemetry: true });
     const made = makeSession();
@@ -184,12 +182,7 @@ describe("SessionManager run state", () => {
     return new Date(run.startedAt + offsetMs).toISOString();
   }
 
-  /**
-   * Drives a watchdog tick to its end. A tick alternates real file I/O with a wait on the fake
-   * clock before it asks the runtime a second time, so neither an advance nor an await alone finishes it.
-   * The date is put back after every step: how many steps the file I/O takes depends on how busy
-   * the machine is, and the tick must not see that many seconds pass. Pending timers keep their delay.
-   */
+  // Alternate real I/O and fake-clock steps; reset the date each step so load can't age the tick.
   async function settleWatchdog(manager: any, sessionId: string): Promise<void> {
     const now = Date.now();
     let settled = false;
@@ -799,7 +792,7 @@ describe("SessionManager run state", () => {
 
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      // Past the protection window the command is still counted as running work, not as an unknown state.
+      // Past the protection window the command still counts as running work, not an unknown state.
       vi.setSystemTime(Date.now() + 46 * 60_000);
       expect(manager.getSessionContinuationState("session-command")).toMatchObject({ runningCommandCount: 1, held: false });
       getHandler()?.({ type: "session.background_tasks_changed", data: {}, timestamp: new Date().toISOString() });
@@ -1958,7 +1951,7 @@ describe("SessionManager run state", () => {
       code: "busy",
     });
 
-    // The boundary lookup streams events.jsonl, so wait for the real disk read before releasing the RPC.
+    // The boundary lookup streams events.jsonl, so wait for the real read before releasing the RPC.
     await vi.waitFor(() => expect(truncateHistory).toHaveBeenCalled());
     releaseTruncate();
     await expect(firstUndo).resolves.toEqual({ eventsRemoved: 1 });
@@ -2024,9 +2017,7 @@ describe("SessionManager run state", () => {
   });
 
   it("drops an unparseable request event without blocking a valid sibling", async () => {
-    // Listings come from the event-derived index, so per-event normalization at
-    // ingest is what keeps one malformed request from blanking the whole
-    // reconnect snapshot or stranding a valid prompt.
+    // Normalizing each event at ingest keeps one bad request from blanking the reconnect snapshot.
     const sessionId = "session-unparseable-sibling";
     const { manager, eventBusRegistry } = createManager();
     const { session, getHandler, getReleaseSend, pendingElicitations } = makeSession();
@@ -2037,8 +2028,7 @@ describe("SessionManager run state", () => {
     getReleaseSend()?.();
     await flushMicrotasks();
 
-    // The runtime holds both requests regardless of whether Bridge could parse
-    // them; only the index decides what Bridge is willing to answer.
+    // The runtime holds both requests; only the index decides what the Bridge will answer.
     pendingElicitations.push({ requestId: "el-broken" }, { requestId: "el-valid" });
     const requestedSchema = {
       type: "object",
@@ -2063,8 +2053,7 @@ describe("SessionManager run state", () => {
         .pendingElicitations.map((request) => request.requestId),
     ).toEqual(["el-valid"]);
 
-    // The malformed sibling is unknown to the index and must 404 rather than be
-    // answered unvalidated; the valid one still resolves through the runtime.
+    // The malformed one must 404 rather than be answered unvalidated; the valid one still resolves.
     await expect(manager.submitElicitationResponse(sessionId, "el-broken", { action: "cancel" }))
       .rejects.toMatchObject({ code: "request_not_found", statusCode: 404 });
     await expect(manager.submitElicitationResponse(sessionId, "el-valid", { action: "cancel" }))
@@ -2381,9 +2370,7 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
 
-    // Watchdog ticks await real file I/O under fake timers, so which tick observes the half hour is
-    // not exact. Settling between phases keeps the contract deterministic: one attempt, never
-    // retried, and the dead turn then ends at the no-progress limit like any other stall.
+    // Ticks await real I/O, so settle after each advance to keep the phases deterministic.
     await vi.advanceTimersByTimeAsync(32 * 60_000);
     await manager.waitForSessionWatchdogIdle(sessionId);
     await flushMicrotasks();
@@ -2850,8 +2837,7 @@ describe("SessionManager run state", () => {
     });
     await flushMicrotasks();
 
-    // Live segments carry the exact source-event id they will be committed under, so the client
-    // can hand each one off to disk history by identity instead of merging transcripts.
+    // Live segments carry their source-event id so the client hands them to disk history by id.
     expect(bus.getSnapshot()).toMatchObject({
       streamingContent: "",
       liveAssistantSegments: [
@@ -3153,14 +3139,14 @@ describe("SessionManager run state", () => {
   });
 
   describe("watchdog: the runtime decides whether a run is over", () => {
-    /** The main agent stopping asks the runtime at once, well inside the runtime's hold on a notice. */
+    /** The main agent stopping asks the runtime at once, well inside its hold on a notice. */
     const mainAgentIdle = (run: { getHandler: () => ((event: any) => void) | undefined }) =>
       run.getHandler()?.({ type: "assistant.idle", timestamp: new Date().toISOString(), data: {} });
 
     it("finishes a run from the log once the runtime reports it idle twice", async () => {
       const run = await startDeliveredRun("runtime-idle");
       run.session.getActivity.mockResolvedValue({ processing: false });
-      // An attached shell defers `session.idle` for as long as it runs, and it never holds a run open.
+      // An attached shell defers `session.idle` while it runs, but never holds a run open.
       run.session.listTasks.mockResolvedValue({ tasks: [{ kind: "shell", id: "dev-server", status: "running" }] });
       writeSessionEvents(run.copilotHome, run.sessionId, [
         { type: "user.message", timestamp: at(run, 500), data: { content: "hello" } },
@@ -3200,7 +3186,7 @@ describe("SessionManager run state", () => {
     it("keeps the run open while the runtime is processing, whatever the log ends with", async () => {
       const run = await startDeliveredRun("runtime-processing");
       run.session.getActivity.mockResolvedValue({ processing: true });
-      // The main agent is mid-turn while a sub-agent's turn end is the newest line in the shared log.
+      // The main agent is mid-turn while a sub-agent's turn end is the newest line in the log.
       writeSessionEvents(run.copilotHome, run.sessionId, [
         { type: "user.message", timestamp: at(run, 500), data: { content: "hello" } },
         { type: "assistant.turn_end", timestamp: at(run, 1_000), data: { turnId: "5" } },
@@ -3249,7 +3235,7 @@ describe("SessionManager run state", () => {
       const run = await startDeliveredRun("runtime-agent-notice");
       run.session.getActivity.mockResolvedValue({ processing: false });
       const idleSince = new Date().toISOString();
-      // The shell makes the runtime hold the notice (60 s on CLI 1.0.88) instead of waking the agent at once.
+      // The shell makes the runtime hold the notice instead of waking the agent at once.
       run.session.listTasks.mockResolvedValue({ tasks: [
         { kind: "agent", id: "reviewer", status: "idle", executionMode: "background", idleSince },
         { kind: "shell", id: "dev-server", status: "running" },
@@ -3923,9 +3909,6 @@ describe("SessionManager run state", () => {
       manager.startWork(sessionId, "hello");
       await flushMicrotasks();
 
-      // Write an events.jsonl with the current fake time as the mtime proxy —
-      // we'll check that the run record's lastEventAt is pushed forward by file
-      // mtime probing once we write a file and advance the watchdog.
       const eventsPath = join(sessionStateDir, "events.jsonl");
       await vi.advanceTimersByTimeAsync(59_000);
       writeFileSync(eventsPath, JSON.stringify({
@@ -3938,9 +3921,7 @@ describe("SessionManager run state", () => {
       await manager.waitForSessionWatchdogIdle(sessionId);
       await flushMicrotasks();
 
-      // The file's real mtime is close to wall-clock time so it will be
-      // greater than the fake-timer lastEventTime; the run record should have
-      // lastEventAt updated to the file's mtime.
+      // The file's real mtime beats the fake-clock lastEventTime, so lastEventAt takes the mtime.
       const activity = manager.getSessionActivity();
       expect(activity).toHaveLength(1);
       expect(activity[0].staleMs).toBeLessThan(60_000);

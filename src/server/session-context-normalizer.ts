@@ -341,8 +341,7 @@ export function normalizeLiveSessionContextEvent(
   const occurredAt = normalizeTimestamp(eventRecord, data, now);
 
   if (USAGE_EVENT_TYPES.has(eventType)) {
-    // Copilot input includes cache traffic; output includes reasoning. Generic
-    // usage shapes retain their existing additive contract.
+    // Copilot input includes cache traffic and output reasoning; other usage shapes are additive.
     const inclusive = options.provider === "copilot" && eventType === "assistant.usage";
     const modelUsage = extractTokenUsage(data, inclusive);
     const contextUsage = extractContextUsage(data, inclusive ? null : modelUsage);

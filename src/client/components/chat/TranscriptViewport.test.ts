@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createReactDomHarness } from "../../test-react-harness";
 import { ViewportKeeper } from "./TranscriptViewport";
 
-/** Stands in for the browser's ResizeObserver. `notify(element)` reports that the element changed size. */
+/** Stands in for ResizeObserver; `notify(element)` reports that the element changed size. */
 function stubResizeObserver() {
   const observers: Array<{ callback: () => void; elements: unknown[] }> = [];
   vi.stubGlobal("ResizeObserver", class {
@@ -38,11 +38,6 @@ afterEach(() => {
 });
 
 describe("ViewportKeeper with content above the reader that changes height long after it rendered", () => {
-  /**
-   * Six rows of 150px, the reader at the top of the fifth, in a browser that does not anchor
-   * scrolling. `grow` makes one row taller, as an image in it finishing loading would, which
-   * pushes the rows after it down.
-   */
   async function renderSixRows({ growingRow = 2, anchoring = false } = {}) {
     if (anchoring) vi.stubGlobal("CSS", { supports: () => true });
     const resizes = stubResizeObserver();
@@ -153,7 +148,7 @@ describe("ViewportKeeper with content above the reader that changes height long 
   });
 
   it("does not follow something that grows in view", async () => {
-    // The fifth row is the one at the top of the view: opening something in it pushes the sixth down.
+    // The fifth row is at the top of the view: opening something in it pushes the sixth down.
     const view = await renderSixRows({ growingRow: 5 });
 
     try {

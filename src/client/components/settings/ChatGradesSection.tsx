@@ -1,5 +1,4 @@
-// Settings › Usage › Chat grades: pick chats by date, model and origin, grade them with Copilot's
-// trajectory classifiers, and compare the labels per model in one chart.
+// Settings › Usage › Chat grades: grade picked chats with Copilot's classifiers, compare per model.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { X } from "lucide-react";
@@ -30,10 +29,7 @@ export function classifierName(classifier: string): string {
   return CLASSIFIER_NAMES[classifier] ?? classifier;
 }
 
-/**
- * Classifiers that describe a chat's structure rather than how it went: where tasks split, the
- * prompt's language, and the per-turn copy of the kind of work that session_taxonomy already shows.
- */
+// Classifiers about a chat's structure, not how it went; task_taxonomy repeats session_taxonomy.
 const HIDDEN_CLASSIFIERS: ReadonlySet<string> = new Set(["turn_splitting", "prompt_language", "task_taxonomy"]);
 
 function defaultRange(now = new Date()): { from: string; to: string } {
@@ -210,7 +206,7 @@ interface ChatGradesChartProps {
   onSegment: (segment: ChartSegment | null) => void;
 }
 
-/** Draws the chart with vega-embed in the current theme's colours and reports the segment a click lands on. */
+/** Draws the chart with vega-embed in theme colours and reports the segment a click lands on. */
 function ChatGradesChart({ classifier, modelName, selected, onSegment }: ChatGradesChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onSegmentRef = useRef(onSegment);

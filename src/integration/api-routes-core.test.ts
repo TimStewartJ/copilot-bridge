@@ -40,13 +40,7 @@ describe("Shutdown route", () => {
     ctx.sessionManager.gracefulShutdown = vi.fn(async () => {
       order.push("graceful");
     });
-    // The shutdown route sends its HTTP response BEFORE awaiting the
-    // graceful-shutdown chain and finally calling process.exit. If we restore
-    // exitSpy before that async chain finishes, the unmocked process.exit(0)
-    // can fire in this worker — or in the next worker that reuses this
-    // process — and silently kill it ("Worker exited unexpectedly"). Resolve
-    // exitFired only when the handler actually reaches process.exit so the
-    // spy stays in place for the entire async tail.
+    // Await exitFired: the route exits after replying; a real exit would kill the worker.
     let resolveExitFired: () => void = () => undefined;
     const exitFired = new Promise<void>((resolve) => { resolveExitFired = resolve; });
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
@@ -187,9 +181,7 @@ describe("Session stream route", () => {
       allowFreeform: false,
       requestedAt: "2026-04-29T12:00:00.000Z",
     };
-    // `subscribeWithSnapshot` is the linearization barrier, and its copy of the
-    // listing index is the one buffered cancellations refer to. Hydration only
-    // settles terminal cleanup; it must never replace what the barrier captured.
+    // Hydration only settles cleanup; it must never replace the subscribeWithSnapshot snapshot.
     ctx.sessionManager.hydratePendingInteractions = vi.fn().mockResolvedValue({
       pendingUserInputs: [],
       pendingElicitations: [],
@@ -578,8 +570,7 @@ describe("Attachment routes", () => {
     });
     if (!published.ok) throw new Error(published.error);
 
-    // Traversal must be rejected in both the attachment id and the session id,
-    // so an encoded path cannot reach another session's published files.
+    // Reject traversal in both ids, so an encoded path cannot reach another session's files.
     const cases: [string, string, number, string][] = [
       ["invalid attachment id", `/api/sessions/${sessionId}/attachments/..secret.txt`, 400, "invalid"],
       ["traversal in session id", `/api/sessions/x%2F..%2F${victimSessionId}/attachments/secret.txt`, 400, "sessionId"],

@@ -27,7 +27,7 @@ interface TaskSessionListProps {
   onBulkAction?: (action: BatchAction, sessionIds: string[]) => void;
   hasDraft?: (sessionId: string) => boolean;
   className?: string;
-  /** When false, hides the embedded SessionList new-chat button (e.g. when parent already provides one) */
+  /** False hides the embedded new-chat button (e.g. when the parent already provides one). */
   showNewButton?: boolean;
   activeLimit?: number;
 }
@@ -61,8 +61,7 @@ export default function TaskSessionList({
   const archivedQuery = useTaskArchivedSessionsQuery(task.id, archivedRequested);
   const archivedPages = archivedQuery.data?.pages;
   const archivedTotal = archivedPages?.[archivedPages.length - 1]?.total;
-  // The task's active sessions come from the shared list; its archived ones are read a page at a
-  // time from the task, never from the global archived list that holds every archived session.
+  // Active sessions come from the shared list; archived ones are paged from the task, not globally.
   const sortedSessions = useMemo(() => {
     const active = linkedSessions.filter((session) => !session.archived);
     const activeIds = new Set(active.map((session) => session.sessionId));
@@ -77,8 +76,7 @@ export default function TaskSessionList({
       .map((session) => ({ ...session, archived: true }));
     return [...sortTaskSessions(active), ...archived];
   }, [archivedPages, linkedSessions]);
-  // A link or unlink made elsewhere (another tab, an agent) changes which archived sessions the
-  // task has. The server pages only current links, so drop the old pages and load them again.
+  // A link change elsewhere alters the archived pages (server pages current links), so reload them.
   const linksRevision = task.sessionLinksRevision;
   const previousLinksRevisionRef = useRef(linksRevision);
   useEffect(() => {

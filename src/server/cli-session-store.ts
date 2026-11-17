@@ -1,16 +1,10 @@
-// Main-thread access to the Copilot CLI's session store (<copilot home>/session-store.db).
-//
-// Every operation runs in cli-session-store-worker.ts on one long-lived worker thread, in the
-// order it was asked for, so an open that an antivirus scan holds for seconds, or a delete waiting
-// for the CLI's write lock, never stalls the server's event loop. Callers wait for the answer;
-// nothing is cached or timed out, so results mean what they always did. The inline backend
-// (tests, BRIDGE_PROCESS_HOST=inline) runs the same function on the calling thread.
+// Ops run in order on one worker so slow opens never block the loop; no cache, no timeout.
 
 import { Worker } from "node:worker_threads";
 import { getProcessHost, resolveWorkerEntry, type HostWorker } from "./process-host.js";
 import type { CliCatalogRead, CliCatalogReadRequest, CliSessionStoreRequest } from "./cli-session-store-worker.js";
 
-/** Must match CLI_SESSION_STORE_WORKER_FLAG in the worker module, which the main thread never imports in worker mode. */
+/** Must match the worker's CLI_SESSION_STORE_WORKER_FLAG, which is not imported in worker mode. */
 const WORKER_FLAG = "bridgeCliSessionStoreWorker";
 
 interface Reply {
@@ -83,7 +77,7 @@ export async function deleteCliSessionStoreRows(copilotHome: string, sessionId: 
   await shared.run({ op: "delete", copilotHome, sessionId });
 }
 
-/** Deletes rows of disposable sessions that outlived their session-state directory. Returns their IDs. */
+/** Deletes rows of disposable sessions whose state directory is gone; returns their IDs. */
 export function sweepLeakedCliSessionStoreRows(opts: {
   copilotHome: string;
   idPrefix: string;

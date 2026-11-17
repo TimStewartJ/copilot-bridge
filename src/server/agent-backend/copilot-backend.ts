@@ -1,16 +1,4 @@
-// CopilotBackend — AgentBackend implementation that delegates to
-// `@github/copilot-sdk`.
-//
-// This file is the only place outside of agent-backend/index.ts that
-// imports the Copilot SDK on the server side (apart from the per-tool
-// legacy SDK tool registration and SDK-specific helpers which Step 2 owns).
-// SessionManager and SessionRunner consume AgentBackend / AgentSession
-// from this module and never reach for CopilotClient again.
-//
-// All previously-exposed rpc escape hatches (`backend.rpc`, `session.rpc`)
-// are now hidden behind typed methods. Callers reach for typed methods like
-// `forkSession`, `truncateHistory`, `getName`, etc.; this file knows about
-// the underlying SDK rpc namespaces.
+// AgentBackend on @github/copilot-sdk; callers use typed methods, never raw SDK rpc.
 
 import { CopilotClient } from "@github/copilot-sdk";
 import { ChildProcess } from "node:child_process";
@@ -95,8 +83,7 @@ const COPILOT_CAPABILITIES: AgentCapabilities = {
   costUsage: true,
   subAgents: true,
   images: true,
-  // The Copilot SDK does not expose a stdin-write API to the Bridge today.
-  // Claude Code (Step 3) will flip this to `true`.
+  // The Copilot SDK exposes no stdin-write API to the Bridge.
   bidirectionalStdin: false,
   externalToolEvents: true,
   forkBoundaries: true,
@@ -149,11 +136,7 @@ function readCodeChanges(value: unknown): AgentUsageCodeChanges | undefined {
   return { linesAdded: linesAdded ?? 0, linesRemoved: linesRemoved ?? 0, filesModified: filesModified ?? 0 };
 }
 
-/**
- * Map a Copilot SDK `TaskInfo` (agent or shell variant) to the backend-neutral
- * {@link AgentBackgroundTask}. Kept defensive because the `tasks` RPC is
- * `@experimental` and field presence varies across SDK builds.
- */
+/** Defensive: the `tasks` RPC is experimental and its fields vary across SDK builds. */
 function mapCopilotTaskInfo(raw: any): AgentBackgroundTask {
   const kind = raw?.type === "shell" ? "shell" : "agent";
   const numericActiveTime = typeof raw?.activeTimeMs === "number" ? raw.activeTimeMs : undefined;
@@ -259,16 +242,7 @@ interface CopilotRpcGuard {
   <T>(rpc: AgentRpcName, operation: () => Promise<T>): Promise<T>;
 }
 
-/**
- * Wraps a CopilotSession so the rest of the Bridge talks to AgentSession.
- * Method signatures intentionally mirror the SDK 1:1 — every typed method
- * delegates to the underlying rpc namespace, returning `undefined` when
- * the namespace is missing on older SDK builds, except native approval setup
- * and task lifecycle RPCs, which reject unsupported or malformed results.
- * RPC timeouts bound callers, not task ownership: raw task operations stay serialized until settlement.
- * Release deliberately has no timeout and joins one SDK detach forever. Its
- * acknowledgement does not prove that background processes have exited.
- */
+/** Release has no timeout on purpose, and its ack doesn't mean background processes exited. */
 class CopilotAgentSession implements AgentSession {
   private taskTail: Promise<void> = Promise.resolve();
   private modeTail: Promise<void> = Promise.resolve();
@@ -288,18 +262,13 @@ class CopilotAgentSession implements AgentSession {
     private readonly useNativeToolPermissions: boolean,
     private readonly excludedTools: readonly string[],
     private readonly logger: Pick<Console, "warn">,
-    /** Experimental Fusion context limit, given again on every switch to Fusion (see copilot-fusion.ts). */
+    /** Experimental Fusion context limit, given again on every switch to Fusion. */
     private readonly fusionContextTokens?: number,
-    /** The catalog's Fusion names for Auto tiers, read when a switch is made (see copilot-fusion.ts). */
+    /** The catalog's Fusion names for Auto tiers, read at each switch (see copilot-fusion.ts). */
     private readonly fusionTiers: () => FusionTierNames = () => new Map(),
   ) {}
 
-  /**
-   * Applies the Bridge's sub-agent models and keeps rubber-duck on a model from another family
-   * than the session's: re-applied on every committed model change of the session itself, however
-   * it was made (Bridge switch, `/model`, a deferred switch draining). Sub-agents log their own
-   * model changes into the session tagged with agentId; those are ignored.
-   */
+  /** Re-applied on each session model change; agentId-tagged sub-agent changes are ignored. */
   async startSubagentPlan(plan: SubagentPlan, initialModel: string | undefined): Promise<void> {
     if (plan.secondOpinion.length > 0 && typeof this.session.on === "function") {
       this.stopSubagentWatch = this.session.on((event: any) => {
@@ -325,8 +294,7 @@ class CopilotAgentSession implements AgentSession {
     }
   }
 
-  // Serialized and idempotent: each run applies the plan for the latest model seen. The queue holds
-  // the update itself, not the caller's timeout-bound wait, so a slow update cannot land after a newer one.
+  // Queues the update, not the caller's timed wait, so a slow one can't land after a newer one.
   private applySubagentPlan(plan: SubagentPlan): Promise<void> {
     const sid = typeof this.session?.sessionId === "string" ? this.session.sessionId.slice(0, 8) : "unknown";
     const raw = this.subagentTail.then(async () => {
@@ -345,7 +313,7 @@ class CopilotAgentSession implements AgentSession {
       this.appliedSubagents = key;
     });
     this.subagentTail = raw.catch(() => undefined);
-    // A failed apply leaves the session usable on the CLI user's settings, so it is logged, not thrown.
+    // A failed apply leaves the session usable on the CLI user's settings, so it is only logged.
     return this.rpc("session.updateSubagentSettings", () => raw).catch((error) => {
       this.logger.warn(
         `[copilot-backend] [${sid}] Failed to apply Bridge sub-agent settings; using CLI user settings: ${
@@ -362,7 +330,7 @@ class CopilotAgentSession implements AgentSession {
   private async withToolPermissions<T>(work: () => Promise<T>): Promise<T> {
     if (this.releasePromise) throw new Error("Session tool intake is closed for release");
     if (this.useNativeToolPermissions) {
-      // Configure the existing auto-approval policy once, instead of answering every prompt over RPC.
+      // Set the auto-approval policy once instead of answering every prompt over RPC.
       await (this.toolPermissionsReady ??= this.rpc("session.setPermissionMode", async () => {
         const permissions = this.session?.rpc?.permissions;
         if (typeof permissions?.setMode !== "function") {
@@ -445,7 +413,7 @@ class CopilotAgentSession implements AgentSession {
 
   async setModel(model: string, opts?: AgentSetModelOptions): Promise<AgentModelSwitchResult | undefined> {
     const target = toRuntimeModelSwitch(model, opts, this.fusionContextTokens, this.fusionTiers());
-    // SDK session.setModel() awaits model.switchTo but discards the result, which hides the compaction preflight.
+    // SDK session.setModel() discards switchTo's result, which hides the compaction preflight.
     const switchTo = this.session?.rpc?.model?.switchTo;
     if (typeof switchTo !== "function") {
       await this.rpc("session.setModel", () => this.session.setModel(target.modelId, target.options));
@@ -541,8 +509,7 @@ class CopilotAgentSession implements AgentSession {
     if (typeof elicit !== "function") {
       return Promise.reject(new Error("Asking the user from a tool is not available in this Copilot SDK build"));
     }
-    // Not bounded like other calls: it waits for a person, and Bridge's own rules for an
-    // unanswered question end the wait.
+    // Unbounded: it waits for a person, and the Bridge's rules for unanswered questions end it.
     return elicit.call(this.session.rpc.ui, request);
   }
 
@@ -825,9 +792,7 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig, fusionTiers?: F
     ? requestedFusionContext
     : undefined;
   const sdkConfig = toRuntimeSessionConfig(callerConfig, fusionContextTokens, fusionTiers);
-  // Apply on every create/resume, including helpers and sessions with a different model. Only
-  // Bridge tools marked defer "auto" load on demand; MCP servers stay loaded unless a server's
-  // own settings say otherwise.
+  // Every create/resume: only Bridge tools with defer "auto" load on demand; MCP tools stay loaded.
   sdkConfig.toolSearch = { enabled: true };
   if (sdkConfig.mcpServers !== undefined) sdkConfig.mcpServers = keepMcpToolsLoaded(sdkConfig.mcpServers);
   if (pendingInteractionEvents) {
@@ -855,34 +820,23 @@ function wrapCopilotSession(
   fusionTiers: () => FusionTierNames,
 ): CopilotAgentSession {
   if (pendingInteractionEvents) {
-    // The placeholder makes the Node SDK advertise elicitation and register
-    // event interest during create/resume. Remove it before exposing the
-    // session so only Bridge transport listeners can answer runtime requests.
+    // The placeholder makes the SDK subscribe; drop it so only Bridge listeners answer requests.
     session.registerElicitationHandler?.(undefined);
   }
   return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions, excludedTools, logger, fusionContextTokens, fusionTiers);
 }
 
-/** A runtime whose transport still looks alive must miss this many consecutive pings before it is declared lost. */
+/** Consecutive pings a runtime whose transport looks alive must miss before it is declared lost. */
 export const BACKEND_PING_ATTEMPTS = 3;
 export const BACKEND_PING_RETRY_DELAY_MS = 1_000;
-/**
- * A ping the runtime answered can still time out here: the SDK hands over one inbound message
- * per event-loop turn, so while the Bridge's main thread is busy a reply waits behind everything
- * that arrived before it. A timed-out ping therefore counts as a miss only when the runtime sent
- * nothing at all meanwhile. This many such pings (at least five minutes) are forgiven in one probe
- * before a runtime that keeps sending but never answers is declared lost after all.
- */
+/** Timed-out pings while the runtime still sends mean a busy Bridge; this many are forgiven. */
 export const BACKEND_PING_BEHIND_ATTEMPTS = 50;
 
 function identityKey(identity: ProcessIdentity): string {
   return `${identity.pid}:${identity.startMarker}`;
 }
 
-/**
- * Termination failures that prove nothing about the runtime: the process table could not be
- * observed in time, or the kill command ran out of time. A later attempt may still succeed.
- */
+/** Failures that prove nothing (table read or kill timed out); a later attempt may succeed. */
 function isRetryableTerminationFailure(result: Extract<ProcessTreeTerminationResult, { ok: false }>): boolean {
   return result.status === "snapshot-unavailable"
     || result.status === "deadline-exceeded"
@@ -899,16 +853,7 @@ function formatDisconnectDetail(error: unknown): string | undefined {
   return String(error);
 }
 
-/**
- * Wraps a CopilotClient as an AgentBackend. Constructor takes a
- * pre-built client so the factory can apply env / options resolution
- * in one place.
- *
- * Besides delegating, the backend watches the transport the SDK leaves
- * unobserved: the JSON-RPC connection close/error events, the runtime child
- * exiting, and stdin pipe errors. The SDK itself only flips `client.state`
- * on those, so without this every pending and future RPC would hang forever.
- */
+/** Also watches transport close, child exit and stdin errors; the SDK alone leaves RPCs hanging. */
 export class CopilotBackend implements AgentBackend {
   readonly id = "copilot" as const;
   readonly capabilities: AgentCapabilities = COPILOT_CAPABILITIES;
@@ -919,20 +864,16 @@ export class CopilotBackend implements AgentBackend {
   private stopping = false;
   private detachTransportWatchers: (() => void) | undefined;
   private healthProbe: Promise<boolean> | undefined;
-  /** Chunks read from the runtime's stdout. A count, not a time: only "anything since?" is asked. */
+  /** Chunks read from the runtime's stdout; a count, since only "anything since?" is asked. */
   private inboundChunks = 0;
   private inboundObserved = false;
   private readonly logger: Pick<Console, "warn" | "error">;
   private startPromise: Promise<unknown> | undefined;
   /** Set once by the first fence request and never cleared: a fenced backend never starts again. */
   private fenceRequested = false;
-  /** The current fence attempt. Cleared only after a retryable failure so a later caller can try again. */
+  /** The current fence attempt; cleared only after a retryable failure so a later one can retry. */
   private fencePromise: Promise<void> | undefined;
-  /**
-   * Processes a failed fence attempt may already have signalled but did not prove gone. The next
-   * attempt must re-check them before acknowledging: killing a parent orphans its surviving
-   * children, so the owned tree the next attempt starts from may no longer reach them.
-   */
+  /** The next fence re-checks these: a killed parent orphans children its tree can't reach. */
   private unverifiedFenceIdentities: ProcessIdentity[] = [];
   private ownedChild: ChildProcess | undefined;
   private ownedTree: ProcessTreeSnapshot | null = null;
@@ -1051,8 +992,7 @@ export class CopilotBackend implements AgentBackend {
     if (startup.status === "timed-out") throw new RuntimeFenceError("Cannot fence while SDK startup is still pending", true);
     const child = this.ownedChild;
     if (child && !this.ownedTree && child.exitCode === null && child.signalCode === null) {
-      // The startup capture can fail on a loaded host. A child whose exit has not been
-      // observed cannot have had its PID recycled, so its current tree is still ours.
+      // A child whose exit was not seen cannot have a recycled PID, so its tree is still ours.
       await this.captureOwnedTree(deadline);
       if (!this.ownedTree) {
         throw new RuntimeFenceError("Runtime fencing failed: snapshot-unavailable: could not capture the owned runtime process tree", true);
@@ -1066,9 +1006,7 @@ export class CopilotBackend implements AgentBackend {
     const owned = new Set(ownedIdentities.map(identityKey));
     const retained = (await this.recheckUnverifiedFenceIdentities(deadline, onPhase))
       .filter((identity) => !owned.has(identityKey(identity)));
-    // Sampling is breadth-first. Fence each native subtree once, then let the
-    // loader reap it before fencing the loader. Retained orphan identities remain
-    // in the list and still require their own identity-verified termination.
+    // Breadth-first: fence native subtrees before the loader; retained orphans get their own kill.
     const identities = [...this.ownedTree.descendants, ...retained, this.ownedTree.root];
     const verified = new Set<string>();
     for (const identity of identities) {
@@ -1120,11 +1058,7 @@ export class CopilotBackend implements AgentBackend {
     }
   }
 
-  /**
-   * Checks every process a previous attempt left unverified with one process-table read.
-   * Returns the ones still alive, which this attempt must terminate. An unreadable status
-   * proves nothing either way, so it fails the attempt without acknowledging ownership.
-   */
+  /** Returns survivors still alive; an unknown status fails the attempt, never acknowledges. */
   private async recheckUnverifiedFenceIdentities(
     deadline: Deadline,
     onPhase?: (observation: RuntimeFenceObservation) => void,
@@ -1234,20 +1168,7 @@ export class CopilotBackend implements AgentBackend {
     }
   }
 
-  /**
-   * Ping the runtime over the RPC channel. Coalesces concurrent probes. A
-   * single slow ping on a loaded host is not proof of loss, so while the
-   * transport still looks alive the probe retries timed-out pings and only
-   * declares the backend disconnected (once) after consecutive misses. A
-   * closed transport, exited process, or non-timeout failure still reports
-   * immediately.
-   *
-   * A timed-out ping is a miss only when the runtime was silent. When it sent
-   * anything since the ping went out, it is alive and the Bridge is behind on
-   * reading its replies (see BACKEND_PING_BEHIND_ATTEMPTS): the probe keeps
-   * pinging without counting, and any of its pings answering, however late,
-   * ends it as healthy.
-   */
+  /** Coalesced; a timed-out ping counts as a miss only if the runtime sent nothing meanwhile. */
   probeHealth(timeoutMs?: number, reason = "health-probe"): Promise<boolean> {
     if (this.healthProbe) return this.healthProbe;
     const probe = (async (): Promise<boolean> => {
@@ -1273,7 +1194,7 @@ export class CopilotBackend implements AgentBackend {
         } catch (error) {
           ping = Promise.reject(error);
         }
-        // A late failure of an abandoned ping (the connection closing, say) is reported by its own watcher.
+        // A late failure of an abandoned ping is reported by its own watcher.
         void ping.then(() => { answered = true; noteAnswer(); }, () => undefined);
         try {
           await boundRpc("backend.ping", () => Promise.race([ping, anyAnswer]), {}, timeoutMs);
@@ -1297,11 +1218,9 @@ export class CopilotBackend implements AgentBackend {
             timer.unref?.();
           })]);
           if (this.inboundObserved) {
-            // Judge silence only after the delay. After a long stall the timeout fires before the
-            // pipe is read, or even before the ping was written, so a reply needs these turns to show.
+            // After a stall the timeout can beat the pipe read, so judge silence after this.
             await retryDelay();
-            // A timer runs before its turn's I/O. A second timer cannot run before the next turn,
-            // so the pipe is read once more before silence is judged.
+            // A second timer runs only after this turn's I/O, so the pipe is read once more.
             await new Promise<void>((resolve) => {
               const timer = setTimeout(resolve, 1);
               timer.unref?.();
@@ -1367,8 +1286,7 @@ export class CopilotBackend implements AgentBackend {
     }
     if (connection && typeof connection.onError === "function") {
       const errorDisposable = connection.onError((error: unknown) => {
-        // Reader errors do not always end the stream; confirm with a probe
-        // instead of declaring the backend dead on a single bad frame.
+        // Reader errors do not always end the stream; probe rather than fail on one bad frame.
         this.logger.warn(`[copilot-backend] JSON-RPC connection error: ${formatDisconnectDetail(error) ?? "unknown"}`);
         void this.probeHealth(undefined, "connection-error");
       });
@@ -1381,9 +1299,7 @@ export class CopilotBackend implements AgentBackend {
       };
       child.once("exit", onExit);
       disposers.push(() => child.off?.("exit", onExit));
-      // Only once the SDK's reader is attached: a first `data` listener would start the stream
-      // flowing and swallow what the reader has not seen. The factory builds stdio backends only;
-      // over TCP stdout carries logs, not replies, and must not be read as a sign of life.
+      // Add after the SDK reader or `data` would eat its replies; over TCP, stdout is only logs.
       const stdout = connection ? child.stdout : undefined;
       if (stdout && typeof stdout.on === "function") {
         const onData = () => { this.inboundChunks += 1; };
@@ -1439,7 +1355,7 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async listModels(): Promise<AgentModelInfo[]> {
-    // Cached for this client's lifetime, as the SDK's own listModels does; refreshing models rotates the client.
+    // Cached for the client's lifetime like the SDK's listModels; refreshing models rotates it.
     this.modelCatalog ??= this.rpc("backend.listModels", () => this.client.rpc.models.list({})).then((list) => {
       this.fusionTierNames = fusionTierNamesFromList(list);
       return modelCatalogFromList(list);
@@ -1462,9 +1378,7 @@ export class CopilotBackend implements AgentBackend {
     const sessions = (this.client as any).rpc?.sessions;
     const checkInUse = sessions?.checkInUse;
     if (typeof checkInUse !== "function") return undefined;
-    // This optional UI probe can queue behind active turns on the shared RPC
-    // channel. A timeout means the indicator is unavailable, not that the
-    // backend is dead; transport watchers and critical RPCs still detect loss.
+    // Optional UI probe that can queue behind turns; a timeout means unknown, not a dead backend.
     const result = await boundRpc(
       "backend.checkSessionsInUse",
       () => checkInUse.call(sessions, { sessionIds: [...sessionIds] }),
@@ -1504,10 +1418,7 @@ export class CopilotBackend implements AgentBackend {
     return this.wrapSession(session, prepared, model);
   }
 
-  /**
-   * The runtime forgets the experimental Fusion context limit on resume, and a resume config would
-   * give it to whatever model the chat is on, so it goes back only onto a chat that is on Fusion.
-   */
+  /** Resume forgets the Fusion context limit; it is restored only onto a chat still on Fusion. */
   private async restoreFusionContext(
     sessionId: string,
     session: any,
@@ -1526,10 +1437,7 @@ export class CopilotBackend implements AgentBackend {
     }
   }
 
-  /**
-   * A chat saved on the retired HydraFusion preview resumes on a model the runtime no longer runs, so
-   * it moves to Fusion High. Returns the session's model from the runtime, which the sub-agent plan also needs.
-   */
+  /** Moves chats off the retired HydraFusion preview to Fusion High; returns the live model. */
   private async leaveRetiredModel(sessionId: string, session: any): Promise<string | undefined> {
     const get = session?.rpc?.model?.getCurrent;
     if (typeof get !== "function") return undefined;
@@ -1701,7 +1609,7 @@ export class CopilotBackend implements AgentBackend {
   }
 }
 
-/** Token auth (`--auth-token-env`) omits `authInfo.login`; the login is only on the Copilot user. */
+/** Token auth (`--auth-token-env`) omits `authInfo.login`; only the Copilot user has it. */
 function accountLogin(authInfo: any): string | null {
   const login = authInfo?.login ?? authInfo?.copilotUser?.login;
   return typeof login === "string" && login.trim() ? login.trim() : null;

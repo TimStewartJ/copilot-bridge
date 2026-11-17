@@ -25,7 +25,7 @@ const MODELS = [
 
 describe("model roles in settings", () => {
   it("infers roles from settings made before roles only where they already equal a tier", () => {
-    // Tim's real settings on 25 Oct 2026: default sol/xhigh (no tier matches), deferred worker = Fast.
+    // Real-world settings: default sol/xhigh (no tier matches), deferred worker = Fast.
     const store = storeWith({
       model: "gpt-6.1-sol", reasoningEffort: "xhigh", contextTier: "long_context",
       modelPresets: PRESETS, deferWorker: { model: "gpt-6-luna", reasoningEffort: "max", contextTier: "long_context" },

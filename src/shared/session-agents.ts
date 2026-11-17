@@ -1,25 +1,10 @@
-// Shared types for surfacing background + child agents in a session.
-//
-// The Copilot SDK maintains an authoritative per-session task registry
-// (`session.rpc.tasks.list()`), which the Bridge projects rather than
-// inferring. These shapes are the backend-neutral projection consumed by both
-// the server DTO/registry and the React client.
-//
-// A core design rule (see session-agent-registry.ts): never present stale
-// registry data as live truth. Counts carry an explicit `source` so the UI can
-// distinguish authoritative live data from a last-seen snapshot or unknown
-// state (e.g. after a restart, before any refresh).
+// Projection of the SDK task registry; counts carry `source` so stale data never looks live.
 
 export type AgentTaskStatus = "running" | "idle" | "completed" | "failed" | "cancelled";
 
 export type AgentExecutionMode = "sync" | "background";
 
-/**
- * Backend-neutral projection of a single SDK agent task. Sensitive free-text
- * fields (`prompt`, `result`, `latestResponse`, `error`) are only included by
- * the authorized per-session endpoint and are truncated; they are never placed
- * on the global bus or in session-list rows.
- */
+/** Free-text fields: truncated, per-session endpoint only; never on the bus or in list rows. */
 export interface SessionAgentTask {
   /** Authoritative task instance id (e.g. "explore-docs"). Stable across the task lifetime. */
   id: string;
@@ -38,7 +23,7 @@ export interface SessionAgentTask {
   completedAt?: string;
   /** Active execution time in ms over the periods of work that have ended, when reported. */
   activeTimeMs?: number;
-  /** When the period of work in flight began, when reported. Absent while the agent is not working. */
+  /** When the current stretch of work began, if reported; absent while the agent is not working. */
   activeStartedAt?: string;
   /** When the agent entered idle (awaiting a follow-up message), when reported. */
   idleSince?: string;
@@ -53,19 +38,10 @@ export interface SessionAgentTask {
   latestResponse?: string;
 }
 
-/**
- * Freshness provenance for agent counts.
- * - `live`: refreshed from a live cached SDK session within the freshness window.
- * - `lastSeen`: a previous live snapshot that may now be stale (e.g. the session
- *   object was evicted, or the freshness window elapsed without a refresh).
- * - `unknown`: no trustworthy data (e.g. after restart before any refresh).
- */
+/** live: fresh from SDK; lastSeen: earlier snapshot, maybe stale; unknown: nothing trustworthy. */
 export type AgentCountsSource = "live" | "lastSeen" | "unknown";
 
-/**
- * Counts-only summary safe to place on the global bus and in session-list rows.
- * `running` + `idle` are the non-terminal background agents worth surfacing.
- */
+/** Counts only, safe for the global bus and list rows; `running` + `idle` are worth surfacing. */
 export interface BackgroundAgentsSummary {
   /** Background agents actively executing. */
   running: number;
@@ -107,19 +83,10 @@ export function isTerminalAgentStatus(status: AgentTaskStatus): boolean {
   return TERMINAL_AGENT_STATUSES.includes(status);
 }
 
-/**
- * Why an agent was not dismissed.
- * - `unavailable`: the session is not loaded, so its runtime cannot be asked.
- * - `not-found`: the runtime no longer tracks the agent.
- * - `running`: the agent is working; it has to be stopped first.
- * - `refused`: the runtime kept the agent on its list.
- */
+/** unavailable: not loaded; not-found: untracked; running: stop first; refused: runtime kept it. */
 export type AgentDismissRefusal = "unavailable" | "not-found" | "running" | "refused";
 
-/**
- * Outcome of dismissing an agent: ending one that waits for a follow-up and taking it off the
- * runtime's list. Only an agent off that list stops counting as one of the session's live contexts.
- */
+/** Only an agent off the runtime's list stops counting as one of the session's live contexts. */
 export type AgentDismissResult =
   | { dismissed: true }
   | { dismissed: false; reason: AgentDismissRefusal };
@@ -130,11 +97,7 @@ export function emptyBackgroundAgentsSummary(
   return { running: 0, idle: 0, failed: 0, total: 0, source };
 }
 
-/**
- * True when the summary indicates background agents the UI should actively
- * surface (running or idle) AND the data is trustworthy (live). Stale/unknown
- * data must never drive a live "agent running" indicator.
- */
+/** Only live data may drive the running indicator; lastSeen/unknown never do. */
 export function hasSurfacedBackgroundAgents(
   summary: BackgroundAgentsSummary | undefined,
 ): boolean {
@@ -142,11 +105,7 @@ export function hasSurfacedBackgroundAgents(
   return summary.running > 0 || summary.idle > 0;
 }
 
-/**
- * Derive a counts-only summary from a set of background tasks. Only
- * background-mode tasks are counted; sync subagents are surfaced through the
- * timeline/turn rendering, not the background indicator.
- */
+/** Counts background-mode tasks only; sync sub-agents show in the timeline instead. */
 export function summarizeBackgroundAgents(
   tasks: readonly SessionAgentTask[],
   source: AgentCountsSource,

@@ -1,6 +1,4 @@
-// Calendar events the Bridge owns: the person's own appointments and the ones agents add for them.
-// Dates the rest of the Bridge keeps (deadlines, revisits, runs) are not stored here; calendar-view.ts
-// lays them beside these events.
+// Bridge-owned events only; deadlines, revisits and runs are merged in by calendar-view.ts.
 
 import type { DatabaseSync } from "./db.js";
 import { runImmediateTransaction } from "./db-transaction.js";
@@ -235,10 +233,7 @@ export function createCalendarStore(db: DatabaseSync, bus: GlobalBus) {
     return (rows as Array<Record<string, unknown>>).map(rowToEvent);
   }
 
-  /**
-   * Adds events, all or none. An event whose externalId already exists updates that event in place:
-   * the body replaces its fields, except that it keeps its task when the body names none.
-   */
+  /** All or none; a known externalId updates that event, keeping its task unless one is given. */
   function saveEvents(bodies: unknown, createdBy: CalendarEvent["createdBy"] = "user"): SavedCalendarEvent[] {
     const list = checkBatchSize(bodies, "events");
     const label = (index: number) => list.length > 1 ? `events[${index}]: ` : "";
@@ -282,7 +277,7 @@ export function createCalendarStore(db: DatabaseSync, bus: GlobalBus) {
     return saved;
   }
 
-  /** Changes the whole event (every repeat). A field set to null is cleared; the result is checked whole. */
+  /** Changes every repeat of the event; a null field is cleared and the result is checked whole. */
   function updateEvent(id: string, body: unknown): CalendarEvent {
     if (!isRecord(body)) fail("Request body must be an object");
     rejectUnknown(body);

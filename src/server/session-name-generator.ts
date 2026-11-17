@@ -40,10 +40,7 @@ ${content}
 
 const TRAILING_CLOSING_TAGS = /(?:\s*<[/|][a-z][\w-]*\|?>)+\s*$/i;
 
-/**
- * Removes closing tags and `<|…|>` markers left at the end of a title, as in
- * "Fix Login Redirect</session-title>". Titles stored while the helper was asked for tags have them.
- */
+/** Strips closing tags and `<|…|>` markers that end older stored titles ("Fix Login</title>"). */
 export function stripTrailingClosingTags(title: string): string {
   return title.replace(TRAILING_CLOSING_TAGS, "");
 }
@@ -52,10 +49,7 @@ const JSON_TITLE = /\{\s*"title"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}/g;
 /** A reply that set out to be the JSON, whether or not a title can be read from it. */
 const JSON_ATTEMPT = /^\s*(?:```|\{)|"title"/;
 
-/**
- * The title in the last `{"title": "..."}` of the reply. Models put code fences or stray text
- * around the object, and one that drafts aloud gives its answer last.
- */
+/** Uses the last `{"title": ...}`: models wrap it in fences or text, and drafts end with it. */
 function titleFromJson(rawOutput: string): string | undefined {
   const literal = [...rawOutput.matchAll(JSON_TITLE)].at(-1)?.[1];
   if (literal === undefined) return undefined;
@@ -66,11 +60,7 @@ function titleFromJson(rawOutput: string): string | undefined {
   }
 }
 
-/**
- * How the helper model framed its reply: as the JSON it was asked for, as JSON that cannot be
- * read, or as plain text. The model is picked by price and so changes without a release; this is
- * where that shows.
- */
+/** The helper model is chosen by price and changes without a release; this tracks reply shape. */
 export function describeTitleReply(rawOutput: unknown): "json" | "unreadable" | "bare" | "none" {
   if (typeof rawOutput !== "string") return "none";
   if (titleFromJson(rawOutput) !== undefined) return "json";

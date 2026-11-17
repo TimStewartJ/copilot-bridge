@@ -50,7 +50,7 @@ function agentRecord(agent: string, partial: Partial<TranscriptAgent> = {}): Tra
   };
 }
 
-/** Renders one stretch of `loaded` the way the chat does: agents attached, stand-ins for launches not loaded. */
+/** Renders one stretch like the chat: agents attached, stand-ins for launches not loaded. */
 function render(
   loaded: ChatEntry[],
   props: {

@@ -225,7 +225,7 @@ function TaskMomentumEditor({
                       setDrafts((current) => ({ ...current, [field.key]: nextValue }));
                     }}
                     onBlur={(event) => {
-                      // Tabbing to this field's Clear keeps the edit open, so Clear stays there to press.
+                      // Tabbing to this field's Clear keeps the edit open so Clear can be pressed.
                       if ((event.relatedTarget as HTMLElement | null)?.dataset?.clearField === field.key) return;
                       void persistField(field.key, drafts[field.key]);
                     }}
@@ -304,7 +304,7 @@ function toFieldValues(task: Task): FieldValues {
   };
 }
 
-/** A typed revisit ("fri", "in 2 weeks 3pm") as the date-time field value; 9:00 when no time is said. */
+/** A typed revisit ("fri", "in 2 weeks 3pm") as a date-time field value; 9:00 if no time given. */
 function readRevisit(value: string): string {
   const when = parseWhen(value.trim());
   return when ? toDateTimeInputValue(whenToDate(when, 9).toISOString()) : "";

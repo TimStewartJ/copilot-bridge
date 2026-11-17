@@ -45,7 +45,7 @@ export function createReadStateStore(db: DatabaseSync) {
     return row?.lastReadAt ?? readThrough;
   }
 
-  /** Marks many conversations read through one moment in a single statement; a later read time is kept. */
+  /** Marks many conversations read in one statement; a later existing read time is kept. */
   function markReadMany(sessionIds: readonly string[], readThroughActivityAt = new Date().toISOString()): void {
     if (sessionIds.length === 0) return;
     db.prepare(
@@ -70,10 +70,7 @@ export function createReadStateStore(db: DatabaseSync) {
     db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(sessionId);
   }
 
-  /**
-   * Puts a conversation's read point back to what it was, only if nobody moved it since `expected`
-   * was set. Returns false when it had moved (the user read it meanwhile), leaving it alone.
-   */
+  /** Restores the read point unless it moved since `expected` (then returns false, unchanged). */
   function restoreRead(sessionId: string, previous: string | null, expected: string): boolean {
     const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as any;
     if (!row || row.lastReadAt !== normalizeTimestamp(expected)) return false;

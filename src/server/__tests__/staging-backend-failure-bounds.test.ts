@@ -58,8 +58,7 @@ describe("lazy staging backend startup failures are bounded", () => {
     expect(mod.__testing.hasRestorableTarget(PREFIX)).toBe(false);
     expect(mod.__testing.hasLazyRouter(PREFIX)).toBe(false);
     expect(mod.__testing.getStartFailure(PREFIX)).toBeUndefined();
-    // With the target gone the prefix falls through to the normal 404 path
-    // instead of answering 502 forever.
+    // With the target gone the prefix falls through to 404 instead of answering 502 forever.
     expect(mod.getStagingRouter(PREFIX)).toBeUndefined();
   });
 
@@ -75,8 +74,7 @@ describe("lazy staging backend startup failures are bounded", () => {
     for (let i = 0; i < 3; i++) mod.__testing.recordStartFailure(PREFIX, `boom ${i}`);
     expect(mod.__testing.hasRestorableTarget(PREFIX)).toBe(false);
 
-    // A dist directory that predates the retirement stays retired, so discovery
-    // will not immediately re-register the backend it just gave up on.
+    // A dist older than the retirement stays retired, so discovery won't re-register it at once.
     expect(mod.isPreviewRetiredAfterStartFailures(PREFIX, retiredAtLowerBound - 1_000)).toBe(true);
 
     // A rebuilt preview (newer artifacts) clears the tombstone.
@@ -106,8 +104,7 @@ describe("lazy staging backend startup failures are bounded", () => {
     const stagingDir = makeTestDir("staging-throwing-preview");
     const target = { ...createPreviewTarget(stagingDir), prefix: PREFIX };
 
-    // Resource-limit enforcement runs before restore and used to bypass the
-    // backoff entirely when it threw, letting the next request respawn at once.
+    // A throwing limit check before restore must still back off, not let the next request respawn.
     const result = await mod.__testing.startRestorableBackend(PREFIX, target, "test", {
       enforceLimits: async () => { throw new Error("resource limit exceeded"); },
     });
@@ -144,8 +141,7 @@ describe("lazy staging request rejections", () => {
     const stagingDir = makeTestDir("staging-lazy-reject");
     const target = { ...createPreviewTarget(stagingDir), prefix: PREFIX };
     mod.rememberRestorablePreviewTarget(target);
-    // A recorded failure puts the prefix in its retry cooldown, so the handler
-    // reaches the failure response path without spawning a backend.
+    // A recorded failure puts the prefix in cooldown, so the handler fails without spawning.
     mod.__testing.recordStartFailure(PREFIX, "boom");
 
     const router = mod.__testing.getLazyRouter(PREFIX);

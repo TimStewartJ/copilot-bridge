@@ -24,10 +24,7 @@ export function describeWaiting(sessions: number, jobs: number, operations = 0):
   return `after ${parts.join(" and ")} ${sessions + jobs + operations === 1 ? "finishes" : "finish"}`;
 }
 
-/**
- * One quiet line. A pending restart blocks nothing and may stay pending for hours, so it is a note
- * about the background rather than an alert: no colour, no layout beyond a single row.
- */
+/** One quiet line, not an alert: a pending restart blocks nothing and may wait for hours. */
 export default function RestartNotice({
   notice,
   waitingSessionTitles = [],

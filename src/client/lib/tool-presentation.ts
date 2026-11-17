@@ -2,11 +2,7 @@ import type { ToolArgs, ToolCall } from "../api";
 import type { ToolCallStatus } from "./tool-call-status";
 import { summarizeToolArgs } from "./tool-args";
 
-/**
- * Turns a raw tool call ("powershell", `{"command": "git status", ...}`) into the short sentence a
- * person would say about it ("Ran git status"). The raw name and arguments stay available in the
- * row's details; this only decides what the collapsed row reads as.
- */
+// Maps a raw tool call to the short phrase its collapsed row shows; raw details stay in the row.
 
 export type ToolIconName =
   | "terminal"
@@ -157,11 +153,6 @@ const WEB_SEARCH: ToolVerb = {
   target: (args) => ({ text: stringArg(args, "query", "q"), mono: false }),
 };
 
-/**
- * A call about another agent names it. The call only carries the agent's runtime id, so with a
- * name on hand the row reads "Checked moves-agent"; without one it falls back to "Checked agent"
- * and the start of the id.
- */
 function agentTarget(named: { active: string; done: string }): ToolVerb["target"] {
   return (args, context) => {
     const agentId = stringArg(args, "agent_id");
@@ -354,19 +345,13 @@ export function describeToolCall(
   return { verb: humanize(name), target: bound(summary || undefined), mono: false, icon: "tool" };
 }
 
-/**
- * A call as one phrase, for a line that cannot set the target apart from the verb. A call that
- * says what it is for is left at that: the command beside it would read as more of the sentence.
- */
+/** A call as one phrase; a self-described call keeps just its verb, not the command. */
 export function describeToolCallBriefly(presentation: ToolPresentation): string {
   if (presentation.selfDescribed) return presentation.verb;
   return [presentation.verb, presentation.target].filter(Boolean).join(" ");
 }
 
-/**
- * "420ms", "3.2s", "2m 14s", "1h 04m" — compact enough to sit at the end of a row. A clock that is
- * still ticking passes `wholeSeconds`, because "7.0s" turning into "8.0s" is noise.
- */
+/** "420ms", "3.2s", "2m 14s", "1h 04m"; a ticking clock passes `wholeSeconds`. */
 export function formatDuration(ms: number, options: { wholeSeconds?: boolean } = {}): string {
   if (!Number.isFinite(ms) || ms < 0) return "";
   if (options.wholeSeconds && ms < 60_000) return `${Math.floor(ms / 1000)}s`;

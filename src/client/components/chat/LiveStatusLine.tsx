@@ -7,11 +7,11 @@ interface LiveStatusLineProps {
   detail?: string;
   /** The longer explanation, shown on hover. */
   description?: string;
-  /** The run is on Autopilot: the label takes the agent colour and the Autopilot mark turns beside it. */
+  /** On Autopilot: the label takes the agent colour and the Autopilot mark turns beside it. */
   autopilot?: boolean;
 }
 
-/** The run's state while there is nothing of its own to show yet, as a line of text, not a badge. */
+/** The run's state while it has nothing of its own to show yet, as text, not a badge. */
 export default function LiveStatusLine({ label, detail, description, autopilot = false }: LiveStatusLineProps) {
   return (
     <div

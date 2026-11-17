@@ -25,11 +25,7 @@ export interface KeyEventDomOptions {
   baseInstall?: () => DomShim;
 }
 
-/**
- * The shared DOM shim intentionally keeps document.addEventListener a no-op, so
- * document-level key handling cannot be observed. This wraps the shim with a
- * real listener registry for the keydown-driven behavior under test.
- */
+/** The shared shim no-ops document listeners; this adds a real registry for keydown tests. */
 export function createKeyEventDom(options: KeyEventDomOptions = {}): KeyEventDom {
   const baseInstall = options.baseInstall ?? installDomShim;
   let dispatch: KeyEventDom["dispatchKeyDown"] | null = null;
@@ -119,11 +115,7 @@ function findElementById(root: any, id: string): any | null {
   return null;
 }
 
-/**
- * Resolves the accessible name of a dialog element the way assistive tech does:
- * aria-labelledby wins and its IDREFs are dereferenced in order, otherwise
- * aria-label is used.
- */
+/** Accessible name as assistive tech reads it: aria-labelledby IDREFs in order, else aria-label. */
 export function resolveAccessibleName(root: any, dialog: any): string {
   const labelledBy = dialog.getAttribute("aria-labelledby");
   if (labelledBy) {

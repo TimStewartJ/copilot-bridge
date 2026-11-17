@@ -137,29 +137,18 @@ const INITIAL_PAGE_SIZE = 50;
 /** Older pages make the server read the whole event log, so fewer, larger pages cost less. */
 const OLDER_PAGE_SIZE = 200;
 const STREAM_RENDER_INTERVAL_MS = 60;
-/**
- * Minimum spacing between background history refreshes. The first request after a quiet period
- * reads immediately; further ones inside the window collapse into one trailing read, so a burst
- * of tool events cannot storm the reader.
- */
+/** Leading read, then one trailing read per window, so tool-event bursts can't storm the reader. */
 const HISTORY_REFRESH_THROTTLE_MS = 250;
-/** Most entries a refresh of the newest history re-reads; older loaded entries are kept as they are. */
+/** Most entries a refresh of the newest history re-reads; older loaded ones stay as they are. */
 const HISTORY_REFRESH_MAX_LIMIT = 200;
-/**
- * Cached history paints instantly, so a sync that lands inside this window never shows an
- * indicator; anything slower gets a clear, full-width strip instead of a flash.
- */
+/** A sync faster than this shows no indicator; slower ones get a full-width strip, not a flash. */
 const HISTORY_SYNC_INDICATOR_DELAY_MS = 150;
 const LIVE_STREAMING_MESSAGE_ID = "live-assistant-stream";
 /** How long attaching to a run's stream may take before the status line calls it reconnecting. */
 const RECONNECT_LABEL_DELAY_MS = 600;
 /** How long a pause after visible output must last before the status line appears under it. */
 const MID_RUN_STATUS_DELAY_MS = 350;
-/**
- * The chat column width from which a reply's hover actions fit in the margin beside the text: the
- * 56rem rail plus room on its right for the control. It is measured on the column itself because
- * the task rail and side panels change it independently of the viewport.
- */
+/** Column width (not viewport) where reply actions fit beside the rail; side panels change it. */
 const ACTION_GUTTER_MIN_COLUMN_PX = 1024;
 const CHAT_RAIL_CLASS = DS.layout.readingColumn;
 const SEARCH_MATCH_PAGE_SIZE = 20;
@@ -211,12 +200,9 @@ interface ChatViewProps {
   composerPlaceholder?: string;
   /** Incremented to move focus into the composer (desktop only). */
   composerFocusRequest?: number;
-  /**
-   * Where the status line (model, tools, context) goes when the host shows it elsewhere, such as
-   * Helm's phone menu: rendered into this element, or not at all while it is null.
-   */
+  /** Where a host such as Helm's phone menu renders the status line; null hides it. */
   statusLineTarget?: HTMLElement | null;
-  /** Told whether the status line reports a problem, so a host that folds it away can mark its opener. */
+  /** Whether the status line has a problem, so a host that folds it away can mark its opener. */
   onStatusLineProblemChange?: (problem: boolean) => void;
 }
 
@@ -250,10 +236,7 @@ function getReasoningShapeKey(blocks: LiveReasoningBlock[]): string {
     .join("|");
 }
 
-/**
- * Thinking arrives a few characters at a time. A block opening, closing or being committed shows
- * at once; text that only grew is batched to the same cadence as streamed reply text.
- */
+/** Block opens, closes and commits show at once; growing text is batched like streamed replies. */
 function useThrottledReasoning(blocks: LiveReasoningBlock[], intervalMs: number): LiveReasoningBlock[] {
   const [displayBlocks, setDisplayBlocks] = useState(blocks);
   const lastUpdateRef = useRef(0);
@@ -294,10 +277,7 @@ function useSustained(value: boolean, delayMs: number): boolean {
   return value && sustained;
 }
 
-/**
- * Runs `onAdvance` when `counter` rises while `scope` stays the same. A new scope only re-bases
- * the comparison, so a per-session counter never fires for the session being navigated to.
- */
+/** Runs `onAdvance` when `counter` rises within one `scope`; a new scope only re-bases it. */
 function useCounterAdvance(scope: unknown, counter: number, onAdvance: () => void): void {
   const seenRef = useRef({ scope, counter });
   const onAdvanceRef = useRef(onAdvance);
@@ -318,11 +298,7 @@ type FailedOptimisticChatMessage = ChatMessage & {
   delivery: ChatMessageDelivery & { failed: true };
 };
 
-/**
- * How far back a refresh re-reads, shallowest first: "live" the newest page, which is all a run
- * in flight rewrites; "tail" the newest entries a finished run may have touched; "window" every
- * loaded entry, because what is loaded may no longer match disk.
- */
+/** Shallowest first: live=newest page, tail=finished run's entries, window=all loaded. */
 const HISTORY_REACHES = ["live", "tail", "window"] as const;
 type HistoryReach = (typeof HISTORY_REACHES)[number];
 
@@ -336,20 +312,20 @@ interface HistoryRefresh {
   reach?: HistoryReach;
   /** Routine refreshes are the steady state of a run; they show no strip and disable no actions. */
   silent?: boolean;
-  /** Replace the run's stream even if it looks healthy; one that died while the tab slept is otherwise kept. */
+  /** Replace the run's stream even if it looks healthy: it may have died while the tab slept. */
   reconnect?: boolean;
 }
 
-/** What one disk read fetches: "load" the newest page for a navigation, or a refresh of some reach. */
+/** One disk read: "load" the newest page for a navigation, or a refresh of some reach. */
 type HistoryReadMode = "load" | HistoryReach;
 
 /** The open session's disk reads. Replaced on every navigation and inert once it is left. */
 interface HistoryReader {
   /** The navigation's own read, behind the loading skeleton. */
   load(): void;
-  /** Ask for a background refresh. Requests that arrive before it can start collapse into one read. */
+  /** Ask for a background refresh; requests before it starts collapse into one read. */
   refresh(request?: HistoryRefresh): void;
-  /** Drop a visible refresh that is in flight: its result predates the send about to start a run. */
+  /** Drop an in-flight visible refresh: its result predates the send about to start a run. */
   abandonVisibleRefresh(): void;
 }
 
@@ -521,10 +497,7 @@ const RUN_NOTICE_LABELS: Record<RunNotice["kind"], string> = {
   command: "Command output",
 };
 
-/**
- * Renders a run outcome that `events.jsonl` does not contain. Keeping it outside the transcript is
- * what lets disk history stay the sole authority for committed content.
- */
+/** A run outcome not in `events.jsonl`, kept outside the transcript so disk stays the authority. */
 function RunNoticeCard({ notice, onRetry, retryDisabled, retrying, retryError }: {
   notice: RunNotice;
   onRetry?: () => void;
@@ -604,7 +577,7 @@ export default function ChatView({
   const targetSourceEventId = routeSearchParams.get("message");
   const historyOnlyMode = routeSearchParams.get("history") === "1";
   const searchQuery = routeSearchParams.get("search")?.trim() ?? "";
-  // A search limited to dates passes its range on, so stepping through matches skips the same messages.
+  // A date-limited search passes its range on, so stepping through matches skips the same ones.
   const searchAfter = routeSearchParams.get("searchAfter") ?? "";
   const searchBefore = routeSearchParams.get("searchBefore") ?? "";
   const requestedMatchOffset = parseNonNegativeInteger(routeSearchParams.get("matchOffset"));
@@ -615,16 +588,13 @@ export default function ChatView({
     entries, entriesRef, agentRecords, applyAgentRecords, hasMore, firstItemIndex,
     historyFetchedAtRef, sessionIdRef, applyHistory,
   } = useChatHistoryWindow({ sessionId, keepViewportRef, onRenderedReadThrough });
-  /**
-   * Client-owned optimistic sends (in flight or failed). They live outside `entries` so the
-   * committed window stays purely disk-derived.
-   */
+  /** Optimistic sends, in flight or failed; kept out of `entries` so that stays disk-derived. */
   const [pendingSends, setPendingSends] = useState<PendingSend[]>([]);
   /** Messages the agent never got, as the last history read had them. */
   const [unsentMessages, setUnsentMessages] = useState<readonly UnsentMessageView[]>(NO_UNSENT_MESSAGES);
   /** Not-sent messages discarded (or being discarded) or resent here, hidden at once. */
   const [discardedUnsentIds, setDiscardedUnsentIds] = useState<ReadonlySet<string>>(NO_IDS);
-  /** Every not-sent message history has listed in this chat; one that left the list was resolved. */
+  /** Every unsent message history has listed here; one that left the list was resolved. */
   const [listedUnsentIds, setListedUnsentIds] = useState<ReadonlySet<string>>(NO_IDS);
   /** The chat a first send in this view created; its sends come along when the view moves to it. */
   const adoptedDraftSessionRef = useRef<string | null>(null);
@@ -873,12 +843,9 @@ export default function ChatView({
     showJumpToLatest, setShowJumpToLatest, cancelFollowScroll, clearProgrammaticScroll,
     settleProgrammaticScroll, getMessageTopWithinScroller, scrollToLatest, handleUserScrollIntent,
   } = useChatScroll(isStreaming || creating || pendingInteractionCount > 0);
-  // Disk owns the committed transcript. Live items hand off by exact source-event identity: each
-  // disappears from the overlay the moment its persisted entry is present in the loaded window.
+  // A live item leaves the overlay once its source event's entry is in the loaded window.
   const committedSourceEventIds = useMemo(() => getCommittedSourceEventIds(entries), [entries]);
-  // Identity alone is not enough: the loaded window is only a suffix of history, so an item whose
-  // disk entry sits above the window would otherwise re-render at the bottom, out of order. Disk is
-  // append-ordered, so its newest entry is a watermark — anything at or before it is committed.
+  // Also check the watermark: entries above the loaded window are on disk but not in entries.
   const userMessageHistory = useMemo(
     () => indexUserMessageHistory(entries, unsentMessages),
     [entries, unsentMessages],
@@ -901,11 +868,7 @@ export default function ChatView({
     }),
     [committedSourceEventIds, isCommittedByWatermark, liveAssistantSegments],
   );
-  /**
-   * Thinking is persisted on its turn's assistant message, so a live block hands off to the disk
-   * entry that names the same message. Until then it has no timestamp to compare against the
-   * watermark, which is correct: text still streaming cannot be on disk.
-   */
+  /** Thinking is saved on its turn's assistant message; hand off by that message id. */
   const committedReasoningMessageIds = useMemo(() => {
     const ids = new Set<string>();
     for (const entry of entries) {
@@ -942,11 +905,7 @@ export default function ChatView({
     }
     return ids;
   }, [entries]);
-  /**
-   * Calls that launched an agent in an earlier part of the session. An agent keeps reporting on
-   * its launching call for as long as it works, and that call is usually far above the loaded
-   * window: such a report updates a row that is not here, and must not add one at the bottom.
-   */
+  /** Agents report on their launch call, often above the window; don't add those at the bottom. */
   const earlierAgentLaunchIds = useMemo(
     () => new Set(agentRecords.map((agent) => agent.toolCallId)),
     [agentRecords],
@@ -1082,8 +1041,7 @@ export default function ChatView({
 
   const handleToggleActivity = useCallback((key: string, expanded: boolean) => {
     setActivityExpansion((current) => ({ ...current, [key]: expanded }));
-    // Opening earlier work is a decision to read it, so new output must not pull the view away.
-    // The block the run is still writing into keeps following.
+    // Opening earlier work stops following new output; the block still being written keeps it.
     if (expanded && key !== liveActivityKeyRef.current) handleUserScrollIntent();
   }, [handleUserScrollIntent]);
 
@@ -1138,8 +1096,7 @@ export default function ChatView({
     setLoadingMore(false);
     lastScrollTopRef.current = 0;
     if (prevSession !== sessionId) {
-      // Arm the landing anchor per navigation only. Re-running this effect for the same session
-      // (composer or callback identity churn) must not yank an established reading position.
+      // Arm only per navigation; a re-run for the same session must not yank the reading position.
       pendingInitialAnchorRef.current = sessionId !== null && !historicalMode;
       loadAnchoredMessageKeyRef.current = null;
     }
@@ -1165,7 +1122,7 @@ export default function ChatView({
       setRefreshingHistory(false);
     };
 
-    // Disk is the sole authority for committed transcript ordering, so every read replaces what it covers.
+    // Disk alone orders the committed transcript, so every read replaces what it covers.
     const read = async (
       mode: HistoryReadMode,
       { silent = false, reconnect: replaceStream = false }: HistoryRefresh = {},
@@ -1205,7 +1162,7 @@ export default function ChatView({
         // Before the entries, so the snapshot cached with them holds the agents they name.
         applyAgentRecords(agents ?? NO_AGENT_RECORDS);
         const windowStart = Math.max(0, total - fetched.length);
-        // A refresh mostly returns what is already loaded; keeping those objects spares their rows a render.
+        // Reusing already-loaded entry objects spares their rows a render.
         const msgs = mode === "load"
           ? fetched
           : keepLoadedEntries(entriesRef.current, firstItemIndex.current, fetched, windowStart);
@@ -1286,8 +1243,7 @@ export default function ChatView({
       }
     };
 
-    // One read at a time, and refreshes no closer together than the throttle: whatever is asked
-    // for in between collapses into the next read, which sees everything the skipped ones would.
+    // One read at a time, throttled; requests in between collapse into the next read.
     let queued: HistoryRefresh | null = null;
     let inFlight: Promise<void> | null = null;
     let lastRefreshAt = 0;
@@ -1325,7 +1281,7 @@ export default function ChatView({
               reconnect: queued.reconnect || request.reconnect,
             }
           : request;
-        // A read that was in flight while the tab slept may never return, so waking does not wait on it.
+        // A read in flight while the tab slept may never return, so waking does not wait for it.
         if (request.reconnect) inFlight = null;
         pump();
       },
@@ -1339,8 +1295,7 @@ export default function ChatView({
 
     const cachedSnapshot = historicalMode ? null : getCachedChatSnapshot(queryClient, sessionId);
     if (cachedSnapshot && cachedSnapshot.entries.length > 0) {
-      // A cached window is disk-derived, so it paints at once. Anything may have happened to the
-      // session since it was cached, so the read behind it covers all of it.
+      // A cached window paints at once; anything may have changed, so the read covers all of it.
       applyAgentRecords(cachedSnapshot.agents ?? NO_AGENT_RECORDS);
       applyHistory(cachedSnapshot.entries, {
         ownerSessionId: sessionId,
@@ -1417,21 +1372,17 @@ export default function ChatView({
     if (action === "reconnect") historyRef.current.refresh();
   }, [busySignal, creating, historicalMode, isStreaming, loading, loadingMore, pendingOrigin, refreshingHistory, sessionId]);
 
-  // The server truncated this session's history (an undo, or a quiet trigger replacing its own
-  // tail), so nothing that is loaded can be trusted, nor anything a finished run left on screen.
+  // History was truncated (undo, or a trigger replaced its tail): distrust all loaded output.
   useCounterAdvance(sessionId, historySignal, () => {
     if (historicalMode) return;
     dropFinishedRunOutput();
     historyRef.current.refresh({ reach: "window" });
   });
-  // Committed history moved on disk. While the run goes on only its newest entries change, and
-  // once it has finished a wider read picks up what the turn touched. Neither re-reads the whole
-  // window, which costs more the further back the reader has scrolled.
+  // Re-read only the newest entries (live while running, tail after); a window read costs more.
   useCounterAdvance(sessionId, historyEpoch, () => {
     if (!historicalMode) historyRef.current.refresh({ silent: true, reach: isStreaming ? "live" : "tail" });
   });
-  // An agent that changes state outside a run this view is streaming leaves nothing on the stream
-  // to say so. The session list's counts move when it does, so history is read again then.
+  // Agent changes outside the streamed run only show in the session list's counts, so reread then.
   const backgroundAgentCounts = backgroundAgents
     ? `${backgroundAgents.running}:${backgroundAgents.idle}:${backgroundAgents.failed}:${backgroundAgents.total}`
     : "";
@@ -1453,8 +1404,7 @@ export default function ChatView({
     return () => clearTimeout(timer);
   }, [refreshingHistory]);
 
-  // Follow the bottom unless the reader is elsewhere; `ViewportKeeper` holds their place when
-  // they are. useLayoutEffect runs before paint, preventing flash.
+  // Follow the bottom unless the reader is elsewhere (`ViewportKeeper` holds that); before paint.
   useLayoutEffect(() => {
     keepViewportRef.current = false;
     // When a message is top-anchored, message-key changes handle the next scroll.
@@ -1483,8 +1433,7 @@ export default function ChatView({
     const requestSessionId = sessionId;
     const isStale = () => sessionIdRef.current !== requestSessionId || firstItemIndex.current !== before;
     try {
-      // Only its entries are taken. It also carries the session's agents, but a read of the newest
-      // page asked for later can be applied first, and this one would then put older records back.
+      // Ignore its agents: a later read of the newest page may land first and has newer ones.
       const { messages: older, total } = await fetchMessagesFast(requestSessionId, { limit: OLDER_PAGE_SIZE, before });
       await scrollerAtRest(scrollActivityRef.current);
       if (isStale()) return;
@@ -1547,8 +1496,7 @@ export default function ChatView({
   const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     const activity = scrollActivityRef.current;
     activity.touching = true;
-    // Listen on the touched node itself: once a render replaces it, its touchend no longer
-    // reaches the scroller, and a finger that never seems to lift would hold older pages back.
+    // Listen on the node: once replaced, its touchend misses the scroller and stalls older pages.
     const lifted = new AbortController();
     const onLift = (end: Event) => {
       lifted.abort();
@@ -1570,10 +1518,7 @@ export default function ChatView({
     void loadOlderMessages();
   }, [entries, loadMoreError, loadOlderMessages, loading]);
 
-  /**
-   * Keep the ref and state in lockstep so synchronous callers (for example a double-clicked retry)
-   * always observe the latest delivery state.
-   */
+  /** Ref and state move together so sync callers (a double-clicked retry) see the latest state. */
   const updatePendingSends = useCallback((
     updater: (current: PendingSend[]) => PendingSend[],
   ) => {
@@ -1582,7 +1527,7 @@ export default function ChatView({
     setPendingSends(next);
   }, []);
 
-  /** Not-sent messages this view no longer shows: discarded here, or sent again by a send it holds. */
+  /** Unsent messages no longer shown: discarded here, or resent by a send this view holds. */
   const hiddenUnsentIds = useMemo<ReadonlySet<string>>(() => {
     const resent = pendingSends.flatMap((send) => (send.resendOf ? [send.resendOf] : []));
     // Listed once and no longer: resent, discarded or delivered, here or on another device.
@@ -1592,8 +1537,7 @@ export default function ChatView({
     return new Set([...discardedUnsentIds, ...resent, ...resolved]);
   }, [discardedUnsentIds, listedUnsentIds, pendingSends, unsentMessages]);
 
-  // A message still being delivered, or one that failed and can be retried, exists only in this page.
-  // A queued one is kept by the server.
+  // Sends in delivery or failed exist only in this page; the server keeps queued ones.
   const hasUndeliveredMessage = pendingSends.some((send) => send.delivery !== undefined && !send.delivery.queued);
   useEffect(() => (hasUndeliveredMessage ? holdPageReload() : undefined), [hasUndeliveredMessage]);
 
@@ -1876,19 +1820,13 @@ export default function ChatView({
   const displayedStreamingContent = useThrottledText(streamingContent, STREAM_RENDER_INTERVAL_MS);
   const hasStreamingText = displayedStreamingContent.trim().length > 0;
   const displayedReasoning = useThrottledReasoning(uncommittedReasoning, STREAM_RENDER_INTERVAL_MS);
-  /**
-   * The live overlay, rendered strictly after committed history. It never interleaves with, or is
-   * merged into, the disk-backed transcript: it only holds prompts and assistant text that
-   * `events.jsonl` has not surfaced yet, plus optimistic sends this client owns.
-   */
+  /** Rendered after committed history, never merged in: only what disk lacks, plus own sends. */
   const liveEntries = useMemo<ChatEntry[]>(() => {
     // A not-sent message discarded or resent here leaves at once, including its live copy.
     const nextEntries: ChatEntry[] = userMessageMerge.liveEntries.filter((entry) => (
       !entry.unsent || !entry.clientMessageId || !hiddenUnsentIds.has(entry.clientMessageId)
     ));
-    // Within one model call the order is fixed: thinking, then text, then tool calls. The overlay
-    // can briefly hold the turn that just ended as well (its history read is still in flight), and
-    // that turn's items come first.
+    // Per call: thinking, text, tools. The just-ended turn (read in flight) goes first.
     const endedTurnEntries: ChatEntry[] = [];
     const currentTurnEntries: ChatEntry[] = [];
     const bucketFor = (turnInstanceId?: string) => (
@@ -1925,9 +1863,7 @@ export default function ChatView({
         ...(segment.timestamp ? { timestamp: segment.timestamp } : {}),
       });
     }
-    // A sub-agent's call is in a turn of the agent's own, so the main agent's turn says nothing
-    // about where it goes. Its time does: before or after what the main agent has said this turn,
-    // which is the side of that text disk history will have it on.
+    // Sub-agent calls have their own turn; place them by time vs this turn's text, as disk does.
     let currentTurnTextAt = Number.POSITIVE_INFINITY;
     for (const segment of uncommittedAssistantSegments) {
       if (bucketFor(segment.turnInstanceId) !== currentTurnEntries) continue;
@@ -2078,11 +2014,7 @@ export default function ChatView({
       };
     });
   }, [entries, liveToolsById]);
-  /**
-   * A step with no recorded end is only "running" while something can still end it: this view's
-   * stream, a run the last disk read reported (or no read yet), a background agent, or another
-   * Copilot client holding the session. Otherwise it simply never finished.
-   */
+  /** A step with no end runs only while something can still end it; else it never finished. */
   const runActive = isStreaming
     || creating
     || historyRunBusy !== false
@@ -2173,8 +2105,7 @@ export default function ChatView({
     () => findSupersededProgressBlockIndices(renderBlocks),
     [renderBlocks],
   );
-  // Most changes to the transcript move no agent to another stretch; the rows that read this are
-  // only told when one does.
+  // Keeps the old map unless an agent moved stretch, so rows that read it rarely re-render.
   const latestAgentBlocksRef = useRef<ReadonlyMap<string, string>>(NO_AGENT_BLOCKS);
   const latestBlockByAgent = useMemo(() => {
     const latest = mapLatestAgentBlocks(renderBlocks, latestAgentBlocksRef.current);
@@ -2185,19 +2116,13 @@ export default function ChatView({
     () => ({ directory: agentDirectory, latestBlockByAgent }),
     [agentDirectory, latestBlockByAgent],
   );
-  /**
-   * The main agent has stopped and the run stays open for agents it launched. The line says how
-   * many it is waiting on, not which of them took the last step.
-   */
+  /** The main agent stopped but its agents still run: how many it waits on. */
   const waitingOnAgents = useMemo(() => {
     if (!isStreaming || !mainAgentIdle) return undefined;
     const working = getWorkingAgents(agentDirectory);
     return working.length > 0 ? describeWaitingOnAgents(working) : undefined;
   }, [agentDirectory, isStreaming, mainAgentIdle]);
-  /**
-   * The newest step each agent has taken in this run, by the call that launched it, for the agents
-   * list. The stream keeps an agent's calls until its next turn, so the step holds still between them.
-   */
+  /** Each agent's newest step in this run, keyed by its launch call; holds still between turns. */
   const agentLatestSteps = useMemo(() => {
     const steps = new Map<string, string>();
     for (const tool of liveTools) {
@@ -2213,7 +2138,7 @@ export default function ChatView({
     }
     return steps;
   }, [agentDirectory, liveTools]);
-  /** How many of each agent's steps are loaded, for the same list: a step shows there as it is taken. */
+  /** Loaded step count per agent, for the agents list, so a step shows there as it is taken. */
   const agentLoadedStepCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const agent of agentDirectory.all) {
@@ -2222,12 +2147,8 @@ export default function ChatView({
     }
     return counts;
   }, [agentDirectory, toolForest]);
-  /**
-   * While the run is between steps, the block at the end of the transcript is where the next step
-   * will land, so it carries the "still working" state instead of a separate indicator below it.
-   */
   const autopilotRuns = useMemo(() => summarizeAutopilotRuns(renderBlocks), [renderBlocks]);
-  /** The block at the end of the transcript, where a step still in flight is the run's current one. */
+  /** The last block: the next step lands there, so it shows "still working" between steps. */
   const trailingActivityKey = useMemo(() => {
     const trailing = renderBlocks[renderBlocks.length - 1];
     return trailing?.type === "activity" ? trailing.key : null;
@@ -2245,15 +2166,9 @@ export default function ChatView({
     intentText,
     hadVisibleOutput,
   }), [creating, isStreaming, streamStatus, pendingOrigin, runMode, streamingContent, activeRootNodes.length, intentText, hadVisibleOutput]);
-  // Attaching to a run's stream normally takes a few milliseconds. Naming that step every time
-  // makes the status blink through "Reconnecting" on its way to "Thinking", so it is only named
-  // once it is taking long enough to be worth explaining.
+  // Name reconnecting only when slow, or the status blinks Reconnecting on its way to Thinking.
   const reconnectIsSlow = useSustained(runHeaderState?.phase === "reconnecting", RECONNECT_LABEL_DELAY_MS);
-  /**
-   * The line that says the run is still going, for when nothing else on screen does. Once the run
-   * has produced output, the gaps between a reply ending and the next step (or the run's end) are
-   * usually a few milliseconds, so the line waits to be sure there really is a pause to explain.
-   */
+  /** Mid-run gaps after output are usually ms, so wait for a real pause before showing it. */
   const statusLineWanted = Boolean(runHeaderState) && !hasStreamingText && !liveActivityKey;
   const midRunPause = statusLineWanted && hadVisibleOutput;
   const midRunPauseSustained = useSustained(midRunPause, MID_RUN_STATUS_DELAY_MS);
@@ -2299,16 +2214,10 @@ export default function ChatView({
     }
   }, [latestMessageAnchorKey, latestMessageRole, scrollToLatest]);
 
-  // Landing on a session should show the start of the newest reply, not its tail. The bottom-follow
-  // layout effect above jams the first painted history to the bottom, which clips the top of a long
-  // assistant message and forces the reader to scroll back up. Re-anchor once per navigation; the
-  // anchored target is clamped to the max scroll top, so short replies still land at the bottom.
-  // `entries` is a dependency because two sessions can share a newest message id, and cached
-  // navigation between them would otherwise never re-run this effect.
+  // Land on the newest reply's start; `entries` re-runs it when cached sessions share its id.
   useLayoutEffect(() => {
     if (!pendingInitialAnchorRef.current || loading) return;
-    // Consume the arming even when there is nothing to anchor, so a later reply in a session that
-    // opened empty is treated as ordinary live output.
+    // Disarm even with nothing to anchor, so a reply in a chat that opened empty is live output.
     pendingInitialAnchorRef.current = false;
     const docReturn = queryClient.getQueryData<{ scrollTop: number; anchorKey?: string; offset: number }>(docReturnKey);
     const scroller = scrollContainerRef.current;
@@ -2339,8 +2248,7 @@ export default function ChatView({
     if (!isStreaming && !creating && !hasPendingInteractions) return;
     if (loadAnchoredMessageKeyRef.current
       && anchoredMessageKeyRef.current === loadAnchoredMessageKeyRef.current) {
-      // New work started under a transcript still parked where navigation left it: fall back to the
-      // live tail so status, tools, and pending prompts stay visible.
+      // New work under a still-parked transcript: jump to the live tail so status stays visible.
       loadAnchoredMessageKeyRef.current = null;
       scrollToLatest({ force: true });
       return;
@@ -2386,7 +2294,7 @@ export default function ChatView({
     }
   }, [retryFailedRun, runNotice, sessionId]);
 
-  // Build lightweight pending-only UI. Live tools and assistant text render in the normal chat flow.
+  // Pending-only UI; live tools and assistant text render in the normal chat flow.
   const retryNow = useNow(providerRetry?.phase === "waiting");
   const retrySeconds = providerRetry ? Math.max(0, Math.min(5, Math.ceil((Date.parse(providerRetry.retryAt) - retryNow) / 1000))) : 0;
   const providerRetryLabel = providerRetry?.phase === "retrying"
@@ -2574,7 +2482,7 @@ export default function ChatView({
       console.error("Failed to copy message:", err);
     });
   }, []);
-  /** One object for every row, so a message's bubble only renders again when the message changes. */
+  /** One shared object, so a bubble re-renders only when its message changes. */
   const messageActions = useMemo(
     () => ({ onCopy: handleCopySpecificMessage, onOpenMenu: openMessageActionsMenu }),
     [handleCopySpecificMessage, openMessageActionsMenu],
@@ -3128,7 +3036,7 @@ export default function ChatView({
           onTouchMove={handleUserScrollIntent}
         >
           {showHistorySync && (
-            // Zero height: the strip lies over the transcript, so showing and hiding it moves nothing.
+            // Zero height: the strip overlays the transcript, so toggling it moves nothing.
             <div className="sticky top-0 z-10 h-0">
               <div role="status" aria-live="polite" className="border-b border-border bg-bg-primary/90 backdrop-blur-sm">
                 <div className="history-sync-bar" aria-hidden="true" />
@@ -3140,7 +3048,7 @@ export default function ChatView({
             </div>
           )}
           {!historicalMode && (hasMore || loadMoreError) && (
-            // One fixed-height row for every state, so switching between them never nudges the transcript.
+            // One fixed-height row for every state, so switching never nudges the transcript.
             <div className="flex min-h-12 items-center justify-center gap-2 px-3 text-xs md:min-h-10">
               {loadMoreError ? (
                 <>
@@ -3154,7 +3062,7 @@ export default function ChatView({
               )}
             </div>
           )}
-          {/* Cached transcript dims and shimmers while the disk read is in flight; live content below stays crisp. */}
+          {/* The cached transcript shimmers during the disk read; live content stays crisp. */}
           <ChatRunActiveProvider value={runActive}>
             <TranscriptAgentsProvider value={transcriptAgents}>
               <ViewportKeeper

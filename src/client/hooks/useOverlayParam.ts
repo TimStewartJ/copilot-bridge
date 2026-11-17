@@ -21,11 +21,7 @@ export function getSearchWithoutParam(search: string, paramName: string): string
 
 const OVERLAY_OWNER = "bridgeOverlayParam";
 
-/**
- * Hook for managing overlay state (sheets, modals, dialogs) via URL search params.
- * Opening an overlay pushes a history entry so the back button closes it.
- * Closing pops entries opened by this hook and replaces direct-linked overlay URLs.
- */
+/** Overlay state in a URL param: open pushes history so Back closes it; close pops or replaces. */
 export function useOverlayParam(paramName: string) {
   const location = useLocation();
   const navigate = useNavigate();

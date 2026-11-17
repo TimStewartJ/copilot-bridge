@@ -1,7 +1,4 @@
-// Copilot model price cache — persists last-known-good SDK token prices so that
-// retired/historical model IDs in old session logs stay priced and transient
-// listModels() outages do not zero out usage cost estimates. All prices originate
-// from the Copilot SDK; nothing here is hand-maintained.
+// Last-known SDK prices, so retired models stay priced and listModels outages don't zero costs.
 
 import {
   isCopilotModelPriceable,

@@ -1,8 +1,4 @@
-/**
- * Transport types for a password or other answer that a shell command run by the agent asks for
- * (`sudo -A`, `ssh`, `git` over HTTPS). The answer itself appears in none of these types except the
- * request body of the respond endpoint: it goes to the program that asked and nowhere else.
- */
+// Shell command prompt types; only the respond body carries the answer, which goes nowhere else.
 
 export const MAX_SHELL_AUTH_VALUE_LENGTH = 4_096;
 export const MAX_SHELL_AUTH_PROMPT_LENGTH = 2_000;
@@ -11,7 +7,7 @@ export const MAX_SHELL_AUTH_CWD_LENGTH = 4_096;
 export const MAX_SHELL_AUTH_PROGRAM_LENGTH = 100;
 
 export type ShellAuthRequestId = string;
-/** `secret` is masked, `text` is visible, `confirm` is a yes/no question answered with "yes" or a cancel. */
+/** `secret` is masked, `text` is visible, `confirm` is answered with "yes" or a cancel. */
 export type ShellAuthInputKind = "secret" | "text" | "confirm";
 export type ShellAuthAction = "accept" | "cancel";
 /** `expired`: the command stopped waiting (it ended or its prompt timed out). */

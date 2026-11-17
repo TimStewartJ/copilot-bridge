@@ -25,11 +25,7 @@ const ARTICLE_BODY = "The dough rests overnight in the fridge, which slows the y
   + "ferments faster than a white one and brings a sharper taste. Leave a comment below with your results. Related "
   + "articles: Baking with rye. How to keep a starter alive on holiday. Ten mistakes every beginner makes.";
 
-/**
- * Signals as the page script reports them: whitespace collapsed, the text cut to its beginning.
- * `textLength` makes the page that long by continuing `text` with ordinary prose. `scripts`
- * matters only to checkPage's second read, so pages have none unless a test says so.
- */
+/** Signals as the page script reports them; `textLength` pads `text` with prose. */
 function page(signals: Partial<PageSignals> & { text: string }): PageSignals {
   let text = signals.text.replace(/\s+/g, " ").trim();
   while (text.length < (signals.textLength ?? 0)) text += ` ${ARTICLE_BODY}`;
@@ -116,8 +112,7 @@ interface ClassificationCase {
   expected: PageBlock | null;
 }
 
-// Real pages, and what the generic rules make of them. Where no element of a protection product
-// is on the page, nobody is named: the block is reported as "This site".
+// Real pages; with no element of a known protection product, the block is named "This site".
 const classificationCases: ClassificationCase[] = [
   {
     // A site that is down says the same as one that refuses a browser.
@@ -131,8 +126,7 @@ const classificationCases: ClassificationCase[] = [
     expected: null,
   },
   {
-    // What a check says counts on a page that links to next to nothing: a short post, a
-    // discussion or a results page uses the same words and links to a lot.
+    // Check wording counts only on a page with few links; posts and results use it with many.
     name: "a short post titled with what a check says, among the site's links",
     signals: page({
       url: "https://blog.example.com/why-i-am-not-a-robot",
@@ -183,7 +177,7 @@ const classificationCases: ClassificationCase[] = [
     expected: null,
   },
   {
-    // The navigation makes it more than a bare check; the refusal with a CAPTCHA can still be passed.
+    // The navigation makes it more than a bare check; the CAPTCHA can still be passed.
     name: "a 403 page with the site's navigation and an hCaptcha (named \"This site\")",
     signals: page({
       url: "https://www.example.net/listing/42",
@@ -232,8 +226,7 @@ describe("classifyPage", () => {
   );
 
   it("reports the block page of a protection product it has never seen", () => {
-    // The design goal: no element of a known product is on these pages. How little they say,
-    // what they ask for and the status they come with are enough.
+    // No known product element: how little the page says, what it asks and its status suffice.
     const shieldWall = { url: "https://www.example.net/listing/42", title: "ShieldWall", status: 403, links: 1 };
     const check = page({ ...shieldWall, text: "ShieldWall Please verify you are human to continue. Incident 7f3a-22c1" });
     const refusal = page({ ...shieldWall, text: "ShieldWall Your request was rejected. Incident 7f3a-22c1" });
@@ -359,7 +352,7 @@ describe("checkPage", () => {
     return Buffer.from(command[2], "base64").toString("utf-8");
   }
 
-  /** The script `checkPage` hands to the browser, with or without the wait for the page to settle. */
+  /** The script `checkPage` hands the browser, with or without waiting for the page to settle. */
   async function issuedScript(options?: { settle?: boolean }): Promise<string> {
     evalReturns(JSON.stringify(ordinaryArticle));
     await checkPage(commandOptions, options);
@@ -377,7 +370,7 @@ describe("checkPage", () => {
     responseStatus?: number;
     /** Whether a laid-out element matches a marker's selector. */
     matches?: (selector: string) => boolean;
-    /** Whether an element that is not laid out matches a marker's selector, and what kind of element it is. */
+    /** The tag of an element that is not laid out and matches a marker's selector, if any. */
     hidden?: (selector: string) => "DIV" | "SCRIPT" | undefined;
     /** Form fields, each either laid out or not. */
     fields?: boolean[];
@@ -392,11 +385,7 @@ describe("checkPage", () => {
     disconnect(): void {}
   }
 
-  /**
-   * Runs the page script against a stand-in for the page's globals and returns what it evaluates
-   * to. The stand-in tells the script's element queries apart by what they ask for: form
-   * fields, links, CAPTCHA answers, or else the elements of a protection product.
-   */
+  /** Evaluates the page script on fake globals that answer element queries by selector. */
   function runPageScript(script: string, fake: FakePage, mutationObserver: unknown = IdleMutationObserver): unknown {
     const element = (laidOut: boolean, tagName = "DIV") => ({
       tagName,

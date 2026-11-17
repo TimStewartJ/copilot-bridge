@@ -1,5 +1,4 @@
-// A task's page: one HTML document a chat published so the user can see where the task stands.
-// Publishing again replaces it; it goes when the task does.
+// A task's one published HTML page; publishing again replaces it, and it goes with the task.
 import type { DatabaseSync } from "./db.js";
 
 /** Largest page the Bridge keeps. */

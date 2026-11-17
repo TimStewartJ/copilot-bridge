@@ -42,8 +42,7 @@ function localIso(month: number, day: number, hour: number): string {
   return new Date(2026, month - 1, day, hour, 0, 0).toISOString();
 }
 
-// Builds a priceable SDK model whose token prices (cents-per-batch, batchSize 1M)
-// convert to round USD-per-1M rates: 100 cents => $1/1M.
+// Prices are cents per 1M-token batch, so 100 cents => $1/1M.
 function sdkPriceableModel(
   id: string,
   rates: { input: number; output: number; cache: number },
@@ -91,8 +90,7 @@ function summaryTotals(totals: CopilotUsageTotals): CopilotUsageSummary["totals"
       reasoning: 0,
       total: 0,
     },
-    // Reasoning tokens are already inside outputTokens, so output is the whole
-    // billable amount.
+    // Reasoning tokens are already inside outputTokens.
     billableOutputTokens: totals.outputTokens,
     reasoningPricingAssumption: REASONING_PRICING_ASSUMPTION,
     unpricedModelCount: 0,
@@ -376,8 +374,7 @@ describe("readCopilotUsageSummary", () => {
             "claude-sonnet-4.6": {
               requests: { count: 1 },
               usage: {
-                // inputTokens is inclusive of cache reads and cache writes, so
-                // only 1M of this is uncached and billed at the input rate.
+                // Includes cache reads and writes; only 1M is billed at the input rate.
                 inputTokens: 3_000_000,
                 outputTokens: 1_000_000,
                 reasoningTokens: 500_000,
@@ -397,8 +394,7 @@ describe("readCopilotUsageSummary", () => {
     const model = summary.models[0];
     const session = summary.sessions[0];
 
-    // Cache writes bill at 1.25x the input rate even though the SDK price card
-    // carries no explicit cache-write field.
+    // Cache writes bill at 1.25x input although the SDK price card has no cache-write field.
     expect(summary.totals.estimatedCostUsd).toBeCloseTo(22.05);
     expect(summary.totals.costBreakdownUsd.reasoning).toBe(0);
     expect(summary.totals.estimatedAiCredits).toBeCloseTo(2_205);
@@ -1441,8 +1437,7 @@ describe("copilot usage time ranges", () => {
     expect(past7.models).toEqual([expect.objectContaining({ model: "gpt-5.4", sessions: 1, inputTokens: 800 })]);
   });
 
-  // Each shutdown snapshot repeats cumulative totals for every model the session
-  // has ever used, so a resume with no new work on that model yields a zero delta.
+  // Each shutdown repeats cumulative totals for every model used, so an idle model's delta is 0.
   function multiModelShutdown(
     timestamp: string,
     cumulative: { old: number; current: number },
@@ -1475,8 +1470,7 @@ describe("copilot usage time ranges", () => {
       },
     ]);
 
-    // gpt-5.4 did all its work in January and none since; the May shutdown just
-    // repeats its unchanged cumulative snapshot alongside real claude usage.
+    // gpt-5.4 worked only in January; the May shutdown repeats its snapshot beside claude usage.
     writeEvents(copilotHome, "resumed-session", [
       multiModelShutdown(localIso(2026, 0, 10), { old: 900, current: 0 }),
       multiModelShutdown(localIso(2026, 4, 12), { old: 900, current: 400 }),

@@ -3,19 +3,10 @@ import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 
 export const BRIDGE_COPILOT_GITHUB_TOKEN_ENV = "BRIDGE_COPILOT_GITHUB_TOKEN";
-/**
- * The CLI turns Copilot Fusion on through an online experiment, which the runtime applies only to
- * its own interactive host, so an SDK host enables the gates itself. DYNAMIC_AUTO_TIERS lists
- * Fusion's levels and lets a session choose one; HYDRAFUSION_PLAN_V2 runs the Max level.
- */
+/** Runtime enables Fusion only for its own host; SDK hosts set these gates (levels, Max). */
 const COPILOT_FUSION_FEATURE_FLAGS = ["DYNAMIC_AUTO_TIERS", "HYDRAFUSION_PLAN_V2"];
 const AGENT_BROWSER_IDLE_TIMEOUT_ENV = "AGENT_BROWSER_IDLE_TIMEOUT_MS";
-/**
- * An agent that drives agent-browser from its shell starts a daemon and a browser that outlive
- * the shell, the session and the Bridge. Nothing closes them, so they stayed on their last page
- * for weeks. With this in the runtime's environment such a daemon closes its browser and exits
- * after an hour without a command. A value set in the Bridge's own environment wins.
- */
+/** Shell-started agent-browser daemons outlive the Bridge; make them exit after an idle hour. */
 export const AGENT_SHELL_BROWSER_IDLE_TIMEOUT_MS = 60 * 60_000;
 const require = createRequire(import.meta.url);
 
@@ -32,11 +23,7 @@ export function resolveBridgeCopilotGitHubToken(
   );
 }
 
-/**
- * The runtime falls back to its own process cwd for repository instructions when a
- * session's cwd is outside any git work tree. Left to inherit the server's cwd (the Bridge
- * checkout or a release slot), every folder-less session would load the Bridge's AGENTS.md.
- */
+/** Else folder-less sessions inherit the server cwd and load the Bridge's own AGENTS.md. */
 function runtimeWorkingDirectory(workspaceDir: string | undefined): { workingDirectory?: string } {
   const dir = normalizeOptionalEnvValue(workspaceDir);
   if (!dir) return {};

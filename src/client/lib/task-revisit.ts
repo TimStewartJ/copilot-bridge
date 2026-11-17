@@ -17,7 +17,7 @@ export function isRevisitDue(value?: string, now: Date | number = Date.now()): b
   return Number.isFinite(parsed) && parsed <= (typeof now === "number" ? now : now.getTime());
 }
 
-/** The morning a number of calendar days ahead, so a postponed task is waiting at the start of that day. */
+/** The morning `days` calendar days ahead, so a postponed task is waiting at the start of it. */
 export function revisitInDays(days: number, now = new Date()): string {
   const date = new Date(now);
   date.setDate(date.getDate() + days);

@@ -1,7 +1,4 @@
-// Task lane: triggers that start a fresh chat in their task, or create a task and start its first
-// chat. Timing comes from SQLite (no in-memory schedule is authoritative). Each occurrence is
-// claimed with a lease; the chat a fire starts is recorded under the claim before it is launched, so
-// a run recovered after a crash is settled, never started twice.
+// Task-lane triggers; the chat is recorded under the claim before launch, so none run twice.
 
 import { computeRetryBackoffMs, isChatWorkWaitError, LEASE_EXPIRED_ERROR, LEASE_MS, LEASE_RENEW_INTERVAL_MS, MAX_ATTEMPTS, MAX_TIMER_DELAY_MS } from "../chat-work-runner.js";
 import type { GlobalBus } from "../global-bus.js";
@@ -23,7 +20,7 @@ export const MAX_CONCURRENT_TRIGGER_LAUNCHES = 3;
 export const TRIGGER_TASK_WATCHDOG_INTERVAL_MS = 60_000;
 /** A trigger the Bridge had no room for is looked at again after this long, not at once. */
 export const TRIGGER_TASK_WAIT_RETRY_MS = 30_000;
-/** A recurring task trigger writes to its task's history once when this many runs in a row failed. */
+/** A recurring task trigger notes in task history once after this many failed runs in a row. */
 export const FAILING_TASK_TRIGGER_NOTICE_AFTER = 3;
 
 export interface TriggerTaskRunnerDeps {
@@ -179,13 +176,12 @@ export function createTriggerTaskRunner(deps: TriggerTaskRunnerDeps) {
       ));
     } catch (error) {
       if (createdTaskId) {
-        try { taskStore.deleteTask(createdTaskId); } catch { /* leave it; the error below is what matters */ }
+        try { taskStore.deleteTask(createdTaskId); } catch { /* the error below is what matters */ }
       }
       throw error;
     }
     try {
-      // Linked and recorded before the launch, so a crash from here on leaves the chat visible and
-      // the occurrence settled as fired rather than started again.
+      // Link and record before launch, so a crash leaves the chat visible and the run not repeated.
       taskStore.linkSession(target.id, sessionId);
       store.recordRun({ triggerId: trigger.id, sessionId, ...(createdTaskId ? { taskId: createdTaskId } : {}), occurrence });
       await sessionManager.startWorkAndWaitForDelivery(sessionId, startedChatPrompt(trigger), undefined, { origin: "schedule", promptSource: "automation-schedule" });
@@ -345,7 +341,7 @@ export function createTriggerTaskRunner(deps: TriggerTaskRunnerDeps) {
     if (!started) return;
     clearTimeout(timer);
     const nextWakeAt = store.getNextWakeAt("task");
-    // A hold already over is not a reason to wake: the trigger is due anyway, or the watchdog looks again.
+    // An expired hold needs no wake: the trigger is due anyway, or the watchdog looks again.
     for (const [id, until] of waitingUntil) if (until <= Date.now()) waitingUntil.delete(id);
     const held = [...waitingUntil.values()];
     const wakeAt = Math.min(nextWakeAt ? Date.parse(nextWakeAt) : Number.POSITIVE_INFINITY, ...held);
@@ -368,7 +364,7 @@ export function createTriggerTaskRunner(deps: TriggerTaskRunnerDeps) {
         console.error(`[trigger-task-runner] Failed to recover trigger ${trigger.id}:`, error);
       }
     }
-    if (sessionManager.getDeferDeliveryReadiness?.().ready === false) return; // the watchdog looks again
+    if (sessionManager.getDeferDeliveryReadiness?.().ready === false) return; // watchdog retries
     for (const trigger of store.listDue("task", now)) {
       if (inFlight.has(trigger.id)) continue;
       const holdUntil = waitingUntil.get(trigger.id);

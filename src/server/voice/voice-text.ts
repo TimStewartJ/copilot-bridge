@@ -1,6 +1,3 @@
-// The Bridge's hands-free vocabulary: the name it answers to and the short commands it handles
-// itself. The speech-shaping rules (what to say from a streamed reply, how to chunk it, how to
-// read an interruption) are the in-tree package src/packages/voice-agent-text.
 import {
   createBargeInClassifier,
   createWakePhraseMatcher,
@@ -33,11 +30,7 @@ export function stripLeadingWakePhrase(text: string): string {
   return wakePhrase.stripLeading(text);
 }
 
-/**
- * Commands the hands-free layer handles itself, without a model round trip. `stop` only stops
- * speech; `cancel` stops the chat's running work. `progress`, `repeat` and `full` are about the
- * chat's work and replies and are never sent to the chat.
- */
+/** Handled without a model: `stop` silences speech, `cancel` stops the chat's work; never sent. */
 export type LocalVoiceCommand = "sleep" | "stop" | "end" | "cancel" | "progress" | "repeat" | "full";
 
 const POLITE_PREFIX = "(?:(?:okay|ok|alright|all right|thanks|thank you|cool|great|hey|so|and|um|uh)\\s+)*";
@@ -64,8 +57,5 @@ export function detectLocalCommand(text: string): LocalVoiceCommand | undefined 
   return undefined;
 }
 
-/**
- * Decides whether speech heard while the assistant is talking is a real interruption
- * or a reaction ("yeah", "really?", laughter) that should not cut it off. "Hey Bridge" always is.
- */
+/** Tells a real interruption from a reaction like "yeah"; "Hey Bridge" always interrupts. */
 export const classifyBargeIn = createBargeInClassifier({ interruptPhrases: ["hey bridge"] });

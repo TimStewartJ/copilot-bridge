@@ -1,13 +1,4 @@
-// Read and write management for on-disk Copilot skills, with the Bridge's workflow metadata.
-//
-// Skills reach sessions from three kinds of directory (see session-config-builder.ts): the
-// repo-bundled `<repoRoot>/skills`, the user-managed `<copilotHome>/skills`, and skill packs
-// (folders or git checkouts the user adds in Settings). A home skill overrides a pack skill with
-// the same id, and both override a bundled one. Only home skills can be edited or deleted here:
-// bundled skills ship through staging/deploy and packs come from their source.
-//
-// Everything reads with fs.promises: home skills and packs are written by other programs, and
-// the server's event loop must not wait on them (see server-runtime.instructions.md).
+// Home skills override packs override bundled; only home is editable. Async fs only.
 
 import matter from "gray-matter";
 import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -90,8 +81,7 @@ export interface SkillsRegistryOptions {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Directory names are filesystem identifiers used directly in URLs; keep them to
-// a conservative character set so they can never traverse out of the skills root.
+// Ids are directory names used in URLs; this charset keeps them inside the skills root.
 const SKILL_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 export const MAX_SKILL_FILE_BYTES = 256 * 1024;
 
@@ -165,7 +155,7 @@ function metadataString(metadata: Record<string, unknown>, key: string): string 
   return undefined;
 }
 
-/** The Bridge's workflow fields from a skill's frontmatter `metadata` map. Unknown values are dropped. */
+/** The Bridge's workflow fields from frontmatter `metadata`; unknown values are dropped. */
 export function parseWorkflowMetadata(data: Record<string, unknown>): SkillWorkflowMetadata {
   const metadata = data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata)
     ? data.metadata as Record<string, unknown>
@@ -245,7 +235,7 @@ export async function listSkillDirectories(options: SkillsRegistryOptions): Prom
   return (await skillLocations(options)).map((location) => location.dir);
 }
 
-/** Every skill a session can load, with home overriding packs and packs overriding bundled skills. */
+/** Every skill a session can load; home overrides packs, and packs override bundled skills. */
 export async function scanSkills(options: SkillsRegistryOptions): Promise<SkillSummary[]> {
   const locations = await skillLocations(options);
   const found = await Promise.all(locations.map(async (location) => {
@@ -285,7 +275,7 @@ export async function readSkill(options: SkillsRegistryOptions, id: string): Pro
   return null;
 }
 
-/** Checks a SKILL.md before it is saved. Returns an error sentence, or undefined when it is usable. */
+/** Checks a SKILL.md before saving; returns an error sentence, or undefined when usable. */
 export function validateSkillContent(id: string, raw: string): string | undefined {
   if (typeof raw !== "string" || !raw.trim()) return "The skill file is empty.";
   if (Buffer.byteLength(raw, "utf-8") > MAX_SKILL_FILE_BYTES) return "The skill file is larger than 256 KB.";
@@ -339,10 +329,7 @@ export async function writeHomeSkill(options: SkillsRegistryOptions, id: string,
   return skill ? { status: "written", skill } : { status: "not-found" };
 }
 
-/**
- * Copy a bundled or pack skill into the home folder so it can be changed there. The home copy then
- * overrides the original on this machine; deleting it restores the original.
- */
+/** Copies a skill into the home folder to edit; the copy overrides it, and deleting restores it. */
 export async function customizeSkill(options: SkillsRegistryOptions, id: string): Promise<WriteSkillResult> {
   const target = homeSkillDir(options.copilotHome, id);
   if (!target) return { status: "invalid", error: "invalid skill id" };
@@ -354,10 +341,7 @@ export async function customizeSkill(options: SkillsRegistryOptions, id: string)
   return skill ? { status: "written", skill } : { status: "not-found" };
 }
 
-/**
- * Delete a home skill directory. Bundled and pack skills are never deletable. Returns
- * "invalid" for unsafe ids, "not-found" when no matching home skill exists.
- */
+/** Deletes a home skill directory; bundled and pack skills are never deletable. */
 export async function deleteHomeSkill(options: { copilotHome: string; id: string }): Promise<DeleteSkillResult> {
   const target = homeSkillDir(options.copilotHome, options.id);
   if (!target) return "invalid";

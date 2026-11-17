@@ -1,10 +1,4 @@
-// Runs the Bridge's own live-view check against the installed agent-browser and a real browser.
-// Everything the live view relies on agent-browser's stream for is in that check, so this is
-// what tells whether an agent-browser update broke it. The other tests open a live view the
-// way a Bridge client does, for what only shows with the stream of a real agent-browser behind
-// the relay: that a view runs no commands of its own, that a file chooser a tap opens reaches the
-// viewer instead of the browser's own screen, and that a sign-in which runs in a popup window
-// can be done in a view. Run with `npm run check:browser`.
+// Live-view check against a real agent-browser and browser. Run with `npm run check:browser`.
 
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -18,9 +12,7 @@ import { WebSocket } from "ws";
 
 import { BROWSER_LIVE_WS_PATH, type BrowserLiveCheck, type BrowserLiveServerMessage } from "../../shared/browser-live.js";
 
-// The shared setup replaces the host lookups, and with them the browser and its launch arguments,
-// and where agent-browser is installed. Without the second, Windows is asked to start
-// `agent-browser` itself, which there is only npm's launcher script.
+// Use real browser lookups and agent-browser path; the mocked bare name fails on Windows.
 vi.unmock("../browser-launch-host.js");
 vi.unmock("../agent-browser-command.js");
 
@@ -116,8 +108,7 @@ it("runs no commands for a view that only shows a page, and reports the page a c
       expect(addresses).toEqual([`${site}/`]);
     });
 
-    // agent-browser announces its tabs after every command it runs. A view that reads the page
-    // for each announcement never stops; the first period lets the reads of its opening finish.
+    // agent-browser announces tabs after every command; a view reading on each would never stop.
     await delay(QUIET_PERIOD_MS);
     const afterOpening = commands.length;
     await delay(QUIET_PERIOD_MS);
@@ -217,8 +208,7 @@ it("asks the viewer for the file when a tap in a view opens the page's file choo
     await expect(live.chooseFiles(asked[0].id, [photo])).resolves.toMatchObject({ ok: true });
     await vi.waitFor(async () => expect(await onBrowser(["get", "title"])).toMatchObject({ value: { output: "photo.jpg 5" } }));
 
-    // A page that reloaded since it asked takes no file, and the viewer is told so. Chrome
-    // itself reports success for the old input.
+    // A page reloaded since it asked takes no file and the viewer is told; Chrome says success.
     socket.send(JSON.stringify({ ...click, eventType: "mousePressed" }));
     socket.send(JSON.stringify({ ...click, eventType: "mouseReleased" }));
     await vi.waitFor(() => expect(asked).toHaveLength(2));
@@ -240,11 +230,7 @@ it("asks the viewer for the file when a tap in a view opens the page's file choo
   }
 });
 
-/**
- * A sign-in the way Microsoft's runs: the page opens a window, the account is picked there, and
- * that window tells the page and closes itself. Every page is one button, so a press anywhere
- * lands on it; `pressed` says which page got each press.
- */
+/** A popup sign-in like Microsoft's; each page is one full-page button, `pressed` logs presses. */
 function createSignInSite() {
   const whole = "display:block;width:100vw;height:100vh";
   const pressed: string[] = [];
@@ -269,9 +255,7 @@ function createSignInSite() {
   return { server, pressed };
 }
 
-// agent-browser turns to a popup when it opens, and back to the page when it closes. Its stream
-// has to go with it: the picture a view shows, and where a press in the view lands. The stream of
-// agent-browser 0.33 stayed on the page, so a sign-in popup could not be used in a view.
+// The view's stream must follow agent-browser into a popup and back (0.33 stayed on the page).
 it.each([
   ["a press in the view", false],
   ["the agent, before the view was opened for a handoff", true],

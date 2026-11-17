@@ -1,6 +1,4 @@
-// Tells a page a site serves to people from one it serves instead of the content: a human
-// check, a refusal, or a CAPTCHA inside an otherwise normal page. Agents otherwise read such a
-// page as an empty or broken result and retry it.
+// Tells real pages from checks, refusals and CAPTCHAs, which agents misread as broken.
 
 import { ab, safeRecordBrowserSpan, type BrowserCommandOptions } from "./agent-browser.js";
 
@@ -23,11 +21,7 @@ export interface PageSignals {
   markers: string[];
 }
 
-/**
- * - challenge: the whole page is a check a person can pass.
- * - denied: the site refused the browser and offers nothing to pass.
- * - captcha: a normal page that contains a CAPTCHA, typically in front of a form's submit.
- */
+/** challenge: passable check page; denied: refusal; captcha: normal page with a CAPTCHA. */
 export type PageBlockKind = "challenge" | "denied" | "captcha";
 
 export interface PageBlock {
@@ -37,15 +31,7 @@ export interface PageBlock {
   status?: number;
 }
 
-/**
- * Elements that only a protection product or a CAPTCHA puts on a page. They refine a verdict and
- * name who is asking; a page is recognised as blocked without them, by its status and by how
- * little it says (see classifyPage), so a product that changes its markup is still reported.
- *
- * - challenge, denied: the element alone says what the page is, whatever else it shows.
- * - name: the product also puts it on pages that are not blocks, so it only names one.
- * - captcha: a widget that asks a person to prove they are one.
- */
+/** Markers refine and name; blocks are found without them. A `name` marker alone is no block. */
 interface PageMarker {
   id: string;
   by: string;
@@ -73,21 +59,13 @@ const PAGE_MARKERS: readonly PageMarker[] = [
 const TEXT_SAMPLE_LENGTH = 1_500;
 /** A page that stands in for the content says little; real pages rarely stay under this. */
 const SPARSE_TEXT_LENGTH = 1_500;
-/**
- * A page that is only a check links to little more than its vendor and the site's terms: six
- * links on the fullest one seen. Posts, discussions and results pages link to dozens.
- */
+/** A bare check page links only to its vendor and the site's terms; real pages link to dozens. */
 const BARE_PAGE_MAX_LINKS = 10;
 const PAGE_CHECK_TIMEOUT_MS = 10_000;
 const SETTLED_PAGE_CHECK_TIMEOUT_MS = 20_000;
 const CHALLENGE_GRACE_MS = 5_000;
 
-/**
- * Waits in the page until it has stopped changing: no DOM change for a moment, and longer while
- * the page still shows next to nothing (an app that has yet to load its data, a check that is
- * about to pass by itself). Sites with ads and analytics never go quiet on the network, so
- * waiting for that costs the full timeout on most of them.
- */
+/** Settle on DOM quiet (longer if text is sparse), not network idle: ad-heavy sites never idle. */
 const SETTLE_QUIET_MS = 700;
 const SETTLE_SPARSE_TEXT_LENGTH = 200;
 const SETTLE_SPARSE_MIN_MS = 4_000;
@@ -140,7 +118,7 @@ function pageSignalsScript(settle: boolean): string {
 const PAGE_SIGNALS_SCRIPT = pageSignalsScript(false);
 const SETTLED_PAGE_SIGNALS_SCRIPT = pageSignalsScript(true);
 
-/** How a page asks for a person, whoever serves it. Counted only on a page that says little else. */
+/** How a page asks for a person, from any vendor; counted only on a page that says little else. */
 const HUMAN_CHECK_TEXT = new RegExp([
   "(verify|verifying|confirm|prove) (that )?you('| a)?re (a |not a )?(human|robot)",
   "are you a (robot|human)",
@@ -160,10 +138,7 @@ const NO_PRODUCT = "This site";
 /** The title of Cloudflare's check in every language, before and after the page has rendered. */
 const INTERSTITIAL_TITLE = /^just a moment/i;
 
-/**
- * Decides from what any block page has in common: it says little, and it asks for a person or
- * the server answered with a refusal. What a protection product puts on a page refines that.
- */
+/** A block page says little and asks for a person or is a refusal; vendor markers refine that. */
 export function classifyPage(signals: PageSignals): PageBlock | null {
   const found = PAGE_MARKERS.filter((marker) => signals.markers.includes(marker.id));
   const product = found.find((marker) => marker.role === "challenge" || marker.role === "denied")
@@ -178,15 +153,13 @@ export function classifyPage(signals: PageSignals): PageBlock | null {
   if (product?.role === "denied") return block(widget ? "challenge" : "denied", product.by);
   if (sparse) {
     const refused = signals.status === 403 || signals.status === 429;
-    // A page that is only a check links to little; a post, a discussion or a results page that
-    // happens to use the same words links to a lot.
+    // A check page links to little; a post or results page using the same words links to a lot.
     const bare = signals.links < BARE_PAGE_MAX_LINKS;
     if (INTERSTITIAL_TITLE.test(signals.title)) return block("challenge", product?.by ?? "Cloudflare");
     if ((bare || refused) && HUMAN_CHECK_TEXT.test(`${signals.title} ${signals.text}`)) {
       return block("challenge", product?.by ?? NO_PRODUCT);
     }
-    // A page with nothing but the CAPTCHA is a check; one with fields around it is a page,
-    // usually a form, that asks for the CAPTCHA at one step.
+    // A CAPTCHA alone is a check; with fields around it, it is one step of a form.
     if (widget && bare && signals.inputs === 0) return block("challenge", product?.by ?? widget.by);
     // Not 503: a site that is down says the same.
     if (refused) return block(widget ? "challenge" : "denied", product?.by ?? NO_PRODUCT);
@@ -221,11 +194,7 @@ export interface PageCheck {
   block: PageBlock | null;
 }
 
-/**
- * Reads the current page of a browser and says whether the site is standing in the agent's way.
- * With `settle`, first waits for the page to stop changing, which is the wait to use after
- * opening a page.
- */
+/** Whether the site blocks the agent; with `settle`, first waits for the page to stop changing. */
 export async function checkPage(
   commandOptions: BrowserCommandOptions,
   options: { settle?: boolean } = {},
@@ -238,8 +207,7 @@ export async function checkPage(
   const read = async (settle: boolean): Promise<PageSignals | undefined> => {
     let result = await run(settle);
     if (!result.ok && settle) {
-      // A page that navigates while it settles takes the waiting script with it. The page it
-      // went to is waited for once; a page that keeps doing it is read as it stands.
+      // Navigating while settling kills the wait script: wait once more, then read the page as is.
       result = await run(true);
       if (!result.ok) result = await run(false);
     }
@@ -249,9 +217,7 @@ export async function checkPage(
   if (!signals) return { block: null };
   let block = classifyPage(signals);
   if (options.settle && block && block.kind !== "captcha" && (block.kind === "challenge" || signals.scripts > 0)) {
-    // Many checks let a real browser through by themselves after a few seconds and load the
-    // page. Reporting the check before then would send the agent away from a page that works.
-    // A refusal whose page runs scripts may be a check that has yet to show itself.
+    // Many checks clear by themselves in seconds; recheck before reporting a block.
     await new Promise<void>((resolve) => setTimeout(resolve, CHALLENGE_GRACE_MS));
     signals = await read(true);
     // The page went somewhere else and cannot be read: what it was is no longer what it is.
@@ -286,10 +252,7 @@ export interface PageBlockNotice {
 
 const REPORT_INSTEAD = "Otherwise use another source and say that this site blocked automated access.";
 
-/**
- * What an agent should do about a block. `browserSessionId` is the session the page is open in;
- * without one the page was opened by a one-shot tool, whose browser is already gone.
- */
+/** What an agent should do about a block; without browserSessionId the browser is already gone. */
 export function describePageBlock(block: PageBlock, browserSessionId?: string): PageBlockNotice {
   const status = block.status && block.status >= 400 ? ` (HTTP ${block.status})` : "";
   const handoff = browserSessionId
@@ -304,8 +267,7 @@ export function describePageBlock(block: PageBlock, browserSessionId?: string): 
     guidance = `${block.by} answered that it is getting too many requests${status}. Repeating the call now will not `
       + "help; try this site again later, or use another source.";
   } else if (block.kind === "denied" && block.by === NO_PRODUCT) {
-    // Nothing on the page says why: a site that turns automation away answers like one that
-    // wants its visitor signed in.
+    // Nothing says why: a site refusing automation answers like one that wants a sign-in.
     guidance = `${block.by} refused this request${status} and the page offers nothing to pass. Repeating the same call `
       + `will not help. If the page needs an account or a permission the user has, ${handoff.replace("do it in", "sign in through")}. `
       + "Otherwise use another source and say that this site refused access.";

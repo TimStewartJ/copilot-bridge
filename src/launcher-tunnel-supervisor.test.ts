@@ -450,8 +450,7 @@ describe("TunnelSupervisor", () => {
     vi.useFakeTimers();
     const first = new FakeChild(101);
     const second = new FakeChild(102);
-    // Each probe cycle is local then public. Public: fail, pass, fail. A strictly
-    // consecutive counter would reset on the pass and never recycle.
+    // Public probes fail, pass, fail: a consecutive counter would reset and never recycle.
     const harness = createHarness({
       children: [first, second],
       fetchResponses: [
@@ -482,8 +481,7 @@ describe("TunnelSupervisor", () => {
   it("does not recycle when old failures have aged out of the window", async () => {
     vi.useFakeTimers();
     const first = new FakeChild(101);
-    // Window is max(threshold=2, 5) = 5 observations. fail, pass x5, fail => the
-    // first failure has aged out, so only 1/2 failures are in the window.
+    // Window is max(threshold 2, 5) = 5: in fail, pass x5, fail the first fail has aged out.
     const responses: Response[] = [
       healthResponse(),
       new Response(null, { status: 503 }),

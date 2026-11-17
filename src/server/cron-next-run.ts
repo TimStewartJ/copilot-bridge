@@ -164,8 +164,7 @@ export function createCronPreviewIterator(
       const at = cursor;
       const parts = getDatePartsInTz(new Date(at), timezone);
       if (jump && parts.minute !== jump.expectedMinute) {
-        // A non-hour timezone transition can introduce matches inside a skipped
-        // interval. Rescan only that hour or smaller interval, still budgeted.
+        // A non-hour DST shift can hide matches in a skipped interval; rescan just that, budgeted.
         scanUntil = at;
         cursor = jump.from + 60_000;
         jump = undefined;
@@ -223,8 +222,7 @@ function parseCronFields(fields: string[]): ParsedCronExpression | undefined {
   const hour = parseCronField(fields[1], 0, 23, undefined);
   const day = parseCronField(fields[2], 1, 31, undefined);
   const month = parseCronField(fields[3], 1, 12, MONTH_NAME_TO_NUMBER);
-  // Keep legacy scheduler semantics: day-of-month and weekday are both required
-  // when both fields are constrained, unlike Vixie cron's OR behavior.
+  // Legacy semantics: a constrained day-of-month and weekday must both match (Vixie cron uses OR).
   const weekday = parseCronField(fields[4], 0, 7, WEEKDAY_NAME_TO_NUMBER, (value) => value === 7 ? 0 : value);
   if (!minute || !hour || !day || !month || !weekday) return undefined;
   return { minute, hour, day, month, weekday };
@@ -389,11 +387,7 @@ export function wallTimeIn(date: Date, timezone?: string): WallTime & { weekday:
   return getDatePartsInTz(date, timezone);
 }
 
-/**
- * The instant a local wall time names in `timezone`. A time that falls in a daylight-saving gap is
- * read with the offset in force before the gap (2:30 in a 2:00–3:00 gap is 3:30 after it), as
- * calendar standards do. In a fold, where the time happens twice, the earlier instant wins.
- */
+/** DST gap: use the pre-gap offset (2:30 -> 3:30); fold: the earlier instant, as calendars do. */
 export function wallTimeToInstant(parts: WallTime, timezone?: string): Date {
   const weekday = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
   const exact = localTimeToDate({ ...parts, weekday }, timezone);
@@ -418,12 +412,7 @@ export interface CronDayRuns {
   times: string[];
 }
 
-/**
- * When a cron expression fires on one local calendar day of its zone, after `afterMs` and before
- * `beforeMs`. On an ordinary day the count comes from the expression's fields, so a dense schedule
- * costs the same as a sparse one. On a day the clock changes, every minute of the day is checked as
- * the scheduler does: a skipped hour never fires and a repeated hour fires twice.
- */
+/** Runs on one local day; DST days check every minute as the scheduler does. */
 export function cronRunsOnLocalDay(
   cronExpr: string,
   timezone: string | undefined,

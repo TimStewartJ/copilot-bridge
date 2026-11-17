@@ -1,18 +1,16 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
-// src/packages/* holds code that is published on its own (see src/packages/README.md). A package
-// is only publishable while it depends on nothing else in this repository, and the Bridge can only
-// swap the in-tree copy for the published one while it uses nothing but the package's entry
-// point. This test walks the real files so neither rule can erode silently. It also reads the
-// workflow that releases a package, which may ask npm for a token and so has rules of its own.
+// Keeps packages publishable: no imports from the repo, and the Bridge uses only entry points.
 
 const SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PACKAGES_DIR = join(SRC_DIR, "packages");
 const PUBLISH_WORKFLOW = join(SRC_DIR, "..", ".github", "workflows", "publish-package.yml");
+const PACKAGES_SCRIPT = join(SRC_DIR, "..", "scripts", "packages.mjs");
 // Bridge modules that may reach past a package's entry point, and why.
 const INTERNAL_IMPORTS_ALLOWED: Record<string, string> = {
   "server/process-host-worker.ts":
@@ -81,8 +79,7 @@ describe("in-tree packages", () => {
   });
 
   it.each(packages)("$manifest.name is released as a built tarball, never as its folder", ({ dir, manifest }) => {
-    // The folder holds source, not the build, so npm has to refuse to publish it.
-    // scripts/packages.mjs leaves the flag out of the manifest it packs.
+    // The folder holds source, not the build, so npm must refuse it; packing drops the flag.
     expect(manifest.private, `keep "private": true in the package.json of ${manifest.name}`).toBe(true);
     // When a GitHub workflow publishes, npm compares this with the repository letter for letter.
     expect(manifest.repository).toEqual({
@@ -138,6 +135,17 @@ describe("in-tree packages", () => {
     expect(violations, "Import an in-tree package as src/packages/<name>/src/index.js, the same surface its published build has.").toEqual([]);
     expect([...unusedExceptions], "exceptions that no longer apply must be removed").toEqual([]);
   });
+
+  it("refuses to pack into the repository, where output would change the build stamp", () => {
+    const out = join(SRC_DIR, "..", `.packages-out-test-${process.pid}`);
+    try {
+      const result = spawnSync(process.execPath, [PACKAGES_SCRIPT, "pack", "--out", out, "voice-agent-text"], { encoding: "utf8" });
+      expect(result.status).not.toBe(0);
+      expect(existsSync(out)).toBe(false);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
 });
 
 interface WorkflowJob {
@@ -158,8 +166,7 @@ describe("the workflow that releases an in-tree package", () => {
   });
 
   it("runs only when someone starts it, and publishes the version in one place", () => {
-    // Nobody approves a version between this workflow and npm, and a published version is
-    // permanent. So a release must take someone starting it, never a push or a tag.
+    // Nothing reviews a version before npm and publishing is permanent, so never on push or tag.
     expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
     const commands = Object.values(workflow.jobs).flatMap(commandsOf);
     expect(commands.filter((command) => /\bnpm publish\b/.test(command))).toHaveLength(1);
@@ -167,15 +174,13 @@ describe("the workflow that releases an in-tree package", () => {
   });
 
   it("hands npm the tarball as a path it cannot take for a GitHub repository", () => {
-    // npm reads "release/<file>.tgz" as the repository "release/<file>.tgz" on GitHub and tries to
-    // fetch it. A path that starts with "./" is a file.
+    // npm reads "release/<file>.tgz" as a GitHub repository; a "./" path is a file.
     const published = Object.values(workflow.jobs).flatMap(commandsOf).flatMap((command) => command.match(/\bnpm publish \S+/g) ?? []);
     expect(published).toEqual(['npm publish "./release/$FILE"']);
   });
 
   it("lets only a job that runs no code from the repository ask npm for a token", () => {
-    // Whatever runs in that job can publish a tarball of its own making. It gets the tarball the
-    // build job made, and installs nothing but the npm that hands it over.
+    // Anything in that job could publish its own tarball, so it installs only npm.
     expect(workflow.permissions).toEqual({});
     const withToken = Object.entries(workflow.jobs).filter(([, job]) => job.permissions?.["id-token"] !== undefined);
     expect(withToken.map(([id, job]) => [id, job.permissions])).toEqual([["publish", { "id-token": "write" }]]);
@@ -187,8 +192,7 @@ describe("the workflow that releases an in-tree package", () => {
   });
 
   it("releases from master only", () => {
-    // The trusted publisher on npm names the workflow file, not a branch: without this step a
-    // changed copy of the workflow on any branch could publish.
+    // npm's trusted publisher names the workflow, not a branch: this step stops other branches.
     const first = workflow.jobs.build!.steps[0] as { if?: string; run?: string };
     expect(first.if).toBe("github.ref != 'refs/heads/master'");
     expect(first.run).toContain("exit 1");

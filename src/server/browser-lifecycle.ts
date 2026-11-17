@@ -1,10 +1,4 @@
-// BrowserLifecycle dependency: encapsulates bridge browser process cleanup so
-// SessionManager (and any future consumer) can be exercised in tests without
-// spawning the agent-browser CLI or scanning OS processes.
-//
-// Production wiring lives in createSessionManager and constructs a real
-// BridgeBrowserLifecycle. Tests that do not care about browser cleanup get the
-// safe no-op default automatically when no lifecycle is injected.
+// Browser cleanup behind an interface so tests skip agent-browser; no-op when none is injected.
 
 import { hasBrowserRuntimeActivity, type BrowserShutdownResult, type BrowserTarget } from "./agent-browser.js";
 import type { BrowserBroker } from "./browser-broker.js";

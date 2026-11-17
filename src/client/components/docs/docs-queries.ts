@@ -1,7 +1,4 @@
-/**
- * Data layer for the Docs view. Everything lives under the ["docs"] query root, which App
- * invalidates when the server reports a `docs:changed` event (an agent wrote a page).
- */
+// Everything lives under the ["docs"] query root, which App invalidates on `docs:changed`.
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,

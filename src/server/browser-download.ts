@@ -1,12 +1,4 @@
-// The `download` step of the browser tools: clicks an element and saves what it downloads.
-//
-// agent-browser has a `download` command that does the same, and on Windows it never works:
-// it hands Chrome the download folder as a verbatim path (`\\?\C:\...`, what Rust's
-// `canonicalize` returns there), and Chrome receives the file and then cancels the download
-// (vercel-labs/agent-browser#1659). The Bridge therefore does what that command does, with the
-// folder's ordinary path: for the length of one step it connects to the browser next to
-// agent-browser, tells Chrome where downloads go and to report them, has agent-browser click
-// the element, and moves the finished file to the name the step asked for.
+// Not agent-browser `download`: Windows \\?\ paths make Chrome cancel (agent-browser#1659).
 
 import { mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -40,10 +32,7 @@ async function moveDownload(from: string, to: string, retryDelaysMs: readonly nu
   }
 }
 
-/**
- * The `download` step: `<ref> <file>`. The result reads like an agent-browser command's, so the
- * step fails and reports the way the others do.
- */
+/** The `download <ref> <file>` step; its result mimics an agent-browser command's. */
 export async function saveDownload(
   args: readonly string[],
   timeoutMs: number | undefined,
@@ -95,16 +84,14 @@ export async function saveDownload(
     };
     connection.onClose = () => stopWaiting();
 
-    // Under Chrome's own name, so that a file of the page's choosing never replaces one that
-    // is already in the folder.
+    // Chrome's own naming, so a file the page names never replaces one already in the folder.
     await connection.send("Browser.setDownloadBehavior", {
       behavior: "allowAndName",
       downloadPath: folder,
       eventsEnabled: true,
     });
 
-    // A click that is run again after a browser restart would download with nobody waiting
-    // for it, so this one is not recovered.
+    // No recovery: a click rerun after a browser restart would download with nobody waiting.
     const click = await run(["click", ref], timeoutMs, { ...commandOptions, skipRecovery: true });
     if (!click.ok) return click;
     clicked = true;

@@ -11,8 +11,7 @@ interface SchemaObjectRow {
   sql: string | null;
 }
 
-// `rootpage` is a physical detail that legitimately differs between two
-// databases with identical schemas, so it is excluded deliberately.
+// `rootpage` differs between databases with identical schemas, so it is excluded.
 function schemaObjects(db: DatabaseSync): string[] {
   return (
     db

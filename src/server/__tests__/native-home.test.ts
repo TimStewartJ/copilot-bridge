@@ -103,7 +103,7 @@ describe("native Home composition", () => {
       // A conversation another active task still holds stays that task's, not the archived one's.
       ["moved-on", "Current work", false],
     ]));
-    // A muted task stays silent whether archived or not, and an active muted task outranks an archived one.
+    // A muted task stays silent, archived or not; an active muted task outranks an archived one.
     expect(home.replies.items.map(reply => reply.sessionId).sort()).toEqual(["late-reply", "moved-on"]);
     expect(home.inputs.items).toEqual([expect.objectContaining({ sessionId: "late-question", taskId: closed.id, taskArchived: true, question: "Proceed?" })]);
     // Reopening the task drops the label at once, though the reply text itself is cached.

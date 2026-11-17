@@ -270,8 +270,7 @@ describe("SessionManager tool result rendering", () => {
     }));
   });
   it("streams the real sub-agent failure reason and matches disk replay", async () => {
-    // The live fold and the disk replay fold are separate traversals of the same event stream.
-    // They must agree, so this drives both from one event list and compares the results.
+    // The live and disk replay folds traverse the same events separately and must agree.
     const sdkEvents: any[] = [
       {
         type: "tool.execution_start",
@@ -330,8 +329,7 @@ describe("SessionManager tool result rendering", () => {
   });
 
   it("keeps a background agent launch successful in both folds when the agent fails later", async () => {
-    // The launch itself succeeded. The live fold has no look-ahead, so replay must not use its
-    // look-ahead to retroactively fail the launch.
+    // The live fold has no look-ahead, so replay must not use its own to fail the launch later.
     const sdkEvents: any[] = [
       {
         type: "tool.execution_start",
@@ -504,8 +502,7 @@ describe("SessionManager tool result rendering", () => {
   });
 
   it("keeps a finished agent's name when the runtime reports its end a second time", async () => {
-    // The order a real sync sub-agent produced: its end, the launching call's completion, then the
-    // same end again, after the correlation for that call has been dropped.
+    // A real sync sub-agent's order: its end, the launch's completion, then its end again.
     const sdkEvents = [
       { id: "turn-start-1", type: "assistant.turn_start", timestamp: "2026-09-20T16:29:06.670Z", data: { turnId: "1" } },
       {
@@ -581,8 +578,7 @@ describe("SessionManager tool result rendering", () => {
       },
       { type: "tool.execution_complete", timestamp: at(1), data: { toolCallId: "task-bg", success: true, result: { content: "Agent started" } } },
       { type: "assistant.turn_end", timestamp: at(1), data: { turnId: "0" } },
-      // The main agent starts its next turn at once, before the agent has begun one of its own:
-      // how the launch was reported is all there is to say this turn is not the agent's.
+      // The main agent's next turn starts before the agent's; only the launch says whose it is.
       { id: "main-2", type: "assistant.turn_start", timestamp: at(1.02), data: { turnId: "1" } },
       // The runtime says whose turn this is, so it does not become the main agent's.
       { id: "agent-turn-1", type: "assistant.turn_start", ...agent, timestamp: at(3), data: { parentToolCallId: "task-bg" } },
@@ -610,7 +606,7 @@ describe("SessionManager tool result rendering", () => {
     manager.sessionObjects.set("session-agent-turns", createSession(sdkEvents));
     await manager._doWork("session-agent-turns", "refactor the engine", bus);
 
-    // Two turns of the main agent's, and one of the agent's that only moves the agent's calls along.
+    // Two main-agent turns, and one agent turn that only moves the agent's calls along.
     expect(events.filter((event) => event.type === "thinking").map((event) => event.turnInstanceId)).toEqual(["main-1", "main-2"]);
     expect(events.filter((event) => event.type === "agent_turn")).toEqual([
       { type: "agent_turn", agentToolCallId: "task-bg", turnInstanceId: "agent-turn-1" },
@@ -631,8 +627,7 @@ describe("SessionManager tool result rendering", () => {
   });
 
   it("streams the main agent's thinking and commits it under its assistant message", async () => {
-    // The order the runtime really uses: deltas, then the persisted message carrying the same
-    // text as `reasoningText`, then the ephemeral complete block.
+    // Real order: deltas, the message repeating them as `reasoningText`, then the complete block.
     const sdkEvents = [
       {
         id: "turn-start-1",
@@ -699,8 +694,7 @@ describe("SessionManager tool result rendering", () => {
     await manager._doWork("session-thinking", "how many sheep", bus);
 
     const reasoningEvents = events.filter((event) => String(event.type).startsWith("reasoning"));
-    // The complete block the runtime sends last repeats what was just committed, so it is folded
-    // and not rebroadcast.
+    // The final complete block repeats what was committed, so it is folded, not rebroadcast.
     expect(reasoningEvents.map((event) => [event.type, event.content])).toEqual([
       ["reasoning_delta", "Nine remain, "],
       ["reasoning_delta", "then he doubles them."],
@@ -724,7 +718,7 @@ describe("SessionManager tool result rendering", () => {
   });
 
   it("shows a Copilot Fusion turn's progress as the run's status until the turn commits", async () => {
-    // The phase's own messages and tool calls arrive only at the commit, so this is all there is meanwhile.
+    // The phase's messages and tool calls arrive only at the commit; until then there is only this.
     const phase = { fusionId: "f1", phaseId: "p1", phaseKind: "primary", role: "solver", pattern: "cascade", conversationScope: "root" };
     const manager = createManager() as any;
     manager.modelMetadata = [{ id: "claude-sonnet-5.5", name: "Claude Sonnet 5.5" }];

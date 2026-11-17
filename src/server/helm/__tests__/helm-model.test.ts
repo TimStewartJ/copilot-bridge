@@ -27,7 +27,7 @@ describe("chooseHelmModel", () => {
   it("is Automatic when the role's model can't be used: the default model at its effort, unless that is a router", () => {
     const gone = { model: "gpt-6-luna", reasoningEffort: "max", modelPresets: { preset3: { model: "old-model" } }, modelRoles: { helm: { tier: "preset3" as const } } } as any;
     expect(chooseHelmModel(gone, MODELS, { fallbackEffort: "high" })).toEqual({ model: "gpt-6-luna", reasoningEffort: "max" });
-    // A router picks per request; Automatic takes the most capable ordinary model instead (never a premium one).
+    // Automatic takes the most capable ordinary model, never a premium one.
     expect(chooseHelmModel({ model: "auto" } as any, MODELS, { fallbackEffort: "high" })).toEqual({ model: "claude-opus-5.5", reasoningEffort: "high" });
   });
 

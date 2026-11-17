@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchTaskOverview } from "../../api";
 
-/** Under the dashboard prefix, so every task change that refreshes Home refreshes task states too. */
+/** Under the dashboard prefix, so a task change that refreshes Home refreshes this too. */
 export const TASK_OVERVIEW_KEY = ["dashboard", "task-overview"] as const;
 
 export function useTaskOverviewQuery(enabled = true) {

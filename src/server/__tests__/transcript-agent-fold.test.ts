@@ -37,7 +37,7 @@ function started(toolCallId: string, agentId: string, seconds: number, data: Rec
   };
 }
 
-/** An event of an agent's own: the runtime stamps it with the agent and the call that launched it. */
+/** An agent's own event: the runtime stamps it with the agent and its launching call. */
 function own(type: string, agent: { agentId: string; toolCallId: string }, seconds: number, data: Record<string, unknown> = {}): Event {
   return { type, agentId: agent.agentId, timestamp: at(seconds), data: { parentToolCallId: agent.toolCallId, ...data } };
 }
@@ -105,7 +105,7 @@ describe("TranscriptAgentFold", () => {
     const fold = new TranscriptAgentFold();
     observeAll(fold, firstTurn);
 
-    // The runtime writes nothing when a later turn ends; the last model call asking for no tool does.
+    // The runtime writes nothing when a later turn ends; a model call asking for no tool marks it.
     const followUp: Event[] = [
       { type: "user.message", agentId: MOVES.agentId, timestamp: at(200), data: { content: "Also cover castling.", source: "agent-session-1" } },
       own("assistant.turn_start", MOVES, 200),
@@ -144,7 +144,7 @@ describe("TranscriptAgentFold", () => {
     // Six seconds in, with a model call in flight.
     observeAll(fold, firstTurn.slice(0, 8));
 
-    // What the runtime writes at shutdown and after an abort: the agent's end, cancelled, then the shutdown.
+    // At shutdown and after an abort the runtime writes the agent's cancelled end, then shutdown.
     const changes = observeAll(fold, [
       { type: "subagent.completed", agentId: MOVES.agentId, timestamp: at(30), data: { toolCallId: MOVES.toolCallId, cancelled: true } },
       { type: "session.shutdown", timestamp: at(30), data: { shutdownType: "routine" } },
@@ -228,8 +228,7 @@ describe("TranscriptAgentFold", () => {
   });
 
   it("reports an agent going back to work when it was launched before the fold began", () => {
-    // A run keeps a fold of its own, so a follow-up to an agent an earlier run launched is the
-    // first the fold hears of it. The follow-up itself does not name the launching call.
+    // Each run has its own fold, so an earlier run's agent first shows up in an unlinked follow-up.
     const fold = new TranscriptAgentFold();
 
     const changes = observeAll(fold, [

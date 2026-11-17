@@ -402,11 +402,7 @@ export function initializeTriggerAndDeliveryRunners(ctx: AppContext): void {
 /** Git packs older than this are fetched again when the server starts. */
 const SKILL_PACK_STARTUP_STALE_MS = 12 * 60 * 60_000;
 
-/**
- * Reads pack state, then scans skills, then fetches stale git packs in the background. Sessions
- * started before the first scan finishes get no <skill_roles> fillers yet, which only costs them
- * the role hints.
- */
+/** Sessions started before the first scan only miss their <skill_roles> hints. */
 export function startSkillCatalog(ctx: AppContext): void {
   const catalog = ctx.skillCatalog;
   const packs = ctx.skillPacks;

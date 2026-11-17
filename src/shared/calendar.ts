@@ -1,6 +1,3 @@
-// The Bridge's calendar: events the Bridge owns, and a read-only view that lays them beside the
-// dates the rest of the Bridge already keeps (checklist deadlines, task revisits, scheduled agent
-// runs and Helm's looks). Shared by the server and the client.
 
 export type CalendarRepeatEvery = "day" | "week" | "month" | "year";
 
@@ -26,10 +23,7 @@ export interface CalendarEvent {
   location?: string;
   notes?: string;
   taskId?: string;
-  /**
-   * The event's ID in a calendar it was imported from. Opaque to the Bridge and unique: saving an
-   * event with an externalId that already exists updates that event instead of adding another.
-   */
+  /** ID in the calendar it was imported from; unique, so saving it again updates that event. */
   externalId?: string;
   /** Short lowercase name of the calendar an imported event comes from, such as "outlook". */
   source?: string;
@@ -42,7 +36,7 @@ export type CalendarItemKind = "event" | "deadline" | "revisit" | "run";
 
 /** One thing on the calendar. Derived items are read-only here and change where they live. */
 export interface CalendarItem {
-  /** Stable for the occurrence: "event:<id>" or "event:<id>:<n>" for the nth repeat, "deadline:<id>", … */
+  /** Stable per occurrence: "event:<id>", "event:<id>:<n>" for a repeat, "deadline:<id>", … */
   id: string;
   kind: CalendarItemKind;
   title: string;
@@ -85,10 +79,7 @@ export interface CalendarResponse {
   undatedChecklistCount: number;
   /** True when the window held more events than one answer carries; the list is then incomplete. */
   eventsTruncated: boolean;
-  /**
-   * Every source that stored imported events come from, whatever the window, sorted, with
-   * UNNAMED_SOURCE (imported events that name no source) last.
-   */
+  /** Every source of stored imported events, whatever the window, sorted, UNNAMED_SOURCE last. */
   importedSources: string[];
   /** The colour of the person's own events and of each source in importedSources. */
   colors: CalendarColors;

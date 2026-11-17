@@ -140,7 +140,7 @@ describe("Work-reference preview route", () => {
 
 describe("Dashboard work map route", () => {
   const spies: Array<{ mockRestore: () => void }> = [];
-  // The provider registry outlives a test's app, so an earlier test's ADO settings would still answer.
+  // The provider registry outlives a test's app, so clear an earlier test's ADO settings.
   beforeEach(() => providers.clearProviderCache());
   afterEach(() => {
     for (const spy of spies.splice(0)) spy.mockRestore();
@@ -182,7 +182,7 @@ describe("Dashboard work map route", () => {
     } satisfies WorkMapSource;
   }
 
-  /** Makes the route read `ado`. The returned function waits until that many map requests have reached the route. */
+  /** Makes the route read `ado`; the result waits until that many map requests arrived. */
   function useAdo(ado: WorkMapSource) {
     const waiting = new Map<number, () => void>();
     let arrived = 0;

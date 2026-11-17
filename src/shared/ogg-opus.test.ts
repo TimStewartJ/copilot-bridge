@@ -32,8 +32,9 @@ describe("opusPacketSamples", () => {
     expect(opusPacketSamples(packet(0x58, 40))).toBe(2_880); // wideband speech, 60 ms
     expect(opusPacketSamples(packet(0x68, 40))).toBe(960); // hybrid, 20 ms
     expect(opusPacketSamples(packet(0x80, 40))).toBe(120); // music mode, 2.5 ms
-    expect(opusPacketSamples(packet(WIDEBAND_20_MS | 1, 40))).toBe(1_920); // two frames
-    expect(opusPacketSamples(new Uint8Array([WIDEBAND_20_MS | 3, 3, 0, 0]))).toBe(2_880); // three frames, counted
+    expect(opusPacketSamples(packet(WIDEBAND_20_MS | 1, 40))).toBe(1_920);
+    // Code 3 packet: the frame count is read from its second byte.
+    expect(opusPacketSamples(new Uint8Array([WIDEBAND_20_MS | 3, 3, 0, 0]))).toBe(2_880);
     expect(() => opusPacketSamples(new Uint8Array(0))).toThrow("empty packet");
     expect(() => opusPacketSamples(new Uint8Array([0x4b]))).toThrow("invalid packet duration");
     expect(() => opusPacketSamples(new Uint8Array([0x4b, 7]))).toThrow("invalid packet duration");
@@ -84,7 +85,7 @@ describe("muxOggOpus", () => {
     expect(pages.every((page) => page.valid)).toBe(true);
     expect(pages[0]!.flags).toBe(0x02);
     expect(pages.at(-1)!.flags).toBe(0x04);
-    // Two header pages, then about a second of audio to a page, each stamped with the running length.
+    // Two header pages, then about a second of audio per page, each stamped with the length so far.
     expect(pages.slice(2).map((page) => page.granule)).toEqual([48_000, 96_000, 144_000, 192_000, 240_000, 288_000, 336_000, 384_000, 389_760]);
 
     const stream = demuxOggOpus(file);
@@ -120,7 +121,7 @@ describe("demuxOggOpus", () => {
     const stream = demuxOggOpus(oggOpusToneFixture());
     const long = packet(WIDEBAND_20_MS, 600);
     const base = muxOggOpus({ ...stream, packets: [] });
-    // Hand-built pages: the first ends mid-packet (a final lacing value of 255), the second continues it.
+    // Hand-built pages: the first ends mid-packet (last lacing value 255), the second continues it.
     const page = (flags: number, sequence: number, serial: number, lacing: number[], body: Uint8Array) => {
       const bytes = new Uint8Array(27 + lacing.length + body.length);
       bytes.set([0x4f, 0x67, 0x67, 0x53], 0);

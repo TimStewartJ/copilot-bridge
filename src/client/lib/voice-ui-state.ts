@@ -42,12 +42,12 @@ export interface VoiceUiState {
   buttonState: VoiceUiButtonState;
   buttonTitle: string;
   message: string | null;
-  /** A fast-changing figure (recording clock, upload percent) shown beside the message, outside its live region. */
+  /** A fast-changing figure shown beside the message, outside its live region. */
   detail: string | null;
   tone: VoiceUiTone;
   /** Time recorded so far ("0:12"), for the recording bar; null when not recording. */
   recordingClock: string | null;
-  /** What the recorder does at its limit ("Sends at 5:00"), once the limit is close; null otherwise. */
+  /** What happens at the limit ("Sends at 5:00"), once it is close; else null. */
   limitNotice: string | null;
   /** Said in the recording bar while the microphone has heard nothing; null otherwise. */
   silenceNotice: string | null;

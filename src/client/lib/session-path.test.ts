@@ -102,9 +102,6 @@ describe("task chat navigation", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// composer key helpers (merged from composer-key.test.ts)
-// ---------------------------------------------------------------------------
 import {
   getComposerKeyFromPathname,
   getDraftComposerKey,

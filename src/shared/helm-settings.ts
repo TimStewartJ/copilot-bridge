@@ -1,12 +1,4 @@
-/**
- * Helm and hands-free settings as `/api/helm/settings` reads and writes them. Tether (the iPhone app)
- * sends all of these keys and checks that a read returns what it wrote.
- *
- * `model`, `typedReasoningEffort` and `spokenReasoningEffort` are retired: Helm's model and effort come
- * from the Helm row in Settings › Models, and hands-free turns run on the chat's own effort. They stay
- * in the contract only so Tether keeps working; the Bridge stores what was written and returns it, and
- * nothing reads them.
- */
+/** Tether sends every key and checks reads echo writes; model and both efforts are unused. */
 export interface UnifiedHelmSettings {
   model: string;
   typedReasoningEffort: string;

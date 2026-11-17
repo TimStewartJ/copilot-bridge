@@ -25,10 +25,7 @@ interface SubAgentGroupProps {
   loadedStepCount?: number;
   renderChildNodes?: (childNodes: ToolCallTreeNode[]) => ReactNode;
   defaultExpanded?: boolean;
-  /**
-   * The agent was launched in an earlier stretch of work, so this row holds only what it did in
-   * this one. Its brief and its answer stay on the row where it was launched.
-   */
+  /** Launched in an earlier stretch: this row holds only this stretch, not brief or answer. */
   contextOnly?: boolean;
 }
 
@@ -52,11 +49,6 @@ function SectionLabel({ children }: { children: ReactNode }) {
   );
 }
 
-/**
- * A delegated agent, as one row per stretch of work it took part in. The row where it was launched
- * opens onto its brief, what it did in that stretch and its answer, and carries the totals for its
- * whole run. A row in a later stretch opens onto what it did there.
- */
 export default memo(function SubAgentGroup({ agentTool, childNodes = [], loadedStepCount = 0, renderChildNodes, defaultExpanded = false, contextOnly = false }: SubAgentGroupProps) {
   const agent = agentTool.agent;
   const agentLabel = agentDisplayName(agentTool);
@@ -83,21 +75,18 @@ export default memo(function SubAgentGroup({ agentTool, childNodes = [], loadedS
   const status = agent || !contextOnly ? getToolCallStatus(agentTool) : null;
   const running = status === "running" && runActive;
   const working = running && newestRow;
-  // What became of the agent is said on the row that launched it and on the row where its work
-  // ends. A row for a stretch in between only holds what was done there.
+  // The agent's outcome shows on its launch row and its last row; rows in between only hold work.
   const speaksForAgent = !contextOnly || newestRow;
-  // No end was recorded and nothing can still end it: the session shut down or the run was cut short.
+  // No end recorded and nothing can still end it: the session shut down or the run was cut short.
   const unfinished = speaksForAgent && (agent?.status === "stopped" || (status === "running" && !runActive));
   const failed = speaksForAgent && status === "failed";
   const rowStatus = !speaksForAgent ? "done" : unfinished ? "unfinished" : status ?? "context";
 
-  // A background agent keeps working after the stretch that launched it, so its launch row counts
-  // its whole run. Every other row counts what is beneath it.
+  // A background agent outlives its launch stretch, so its launch row counts the whole run.
   const wholeRunAgent = !contextOnly && agent?.background ? agent : undefined;
   const stepsHere = childNodes.length;
   const failedHere = childNodes.reduce((sum, child) => sum + child.failedCount, 0);
-  // The records are read a moment after each step is taken; the steps already on screen count too,
-  // so this row never trails the agent's row in the stretch it is working in.
+  // Records lag each step, so on-screen steps count too and this row never trails the agent's row.
   const stepCount = wholeRunAgent ? Math.max(wholeRunAgent.toolCount, loadedStepCount, stepsHere) : stepsHere;
   // Failures inside an agent are invisible until its row is opened, so the row has to say so.
   const failedCount = wholeRunAgent ? Math.max(wholeRunAgent.failedToolCount, failedHere) : failedHere;

@@ -634,8 +634,7 @@ describe("SessionManager reloadSession", () => {
       const second = expect(manager.reloadSession("session-behind-2")).rejects.toThrow("timed out after 60s");
       await vi.advanceTimersByTimeAsync(60_000);
       await Promise.all([first, second]);
-      // The second timeout sends its own ping (after one checkpoint ping per resume) instead of
-      // recycling on the Bridge's clock.
+      // The second timeout sends its own ping instead of recycling on the Bridge's clock.
       expect(backend.diagnosticPing).toHaveBeenCalledTimes(3);
       expect(manager.settlingTimedOutSessionResumes.size).toBe(2);
       expect(handleBackendDisconnect).not.toHaveBeenCalled();
@@ -679,7 +678,7 @@ describe("SessionManager reloadSession", () => {
       const lateSession = makeAgentSessionStub({ disconnect: vi.fn() });
       let resolveResume!: (session: typeof lateSession) => void;
       const { backend, caughtUp } = behindBackend(vi.fn(() => new Promise((resolve) => { resolveResume = resolve; })));
-      // The probe started by the request's own timeout is answered; only the watchdog's later ping is not.
+      // The probe from the request's timeout is answered; only the watchdog's later ping is not.
       backend.probeHealth.mockResolvedValueOnce(true);
       const handleBackendDisconnect = vi.spyOn(manager, "handleBackendDisconnect").mockImplementation(() => {});
       manager.backend = backend;
@@ -731,7 +730,7 @@ describe("SessionManager reloadSession", () => {
       const lateSession = makeAgentSessionStub({ disconnect: vi.fn(() => new Promise(() => {})) });
       const { backend, handleBackendDisconnect, checkpointPings } = await deliverLateSession(manager, lateSession);
 
-      // Not released within 5 s: the lease is quarantined, which holds new work back, and nothing is recycled yet.
+      // Not released within 5 s: the lease is quarantined and holds new work back; no recycle yet.
       expect(handleBackendDisconnect).not.toHaveBeenCalled();
       expect(manager.cleanupOwnership.get(lateSession)).toMatchObject({ phase: "quarantined" });
       expect(manager.settlingTimedOutSessionResumes.size).toBe(0);

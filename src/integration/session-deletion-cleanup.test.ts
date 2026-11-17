@@ -52,8 +52,7 @@ function seedSessionContext(sessionId: string): void {
   expect(event).not.toBeNull();
   store.recordContextEvent(event!);
 
-  // session_context_backfills has no public writer other than the file backfill,
-  // so seed it directly to prove the delete covers all four tables.
+  // Seed session_context_backfills directly (no other public writer) to cover all four tables.
   db.prepare(`
     INSERT INTO session_context_backfills (sessionId, provider, providerSessionId, eventsPath, fileSize, mtimeMs, backfilledAt)
     VALUES (?, 'copilot', ?, ?, 10, 1, '2026-05-01T10:00:00.000Z')
@@ -187,9 +186,7 @@ describe("session deletion cleans up every owned subsystem", () => {
     const store = ctx.sessionContextStore!;
     expect(countRows("session_context_events", SESSION_ID)).toBeGreaterThan(0);
 
-    // Force the final statement in the transaction to fail. Deletes run
-    // events → turns → backfills → summary, so dropping the summary table makes
-    // the last statement throw after the first three already ran.
+    // Deletes run events → turns → backfills → summary, so this fails the last one after three ran.
     db.exec("DROP TABLE session_context_summary");
 
     expect(() => store.deleteSessionContext(SESSION_ID)).toThrow();

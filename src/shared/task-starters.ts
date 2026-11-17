@@ -1,13 +1,10 @@
-// Suggested chats on a task: a few ready prompts Helm leaves on the task panel. Tapping one opens a
-// new chat on the task with the prompt in the composer. Helm's looks write them for the tasks they
-// look at, and the panel's refresh asks Helm for just that task. Shared by the server and the client.
 import { isPlaybookName } from "./workflow-vocabulary.js";
 
 export const TASK_STARTERS_MAX = 3;
 export const TASK_STARTER_LABEL_MAX = 60;
 export const TASK_STARTER_PROMPT_MAX = 2000;
 
-/** helm: a scheduled look; refresh: the panel's refresh button; auto: after a chat on the task went quiet. */
+/** helm: a scheduled look; refresh: the panel's button; auto: after a chat on it went quiet. */
 export type TaskStarterSource = "helm" | "refresh" | "auto";
 export type TaskStarterRefreshTrigger = "manual" | "auto";
 

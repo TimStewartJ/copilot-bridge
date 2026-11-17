@@ -2,8 +2,6 @@ import type { DatabaseSync } from "./db.js";
 import { createBridgeSessionStateStore, type BridgeSessionState } from "./bridge-session-state-store.js";
 import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
 
-// ── Schedule run retention ────────────────────────────────────────
-
 /** Default number of schedule_runs rows retained per schedule. */
 export const DEFAULT_SCHEDULE_RUNS_KEEP = 500;
 /** Extra rows kept above a schedule's autoArchiveKeep so retention has headroom. */
@@ -21,13 +19,7 @@ function readScheduleRunsKeepEnv(): number {
   return DEFAULT_SCHEDULE_RUNS_KEEP;
 }
 
-/**
- * Resolve how many schedule_runs rows to retain for a schedule. Defaults to
- * BRIDGE_SCHEDULE_RUNS_KEEP (or {@link DEFAULT_SCHEDULE_RUNS_KEEP}). When a
- * schedule configures autoArchiveKeep, keep at least that many rows plus
- * {@link SCHEDULE_RUNS_KEEP_HEADROOM} so session retention still sees the full
- * keep window plus a buffer of candidates.
- */
+/** Env default, raised to autoArchiveKeep + headroom so retention sees its full window. */
 export function resolveScheduleRunsKeep(autoArchiveKeep?: number | null): number {
   const base = readScheduleRunsKeepEnv();
   if (typeof autoArchiveKeep === "number" && Number.isInteger(autoArchiveKeep) && autoArchiveKeep > 0) {
@@ -164,13 +156,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
     `).run(scheduleId, sessionId, recordedAt);
   }
 
-  /**
-   * Bound per-schedule run history to the newest `keep` rows. Idempotent: a
-   * no-op when at or below the bound. `retainSessionIds` rows are never pruned
-   * (used to preserve sessions retention still wants to retry, e.g. busy or
-   * sessions with active deferred work). Ordering matches listScheduleRuns; the
-   * idx_schedule_runs_schedule index serves the scheduleId filter.
-   */
+  /** Keeps the newest `keep` rows; rows of retainSessionIds (still retried) are never pruned. */
   function pruneScheduleRuns(scheduleId: string, keep: number, retainSessionIds: string[] = []): number {
     if (!Number.isInteger(keep) || keep <= 0) return 0;
     const retained = [...new Set(retainSessionIds)];
@@ -200,7 +186,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
     return result;
   }
 
-  /** Every session's meta. Reads the whole table: for maintenance, and for a list too long to read by id. */
+  /** Reads the whole table: for maintenance, or a list too long to read by id. */
   function listMeta(): MetaMap {
     return toMetaMap(bridgeSessionStateStore.listStates());
   }

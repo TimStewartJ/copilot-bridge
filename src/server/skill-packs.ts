@@ -1,8 +1,4 @@
-// Skill packs: keeps git packs checked out under the data folder and reports each pack's state.
-//
-// A git pack is a shallow checkout at <dataDir>/skill-packs/<id>, refreshed with fetch + reset so
-// local edits there never block a sync (edit the pack at its source instead). A folder pack is
-// read where it is. Git runs through runGit (process host, off the main thread).
+// Git packs: shallow checkouts under dataDir, synced by fetch+reset, so local edits are lost.
 
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -154,10 +150,7 @@ export function createSkillPackManager(options: SkillPackManagerOptions) {
     return work;
   }
 
-  /**
-   * Syncs every enabled pack, or with `staleAfterMs` only git packs not synced that recently, so a
-   * restart does not fetch every pack again.
-   */
+  /** Syncs every enabled pack; `staleAfterMs` limits it to git packs not synced that recently. */
   async function syncAll(syncOptions: { staleAfterMs?: number } = {}): Promise<SkillPackStatus[]> {
     const results: SkillPackStatus[] = [];
     const saved = await loadState();
@@ -186,7 +179,7 @@ export function createSkillPackManager(options: SkillPackManagerOptions) {
     return Promise.all(options.getPacks().map((pack) => inspect(pack)));
   }
 
-  /** Removes the checkout of a git pack that is no longer configured. Folder packs are never touched. */
+  /** Removes checkouts of git packs no longer configured; folder packs are never touched. */
   async function pruneRemoved(): Promise<void> {
     const configured = new Set(options.getPacks().filter((pack) => pack.source.kind === "git").map((pack) => pack.id));
     let entries: string[];
@@ -203,10 +196,7 @@ export function createSkillPackManager(options: SkillPackManagerOptions) {
     }
   }
 
-  /**
-   * The packs a chat loads: on, present on disk, and either untagged or sharing a tag with the
-   * chat's task. Uses the last known state so session setup never waits on the disk.
-   */
+  /** Packs a chat loads (on, on disk, untagged or sharing a task tag); cached, so no disk wait. */
   function activeRoots(taskTagNames?: readonly string[], filter: { ignoreTags?: boolean } = {}): SkillPackRoot[] {
     const tags = new Set((taskTagNames ?? []).map((tag) => tag.toLowerCase()));
     return options.getPacks().flatMap((pack) => {

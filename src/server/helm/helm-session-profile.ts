@@ -1,7 +1,4 @@
-// Two shapes of Helm session. Helm's chat is an ordinary Bridge chat (Assistant profile, with its
-// shell, skills, MCP servers and Bridge tools) plus Helm's own tools; its role and guidance reach
-// the ordinary prompt through the profile's config options. The looks that write the brief are
-// locked down: Helm's instructions and read-only tools only, applied on create and on every resume.
+// Helm chat = ordinary chat + Helm tools; brief looks get only Helm's prompt and read-only tools.
 import type { BridgeToolDefinition } from "../agent-tools-mcp/server.js";
 import { createNativeBridgeTools } from "../bridge-native-tools.js";
 import { BUILT_IN_GITHUB_MCP_SERVER } from "../built-in-mcp-servers.js";
@@ -14,13 +11,7 @@ export interface HelmSessionProfileOptions {
 
 export const HELM_CLIENT_NAME = "Copilot Bridge Helm";
 
-/**
- * The only fields a look takes from the config an ordinary session would get: which session and
- * model it is, and how the runtime talks to Bridge. This is an allowlist on purpose. Ordinary
- * sessions keep gaining capabilities through new config fields (plugins, agents, MCP servers),
- * and an unattended run that reads every Bridge must not inherit one just because nobody
- * remembered to strip it here: anything not named below is dropped.
- */
+/** Allowlist on purpose: new session config fields (plugins, MCP) must not reach looks unasked. */
 const KEPT_FROM_BASE_CONFIG = [
   "sessionId",
   "model",
@@ -38,10 +29,7 @@ const KEPT_FROM_BASE_CONFIG = [
   "fusionContextTokens",
 ] as const;
 
-/**
- * Returns the locked config of a look. Identity, model and lifecycle fields chosen by the session
- * manager are kept; everything that shapes what the agent is and what it can touch is Helm's own.
- */
+/** A look's locked config: keeps identity, model and lifecycle; everything else is Helm's. */
 export function applyHelmSessionProfile<T extends Record<string, unknown>>(base: T, options: HelmSessionProfileOptions): T {
   const tools = createNativeBridgeTools(options.tools);
   const kept = Object.fromEntries(
@@ -64,17 +52,10 @@ export function applyHelmSessionProfile<T extends Record<string, unknown>>(base:
   } as unknown as T;
 }
 
-/**
- * Tools Helm's chat goes without. ask_user shows a form, and hands-free has no way to speak one or
- * take its answer; Helm asks its questions in its reply instead. Helm's chat does not use
- * playbooks, so it has neither the tool that picks one nor the one that reports a playbook done.
- */
+/** ask_user forms can't work hands-free, and Helm chat has no playbooks. */
 export const HELM_CHAT_EXCLUDED_TOOLS = ["ask_user", "playbook_select", "verify_complete"] as const;
 
-/**
- * Adds Helm's own tools to an ordinary chat's config and hides playbook skills, which would tell
- * Helm to call the playbook tools it does not have.
- */
+/** Adds Helm's tools to a chat and hides playbook skills, which need tools Helm lacks. */
 export function applyHelmChatProfile<T extends Record<string, unknown>>(
   base: T,
   options: { tools: readonly BridgeToolDefinition[]; playbookSkills?: readonly string[] },

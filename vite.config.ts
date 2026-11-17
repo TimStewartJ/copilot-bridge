@@ -4,9 +4,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { resolveBridgePort } from "./src/server/port-config";
 
-// langium, which mermaid parses with, imports vscode-jsonrpc/lib/common/* without depending on
-// vscode-jsonrpc, so it gets the copy the Bridge shares with the Copilot SDK. That copy's exports
-// map hides lib/, so point those imports at its files.
+// langium imports vscode-jsonrpc/lib/* undeclared; our copy's exports hide lib/, so alias it.
 const vscodeJsonrpcLib = normalizePath(fileURLToPath(new URL("./node_modules/vscode-jsonrpc/lib/", import.meta.url)));
 
 export default defineConfig(({ mode }) => {

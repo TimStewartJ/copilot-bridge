@@ -1,8 +1,4 @@
-// A command reaches a program in one of two forms. A ShellCommand is text a shell reads, so it must
-// be constant: a value inside it depends on that shell's quoting, which differs between /bin/sh and
-// cmd.exe. A CommandLine starts the program directly and passes each value as its own argument.
-// Every runner that can start a shell takes one of these, so a command built from values fails to
-// compile instead of failing on a branch name with a space or a `^` that cmd.exe swallows.
+// Shell text must be constant (sh and cmd.exe quote differently); pass values via CommandLine.
 
 declare const shellCommandBrand: unique symbol;
 
@@ -18,10 +14,7 @@ export interface CommandLine {
 
 export type Command = ShellCommand | CommandLine;
 
-/**
- * Tags constant shell text: sh`git status --porcelain`. A `${}` in the template does not compile;
- * build a CommandLine with commandLine() instead.
- */
+/** Tags constant shell text: sh`git status`. A `${}` does not compile; use commandLine(). */
 export function sh(strings: TemplateStringsArray, ...values: never[]): ShellCommand {
   if (values.length > 0 || strings.length !== 1) {
     throw new TypeError("A shell command must be constant text. Pass values as arguments with commandLine().");

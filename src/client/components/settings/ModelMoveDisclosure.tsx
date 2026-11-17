@@ -39,7 +39,7 @@ import { DS, cx } from "../../design/tokens";
 import { Button, Details, DisclosureRow, Notice, SegmentedControl, SettingList, SettingRow } from "../../design/primitives";
 
 const POLL_INTERVAL_MS = 1_500;
-/** A move can leave hundreds of chats behind when it stops early; the list shows the first of them. */
+/** A move stopped early can leave hundreds of chats behind; the list shows the first of them. */
 const MAX_LISTED_RESULTS = 50;
 
 function countChats(count: number): string {
@@ -83,12 +83,6 @@ function describeResult(result: SessionModelMoveResult): string {
   }
 }
 
-/**
- * Moves every chat that is not archived off one model, to a tier (its model, effort and context) or
- * to a model of your own. It is used every few weeks at most, so it is one closed line under the
- * model setting. The server does the work one chat at a time; this shows the choice, the progress
- * and the result.
- */
 export function ModelMoveDisclosure({ presets }: { presets?: AppSettings["modelPresets"] }) {
   const { data: models } = useModelsQuery();
   const [open, setOpen] = useState(false);
@@ -97,7 +91,7 @@ export function ModelMoveDisclosure({ presets }: { presets?: AppSettings["modelP
   const [usageError, setUsageError] = useState<string | null>(null);
   const [fromModel, setFromModel] = useState("");
   const [target, setTarget] = useState<MoveTarget | undefined>(undefined);
-  /** Custom only: the model, and an effort and context for every chat. Empty: each chat keeps its own. */
+  /** Custom only: the model, effort and context for every chat; empty keeps each chat's own. */
   const [toModel, setToModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [contextTier, setContextTier] = useState<CopilotContextTier | "">("");
@@ -132,7 +126,7 @@ export function ModelMoveDisclosure({ presets }: { presets?: AppSettings["modelP
     }
   }, []);
 
-  /** Takes the server's view of the move, and refreshes what depends on it once the move is over. */
+  /** Takes the server's view of the move and refreshes what depends on it once it is over. */
   const applyJob = useCallback((next: SessionModelMoveJob, previous: SessionModelMoveJob | null) => {
     setJob(next);
     if (!isSessionModelMoveFinished(next.status)) return;
@@ -170,7 +164,7 @@ export function ModelMoveDisclosure({ presets }: { presets?: AppSettings["modelP
             applyJob(state.job, job);
             return;
           }
-          // The server restarted and forgot the move; the chats it had not reached are still on the old model.
+          // The server restarted and forgot the move; chats it had not reached keep the old model.
           setJob(null);
           setStopping(false);
           setError("The server restarted before the move finished. Chats already moved stay moved.");

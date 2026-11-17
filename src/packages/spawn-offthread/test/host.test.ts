@@ -78,8 +78,7 @@ describe("ProcessHost exec scheduling", () => {
     const second = host.execFile("git", ["log"]);
     const third = host.execFile("git", ["diff"]);
 
-    // Two workers, each blocked creating one process. The third request waits on the calling
-    // thread instead of queueing behind a creation that may take tens of seconds.
+    // Both workers are busy creating, so the third request waits here, not behind a slow creation.
     expect(workers).toHaveLength(2);
     expect(workers.map((worker) => worker.execRequests().length)).toEqual([1, 1]);
 

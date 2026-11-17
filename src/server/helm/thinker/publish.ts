@@ -1,7 +1,4 @@
-// Checks a thinker's publication against the packet it was given and turns it into a brief and
-// memory changes. Nothing is accepted unless all of it is valid, so a run can fix its mistakes
-// and publish again; the first valid publication is final. Every action must point at something
-// the run was shown, an answer must fit the question, and Helm can never change Tim's own memory.
+// Validates a thinker publication all-or-nothing; the first valid one is final.
 import {
   HELM_ENTRY_MAX_CHARS,
   HELM_THREAD_OWNERS,
@@ -52,7 +49,7 @@ export type MemoryOp =
   /** from: names of the outside sources the entry cites (threads, people and dates). */
   | {
     op: "upsert"; kind: HelmMemoryKind; key: string; text: string; source: string | null; from?: string[];
-    /** Threads: whose move it is, how long Helm holds off, and the task fields the line was written from. */
+    /** Threads: whose move it is, how long Helm holds off, and the fields it was written from. */
     owner?: HelmThreadOwner; holdUntil?: string | null; basis?: string;
   }
   | { op: "propose"; kind: "rule" | "priority"; text: string; source: string | null }
@@ -229,7 +226,7 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
     if (!bridge || !watchText) return;
     const task = typeof rawWatch.taskId === "string" ? bridge.tasks.find((candidate) => candidate.taskId === rawWatch.taskId) : undefined;
     const taskOk = !!task;
-    // Watching is for what waits on others. The live fields decide that, not Helm's own thread line.
+    // Watching is for what waits on others; live fields decide that, not Helm's thread line.
     if (task?.onTim === "fields") {
       errors.push(`${where}: "${task.title}" waits on no one but Tim: no agent is working on it and it is not waiting on anyone else${task.needsTim?.length ? ` (${task.needsTim.join("; ")})` : ""}. Don't watch it; raise it as an item, or leave it out and Home lists it under On you.`);
       return;
@@ -269,7 +266,7 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
   return { ok: true, brief: { summary: summary!, items, proposals, watching }, handled, memory: memoryOps, starters };
 }
 
-/** The outside sources a memory entry cites: its from list, or a source note such as "mail: Ana, Nov 3". */
+/** Outside sources an entry cites: its from list, or a source note such as "mail: Nov 3". */
 function citedSources(rawFrom: unknown, sourceNote: string | null, packet: ThinkerPacket, where: string, errors: string[]): string[] {
   // This run's sources, and those memory already cites, so a line can keep what it rests on.
   const known = new Set([...packet.outsideSources.map((source) => source.name), ...Object.values(packet.sourceNames ?? {}).filter((name) => name !== HELM_REMOVED_SOURCE)]);

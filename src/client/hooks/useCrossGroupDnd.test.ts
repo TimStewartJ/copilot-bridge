@@ -77,7 +77,7 @@ function closestCenterIds(boxes: Record<string, Box & { group?: boolean }>, coll
 }
 
 describe("taskListCollisionDetection", () => {
-  // Group A (0-170, header on top) holds rows a1, a2, a3; group B (220-260) is collapsed and shows no rows.
+  // Group A (0-170, header on top) holds a1-a3; group B (220-260) is collapsed, no rows.
   const boxes = {
     A: { top: 0, height: 170, group: true },
     a1: { top: 40, height: 40 }, a2: { top: 80, height: 40 }, a3: { top: 120, height: 40 },

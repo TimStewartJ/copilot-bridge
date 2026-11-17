@@ -39,7 +39,7 @@ import {
   writeFileSyncCallMock,
 } from "./staging-tools-mocks.js";
 
-// Each staging-tools test file registers the shared mocks itself; vi.mock only applies to the file it is in.
+// Each staging-tools test file registers the shared mocks itself: vi.mock is per file.
 const mocks = await vi.hoisted(() => import("./staging-tools-mocks.js"));
 vi.mock("@github/copilot-sdk", () => mocks.copilotSdkModule);
 vi.mock("node:child_process", async (importOriginal) => mocks.mockChildProcess(await importOriginal()));
@@ -81,7 +81,7 @@ describe("staging tools", () => {
         ? "master\n"
         : successfulCommandOutput(command)
     ));
-    // Worktrees go beside the control root. Pin it so this test cannot touch the real checkout's parent.
+    // Worktrees go beside the control root; pin it so the test stays off the real checkout.
     const sandbox = createTempDir("bridge-stage-init-");
     vi.stubEnv("BRIDGE_CONTROL_ROOT", join(sandbox, "production"));
     const tools = await loadStagingTools();
@@ -638,7 +638,7 @@ describe("staging tools", () => {
     expect(existsSync(join(notAWorktree, "src"))).toBe(true);
     expect(removedTrees()).not.toContain(notAWorktree);
     expect(stagingLogMock).toHaveBeenCalledWith(expect.stringContaining("could not remove orphaned staging worktree aaa-locked-orphan"));
-    // Entries after the locked one are still seen as active, so their previews are not pruned as orphans.
+    // Entries after the locked one still count as active, so their previews are not pruned.
     expect(mod.__testing.readActivePreviewTarget(preview.prefix, previewParent)).not.toBeNull();
   });
 
@@ -1722,8 +1722,7 @@ describe("staging fresh-install node_modules link handling", () => {
 
     expect(result1, "abort: should fail").toMatchObject({ ok: false });
     expect(result1.output, "abort: should contain error").toContain("EPERM: operation not permitted");
-    // Critically: npm install never runs over the still-present symlink, which
-    // would resolve into production's node_modules.
+    // npm install must never run over the remaining symlink into production's node_modules.
     expect(runCommand1, "abort: npm should not run").not.toHaveBeenCalled();
     expect(preparePatchedPackagesForInstallMock, "abort: no patched packages").not.toHaveBeenCalled();
 
@@ -1871,9 +1870,7 @@ describe("staging seed runtime isolation", () => {
     const productionDataDir = createProductionDataDir();
     const stagingDir = createTempDir("bridge-stage-isolation-fail-");
 
-    // A production database without a `schedules` table makes the required
-    // isolation statement fail. Previously this was downgraded to a warning and
-    // the preview started with live push subscriptions still present.
+    // No `schedules` table makes the required isolation statement fail.
     const prodDb = new DatabaseSync(join(productionDataDir, "bridge.db"));
     try {
       prodDb.exec("DROP TABLE schedules");

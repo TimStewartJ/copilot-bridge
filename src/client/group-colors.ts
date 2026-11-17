@@ -1,6 +1,4 @@
-// Canonical client-side group color definitions.
-// Server maintains its own list in task-group-store.ts for validation.
-// The classes come from the design system's identity colours (design/identity.ts).
+// Group colors; the server keeps its own list in task-group-store.ts for validation.
 
 import { IDENTITY_EDGE, IDENTITY_FILL, IDENTITY_TINT } from "./design/identity";
 

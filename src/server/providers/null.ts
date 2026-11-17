@@ -1,5 +1,4 @@
-// Null provider — fallback when a provider isn't configured
-// Returns ID-only stubs with no enrichment
+// Fallback when no provider is configured: returns ID-only stubs with no enrichment.
 
 import type { PRRef, EnrichedWorkItem, EnrichedPR, WorkTrackingProvider, ProviderName } from "./types.js";
 

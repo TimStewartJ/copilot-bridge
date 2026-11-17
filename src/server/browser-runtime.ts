@@ -1,5 +1,4 @@
-// The Bridge's browser machinery for one app context: the broker that owns the browsers, the
-// store of multi-turn browser sessions, and the gateway that shows a session to the user.
+// The Bridge's browser machinery for one app context: broker, browser sessions and live gateway.
 
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,10 +23,7 @@ export interface BrowserRuntime {
 
 const runtimes = new WeakMap<object, BrowserRuntime>();
 
-/**
- * A preview is stopped by killing it, so nothing would ever close its signed-in browser. Longer
- * than a live view stays open without input, during which the view keeps sending commands.
- */
+/** Nothing closes a killed preview's signed-in browser; outlasts an idle live view's lifetime. */
 const PREVIEW_SIGNED_IN_BROWSER_IDLE_TIMEOUT_MS = 45 * 60_000;
 
 export function getBrowserRuntime(ctx: AppContext): BrowserRuntime {

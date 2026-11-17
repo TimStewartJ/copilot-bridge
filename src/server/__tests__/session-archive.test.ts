@@ -115,7 +115,7 @@ describe("session_archive tool", () => {
     expect(archivedEventSessionIds(events[0]!)).toEqual([ID(1), ID(2)]);
     expect([1, 2, 3, 4, 5, 7, 8].map((n) => sessionMetaStore.isArchived(ID(n))))
       .toEqual([true, true, false, false, false, false, false]);
-    // No row for a session that does not exist, and an archived chat keeps its place in the archive.
+    // No row for a missing session; an archived chat keeps its place in the archive.
     expect(sessionMetaStore.getMeta(ID(7))).toBeUndefined();
     expect(sessionMetaStore.getMeta(ID(6))?.archivedAt).toBe(archivedAt);
 

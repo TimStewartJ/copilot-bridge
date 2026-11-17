@@ -1,5 +1,4 @@
-// Work tracking provider abstraction — types and interface
-// Providers (ADO, GitHub, etc.) implement this to enrich work items and PRs
+// Interface that work tracking providers (ADO, GitHub) implement to enrich work items and PRs.
 
 import type { PRRef } from "../task-store.js";
 import type { WorkItemRelationType } from "../../shared/work-map.js";

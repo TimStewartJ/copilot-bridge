@@ -31,7 +31,7 @@ import {
 import { DS } from "../../design/tokens";
 
 const DRAFT_SAVE_DELAY_MS = 500;
-/** The preview re-renders the whole document; on a long page that must wait for a pause in typing. */
+/** The preview re-renders the whole document, so on a long page it waits for a typing pause. */
 const PREVIEW_DELAY_MS = 200;
 /** Side-by-side writing and preview needs two readable columns. */
 const SPLIT_MIN_PANE_WIDTH = 1000;
@@ -63,7 +63,7 @@ function syncLeadingTitle(body: string, previousTitle: string, nextTitle: string
 }
 
 export interface DocsEditorProps {
-  /** Latest copy of the page. It keeps updating while editing, which is how outside changes are noticed. */
+  /** Latest copy of the page; it keeps updating while editing, which is how outside edits show. */
   page: DocPage;
   schema: DbSchema | null;
   onClose: () => void;

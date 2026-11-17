@@ -1,10 +1,4 @@
-// Helm's looks at all Bridges: the careful pass that writes the brief on Home and keeps Helm's
-// memory, on a schedule and on demand; serves the brief; and carries out what Tim clicks. It is the
-// same Helm as the chat (same model role, same memory); the chat reads through readConversation and
-// readBridge here. A run is an
-// ordinary Bridge session with the thinker profile, hidden from the chat lists. The run can only
-// read and publish; every change to a conversation, checklist or task comes from Tim's click,
-// except marking FYI replies read on this Bridge when Tim allows routine handling (undoable).
+// Helm's looks: runs only read and publish; changes come from Tim's clicks (FYI reads excepted).
 import { createListedSessionId } from "../../unlisted-sessions.js";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -144,7 +138,7 @@ export class HelmThinker {
     void this.retention().catch(() => undefined);
   }
 
-  /** Stops scheduling and ends a running look's source connections; resolves once they are closed. */
+  /** Stops scheduling and closes a running look's source connections; resolves once closed. */
   async dispose(): Promise<void> {
     this.disposed = true;
     this.scheduledLook?.cancel();
@@ -188,8 +182,6 @@ export class HelmThinker {
     return settings;
   }
 
-  // ── Outside sources ───────────────────────────────────────
-
   /** A configured MCP server's tools, read live, for choosing what Helm may read. */
   async listSourceTools(serverId: unknown): Promise<{ serverId: string; name: string; tools: SourceToolInfo[] }> {
     const server = typeof serverId === "string" ? this.ctx.mcpServerStore?.getMcpServer(serverId) : undefined;
@@ -216,7 +208,7 @@ export class HelmThinker {
     return names;
   }
 
-  /** Connects the run's sources. They are on the run before connecting, so stopping the run closes them too. */
+  /** Sources join the run before connecting, so stopping the run closes them too. */
   private async openSources(settings: HelmThinkerSettings, active: ActiveRun): Promise<RunSources | undefined> {
     if (settings.sources.length === 0) return undefined;
     const servers = new Map<string, McpServer>();
@@ -238,7 +230,7 @@ export class HelmThinker {
     }));
   }
 
-  /** The Helm role's model (Settings › Models), at that choice's effort, else the user's default, else high. */
+  /** The Helm role's model and effort, else the user's default, else high effort. */
   private async chooseModel(): Promise<{ model?: string; effort?: string; contextTier?: "default" | "long_context" }> {
     const models = await this.ctx.sessionManager.listModels().catch(() => [] as AgentModelInfo[]);
     const choice = chooseHelmModel(this.ctx.settingsStore.getSettings(), usableModels(models), { fallbackEffort: DEFAULT_LOOK_EFFORT });
@@ -305,7 +297,7 @@ export class HelmThinker {
           }),
         });
       },
-      // Each turn thinks at the effort the run resolved for its model (none for a model without efforts).
+      // The effort the run resolved for its model; none for a model without efforts.
       defaultTurnReasoningEffort: () => (this.active ? this.store.getRun(this.active.runId)?.effort ?? undefined : undefined),
     };
   }
@@ -392,8 +384,7 @@ export class HelmThinker {
   }
 
   private publishTool(): BridgeToolDefinition {
-    // Limits go in descriptions, not maxLength or maxItems: the tool adapter stops at the first schema
-    // violation, while validatePublication names every problem so a run can fix them all in one retry.
+    // Limits go in descriptions, not the schema, so validatePublication reports all at once.
     const chars = (max: number, lead = "") => ({ type: "string", description: `${lead}At most ${max} characters.` });
     const entryText = chars(HELM_ENTRY_MAX_CHARS);
     return defineBridgeTool("helm_publish", {
@@ -530,8 +521,7 @@ export class HelmThinker {
     const result = validatePublication(args, active.packet, memory);
     if (!result.ok) return toolFailure("The brief was not published. Fix these and call helm_publish again.", { detail: result.errors.join("\n") });
     const settings = this.store.getSettings();
-    // Everything this run writes may carry what it read from its sources and what reached it through
-    // memory and the last brief; the published brief and every entry it writes are marked with all of them.
+    // The brief and every entry are marked with all sources read or carried in through memory.
     const fromSources = mergeSourceIds(active.carriedSources, active.sources?.usedServerIds ?? []);
     const brief: HelmBrief = { ...result.brief, ...onYouList(active.packet, result.brief) };
     let changes: HelmMemoryChange[] = [];
@@ -543,7 +533,7 @@ export class HelmThinker {
           if (this.ctx.taskStore.getTask(plan.taskId)) this.ctx.taskStartersStore?.replaceWithin(plan.taskId, plan.chats, "helm");
         }
         this.store.setRunSources(run.id, this.runSourceStatuses(active.sources), fromSources);
-        // Only a source read successfully counts as read: after a failure, the next look reads that stretch again.
+        // Only successful reads count, so the next look rereads a stretch that failed.
         this.store.setSourceCoverage(active.sources?.readServerIds ?? [], run.startedAt);
       }
       return ok;
@@ -554,7 +544,7 @@ export class HelmThinker {
     return { success: true, items: result.brief.items.length, handled, memoryChanges: changes.length, starters: result.starters.length };
   }
 
-  /** Server ids of the outside sources a run may cite, by the names the run sees: today's sources and those memory already cites. */
+  /** Server ids by name of the sources a run may cite: today's and those memory already cites. */
   private sourceIdsByName(active: ActiveRun): Map<string, string> {
     const ids = new Map<string, string>();
     for (const [id, name] of Object.entries(active.packet?.sourceNames ?? {})) if (name !== HELM_REMOVED_SOURCE) ids.set(name, id);
@@ -566,12 +556,7 @@ export class HelmThinker {
     return ids;
   }
 
-  /**
-   * runSources marks what the run as a whole may have been shaped by: proposals and the picture keep
-   * it. A thread, person or date carries only the sources it cites, so a look that read mail does not
-   * mark every line it writes as written from mail. An unchanged line keeps what it had, unless the
-   * run rewrites everything (a rebuild).
-   */
+  /** A line carries only the sources it cites, so reading mail doesn't mark every line as mail. */
   private applyMemory(ops: MemoryOp[], runSources: readonly string[] = [], options: { sourceIds?: ReadonlyMap<string, string>; rewrite?: boolean } = {}): HelmMemoryChange[] {
     const changes: HelmMemoryChange[] = [];
     // A source that is no longer one Helm reads can't be cited again, so a rewrite keeps it.
@@ -618,7 +603,7 @@ export class HelmThinker {
     return changes;
   }
 
-  /** Marks FYI replies read on this Bridge, only through what the run saw, recording how to undo it. */
+  /** Marks FYI replies the run saw as read on this Bridge, recording how to undo it. */
   private applyHandled(runId: string, plans: HandledPlan[]): number {
     let count = 0;
     for (const plan of plans) {
@@ -728,7 +713,7 @@ export class HelmThinker {
     } catch (error) {
       this.fence(run.id);
       const message = error instanceof Error ? error.message : String(error);
-      // A brief published before the run stalled has already changed memory and been shown: it stands.
+      // A brief published before the run stalled has already been shown, so it stands.
       const published = !!this.store.getRun(run.id)?.briefJson;
       const credits = await this.readCredits(run.sessionId).catch(() => null);
       this.store.finishRun(run.id, published ? { status: "done", error: `Published, then: ${message}`, credits } : { status: "failed", error: message, credits });
@@ -760,7 +745,7 @@ export class HelmThinker {
       unsubscribe = this.ctx.globalBus.subscribe((event) => {
         if (event.type === "session:idle" && event.sessionId === sessionId) resolve();
       });
-      // A missed idle event must not hang the run: check every 15 s once the turn has had time to start.
+      // A missed idle event must not hang the run: poll once the turn has had time to start.
       poll = setInterval(() => {
         if (Date.now() - sentAt > 20_000 && !this.ctx.sessionManager.isSessionBusy(sessionId)) resolve();
       }, 15_000);
@@ -800,10 +785,10 @@ export class HelmThinker {
         await this.deleteSession(run.sessionId);
         this.store.markSessionDeleted(run.id);
       } catch {
-        // Busy or mid-delete: try again next time. A session that is already gone deletes without error.
+        // Busy or mid-delete: retry next time. A session already gone deletes without error.
       }
     }
-    // Only a run whose session is gone may be forgotten: its record is what hides the session from the chat lists.
+    // Prune only runs whose session is gone: the run record hides its session from chat lists.
     this.store.pruneRuns(new Date(now - KEEP_RUNS_MS).toISOString());
   }
 
@@ -976,7 +961,7 @@ export class HelmThinker {
       if (what.type === "tidy_task") {
         if (what.bridge !== "local") throw new HelmError("Tidy-ups only start on this Bridge", 400);
         const launch = await startTaskTidyChat(this.ctx, what.taskId);
-        // A started chat is kept even when its first message wasn't confirmed, so a retry can't start a second one.
+        // Keep the chat even if its first message is unconfirmed, so a retry can't start another.
         return launch.ok
           ? { outcome: "Started a tidy-up chat", sessionId: launch.sessionId }
           : { outcome: "Started a tidy-up chat; open it to check its first message arrived", sessionId: launch.sessionId };
@@ -1054,8 +1039,7 @@ export class HelmThinker {
       const max = entry.kind === "picture" ? 40_000 : 600;
       if (!text || text.length > max) throw new HelmError(`Write up to ${max} characters`, 400);
     }
-    // Keeping or editing something Helm wrote makes it Tim's: later runs follow it and can't change it.
-    // The standing picture stays Helm's so it keeps being rewritten.
+    // Keeping or editing Helm's entry makes it the user's; the standing picture stays Helm's.
     const takeOver = entry.kind !== "picture" && (text !== undefined || (input.status === "active" && entry.status === "proposed"));
     return this.store.updateMemory(id, {
       ...(text !== undefined ? { text } : {}),
@@ -1065,10 +1049,7 @@ export class HelmThinker {
   }
 }
 
-/**
- * The brief's "On you" list, from the packet's live fields rather than from what the run wrote:
- * every task that needs Tim now and that no item already points at, soonest first.
- */
+/** "On you": tasks whose live fields need the user now and no item covers, soonest first. */
 export function onYouList(packet: ThinkerPacket, brief: Pick<HelmBrief, "items">): Pick<HelmBrief, "onYou" | "onYouMore"> {
   const covered = new Set(brief.items.flatMap((item) => [
     ...item.evidence.flatMap((evidence) => evidence.target.taskId ? [`${evidence.target.bridge}:${evidence.target.taskId}`] : []),

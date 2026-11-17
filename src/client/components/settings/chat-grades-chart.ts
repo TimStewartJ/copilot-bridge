@@ -1,5 +1,4 @@
-// The Chat grades chart: one horizontal bar per model, split by the share of each label value the
-// selected classifier gave. Values are open strings from the Copilot runtime, coloured by rank.
+// One bar per model split by label value; values are open strings, coloured by rank.
 import type { ChatGradesClassifier } from "../../../shared/chat-grades.js";
 import { formatUsageCount } from "../../lib/usage-presentation";
 
@@ -35,7 +34,7 @@ const FALLBACK_COLORS: ChartColors = {
   grid: "#2c2c2c",
 };
 
-/** The current theme's colours, read from its CSS variables; canvas rendering cannot resolve var(). */
+/** The theme's colours from its CSS variables; canvas rendering cannot resolve var(). */
 export function readChartColors(): ChartColors {
   if (typeof document === "undefined" || !document.documentElement || typeof getComputedStyle !== "function") return FALLBACK_COLORS;
   const style = getComputedStyle(document.documentElement);
@@ -97,7 +96,7 @@ export function buildChartRows(
   return { rows, values };
 }
 
-/** A Vega-Lite spec: horizontal 100% stacked bars, one per model, with each bar's unit count in its label. */
+/** Vega-Lite spec: horizontal 100% stacked bars, one per model, labelled with its unit count. */
 export function buildChatGradesChartSpec(
   classifier: ChatGradesClassifier,
   modelName: (model: string) => string,

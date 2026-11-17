@@ -100,10 +100,7 @@ interface FakeAgentBrowser {
   calls: Array<{ command: string[]; session: string }>;
 }
 
-/**
- * Stands in for the agent-browser CLI behind `execFile`. Every command succeeds on an ordinary
- * page unless `respond` answers it differently.
- */
+/** Fake agent-browser behind `execFile`: all succeeds on a plain page unless `respond` differs. */
 function fakeAgentBrowser(
   respond: (command: string[]) => AgentBrowserReply | undefined = () => undefined,
 ): FakeAgentBrowser {
@@ -337,7 +334,7 @@ describe("browser session tools", () => {
       return { ...loaded, browserSessionId: started.browserSessionId as string };
     }
 
-    /** One page per result field; which pages are blocked, and how, is covered by the page check's own tests. */
+    /** One page per result field; how pages are classified is tested in browser-page-check. */
     const blockingPages = [
       { name: "a human check", page: CHALLENGE_PAGE, field: "blocked", other: "captcha", kind: "challenge", by: "Cloudflare" },
       { name: "a CAPTCHA inside a usable page", page: CAPTCHA_PAGE, field: "captcha", other: "blocked", kind: "captcha", by: "reCAPTCHA" },
@@ -389,8 +386,7 @@ describe("browser session tools", () => {
       expect(passed).not.toHaveProperty("blocked");
     });
 
-    // A failed tool result reaches the model as `textResultForLlm` alone (normalizeToolResult,
-    // convertBridgeToolResultToSdk): the other fields and the session log are not shown to it.
+    // The model sees only `textResultForLlm` of a failed tool result, not other fields or the log.
     it.each(blockingPages)("tells the agent in the failure text about $name after a failed step", async ({ page, field, other, kind, by }) => {
       const browser = fakeAgentBrowser((command) => (command[0] === "click" ? { fail: "Element @e1 not found" } : undefined));
       const { tools, browserSessionId } = await startPublicSession(browser);

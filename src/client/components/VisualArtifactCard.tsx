@@ -10,10 +10,7 @@ interface VisualArtifactCardProps {
   visual: VisualArtifact;
 }
 
-/**
- * A visual the agent published, shown the way a chat app shows an artifact: the content in one
- * frame, and beneath it a line that says what it is, with Expand and Download beside it.
- */
+/** A published visual in one frame, with a caption line and Expand and Download beside it. */
 export default function VisualArtifactCard({ visual: published }: VisualArtifactCardProps) {
   const visual = withAppBase(published, API_BASE);
   const [modalOpen, setModalOpen] = useState(false);

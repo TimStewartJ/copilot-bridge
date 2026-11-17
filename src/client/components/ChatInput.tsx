@@ -143,7 +143,7 @@ const COMPOSER_TOOL_BUTTON_CLASS = "flex h-12 w-10 flex-shrink-0 items-center ju
 
 const AUTO_SEND_STRIKE = "m2 2 20 20";
 
-/** Auto-send's paper plane. Turning it off draws a strike across it, with a gap cut in the plane so the strike reads at this size. */
+/** Auto-send's paper plane; off adds a strike, with a gap cut so it reads at this size. */
 function AutoSendIcon({ on }: { on: boolean }) {
   const gapId = useId();
   return (
@@ -212,7 +212,7 @@ export default function ChatInput({
   const composingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastHeightRef = useRef(0);
-  /** The text box is hidden behind the recording line; measuring it then would collapse it to nothing. */
+  /** Hidden behind the recording line; measuring the text box then would collapse it. */
   const textareaHiddenRef = useRef(false);
   const recordingRowRef = useRef<HTMLDivElement>(null);
   const finishRecordingRef = useRef<HTMLButtonElement>(null);
@@ -221,14 +221,14 @@ export default function ChatInput({
   const uploadingRef = useRef(uploading);
   const sendBlockedRef = useRef(Boolean(disabled));
   const agentBusyRef = useRef(Boolean(onAbort));
-  /** The send mode an auto-sent transcript uses, so dictating with Autopilot on starts an Autopilot run. */
+  /** Send mode for an auto-sent transcript, so dictating with Autopilot on starts Autopilot. */
   const nextSendModeRef = useRef<SendMode>(defaultSendMode);
   const pendingCaptureSendModeRef = useRef<{ mode: SendMode; choice: number } | null>(null);
   /** Counts send-mode choices, so a recording finishing late never undoes a newer one. */
   const sendModeChoiceRef = useRef(0);
   const restoredForRef = useRef<string | null>(null);
   const pendingCaptureSubmitModeRef = useRef<VoiceSubmitMode | null>(null);
-  /** The composer whose finished recording goes out with the rest of its content once transcribed. */
+  /** The composer whose recording is sent with its other content once transcribed. */
   const sendAfterTranscriptRef = useRef<string | null>(null);
   const acceptedFlashJobIdRef = useRef<string | null>(null);
   const acceptedFlashTimerRef = useRef<number | null>(null);
@@ -335,7 +335,7 @@ export default function ChatInput({
   const voice = useVoiceInput({
     contextKey: composerKey,
     onAudioCaptured: async ({ audio, contextKey }) => {
-      // Finish was pressed in the chat this was recorded in, with auto-send on. Any other ending stays a draft.
+      // Only Finish in the recording's own chat, with auto-send on, sends; else it stays a draft.
       const finishedMode = contextKey === composerKey ? pendingCaptureSubmitModeRef.current : null;
       const submitMode = finishedMode ?? "insert";
       const capturedSendMode = submitMode === "autosend" ? pendingCaptureSendModeRef.current : null;
@@ -434,9 +434,6 @@ export default function ChatInput({
     haptic(recording ? "light" : "selection");
   }, [recording]);
 
-  // While the microphone is open, the box shows only Finish (where the microphone was), the Autopilot
-  // toggle, the recording line and Cancel. Finishing hands straight back to the composer, which shows
-  // the upload and transcription.
   const recordingView = voice.phase === "starting" || voice.phase === "recording";
   textareaHiddenRef.current = recordingView;
   const wasRecordingViewRef = useRef(recordingView);
@@ -450,8 +447,7 @@ export default function ChatInput({
     adjustTextareaHeight();
     if (focusWasDropped() && hasFinePointer()) textareaRef.current?.focus();
   }, [adjustTextareaHeight, recordingView, resetSendModeMenu]);
-  // The button that started the recording is gone, so keyboard focus moves into the recording row:
-  // onto the row while the microphone starts, then onto Finish.
+  // The mic button is gone, so focus goes to the recording row, then Finish once recording.
   useEffect(() => {
     if (!recordingView) return;
     const row = recordingRowRef.current;
@@ -539,8 +535,7 @@ export default function ChatInput({
     requestAnimationFrame(() => adjustTextareaHeight());
   }, [adjustTextareaHeight, composerKey, draft?.text]);
 
-  // Attachments put back from outside (a not-sent message taken back to edit). The composer's own
-  // changes reach the draft at once, so the two only differ when something else changed the draft.
+  // Picks up attachments put back from outside, such as an unsent message taken back to edit.
   const draftAttachmentsKey = attachmentListKey(draft?.attachments);
   useEffect(() => {
     if (restoredForRef.current !== composerKey) return;
@@ -708,10 +703,7 @@ export default function ChatInput({
     setSelectedSlashCommandIndex(0);
   }, [slashDraft?.query, slashSuggestions.length]);
 
-  /**
-   * The mode the next send uses. A new chat takes it from its launch panel; an open chat starts
-   * each message interactive and the Autopilot toggle switches just that message.
-   */
+  /** New chats take it from the launch panel; in an open chat it applies to one message only. */
   const [chosenSendMode, setChosenSendMode] = useState<SendMode>(defaultSendMode);
   const chooseSendMode = useCallback((mode: SendMode) => {
     sendModeChoiceRef.current += 1;
@@ -844,7 +836,7 @@ export default function ChatInput({
     nothingHeard: voice.nothingHeard,
   });
   const showVoiceButton = voiceUi.showButton && !hideVoiceInput;
-  // On a phone, typed text gets the room: the tools fold into one menu, unless a recording is under way.
+  // On a phone, typed text gets the room: tools fold into one menu unless recording.
   const collapseTools = isMobile && input.trim().length > 0 && (!showVoiceButton || voiceUi.buttonState === "mic");
   const toggleVoiceRecording = () => {
     if (voice.phase === "recording") {

@@ -18,10 +18,7 @@ export class ChatMessageIdConflictError extends Error {
   }
 }
 
-/**
- * Browser messages being admitted right now, by session and id, so a repeat of one is not run
- * twice: it gets the first one's outcome.
- */
+/** Browser messages being admitted, by session and id, so a repeat gets the first's outcome. */
 const admittingMessages = new Map<string, Map<string, { prompt: string; outcome: Promise<ChatMessageDelivery> }>>();
 
 export interface ChatMessageDeliveryOptions {
@@ -31,15 +28,9 @@ export interface ChatMessageDeliveryOptions {
   waitForDelivery?: boolean;
   queue?: "none" | "on_failure" | "before_send";
   signal?: AbortSignal;
-  /**
-   * A person's chat message: kept in the chat as not sent if its run ends before the agent has it,
-   * and sent at most once per `clientMessageId` (a repeat answers with what became of the first).
-   */
+  /** A person's message: kept as not sent if its run ends first; sent once per clientMessageId. */
   keepUndelivered?: boolean;
-  /**
-   * The user typed this in the chat while the agent waited on a question: the question is answered
-   * as skipped so the message reaches the agent now.
-   */
+  /** Typed while the agent waited on a question: skip the question so the message arrives now. */
   skipOpenQuestions?: boolean;
 }
 
@@ -53,10 +44,7 @@ export type ChatMessageDeliveryContext = Pick<AppContext,
   "sessionManager" | "sessionMetaStore" | "globalBus" | "deferredPromptStore" | "deferredPromptRunner"
 > & Partial<Pick<AppContext, "chatMessageIdStore" | "unsentMessageStore" | "eventBusRegistry">>;
 
-/**
- * What became of a browser message already sent under this id, or undefined for a new one.
- * Throws when the id was used for a different message.
- */
+/** The earlier outcome for this message id, or undefined if new; throws if the id was reused. */
 function findPreviousDelivery(
   ctx: ChatMessageDeliveryContext,
   sessionId: string,
@@ -104,7 +92,7 @@ export async function sendChatMessage(
     }
     const previous = findPreviousDelivery(ctx, sessionId, clientMessageId, prompt);
     if (previous) return previous;
-    // Held from here to the start of its run: a repeat arriving while this one waits shares its outcome.
+    // Held until its run starts: a repeat arriving meanwhile shares its outcome.
     const outcome = deliver();
     admitting.set(clientMessageId, { prompt, outcome });
     admittingMessages.set(sessionId, admitting);
@@ -177,8 +165,7 @@ export async function sendChatMessage(
       if (unavailable) return queue(unavailable);
     }
     restore();
-    // Right after Stop the stopped run may still be letting go of the chat (or the chat is still
-    // loading): neither steering nor a new run is possible yet, but a new run will be in a moment.
+    // Just after Stop or while loading, the chat cannot be steered or run yet; wait briefly.
     if (manager.isSessionSettling(sessionId)) {
       await manager.waitWhileSessionSettles(sessionId, SETTLING_SESSION_WAIT_MS);
       signal?.throwIfAborted();

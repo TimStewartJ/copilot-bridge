@@ -1,6 +1,4 @@
-// Deploy guards: what staging_deploy refuses to merge and push. The repository is public, so a
-// commit authored with a blocked email or a term from the local denylist must never reach it.
-// Everything here is pure; staging-tools.ts runs git and feeds the output in.
+// Pure checks for what staging_deploy refuses to push to the public repo; staging-tools runs git.
 
 import { isAbsolute } from "node:path";
 import { isRecord } from "../shared/is-record.js";
@@ -13,7 +11,7 @@ import {
 
 export type { DeployGuardSettings } from "../shared/deploy-guards.js";
 
-/** Validates a deployGuards value; throws an Error naming the bad field. Unset or empty is undefined. */
+/** Validates deployGuards, throwing an Error naming the bad field; unset or empty is undefined. */
 export function parseDeployGuardSettings(value: unknown): DeployGuardSettings | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isRecord(value)) throw new Error("deployGuards must be an object");
@@ -93,10 +91,7 @@ export function findDenylistTerm(text: string, terms: readonly DenylistTerm[]): 
   return terms.find((entry) => lower.includes(entry.term));
 }
 
-/**
- * A reason the deploy is refused. A term finding names where the term is and which denylist line
- * it is, never the term itself: the result is written to job logs and the session.
- */
+/** A refusal reason; a term finding names where and which denylist line, never the term itself. */
 export type DeployGuardFinding =
   | { kind: "email"; sha: string; field: "author" | "committer"; email: string; pattern: string }
   | { kind: "term"; where: "deploy message"; termLine: number }
@@ -147,7 +142,7 @@ export function checkCommits(
   return findings;
 }
 
-/** `git log -p` arguments for PatchTermScanner; each commit starts with a line of RS and its sha. */
+/** `git log -p` args for PatchTermScanner; each commit starts with an RS line and its sha. */
 export const PATCH_LOG_ARGS = [
   "log",
   "-p",
@@ -166,11 +161,7 @@ function unquotePath(path: string): string {
   return path.length >= 2 && path.startsWith("\"") && path.endsWith("\"") ? path.slice(1, -1) : path;
 }
 
-/**
- * Reads `git log -p` output one line at a time and records denylist terms in added lines and in
- * the paths of added files, with the commit, path and line number in the new file. Lines inside a
- * hunk are counted from its header, so an added line that looks like a header is still scanned.
- */
+/** Finds denylist terms in git log -p added lines; hunk counts keep header-like lines scanned. */
 export class PatchTermScanner {
   readonly findings: DeployGuardFinding[] = [];
   total = 0;

@@ -162,7 +162,7 @@ describe("TaskRail navigation attention", () => {
       });
       const text = () => harness!.dom.container.textContent ?? "";
       expect(text()).toContain("Parked idea");
-      // Whether an hour ago was "today" depends on the host's time zone; the set-aside word does not.
+      // Whether an hour ago was "today" depends on the host's zone; the set-aside word does not.
       const badgeTitles = () => findAllByTag(harness!.dom.container, "SPAN").map((node) => String(getReactProps(node)?.title ?? ""));
       expect(badgeTitles().some((title) => title.startsWith("Deferred · "))).toBe(true);
       expect(text()).toContain("Set aside (2)");

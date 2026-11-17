@@ -15,9 +15,9 @@ export const NOTHING_HEARD_CANCEL_MS = 12_000;
 interface UseVoiceInputOptions {
   contextKey: string;
   onAudioCaptured: (capture: { audio: Blob; contextKey: string }) => Promise<void>;
-  /** The recording reached the server's length limit and took no more audio. Defaults to stopping it. */
+  /** The recording hit the server's length limit. Defaults to stopping it. */
   onMaxDurationReached?: () => void;
-  /** The microphone has heard nothing since the recording started, for NOTHING_HEARD_CANCEL_MS. Defaults to cancelling it. */
+  /** Nothing heard for NOTHING_HEARD_CANCEL_MS since the start. Defaults to cancelling it. */
   onNothingHeard?: () => void;
 }
 
@@ -34,7 +34,7 @@ interface VoiceInputState {
   /** The recording in progress has heard nothing for NOTHING_HEARD_WARNING_MS since it started. */
   nothingHeard: boolean;
   error: string | null;
-  /** Loudness (RMS, 0 to 1) the microphone hears right now; 0 when nothing is capturing. Read it per animation frame. */
+  /** Current microphone loudness (RMS, 0 to 1), 0 when not capturing; read per animation frame. */
   getLevel: () => number;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
@@ -245,8 +245,7 @@ export function useVoiceInput({ contextKey, onAudioCaptured, onMaxDurationReache
       chunksRef.current = [];
       activeContextKeyRef.current = contextKeyRef.current;
 
-      // The server rejects audio past its limit, so capture ends exactly there instead of
-      // letting a finished recording fail on upload.
+      // Stop at the server's limit so a finished recording cannot fail on upload.
       const maxSamples = maxDurationSeconds * resampler.outputRate;
       const maxInputSamples = maxDurationSeconds * audioContext.sampleRate;
       let capturedSamples = 0;

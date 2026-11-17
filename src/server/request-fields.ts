@@ -1,4 +1,4 @@
-// Rejecting request fields an endpoint does not know, so a typo is an error instead of being ignored.
+// Rejects request fields an endpoint does not know, so a typo is an error instead of ignored.
 
 export function findUnknownFields(input: unknown, allowedFields: readonly string[]): string[] {
   if (!input || typeof input !== "object" || Array.isArray(input)) return [];

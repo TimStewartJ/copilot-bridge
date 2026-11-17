@@ -1,10 +1,6 @@
 import { createContext, useContext } from "react";
 
-/**
- * Whether the run that produced the transcript is still going. A tool call with no recorded
- * completion is "running" only while it is; in a run that ended without one (the server restarted,
- * the log was cut short) it simply never finished, and must not spin forever.
- */
+/** A step with no end is running only while this is true; else it never finished (no spinner). */
 const ChatRunActiveContext = createContext(true);
 
 export const ChatRunActiveProvider = ChatRunActiveContext.Provider;

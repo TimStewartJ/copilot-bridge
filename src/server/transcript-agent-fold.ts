@@ -2,21 +2,6 @@ import { getSdkAgentId, isSdkAgentUserMessage } from "./sdk-event-identity.js";
 import { isHiddenTool } from "../shared/tool-visibility.js";
 import type { TranscriptAgent, TranscriptAgentStatus } from "../shared/transcript-agents.js";
 
-// Folds a session's event stream into one record per sub-agent: who it is and where it stands.
-//
-// It is shared by the two places that read that stream. The disk reader keeps one inside its
-// resumable event-log scan, so a history read that only parses the newest part of a large log can
-// still name an agent that was launched long before it. The live runner keeps one per run, only to
-// know the moment an agent starts or stops working so it can tell the browser to read again.
-//
-// What the runtime records about an agent's life:
-//   - `subagent.started` once, when it is launched;
-//   - `subagent.completed` when its first turn ends, and once more, marked `cancelled`, when the
-//     runtime lets the agent go: at shutdown, after an abort, or when it is stopped;
-//   - nothing at all when a later turn ends. A follow-up begins with a `user.message` addressed to
-//     the agent, and its end has to be read from the agent's own turns: a model call that asked
-//     for no tools is the last of a turn.
-
 /** Enough for every agent a long session realistically runs; older finished ones are let go. */
 const MAX_TRACKED_AGENTS = 200;
 /** Launching calls seen whose agent has not reported in yet. */
@@ -102,7 +87,7 @@ export class TranscriptAgentFold {
     };
   }
 
-  /** The agents in the order they were launched. They report in whichever order they happen to start. */
+  /** Agents in launch order; they report in whatever order they happen to start. */
   list(): TranscriptAgent[] {
     return [...this.agents.values()]
       .map((agent, index) => ({ agent, index, launchedAt: timeOf(agent.startedAt) ?? Number.POSITIVE_INFINITY }))
@@ -120,15 +105,11 @@ export class TranscriptAgentFold {
     return this.toolCallByAgentId.get(agentId);
   }
 
-  /**
-   * Takes the next event of the stream. Returns what happened to an agent when the event started
-   * or ended its work, and nothing for everything else.
-   */
+  /** Takes the next event; returns the agent change when it started or ended work, else nothing. */
   observe(event: unknown): AgentLifecycleChange | undefined {
     this.tookOnAgent = false;
     const change = this.apply(event);
-    // A fold that begins partway through a session, as a run's does, first meets an agent an
-    // earlier run launched when a follow-up puts it back to work.
+    // A fold started mid-session first meets an earlier run's agent when a follow-up resumes it.
     return change ?? (this.tookOnAgent ? "resumed" : undefined);
   }
 
@@ -143,8 +124,7 @@ export class TranscriptAgentFold {
         return this.start(event, data, at);
       case "subagent.completed": {
         const agent = this.agentOfLaunch(data.toolCallId);
-        // An agent that is not working has nothing left to end: the runtime repeats this for
-        // every agent it lets go.
+        // Fires after turn 1 and again, cancelled, when let go; later turns end on a no-tool call.
         if (!agent || agent.status !== "running") return undefined;
         // Let go while still at work, it was cut short.
         return this.end(agent, at, data.cancelled === true ? "stopped" : "finished");
@@ -293,10 +273,7 @@ export class TranscriptAgentFold {
     return id ? this.agents.get(id) : undefined;
   }
 
-  /**
-   * The agent an event belongs to. With `firstSeenAt`, an agent the fold has never heard of is
-   * taken on from here, which only happens when the log lost its `subagent.started`.
-   */
+  /** The event's agent; `firstSeenAt` adopts an unknown one whose `subagent.started` was lost. */
   private agentOfEvent(
     event: Record<string, unknown>,
     data: Record<string, unknown>,

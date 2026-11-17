@@ -28,11 +28,7 @@ export interface BridgeToolDefinition {
 
 type RegistryScope = "global" | "session";
 
-/**
- * Relabel image content items whose declared MIME type disagrees with their
- * actual magic bytes. A mismatch makes some model APIs reject the whole request,
- * so the detected type wins for any image we recognize.
- */
+/** Use the sniffed image type: a wrong MIME makes some model APIs reject the whole request. */
 function correctImageContentMimes(content: CallToolResult["content"]): CallToolResult["content"] {
   return content.map((item) =>
     item.type === "image" && typeof item.data === "string"
@@ -72,15 +68,7 @@ export function normalizeToolResult(result: BridgeToolHandlerResult): CallToolRe
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 }
 
-/**
- * In-process registry of public Bridge tools.
- *
- * The Copilot backend loads these definitions directly as native first-class
- * tools (see `bridge-native-tools.ts`), so the Bridge no longer runs an MCP
- * socket/stdio transport for them. This class is purely a typed catalog:
- * `registerAllBridgeTools` populates it and SessionManager reads the
- * definitions to build the native tool surface.
- */
+/** Typed catalog of Bridge tools, loaded as native tools (bridge-native-tools.ts), no MCP. */
 export class BridgeToolsMcpServer {
   private readonly tools = new Map<string, BridgeToolDefinition>();
 

@@ -1,16 +1,4 @@
-// The session list: the one owner of its build, cache, invalidation and per-response overlay.
-//
-// A build is the slow part: the CLI catalog, the session folders, one workspace.yaml and two
-// stats per listed session. Its rows hold what only changes structurally (which sessions exist,
-// their names, workspaces and files) and are kept until something structural is announced or
-// they are 30 seconds old. Everything that changes while people work (run state, questions,
-// archived, activity and read times, task links, triggers) is read for each
-// response, by session id, for the rows in hand. So archiving, reading or linking a chat needs
-// no build, and a response never reads a whole table.
-//
-// The server's main thread stalls for as long as the synchronous part of a list read takes, and
-// that stretches many times over when the machine is busy. Keep both the build and the overlay
-// free of whole-table reads.
+// Cached rows hold structural data; live state is overlaid per response. No whole-table reads.
 
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -46,7 +34,7 @@ export interface SessionListDeps {
 }
 
 export interface SessionList {
-  /** The list as a response shows it: rows built after the last announced change, with current volatile fields. */
+  /** Rows built after the last announced change, with current volatile fields. */
   read(includeArchived?: boolean): Promise<SessionListRow[]>;
   /** The two halves of `read`, for a caller that does something between them. */
   base(includeArchived?: boolean): Promise<SessionListRow[]>;
@@ -61,10 +49,9 @@ export type SessionListKind = "active" | "all";
 
 /** Rows this old are still served, and replaced by one build in the background. */
 const REFRESH_AFTER_MS = 30_000;
-// Bounded so a build over thousands of sessions cannot flood the libuv threadpool
-// and starve concurrent transcript reads.
+// Bounded so a big build cannot flood the libuv threadpool and starve concurrent transcript reads.
 const DETAIL_CONCURRENCY = 32;
-/** Measured with 15,000 stored sessions: by-id reads cost more than whole-table reads from about 10,000 ids. */
+/** Whole-table reads beat by-id reads from about 10,000 ids (measured on 15,000 sessions). */
 const SCAN_TABLES_ABOVE = 8_000;
 
 interface Slot {
@@ -74,10 +61,7 @@ interface Slot {
   build?: { seq: number; promise: Promise<SessionListRow[]> };
   /** The one build queued behind `build`, for readers that arrived after an invalidation. */
   next?: Promise<SessionListRow[]>;
-  /**
-   * Sessions a build was already started for because a response showed them without details.
-   * One stays here while builds leave it without details, so it cannot ask for a build per response.
-   */
+  /** Sessions shown without details that already asked for a build, so each asks only once. */
   askedDetails: Set<string>;
 }
 
@@ -124,10 +108,7 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
     } catch { /* telemetry should never break core flow */ }
   }
 
-  /**
-   * What the overlay and the detail filter both read about a set of sessions, by id. For a very
-   * long list (the one with archived chats) one scan of each table costs less than a lookup per id.
-   */
+  /** What the overlay and detail filter read by id; very long lists scan whole tables instead. */
   function readVolatile(sessionIds: string[]) {
     const everySession = sessionIds.length > SCAN_TABLES_ABOVE;
     return {
@@ -203,8 +184,7 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
       }];
     });
     shown.sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
-    // A session that became visible since its list was built is shown now and gets its details
-    // from one build. Rows that are not the list's own (a page of named sessions) never ask.
+    // Newly visible sessions show now and get details from one build; foreign rows never ask.
     const kind: SessionListKind = includeArchived ? "all" : "active";
     const slot = slots[kind];
     if (slot.rows?.rows === rows && !slot.build && withoutDetails.some((id) => !slot.askedDetails.has(id))) {
@@ -214,10 +194,7 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
     return shown;
   }
 
-  /**
-   * Adds the file-backed details to the candidates a list would show today. The others stay as
-   * found, so a later response can still show one that starts running, until the next build.
-   */
+  /** Adds file details to rows shown today; others stay as found in case one starts running. */
   async function addDetails(candidates: SessionListRow[], includeArchived: boolean, usingCatalog: boolean): Promise<SessionListRow[]> {
     const ids = candidates.map((row) => row.sessionId);
     const volatile = readVolatile(ids);
@@ -304,16 +281,14 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
     const catalog = await ctx.cliSessionCatalog?.listSessions(includeArchived ? undefined : { excludeIds: archivedIds });
     const skip = new Set(archivedIds);
     for (const session of catalog ?? []) skip.add(session.sessionId);
-    // The native SDK persists sessions on disk without necessarily indexing them in the CLI catalog.
+    // The native SDK may persist sessions on disk without indexing them in the CLI catalog.
     const onDisk = await ctx.sessionManager.listSessionsFromDisk({ includeArchived, skip });
     const fromCatalog = new Set(catalog?.map((session) => session.sessionId));
     const candidates = [
       ...(catalog ?? []).map(fromCatalogRow),
       ...onDisk.filter((session: SessionListRow) => !fromCatalog.has(session.sessionId)),
     ].filter((session) => isListed(session.sessionId));
-    // A creation answers with the session's id before the runtime has made its folder. Until
-    // then the session is a candidate as a bare row, so a response shows it once it is linked or
-    // running. The creation announces its own end, which replaces the row or removes it.
+    // Pending creations have no folder yet, so they're listed as bare rows until creation ends.
     const pending = ctx.sessionManager.listPendingSessionCreationIds();
     if (pending.length > 0) {
       const found = new Set(candidates.map((session) => session.sessionId));
@@ -400,8 +375,7 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
     recordRead("miss", { queued: !!slot.build });
     if (slot.next) return slot.next;
     if (!slot.build) return startBuild(kind);
-    // The running build started before the last invalidation. One more starts when it ends,
-    // however it ends, and serves every reader that arrived in between.
+    // The running build is stale: one more starts when it ends, however it ends, for all waiters.
     slot.next = slot.build.promise.then(() => undefined, () => undefined).then(() => {
       slot.next = undefined;
       return startBuild(kind);

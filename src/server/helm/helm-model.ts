@@ -1,13 +1,10 @@
-// Which model Helm runs on, for its chat and for the looks that write the brief on Home: the
-// "Helm" row in Settings › Models (a tier, or a model of its own), checked against the models that
-// can be used right now; otherwise Automatic.
 import type { AgentModelInfo } from "../agent-backend/types.js";
 import type { AppSettings } from "../settings-store.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import { resolveSupportedReasoningEffort } from "../../shared/reasoning-effort.js";
 import { resolveModelRole } from "../model-roles.js";
 
-/** Output price above which Automatic never picks a model (premium tiers priced for speed or research). */
+/** Output price above which Automatic never picks a model (premium speed or research tiers). */
 export const HELM_MAX_AUTOMATIC_PRICE = 2_000;
 
 export interface HelmModelChoice {
@@ -27,18 +24,12 @@ function price(model: AgentModelInfo): number | undefined {
   return (model as { billing?: { tokenPrices?: { outputPrice?: number } } }).billing?.tokenPrices?.outputPrice;
 }
 
-/** A real model that reasons. A router such as "auto" has no price and picks per request, often a light model. */
+/** A priced model that reasons; a router like "auto" has no price and often picks a light model. */
 function thinks(model: AgentModelInfo | undefined): model is AgentModelInfo {
   return !!model && typeof price(model) === "number" && (model.supportedReasoningEfforts?.length ?? 0) > 0;
 }
 
-/**
- * Helm's model, for its chat and for the brief's looks. `requested` (a conversation started on a
- * named model) wins when it can be used, then the Helm role (a tier, or a model of its own, with that
- * choice's effort and context), then Automatic: the user's default chat model when it is a real model
- * that reasons, else the most capable ordinary model. Effort is the role's, else the user's default
- * effort for that model, else `fallbackEffort`, always clamped to what the model supports.
- */
+/** Order: requested, Helm role, thinking user default, best model; effort clamped to the model. */
 export function chooseHelmModel(
   settings: AppSettings,
   allModels: readonly AgentModelInfo[],
@@ -56,7 +47,7 @@ export function chooseHelmModel(
     ?? [...models].filter((model) => thinks(model) && price(model)! <= HELM_MAX_AUTOMATIC_PRICE).sort((a, b) => price(b)! - price(a)!)[0]
     ?? userDefault
     ?? models[0];
-  // No model list (the runtime is starting): name what was asked for and let the runtime decide the rest.
+  // No model list yet (runtime starting): name what was asked for and let the runtime decide.
   if (!chosen) {
     const fallback = options.requested ?? (role.source !== "automatic" ? role.model : undefined);
     return fallback ? { model: fallback, ...(role.reasoningEffort && !options.requested ? { reasoningEffort: role.reasoningEffort } : {}) } : {};

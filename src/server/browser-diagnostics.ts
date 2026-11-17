@@ -437,8 +437,7 @@ export async function probeBrowserContext(
   }
   const context: BrowserContext = contextValue;
   const { broker, live } = getBrowserRuntime(ctx);
-  // The public probe's browser is nobody's, so it also serves to check that a browser can be
-  // shown to the user. The outcome is kept by the gateway and reported with the diagnostics.
+  // The public probe's browser is free, so it also checks a browser can be shown to the user.
   const health = await broker.probe(
     context,
     context === "public" ? (lease) => live.checkStream(lease.browserTarget) : undefined,

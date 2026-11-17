@@ -26,8 +26,7 @@ export function stampMcpStatusSnapshot(
 
 export function isMcpStatusFresh(snapshot: McpStatusSnapshot, now = Date.now()): boolean {
   if (snapshot.servers.some((server) => server.status === "pending" || server.status === "unknown")) {
-    // Loaded events may repeat startup placeholders on every prompt. Only a probe can
-    // confirm these; briefly cache its result to bound bursts of status requests.
+    // Events repeat startup placeholders; only a probe confirms them, cached briefly for bursts.
     return snapshot.provenance === "probe" && snapshot.observedAt !== undefined
       && now - snapshot.observedAt < 2_000;
   }

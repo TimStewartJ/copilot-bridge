@@ -1,5 +1,4 @@
-// Choosing the colour of each kind of event: the person's own, and each calendar they import from.
-// The choice is saved on the server, so every device shows the same colours.
+// Event colours (own and per import source), saved on the server so every device matches.
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { UNNAMED_SOURCE, type CalendarColor, type CalendarColors } from "../../shared/calendar";
@@ -13,7 +12,7 @@ export default function CalendarColorsDialog({ colors, onClose }: { colors: Cale
   const [draft, setDraft] = useState(colors);
   const [error, setError] = useState("");
 
-  // Saving is quick and leaves the dialog usable, so it never blocks or steals focus from the swatches.
+  // Saving never blocks or steals focus from the swatches.
   async function save(change: { own?: CalendarColor; sources?: Record<string, CalendarColor> }) {
     setDraft((current) => ({ own: change.own ?? current.own, sources: { ...current.sources, ...change.sources } }));
     setError("");

@@ -1,5 +1,4 @@
-// A connection to the DevTools endpoint of a browser agent-browser runs, for the few things
-// the Bridge has to ask Chrome itself: see browser-upload.ts and browser-download.ts.
+// DevTools connection to an agent-browser Chrome, for what only Chrome does (uploads, downloads).
 
 import { WebSocket } from "ws";
 
@@ -73,7 +72,7 @@ export class CdpConnection {
   }
 }
 
-/** The browser's DevTools address when it is on this machine, which is the only place the Bridge connects to. */
+/** The browser's DevTools address if on this machine, the only place the Bridge connects to. */
 export function localDevToolsUrl(value: unknown): string | undefined {
   try {
     const url = new URL(String(value));

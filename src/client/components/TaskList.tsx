@@ -88,8 +88,7 @@ export default function TaskList({
   const ctxTask = ctxMenu ? tasks.find((t) => t.id === ctxMenu.id) : null;
 
   const statusGroups = useMemo(() => groupTasksByStatus(tasks), [tasks]);
-  // Deferred and muted tasks sit in a collapsed Set aside section, out of the reorderable list,
-  // except one whose revisit date has arrived: it shows with current work until the date is answered.
+  // Set-aside tasks go in a collapsed section, except one with a due revisit, until it is answered.
   const dueSetAsideIds = useDueSetAsideIds(tasks);
   const grouped = useMemo(() => {
     const shelved = (task: Task) => isSetAsideTask(task) && !dueSetAsideIds.has(task.id);

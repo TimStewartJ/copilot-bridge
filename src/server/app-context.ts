@@ -1,5 +1,4 @@
-// AppContext — dependency injection container for the entire app
-// Production creates one context; staging preview creates a second, isolated context.
+// The app's dependency container; a staging preview builds a second, isolated one.
 
 import type { TaskStore } from "./task-store.js";
 import type { TaskGroupStore } from "./task-group-store.js";
@@ -124,14 +123,14 @@ export interface AppContext {
   pushSubscriptionStore?: PushSubscriptionStore;
   managementJobStore?: ManagementJobStore;
   pushNotificationService?: PushNotificationService;
-  /** Chat delivery outbox: messages queued for a chat (trigger results, job results, restart notices). */
+  /** Chat delivery outbox: queued trigger and job results and restart notices for chats. */
   deferredPromptStore?: DeferredPromptStore;
   interruptedRunStore?: InterruptedRunStore;
   /** The browser message id each saved chat message was sent as. */
   chatMessageIdStore?: ChatMessageIdStore;
   /** Chat messages the Bridge accepted that the agent never received. */
   unsentMessageStore?: UnsentMessageStore;
-  /** Commands running in attached shells, kept so one the Bridge stops can be reported to its agent. */
+  /** Commands in attached shells, kept so one the Bridge stops can be reported to its agent. */
   backgroundCommandStore?: BackgroundCommandStore;
   /** Every automation: chat wake-ups, chats started in tasks, new tasks. */
   triggerStore?: TriggerStore;
@@ -144,26 +143,23 @@ export interface AppContext {
   deferredPromptRunner?: DeferredPromptRunner;
   /** Periodic owner of session-overlay/trigger row cleanup. Started at boot. */
   sessionOverlayMaintenance?: SessionOverlayMaintenance;
-  /**
-   * Discovers atomically published preview generations from management jobs run by
-   * the separate runner process.
-   */
+  /** Discovers preview generations published by the separate management job runner. */
   stagingPreviewDiscovery?: StagingPreviewDiscoveryController;
   /** Root of .copilot directory — defaults to homedir()/.copilot for production */
   copilotHome?: string;
-  /** Public API mount path used for server-generated links (e.g. "/api" or "/staging/<prefix>/api") */
+  /** API mount path for server-made links, e.g. "/api" or "/staging/<prefix>/api". */
   apiBasePath?: string;
   runtimePaths?: RuntimePaths;
   bridgeToolsMcpServer?: BridgeToolsMcpServer;
   /** Shared launcher log file path when this server was started by the launcher */
   launcherLogPath?: string;
-  /** Which sessions are Helm conversations. Available before the API router so resumes can consult it. */
+  /** Which sessions are Helm conversations; made before the API router so resumes can ask. */
   helmStore?: HelmStore;
-  /** Helm, Bridge's orchestration manager. Created by the API router, which owns the facade it acts through. */
+  /** Helm, the orchestration manager; the API router creates it and owns its facade. */
   helm?: HelmService;
-  /** Which sessions are Helm thinker runs, their briefs and Helm's memory. Available before the API router. */
+  /** Helm thinker runs, their briefs and Helm's memory; made before the API router. */
   helmThinkerStore?: HelmThinkerStore;
-  /** Helm's looks over every Bridge, which write the brief Home shows, and Helm's memory. Created with Helm. */
+  /** Helm's passes over every Bridge that write Home's brief and Helm's memory; made with Helm. */
   helmThinker?: HelmThinker;
   /** Hands-free voice conversations for Helm. Created by the API router. */
   voiceGateway?: VoiceGateway;

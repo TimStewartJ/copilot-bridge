@@ -95,7 +95,7 @@ function withHandle<T>(api: WindowsProcessTableApi, handle: unknown, work: () =>
 }
 
 export function enumerateWindowsProcessTable(api: WindowsProcessTableApi): WindowsProcessTableEntry[] {
-  // A PID opened after the snapshot may already have been recycled. Never attach its new birth time to an old parent edge.
+  // A PID opened after the snapshot may be recycled; never give its new birth time to an old edge.
   const startedAt = api.now();
   const snapshot = api.snapshot();
   if (api.invalidHandle(snapshot)) throw new Error(`CreateToolhelp32Snapshot failed with Windows error ${api.lastError()}`);

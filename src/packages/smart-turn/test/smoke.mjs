@@ -1,5 +1,4 @@
-// Runs in a scratch project that has only the packed tarballs installed (npm run packages:verify).
-// It proves the published build resolves by name and produces model input without Node's modules.
+// Run by packages:verify against the packed tarball: the build resolves by name and makes input.
 import assert from "node:assert/strict";
 import {
   createSmartTurnDetector,

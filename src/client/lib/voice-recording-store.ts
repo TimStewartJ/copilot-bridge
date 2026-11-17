@@ -91,10 +91,7 @@ function openDatabase(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
-/**
- * Runs a store transaction and resolves only once the transaction commits, so callers can never
- * observe a write (or delete) that the browser later rolls back.
- */
+/** Resolves only on commit, so callers never see a write the browser later rolls back. */
 async function runTransaction<T>(
   mode: IDBTransactionMode,
   work: (store: IDBObjectStore, resolveValue: (value: T) => void) => IDBRequest | { request: IDBRequest; read: (request: IDBRequest) => T } | null,
@@ -271,10 +268,7 @@ export async function patchPendingVoiceRecording(
   }
 }
 
-/**
- * Deletes a pending recording. When `recordingId` is supplied the delete is skipped unless it still
- * owns the slot, so a late callback from a superseded recording cannot destroy a newer one.
- */
+/** With `recordingId`, deletes only if it still owns the slot, so newer recordings survive. */
 export async function deletePendingVoiceRecording(composerKey: string, recordingId?: string): Promise<void> {
   if (recordingId) {
     const existing = await getPendingVoiceRecording(composerKey);

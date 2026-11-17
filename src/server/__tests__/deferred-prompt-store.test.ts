@@ -7,7 +7,7 @@ import type { DeferredPromptStore } from "../deferred-prompt-store.js";
 import { openDatabase, type DatabaseSync } from "../db.js";
 import { createTriggerResultDelivery, parseTriggerResultPrompt, type TriggerDelivery } from "../triggers/messages.js";
 
-/** A result message in the format defers queued before triggers; such rows are still in outboxes. */
+/** A result in the pre-trigger defer format; such rows are still in outboxes. */
 function legacyDeferResult(deferId: string, sessionId: string, deliveryId: string, message: string): TriggerDelivery {
   return {
     id: deliveryId,
@@ -361,7 +361,7 @@ describe("deferred-prompt-store", () => {
     it("moves expired running rows back to pending with an interruption error", () => {
       const dp = store.create("s1", "Prompt", new Date().toISOString());
       // Claim with a lease that already expired
-      const claimed = store.claimDue(dp.id, 1)!; // 1ms lease
+      const claimed = store.claimDue(dp.id, 1)!;
       // Wait a tick so leaseExpiresAt is in the past
       const expiredNow = new Date(Date.now() + 10).toISOString();
       const reclaimed = store.reclaimExpiredRunning(expiredNow);

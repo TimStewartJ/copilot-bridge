@@ -1,6 +1,3 @@
-// The Bridge's calendar: the person's own events beside the dates the Bridge already keeps
-// (checklist deadlines, task revisits, agent runs). Phones start with Agenda and show a week
-// as days to open; Day and the desktop week keep their timed grid.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -108,8 +105,7 @@ export default function CalendarPage({ onSelectTask, tasks = [], mobileBack }: P
     onSelectTask(...task);
   }, [overlay, onSelectTask]);
 
-  // A drag changes the event itself: its first occurrence shifts by what this one moved, so every
-  // repeat moves alike. The new place shows until the calendar has reloaded.
+  // A drag shifts the whole series by this occurrence's move; the new place shows until reload.
   const moveEvent = useCallback(async ({ item, start, end }: EventMove) => {
     if (!item.eventId) return;
     const hold = (next: { start: string; end: string } | null) => setPending((current) => {

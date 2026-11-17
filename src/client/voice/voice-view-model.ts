@@ -1,6 +1,4 @@
-// Live state of a hands-free conversation. The words themselves are not kept here: what you say
-// goes to the chat as ordinary messages, so the chat transcript is the single record. This
-// tracks only what the dock shows while you talk.
+// Only what the dock shows; spoken words go to the chat as messages, the single record.
 import type { VoiceState } from "./voice-api";
 
 export interface VoiceTurnMetrics {

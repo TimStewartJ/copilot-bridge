@@ -1,11 +1,4 @@
-// Session overlay maintenance — the periodic owner of Bridge-side overlay
-// cleanup.
-//
-// `runSessionOverlayReaper` used to be reachable only from a maintenance REST
-// route that nothing called, so overlay rows, run history for deleted
-// triggers, and stopped trigger rows accumulated for the lifetime of an
-// install. This module gives that cleanup a real owner: one startup pass plus a
-// low-frequency interval, with an unref'd timer and explicit shutdown disposal.
+// Periodic owner of overlay cleanup: a startup pass plus a slow unref'd interval.
 
 import type { AppContext } from "./app-context.js";
 import { sweepExpiredScratchSessions } from "./scratch-sessions.js";
@@ -85,7 +78,7 @@ export function createSessionOverlayMaintenance(
 
   async function runOnce(): Promise<SessionOverlayMaintenanceResult> {
     const deletedScratchSessions = await sweepScratchSessions();
-    // Before the reaper, so the overlay rows of conversations that are gone lose their last task link.
+    // Before the reaper, so overlay rows of gone conversations lose their last task link.
     let removedDanglingLinks = 0;
     try {
       const repair = await repairDanglingTaskSessionLinks(ctx, { now });
@@ -121,8 +114,7 @@ export function createSessionOverlayMaintenance(
     };
 
     if (result.reaped > 0 || result.deletedTriggerRuns > 0) {
-      // Mirrors what the old maintenance route did: the enriched session cache
-      // is rebuilt from this bus event.
+      // The enriched session cache is rebuilt from this event.
       ctx.globalBus.emit({ type: "sessions:changed" });
     }
 

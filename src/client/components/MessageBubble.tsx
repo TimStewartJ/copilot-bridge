@@ -17,11 +17,7 @@ import { AutopilotBadge, StatusIcon } from "../design/primitives";
 
 interface MessageBubbleProps {
   message: ChatMessage;
-  /**
-   * Copy and menu actions. They arrive as plain values and stable callbacks, never as a rendered
-   * element: this component is memoized, and re-parsing every loaded reply's markdown each time
-   * the transcript renders is what it exists to avoid.
-   */
+  /** Plain values and stable callbacks, never JSX: a new element each render breaks the memo. */
   actions?: {
     onCopy: (key: string, message: ChatMessage) => void;
     onOpenMenu: (x: number, y: number, key: string, message: ChatMessage) => void;
@@ -35,9 +31,9 @@ interface MessageBubbleProps {
   onFinishSelectingText?: () => void;
   /** Lets sent images and files in history load from the session's copy on the server. */
   sessionId?: string;
-  /** Sends a user message the agent never got (`message.unsent`) again. Edit and Discard are in its menu. */
+  /** Resends a message the agent never got (`message.unsent`); Edit and Discard are in its menu. */
   onResendUnsent?: () => void;
-  /** Quieter secondary contrast for a tool-accompanying progress note superseded by a later reply. */
+  /** Quieter contrast for a progress note beside tools that a later reply superseded. */
   progressNote?: boolean;
 }
 
@@ -47,16 +43,7 @@ const UNSENT_REASON: Record<NonNullable<ChatMessage["unsent"]>["state"], { label
   failed: { label: "Failed", title: "The turn could not start" },
 };
 
-/**
- * Copy / more actions, shown while the message is hovered or focused. They float where they can
- * never cover the content that follows: a reply in a long agentic run is usually followed at once
- * by the next step, so anything hung below the message lands on top of it.
- *
- * A prompt's actions sit beside its bubble, in the space a right-aligned bubble always leaves
- * empty. A reply's actions hang in the margin beside its first line when the chat column is wide
- * enough to have one (`.chat-ui[data-action-gutter]`, see index.css); in a narrow column they fall
- * back to the reply's top-right corner.
- */
+/** Beside the bubble or in the reply's margin/corner, never below: the next step sits there. */
 function BubbleActions({ side, children }: { side: "left" | "right"; children?: ReactNode }) {
   if (!children) return null;
   return (
@@ -167,9 +154,7 @@ export default memo(function MessageBubble({
           <div className="flex flex-col items-end gap-1.5">
             {hasAttachments && <MessageAttachments attachments={message.attachments!} align="end" sessionId={sessionId} />}
             {hasText && (
-              // The bubble sizes to its text, so a long word must be able to shrink it (anywhere),
-              // not just break after the width is fixed (break-words). Keep this off replies:
-              // it is inherited and would squeeze markdown tables instead of letting them scroll.
+              // `anywhere` lets long words shrink the bubble; not on replies, it squeezes tables.
               <div className={`rounded-3xl px-4 py-2.5 text-sm leading-relaxed text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere] ${
                 isFailed ? "border border-error/40 bg-bg-elevated" : unsent ? "border border-surface-edge bg-bg-elevated" : "bg-bg-elevated"
               }`}>

@@ -1,17 +1,13 @@
 import type { EnrichedPR, EnrichedWorkItem } from "../server/providers/types.js";
 
-/** Work item states that mean the work is finished or dropped. The ADO query and the map share this list. */
+/** States meaning the work is finished or dropped; the ADO query and the map share this list. */
 export const CLOSED_WORK_ITEM_STATES = ["closed", "completed", "done", "removed", "resolved"] as const;
 
 export function isClosedWorkItemState(state: string | null | undefined): boolean {
   return state ? (CLOSED_WORK_ITEM_STATES as readonly string[]).includes(state.toLowerCase()) : false;
 }
 
-/**
- * A link between two work items, as the source item reports it. Parent/child come from the ADO
- * hierarchy; predecessor/successor from dependency links; duplicate names the item that duplicates
- * this one and duplicateOf the item this one duplicates.
- */
+/** As the source reports it; duplicate: the item copying this; duplicateOf: what this copies. */
 export type WorkItemRelationType =
   | "parent"
   | "child"
@@ -37,7 +33,7 @@ export interface WorkMapTask {
   waitingOn: string | null;
 }
 
-/** A work item a Bridge task links, one assigned to the current user, or one found through a linked pull request. */
+/** Linked by a task, assigned to the current user, or found through a linked pull request. */
 export interface WorkMapWorkItem extends EnrichedWorkItem {
   taskIds: string[];
   pullRequestKeys: string[];
@@ -69,10 +65,7 @@ export interface WorkMapData {
   warnings: string[];
 }
 
-/**
- * How far a build of the map is: which of its steps it is on, and how much of that step is done.
- * `total` is 0 for a step whose size is not known up front.
- */
+/** Which build step is running and how much of it is done; `total` is 0 when not known up front. */
 export interface WorkMapProgress {
   label: string;
   /** 1-based. */

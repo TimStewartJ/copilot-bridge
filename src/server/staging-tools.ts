@@ -1,6 +1,4 @@
-// Per-session staging worktrees for validated code deployment
-// Each session gets an isolated worktree to make changes, run quality checks,
-// and deploy only after validation passes.
+// Per-session staging worktrees: edit in isolation, validate, then deploy.
 
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync } from "node:fs";
 import { readFile, rmdir } from "node:fs/promises";
@@ -166,8 +164,7 @@ const STAGING_DEPENDENCY_HASH_FILENAME = ".bridge-deps-hash";
 
 export async function cleanupCompletedStagingDeploy(stagingDir: string): Promise<void> {
   const prefix = basename(stagingDir);
-  // A preview that cannot be deleted means its backend is still running out of this worktree,
-  // so the worktree is only deleted once the preview is gone.
+  // An undeletable preview still runs from this worktree, so remove the preview first.
   await cleanupPreviewTarget(stagingDir);
   await removeWorktree(stagingDir, `staging/${prefix}`);
   deleteStagingValidationStamp(PRODUCTION_DATA_DIR, prefix);
@@ -218,11 +215,7 @@ function readStagingDependencyHash(stagingModules: string): {
   }
 }
 
-/**
- * Keep each staging worktree's dependencies isolated from production. Legacy
- * node_modules links are detached before npm runs, including dangling links.
- * Exported for focused tests of the fresh-install guard.
- */
+/** Detaches legacy node_modules links (even dangling) so staging deps stay isolated. */
 export async function ensureStagingDeps(
   stagingDir: string,
   options: { runCommand?: StagingCommandRunner; log?: (message: string) => void } = {},
@@ -315,11 +308,7 @@ export function getActivePreviews(): ReadonlyMap<string, string> {
   return activePreviews;
 }
 
-/**
- * True when a preview is still registered in this process but its built assets are
- * gone (deployed, cleaned up, or mid-rebuild). Callers use this to refuse routing —
- * including lazy staged-backend starts — and to trigger a reconciling rescan.
- */
+/** Registered but index.html is gone; callers refuse routing and rescan. */
 export function isRegisteredStagingPreviewMissing(prefix: string): boolean {
   const distDir = activePreviews.get(prefix);
   return distDir !== undefined && !existsSync(join(distDir, "index.html"));
@@ -346,10 +335,7 @@ function createRestorablePreviewTarget(
   };
 }
 
-/**
- * Cheap startup discovery for already-built previews. This runs before listen()
- * so restored preview URLs are routeable while heavier prune/warmup work stays async.
- */
+/** Cheap discovery of built previews, run before listen() so their URLs route right away. */
 export function registerExistingPreviewsFromDisk(options: RegisterExistingPreviewsFromDiskOptions = {}): number {
   const writeLog = options.log ?? log;
   if (!shouldManageStagingArtifacts()) {
@@ -409,10 +395,7 @@ export function registerExistingPreviewsFromDisk(options: RegisterExistingPrevie
           registeredPreviewDirs++;
         }
 
-        // Backend registration is tracked separately from the frontend entry:
-        // a preview retired after repeated backend start failures keeps serving
-        // its built assets, and its backend is only re-registered once the dist
-        // directory is rebuilt (newer mtime than the retirement).
+        // A retired backend stays off until a rebuild, while its built assets keep being served.
         if (
           shouldRegisterBackends
           && !hasRestorablePreviewTarget(entry.name)
@@ -432,13 +415,7 @@ export function registerExistingPreviewsFromDisk(options: RegisterExistingPrevie
   return registeredPreviewDirs;
 }
 
-/**
- * Reconcile in-process preview state with what is on disk.
- *
- * Preview builds happen in the management-job-runner process, so this runs when a
- * watched management job reaches a terminal state (or when a request finds a
- * registered preview whose assets are gone) instead of on a permanent interval.
- */
+/** Runs on job completion or missing assets, not on an interval. */
 async function runStagingPreviewDiscovery(
   trigger: StagingPreviewDiscoveryTrigger,
   writeLog: (msg: string) => void,
@@ -498,11 +475,7 @@ function getPreviewJobTarget(input: unknown): PreviewTarget | null {
   return parsePreviewPrefix(target.prefix) ? target : null;
 }
 
-/**
- * Start event-driven preview discovery for management jobs run by the separate
- * runner process. Returns null when there is no job store or when staging artifacts
- * are not managed (packaged release mode).
- */
+/** Watches runner-process jobs for new previews; null without a job store or in packaged mode. */
 export function startStagingPreviewDiscovery(options: {
   store?: ManagementJobStore | null;
   log?: (msg: string) => void;
@@ -563,9 +536,7 @@ async function run(
   cwd: string,
   options: StagingRunOptions = {},
 ): Promise<{ ok: boolean; output: string }> {
-  // Prepend the running process's Node directory to PATH so npx/vitest/tsc/vite
-  // resolve the correct Node binary (v22+ required for node:sqlite) instead of
-  // whatever older `node` happens to be first on the system PATH.
+  // Use this process's Node (22+ for node:sqlite), not an older node earlier on PATH.
   const nodeDir = dirname(process.execPath);
   const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
   const validationEnv = options.isolateRuntimeEnv
@@ -679,10 +650,7 @@ async function stagingBranchExists(branch: string): Promise<boolean> {
   return output.split(/\r?\n/).some((line) => line.trim() === branch);
 }
 
-/**
- * Remove a staging worktree and its branch. `git worktree remove` cannot delete node_modules in
- * time and refuses a directory it no longer tracks, so the tree is deleted and then pruned.
- */
+// Deletes the tree then prunes: `git worktree remove` is too slow on node_modules.
 async function removeWorktree(stagingDir: string, branch: string): Promise<void> {
   await getProcessHost().removeTree(stagingDir);
   await runCleanupGit(["worktree", "prune"]);
@@ -780,11 +748,7 @@ type PruneOrphanedWorktreesOptions = {
   pruneGitWorktrees?: () => void | Promise<void>;
 };
 
-/**
- * Prune orphaned staging worktrees on server startup and register surviving previews.
- * Called from server initialization — removes worktrees whose branches
- * no longer exist. Backends are restored lazily, with a small newest-preview warmup.
- */
+/** On startup: drop worktrees with no branch, register previews; backends start lazily. */
 async function pruneOrphanedWorktreesImpl(options: PruneOrphanedWorktreesOptions = {}): Promise<void> {
   const writeLog = options.log ?? log;
   if (!shouldManageStagingArtifacts()) {
@@ -1124,7 +1088,7 @@ export async function runStagingPreviewJob(
     writeLog("Skipping staging preview validation");
   }
 
-  // Vite's own entry run with this Node: npx is a .cmd launcher on Windows, which only a shell can start.
+  // Run Vite's entry with this Node: npx is a .cmd on Windows, which only a shell can start.
   const buildCommand = commandLine(process.execPath, [
     join(stagingDir, "node_modules", "vite", "bin", "vite.js"),
     "build",
@@ -1251,10 +1215,7 @@ const DEPLOY_GUARD_STDERR_LIMIT = 4_000;
 
 type DeployGuardStepResult = { ok: true } | { ok: false; error: string };
 
-/**
- * Runs git and hands each stdout line to onLine as it arrives, so a large patch is never held in
- * memory whole. Nothing is logged: the output may contain the very terms the guard looks for.
- */
+// Streams git stdout by line; never logs it, since it may contain the terms the guard looks for.
 async function streamGitLines(
   args: readonly string[],
   cwd: string,
@@ -1309,7 +1270,7 @@ interface LoadedDeployGuards {
   denylistFile?: string;
 }
 
-/** Reads the denylist. A configured file that cannot be read blocks the deploy rather than passing it. */
+/** Reads the denylist; a configured file that cannot be read blocks the deploy. */
 async function loadDeployGuards(
   settings: DeployGuardSettings,
 ): Promise<{ ok: true; guards: LoadedDeployGuards } | { ok: false; detail: string }> {
@@ -1358,16 +1319,7 @@ async function checkDeployRange(
   };
 }
 
-/**
- * Tracks the production `git stash` created for a deploy so a failed or
- * ambiguous `git stash pop` can never be reported as a clean success.
- *
- * The entry is created with a unique marker message and located by that marker,
- * so a stash someone else pushed during the deploy window is never mistaken for
- * this deploy's entry. `restore` is installed by the deploy body so the wrapper
- * can finalize a still-pending stash even when the body throws, and `suppressed`
- * marks the recovery paths that deliberately leave the stash in place.
- */
+/** Found by its unique marker, never stash@{0}, so another stash is never popped. */
 interface ProductionStashState {
   pending: boolean;
   suppressed: boolean;
@@ -1425,10 +1377,7 @@ function appendWarningField(target: Record<string, unknown>, field: string, warn
   if (typeof value === "string") target[field] = appendWarningText(value, warning);
 }
 
-/**
- * Makes a failed stash restore visible on every deploy outcome — including the
- * success path — without depending on each return site remembering to mention it.
- */
+/** Adds a failed stash restore warning to every deploy outcome, success included. */
 function appendStashRecoveryWarning(
   result: Record<string, unknown>,
   warning: string,
@@ -1545,11 +1494,7 @@ async function runStagingDeployJobImpl(
     }
   }
 
-  /**
-   * Refuses the deploy when a commit in prodBranch..branch has a blocked author or committer email,
-   * or a denylisted term in its message, an added line or an added file's path. Runs before the
-   * production stash and again after the rebase, which rewrites committers, and on every retry.
-   */
+  /** Rerun after the rebase (it rewrites committers) and on every retry, not just once. */
   const runDeployGuards = async (prodBranch: string) => {
     if (!deployGuards) return null;
     const range = `${prodBranch}..${branch}`;
@@ -1682,8 +1627,7 @@ async function runStagingDeployJobImpl(
       // Logging must never change the deploy outcome.
     }
   };
-  // Recovery commands log through the guarded sink so a broken logger cannot
-  // make a successful restore look like a stranded stash.
+  // A broken logger must not make a successful restore look like a stranded stash.
   const runRecoveryCommand: StagingCommandRunner = (cmd, cwd, runOptions = {}) =>
     run(cmd, cwd, { ...runOptions, log: safeWriteLog });
 
@@ -1711,12 +1655,10 @@ async function runStagingDeployJobImpl(
     safeWriteLog(`Failed to restore stashed production changes: ${popResult.output.slice(-200)}`);
   };
   stash.restore = popProductionStash;
-  // Deploy paths always use the non-throwing form so a broken restore cannot
-  // replace the outcome they were about to report.
+  // Non-throwing, so a broken restore cannot replace the outcome being reported.
   const unstashProduction = () => finalizeProductionStash(stash, writeLog);
 
-  // Assume the worst until the stash outcome is confirmed, so an exception
-  // between here and identification still tells the user where to look.
+  // Assume the worst until confirmed, so an exception still tells the user where to look.
   stash.warning = stashRestoreWarning(
     `The deploy could not confirm the outcome of '${stashCommand.displayCommand}' in ${PRODUCTION_ROOT}, so uncommitted production changes may be stashed under the message '${stashMarker}'.`,
   );
@@ -2005,8 +1947,7 @@ async function runStagingDeployJobImpl(
       writeLog(`Push failed — resetting production checkout to pre-deploy SHA ${preDeploySha}`);
       const resetResult = await runCommand(resetCommand, PRODUCTION_ROOT);
       if (!resetResult.ok) {
-        // Leave the stash in place: popping onto a checkout that could not be
-        // reset would layer the user's changes over a broken production tree.
+        // Keep the stash: popping it onto an unreset checkout would bury the user's changes.
         stash.suppressed = true;
         return commandFailure(
           "Push to origin failed and production reset failed.",
@@ -2083,8 +2024,7 @@ async function runStagingDeployJobImpl(
 
   await unstashProduction();
 
-  // The restarted server warms the newest preview, which is this one. Its backend then holds the
-  // preview database open while post-activation cleanup deletes it, and the delete fails (EPERM).
+  // Else the restarted server warms this preview and its open database blocks cleanup (EPERM).
   unpublishPreview(prefix);
 
   const restartDeferred = options.deferDeployRestart === true;
@@ -2419,8 +2359,7 @@ function enqueueStagingDeploy(ctx: AppContext, args: any, invocation?: BridgeToo
 
 export function createStagingToolDefinitions(ctx?: AppContext): BridgeToolDefinition[] {
   if (!ctx) return [...STAGING_TOOLS];
-  // Rebuild through the adapter rather than patching `handler`, so these tools
-  // keep the argument validation every other Bridge tool gets.
+  // Rebuild via the adapter, not by patching `handler`, to keep argument validation.
   const boundHandlers: Record<string, DefineBridgeToolOptions["handler"]> = {
     staging_preview: (args: any, invocation) => enqueueStagingPreview(ctx, args, invocation),
     staging_deploy: (args: any, invocation) => enqueueStagingDeploy(ctx, args, invocation),

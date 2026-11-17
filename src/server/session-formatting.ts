@@ -122,7 +122,7 @@ export function formatRelatedDocManifestEntry(doc: {
   matchedTags: string[];
 }): string | undefined {
   const path = escapePromptLiteral(doc.path);
-  // A clipped path isn't a usable docs_read pointer. The page is still discoverable with docs_search.
+  // A clipped path is no use to docs_read; docs_search still finds the page.
   if (path.length > 240) return undefined;
   const title = briefLabel(doc.title, 64);
   let line = `- ${title} (${path})`;

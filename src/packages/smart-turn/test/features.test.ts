@@ -7,9 +7,7 @@ import {
 } from "../src/index.js";
 import { deterministicSignal } from "./signal.js";
 
-// Reference values: WhisperFeatureExtractor from @huggingface/transformers 4.3.0 on
-// deterministicSignal(), prepared the way Smart Turn's inference.py prepares audio (the last
-// 8 seconds, padded with silence at the start, zero mean and unit variance over the window).
+// transformers 4.3.0 WhisperFeatureExtractor on deterministicSignal(), prepped as inference.py.
 const REFERENCE_MEAN = 0.040216511713340876;
 const REFERENCE_STD = 0.48850857682212173;
 const REFERENCE_POINTS: Array<[mel: number, frame: number, value: number]> = [

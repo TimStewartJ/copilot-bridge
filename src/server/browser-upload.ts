@@ -1,15 +1,4 @@
-// Gives files to the file choosers a browser's pages open.
-//
-// A browser draws its file chooser outside the page, where neither agent-browser nor a live
-// view reaches it; on a headed browser it is a window on the server's screen that stays open.
-// Chrome hands the chooser to a DevTools client that asks for it, which is what a
-// FileChooserWatch does, next to agent-browser:
-// - The `upload` step watches the tab on show for the length of the step, has agent-browser
-//   click the element, and answers the chooser that opens. Clicking, rather than setting the
-//   files on a node, is what makes a styled button, a label and a hidden input work, and it
-//   lets Chrome say whether the page takes one file or several.
-// - A live view watches every tab for as long as it is open, and answers a chooser with the
-//   files the person viewing picks on their own device (browser-live.ts).
+// Answers file choosers over DevTools; upload clicks, not sets the node, so styled inputs work.
 
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
@@ -127,11 +116,7 @@ export class FileChooserWatch {
     }
   }
 
-  /**
-   * Answers a chooser. The browser reads a file when the page does, which can be much later.
-   * Rejects when the page that asked has reloaded or gone elsewhere since: Chrome reports
-   * success for its input then and nothing happens, but it no longer finds the input's node.
-   */
+  /** resolveNode first: after a reload setFileInputFiles reports success but does nothing. */
   async setFiles(chooser: FileChooser, paths: readonly string[]): Promise<void> {
     await this.cdp.send("DOM.resolveNode", { backendNodeId: chooser.backendNodeId }, chooser.sessionId);
     await this.cdp.send("DOM.setFileInputFiles", { files: paths, backendNodeId: chooser.backendNodeId }, chooser.sessionId);
@@ -139,18 +124,14 @@ export class FileChooserWatch {
 
   async close(): Promise<void> {
     if (this.cdp.closed) return;
-    // Closing the connection ends its sessions and with them the interception; asking first
-    // costs one bounded round and leaves nothing to a Chrome that is slow to notice the close.
+    // Closing ends interception too, but a slow Chrome may lag; asking first is one bounded round.
     await Promise.allSettled([...this.watched.keys()].map((sessionId) =>
       this.cdp.send("Page.setInterceptFileChooserDialog", { enabled: false }, sessionId)));
     this.cdp.close();
   }
 }
 
-/**
- * The files of an `upload` step as paths the browser can read. agent-browser's own `upload`
- * gives the page an empty file for a path that does not exist, so every file is checked here.
- */
+/** Checks each file exists: agent-browser's upload sends an empty file for a missing path. */
 async function resolveUploadFiles(files: readonly string[], filesDir: string | undefined): Promise<Result<string[]>> {
   const paths: string[] = [];
   for (const file of files) {
@@ -171,10 +152,7 @@ function activeTargetId(data: Record<string, unknown> | undefined): string | und
   return active.length === 1 && typeof active[0].targetId === "string" ? active[0].targetId : undefined;
 }
 
-/**
- * Clicks the element `ref` and gives `files` to the file chooser that opens. The result reads
- * like an agent-browser command's, so the step fails and reports the way the others do.
- */
+/** Clicks `ref` and gives `files` to the chooser; the result mimics an agent-browser command's. */
 export async function uploadFiles(
   ref: string,
   files: readonly string[],
@@ -211,8 +189,7 @@ export async function uploadFiles(
       onClose: () => stopWaiting(),
     });
 
-    // A click that is run again after a browser restart would open the chooser with nobody
-    // asking for it, so this one is not recovered.
+    // No recovery: a click rerun after a browser restart would open a chooser nobody asked for.
     const click = await run(["click", ref], timeoutMs, { ...commandOptions, skipRecovery: true });
     if (!click.ok) return click;
     clicked = true;

@@ -1,13 +1,6 @@
 import { vi } from "vitest";
 
-// vi.waitFor and vi.waitUntil poll every 50ms but default to a 1s budget, and
-// Vitest has no config option to change that. Most waits here poll background
-// work that does real filesystem, SQLite, or HTTP work, and the full suite runs
-// with one worker per core while the live bridge and other validations share
-// the machine. Under that load ordinary tests can stall for 10-24s. A polling
-// budget is a hang guard, not a performance assertion: passing checks still
-// return on the first satisfied poll. Keep it inside the shared test timeout so
-// a real hang reports the last assertion error. Pass an explicit timeout to opt out.
+// Suite load stalls waits 10-24 s; stay under the test timeout so hangs show the last assertion.
 export const WAIT_FOR_DEFAULT_TIMEOUT_MS = 20_000;
 
 type WaitOptions = number | { timeout?: number; interval?: number } | undefined;
@@ -22,10 +15,7 @@ const waitUntil = vi.waitUntil;
 vi.waitFor = ((callback, options) => waitFor(callback, withDefaultTimeout(options))) as typeof vi.waitFor;
 vi.waitUntil = ((callback, options) => waitUntil(callback, withDefaultTimeout(options))) as typeof vi.waitUntil;
 
-// Vitest stops a parallel test file's thread when the file ends, and that also stops any
-// process-snapshot worker the file started in the background. koffi aborts the whole test
-// process if that lands while it is still loading (see src/server/windows-process-table.ts),
-// so real Windows snapshots run only in the native project, which opts in.
+// Vitest stopping a file mid koffi load aborts the run; real snapshots only in the native project.
 if (process.env.BRIDGE_TEST_REAL_PROCESS_SNAPSHOTS !== "1") {
   vi.doMock("../server/windows-process-table.js", async (importOriginal) => ({
     ...await importOriginal<typeof import("../server/windows-process-table.js")>(),
@@ -35,14 +25,12 @@ if (process.env.BRIDGE_TEST_REAL_PROCESS_SNAPSHOTS !== "1") {
   }));
 }
 
-// Where agent-browser is installed differs per machine too, and on Windows decides whether its
-// commands go through the command shell with their arguments quoted for it.
+// agent-browser's install differs per machine and on Windows decides whether it runs via the shell.
 vi.doMock("../server/agent-browser-command.js", () => ({
   getAgentBrowserCommand: () => ({ file: "agent-browser", shell: false }),
 }));
 
-// Which browsers are installed and what agent-browser's configuration says differ per machine.
-// Unless a test says otherwise there is no system or downloaded browser and no configuration file.
+// Installed browsers and agent-browser config differ per machine; tests default to none of either.
 vi.doMock("../server/browser-launch-host.js", () => ({
   isExecutableFile: async () => false,
   readJsonFile: async () => undefined,

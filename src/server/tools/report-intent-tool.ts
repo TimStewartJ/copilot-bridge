@@ -34,9 +34,7 @@ export function createReportIntentToolDefinitions(ctx: AppContext) {
           return { isError: true, content: [{ type: "text" as const, text: "Intent must not be blank" }] };
         }
 
-        // Emit on the invoking session's bus so the Bridge web UI reflects the
-        // change without relying on the SDK sessionLog path. Only this session's
-        // intent changes — concurrent sessions keep their own.
+        // Emit on this session's bus so the web UI updates without the SDK sessionLog path.
         const { sessionId } = invocation;
         ctx.eventBusRegistry.getBus(sessionId)?.emit({ type: "intent", intent });
         ctx.globalBus.emit({ type: "session:intent", sessionId, intent });

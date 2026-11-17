@@ -14,7 +14,7 @@ interface CdpRequest {
   params: Record<string, any>;
 }
 
-/** Stands in for Chrome's DevTools endpoint: answers every request and sends the events a test asks for. */
+/** Fake Chrome DevTools endpoint: answers every request and sends the events a test asks for. */
 class FakeChrome {
   readonly server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   readonly requests: CdpRequest[] = [];

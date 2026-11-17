@@ -1,8 +1,3 @@
-// Backend disconnect recovery: when the agent backend's RPC channel is lost
-// the manager must fail in-flight runs immediately (nothing will answer),
-// fence the orphan, drop cached handles only after confirmed fencing,
-// start a replacement, and re-send a continue prompt to the
-// interactive turns it interrupted.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -205,7 +200,7 @@ describe("SessionManager backend disconnect recovery", () => {
     expect(fresh.start).not.toHaveBeenCalled();
     finishFence();
 
-    // Cached handles are dropped without any RPC to the dead runtime; the orphan is force-stopped; a replacement starts.
+    // Handles drop without RPC to the dead runtime; the orphan is force-stopped; a new one starts.
     await vi.waitFor(() => expect(manager.sessionObjects.has("session-idle")).toBe(false));
     await vi.waitFor(() => expect(manager.sessionObjects.get("session-interactive")).not.toBe(interactive.session));
     expect(manager.sessionObjects.has("session-quiet")).toBe(false);
@@ -223,7 +218,7 @@ describe("SessionManager backend disconnect recovery", () => {
     await expect(manager.validateModelSelection({ model: "new-model" })).resolves.toEqual({ ok: true });
     expect(fresh.listModels).toHaveBeenCalledOnce();
 
-    // The interactive turn gets a continue prompt on the new backend; the quiet defer turn does not.
+    // The interactive turn gets a continue prompt on the new backend; the defer turn does not.
     await vi.waitFor(() => expect(resumedInteractive.session.send).toHaveBeenCalledWith({ prompt: BACKEND_RECOVERY_CONTINUE_PROMPT }));
     expect(resumedInteractive.session.send).toHaveBeenCalledOnce();
     expect(fresh.resumeSession).toHaveBeenCalledWith("session-interactive", expect.anything());
@@ -309,8 +304,7 @@ describe("SessionManager backend disconnect recovery", () => {
         recovery: { outcome: "recovered" },
         runtimeLog: { status: "read", matchedBy: "pid", reachesWindowStart: true, lines: [closing] },
       });
-      // The deadline's own ping comes first. The record's ping is the second, and it has to reach
-      // the runtime before fencing starts to kill it.
+      // The record's ping (the second, after the deadline's) must reach the runtime before fencing.
       expect(diagnosticPing).toHaveBeenCalledTimes(2);
       expect(diagnosticPing.mock.invocationCallOrder[1]).toBeLessThan(dead.fence.mock.invocationCallOrder[0]!);
       expect(telemetryStore.querySpans({ name: "backend.disconnect" })[0]?.metadata).toMatchObject({

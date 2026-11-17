@@ -102,7 +102,7 @@ export const OUTCOME_DONE: Record<TaskOutcome, string> = {
   set_aside: "Set aside",
 };
 
-/** Set-aside tasks that still need Tim (a question, a stall or a reached revisit), by id with the reason to show. */
+/** Set-aside tasks that still need the user, by id, with the reason to show. */
 export function setAsideAttention(rows: readonly TaskOverviewRow[] | undefined, setAsideIds: ReadonlySet<string>, now = new Date()): Map<string, string> {
   const result = new Map<string, string>();
   for (const row of rows ?? []) {

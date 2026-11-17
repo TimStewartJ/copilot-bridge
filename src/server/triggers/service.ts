@@ -1,5 +1,4 @@
-// Trigger operations shared by the model tools and the HTTP API: validation, creation, editing and
-// lifecycle changes, with the events and runner wake-ups each one needs.
+// Trigger operations shared by model tools and the HTTP API, with their events and runner wake-ups.
 
 import type { DeferredPromptStore } from "../deferred-prompt-store.js";
 import type { GlobalBus } from "../global-bus.js";
@@ -284,7 +283,7 @@ export function createTriggerService(deps: TriggerServiceDeps) {
       patch.when = when.when;
       if (existing.status === "active") patch.nextRunAt = firstRunAt(when.when, now);
     } else if (check.check !== undefined) {
-      // A check added or removed changes the shortest allowed gap; the current timing must still fit.
+      // Adding or removing a check changes the minimum gap; the current timing must still fit.
       const current = existing.when;
       const recheck = parseTriggerWhen(
         current.kind === "at" ? { runAt: current.at } : current.kind === "every" ? { intervalSeconds: current.seconds } : { cron: current.cron, timezone: current.timezone },
@@ -372,10 +371,7 @@ export function createTriggerService(deps: TriggerServiceDeps) {
     return { ok: true, trigger: store.get(trigger.id)! };
   }
 
-  /**
-   * Restart a stopped trigger. One that is still running but whose last result never reached its
-   * chat gets that result sent again instead.
-   */
+  /** Restarts a stopped trigger, or resends a running one's undelivered last result. */
   function reactivate(id: string, now = new Date()): TriggerResult & { deliveryRetried?: boolean } {
     const existing = get(id);
     if (!existing) return { ok: false, status: 404, error: `Trigger ${id} not found.` };
@@ -419,7 +415,7 @@ export function createTriggerService(deps: TriggerServiceDeps) {
     return { ok: true, trigger: updated };
   }
 
-  /** Delete a trigger and its run history. A running one is cancelled first so its run cannot settle. */
+  /** Deletes a trigger and its runs; a running one is cancelled first so it cannot settle. */
   function remove(id: string): TriggerResult {
     const existing = get(id);
     if (!existing) return { ok: false, status: 404, error: `Trigger ${id} not found.` };

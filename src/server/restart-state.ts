@@ -7,9 +7,9 @@ export const RESTART_STATE_FILE_NAME = "restart-state.json";
 export const RESTART_SIGNAL_FILE_NAME = "restart.signal";
 export const RESTART_IN_PROGRESS_FILE_NAME = "restart-in-progress.json";
 
-/** `restarting` spans the launcher's cutover, from claiming the request until the replacement is up. */
+/** `restarting` spans the cutover: from claiming the request until the new server is up. */
 export type RestartPhase = "idle" | "restarting";
-// A launcher from before restart-when-idle writes these while it waits. The claimed request says the same.
+// Older launchers (before restart-when-idle) write these while waiting; the claimed request agrees.
 const LEGACY_WAITING_PHASES = ["queued", "waiting-for-sessions"];
 
 export type ReleaseFailureEvent =
@@ -124,11 +124,7 @@ function isTransientRestartStateFsError(error: unknown): boolean {
 type RestartStateFsRetrySleep = (ms: number) => Promise<void>;
 type RestartStateFsRetrySleepSync = (ms: number) => void;
 
-// Capture the real timer at module load. Callers may install fake timers after
-// importing this module (e.g. test suites), but the transient-FS retry backoff
-// must still elapse in real time — freezing it under fake timers would hang any
-// real restart-state file I/O. Binding here keeps that backoff immune to a
-// later fake-timer installation while remaining identical in production.
+// Bound at load so fake timers installed later can't freeze the real I/O retry backoff.
 const realSetTimeout: typeof globalThis.setTimeout = globalThis.setTimeout;
 
 const defaultRestartStateFsRetrySleep: RestartStateFsRetrySleep = (ms) =>
@@ -141,12 +137,6 @@ const defaultRestartStateFsRetrySleepSync: RestartStateFsRetrySleepSync = (ms) =
 };
 let restartStateFsRetrySleepSync: RestartStateFsRetrySleepSync = defaultRestartStateFsRetrySleepSync;
 
-/**
- * Test seam for the transient-FS-retry backoff sleep. The default is already
- * bound to the real timer (see above), so most suites need no override; this
- * exists for tests that want to make the backoff instant or deterministic. Pass
- * undefined to restore the default. Not for production use.
- */
 export function __setRestartStateFsRetrySleepForTests(sleep?: RestartStateFsRetrySleep): void {
   restartStateFsRetrySleep = sleep ?? defaultRestartStateFsRetrySleep;
 }
@@ -155,11 +145,7 @@ export function __setRestartStateFsRetrySleepSyncForTests(sleep?: RestartStateFs
   restartStateFsRetrySleepSync = sleep ?? defaultRestartStateFsRetrySleepSync;
 }
 
-/**
- * Retries Windows sharing violations (antivirus, indexer) on restart control files. Exported for the
- * restart signal, which lives beside the restart state and races the same scanners; it passes a longer
- * schedule because a scanner can hold the signal for tens of seconds.
- */
+/** Retries Windows sharing violations (antivirus, indexer) on restart control files. */
 export async function retryTransientRestartStateFsOperation<T>(
   operation: () => Promise<T>,
   delaysMs: readonly number[] = RESTART_STATE_FS_RETRY_DELAYS_MS,
@@ -244,22 +230,11 @@ export async function clearRestartState(filePath: string): Promise<void> {
 const DEFAULT_STALE_TEMP_MAX_AGE_MS = 60_000;
 
 function isStaleRestartStateTempName(stateFileName: string, candidate: string): boolean {
-  // Matches the layout produced by getTempRestartStatePath:
-  // `.${basename(stateFile)}.${uuid}.tmp`
+  // Matches getTempRestartStatePath: `.${basename(stateFile)}.${uuid}.tmp`
   return candidate.startsWith(`.${stateFileName}.`) && candidate.endsWith(".tmp");
 }
 
-/**
- * Best-effort sweep of orphaned restart-state temp files. The atomic
- * write-then-rename in writeRestartState leaves a `.restart-state.json.<uuid>.tmp`
- * behind if the process is force-killed between the write and the rename — which
- * is exactly what the launcher does to children during a restart cutover. Those
- * temps are never reclaimed otherwise and accumulate unbounded over time.
- *
- * Only temps older than maxAgeMs are removed so a concurrent writer's in-flight
- * temp (which lives for milliseconds) is never deleted. Returns the count
- * removed. All filesystem errors are swallowed — this is opportunistic cleanup.
- */
+/** Removes temps left by force-kills mid-write; the age filter spares a live writer's temp. */
 export function sweepStaleRestartStateTempFiles(
   stateFilePath: string,
   options: { maxAgeMs?: number } = {},
@@ -289,11 +264,7 @@ export function sweepStaleRestartStateTempFiles(
   return removed;
 }
 
-/**
- * Whether a restart is requested or under way, read from disk so every process agrees: the server,
- * the launcher and the management job runner each see only these files. An unreadable file counts
- * as pending, which keeps the callers (hibernate, deploy reconciliation) on their waiting side.
- */
+/** Read from disk so all processes agree; an unreadable file counts as pending. */
 export function isRestartPending(dataDir: string): boolean {
   try {
     if (controlFileExistsSync(join(dataDir, RESTART_SIGNAL_FILE_NAME))) return true;

@@ -67,7 +67,7 @@ function trimSingleTrailingNewline(text: string): string {
 
 function getDiffLineClass(line: string): string {
   if (line.startsWith("@@ ")) {
-    // design-audit-ignore-next-line: a diff is content, and a hunk header is marked the way every diff viewer marks it
+    // design-audit-ignore-next-line: diff content; hunk headers look as in any diff viewer
     return "border-info/40 bg-info-surface text-info";
   }
   if (

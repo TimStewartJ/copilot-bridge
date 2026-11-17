@@ -27,10 +27,7 @@ function viewReducer(state: VoiceViewState, action: ViewAction): VoiceViewState 
 
 const RECONNECT_DELAYS_MS = [500, 1_500, 3_000, 6_000, 10_000, 15_000];
 
-/**
- * Controller for hands-free voice. It attaches to one chat at a time and holds
- * no conversation context itself, so starting and stopping it never loses anything.
- */
+/** Hands-free attaches to one chat at a time and holds no context, so stopping loses nothing. */
 export function useVoiceMode() {
   const preferences = useHelmPreferences();
   const [status, setStatus] = useState<VoiceStatus | null>(null);
@@ -51,9 +48,9 @@ export function useVoiceMode() {
   const endedRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
-  /** The delayed cleanup after the server ends a conversation; a newer start cancels it so it can't close its successor. */
+  /** Delayed cleanup after the server ends a conversation; a newer start cancels it. */
   const endedTeardownRef = useRef<number | undefined>(undefined);
-  /** Bumped on every start and stop: a connection that finishes for an older one is closed and ignored. */
+  /** Bumped on every start and stop; a connection for an older one is closed and ignored. */
   const connectionGenRef = useRef(0);
   const wakeLockRef = useRef<{ release(): Promise<void> } | null>(null);
   const settingsRef = useRef<VoiceSettings | null>(null);
@@ -220,11 +217,7 @@ export function useVoiceMode() {
     },
   };
 
-  /**
-   * Starts hands-free for a chat. The id may be a promise-returning function so the
-   * caller can create the conversation on demand: audio has to start inside the tap that asked
-   * for it (iOS will not resume an AudioContext after a network wait), so that happens first.
-   */
+  /** Start audio before awaiting target(): iOS won't resume an AudioContext after a fetch. */
   const start = useCallback(async (target: string | (() => Promise<string>)) => {
     if (!settingsRef.current) await refreshStatus();
     const currentSettings = settingsRef.current;
@@ -259,8 +252,7 @@ export function useVoiceMode() {
       try {
         result = await audio.start();
       } catch (err) {
-        // Browsers report a missing or blocked microphone in their own words
-        // ("The object can not be found here."); say what it means instead.
+        // Browsers word a missing or blocked microphone oddly; say what it means instead.
         throw new Error(describeVoiceCaptureError(err));
       }
       if (startEchoSafe && !result.echoSafe) {

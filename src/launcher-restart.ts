@@ -29,10 +29,7 @@ export type VerifiedReplacement<T> =
   | { stopped: false; replacement: null }
   | { stopped: true; replacement: T };
 
-/**
- * The only legal path from one managed server to another: replacement creation
- * is not invoked until the previous process tree has a verified stop result.
- */
+/** The only way to replace a managed server: start the new one only after a verified stop. */
 export async function startAfterVerifiedStop<T>(
   stop: () => Promise<boolean>,
   startReplacement: () => T,

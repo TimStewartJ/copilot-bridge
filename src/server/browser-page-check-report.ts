@@ -1,7 +1,4 @@
-// Opens real sites in a public browser and prints what the page check makes of each: the way to
-// see whether block detection still matches what sites serve. Run with
-// `npm run report:browser-blocks -- [url ...]`; without URLs it visits a list of sites that are
-// known for turning automated browsers away, and a few that never do.
+// Run `npm run report:browser-blocks -- [url ...]` to test block detection on real sites.
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

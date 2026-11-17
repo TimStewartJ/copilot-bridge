@@ -37,7 +37,7 @@ export const DEFAULT_CATEGORY: CategoryId = "chat";
 /** Parts of the System page a link can open directly with `?section=`. */
 export type SystemSectionId = "updates" | "jobs" | "browser" | "version";
 
-/** Retired category ids kept so existing `?group=` deep links and remembered categories still resolve. */
+/** Retired category ids, kept so old `?group=` links and remembered categories still resolve. */
 const CATEGORY_ALIASES: Record<string, CategoryId> = {
   general: "chat",
   management: "system",

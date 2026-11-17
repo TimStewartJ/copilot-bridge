@@ -83,7 +83,7 @@ interface TaskPanelProps {
   activeSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (taskId: string) => void;
-  /** Opens a new chat with a suggested prompt; false when it didn't. Leaving it out hides suggestions. */
+  /** Opens a chat with a suggested prompt; false if it didn't. Leaving it out hides suggestions. */
   onStartSuggestedChat?: (taskId: string, starter: TaskStarter) => boolean;
   onUpdateTask: (
     taskId: string,
@@ -262,10 +262,9 @@ export default function TaskPanel({
   const latestTaskIdRef = useRef(task?.id ?? null);
   const pendingChecklistItemId = searchParams.get("checklistItem");
 
-  // Everything below the chats loads separately; it appears in one step, so nothing a reader is about
-  // to tap above it moves. The chats and everything above them come from data already in memory.
+  // Everything below the chats loads separately and appears in one step, so nothing above moves.
   const startersShown = Boolean(onStartSuggestedChat && task?.status === "active" && !task.completedAt);
-  // A task that is archived without being completed has no Status fields, so its page stays in Linked.
+  // An archived, uncompleted task has no Status fields, so its page stays in Linked.
   const pageInStatus = Boolean(task && !(task.status === "archived" && !task.completedAt));
   const pageQuery = useTaskPageQuery(task?.id ?? "", Boolean(task));
   const startersQuery = useTaskStartersQuery(task?.id ?? "", Boolean(task) && startersShown);
@@ -386,7 +385,7 @@ export default function TaskPanel({
     [currentTask, completionCounts, checklistLoaded],
   );
 
-  // currentTask and completionState are null exactly when task is null, so one guard narrows all three.
+  // currentTask and completionState are null exactly when task is, so one guard narrows all three.
   if (!task || !currentTask || !completionState) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center border-r border-border bg-bg-secondary md:w-64">
@@ -447,8 +446,7 @@ export default function TaskPanel({
     && Boolean(completionState.ctaNextStatus || completionState.ctaCompletionAction);
   const completionDisabled = !showCompletionButton || isUpdatingCompletion;
   const showMomentumFields = completionState.ctaState !== "archived";
-  // Reopening depends only on the task, so it sits in the header. Completing depends on the checklist,
-  // chats and pull requests, so it closes the checklist, below the chats, where its arrival moves nothing.
+  // Reopen sits in the header; Complete closes the checklist, where its arrival moves nothing.
   const showReopen = showCompletionButton && completionState.ctaState === "completed";
   const showCompletionFooter = currentTask.kind !== "ongoing"
     && (completionState.ctaState === "ready" || completionState.ctaState === "default");
@@ -541,7 +539,7 @@ export default function TaskPanel({
             </IconButton>
           </div>
 
-          {/* One fixed-height line, so a badge arriving with the read state never moves what follows. */}
+          {/* Fixed height, so a badge arriving with the read state never moves what follows. */}
           <div className="flex h-6 min-w-0 items-center gap-2">
             <div data-testid="task-status-line" className={cx(DS.text.meta, "flex min-w-0 items-center truncate")}>
               {statusLine}

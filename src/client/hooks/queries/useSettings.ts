@@ -11,10 +11,7 @@ export function useSettingsQuery() {
   });
 }
 
-/**
- * Every settings write goes through this one writer, so writes from Settings, Helm and model
- * presets are sent one at a time and the cache always shows the latest intended settings.
- */
+/** The one settings writer, so writes go one at a time and the cache shows the latest intent. */
 export const settingsWriter = createSettingsWriter({
   patch: patchSettings,
   fetch: fetchSettings,

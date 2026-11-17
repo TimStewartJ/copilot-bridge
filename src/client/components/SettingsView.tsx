@@ -88,10 +88,7 @@ function CategoryPanel({
 /** How long "Saved · Undo" stays in the header after a save. */
 const SAVED_NOTICE_MS = 6_000;
 
-/**
- * Settings save as they change; this says what happened to the last change. A failure stays until
- * it is retried, dismissed, or the setting is changed again.
- */
+/** The last autosave's outcome; a failure stays until retried, dismissed, or changed again. */
 function SaveStatus({ state }: { state: SettingsWriterSnapshot }) {
   const { status, error } = state;
   const savedAt = status.kind === "saved" ? status.at : null;
@@ -192,8 +189,7 @@ export default function SettingsView() {
     : normalizeCategory(groupParam);
   const categoryMeta = getCategoryMeta(activeCategory);
 
-  // Sections build a whole settings object from the one they were rendered with; only what they
-  // changed is applied to the latest settings, which the writer then saves.
+  // Sections pass a whole object built from stale settings; only their changes apply to the latest.
   const setDraft = useCallback((next: AppSettings) => {
     if (!draft) return;
     const base = draft;

@@ -84,7 +84,7 @@ export const CROSS_PLATFORM_TEST_RULES: ReadonlyArray<CrossPlatformTestRule> = [
   },
   {
     id: "repo-runtime-path",
-    // Catches join(process.cwd(), "data"|".test-data"|"dist") — writing to repo-local runtime dirs in tests.
+    // Catches tests writing to repo-local runtime dirs such as join(process.cwd(), "data").
     pattern: /join\s*\(\s*process\.cwd\s*\(\s*\)\s*,\s*["'`](?:data|\.test-data|dist)["'`]/,
     message:
       "Use makeTestDir() or makeTestRuntimePaths() instead of repo-local runtime paths derived from process.cwd().",

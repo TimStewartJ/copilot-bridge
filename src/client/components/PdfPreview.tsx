@@ -4,19 +4,13 @@ import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import { cx } from "../design/tokens";
 import { pdfCanvasScale } from "./file-preview";
 
-/**
- * A PDF drawn by pdf.js, because a phone's web view shows only the first page of an embedded PDF
- * and cannot zoom it. The card shows page one and the viewer every page. A page is drawn while it
- * is near the screen and let go when it leaves, so neither a long document nor a transcript with
- * many PDFs holds its pages in memory. Loaded on first use: the chat does not carry pdf.js until a
- * PDF comes near the screen.
- */
+/** pdf.js: phone web views show only page 1 of an embedded PDF. Pages draw only near the screen. */
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 /** One worker for every PDF on the page; pdf.js would otherwise start one per document. */
 let sharedWorker: PDFWorker | undefined;
 
-/** A phone allows about 16 million pixels in one canvas and little memory for many; stay well under it there. */
+/** Phones cap a canvas near 16M pixels and have little memory for many, so stay well under. */
 const MAX_CANVAS_PIXELS = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches ? 5_000_000 : 16_000_000;
 const LETTER_RATIO = 11 / 8.5;
 
@@ -34,7 +28,7 @@ interface PdfPageProps {
   width: number;
   /** Height over width to hold the page's place with until it has been read: the first page's. */
   placeholderRatio: number;
-  /** The scrolling element pages are watched against: the viewer's own, or the window for a card. */
+  /** The scroller pages are watched against: the viewer's own, or the window for a card. */
   scroller: HTMLElement | null;
 }
 

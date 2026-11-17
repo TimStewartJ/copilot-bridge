@@ -222,7 +222,7 @@ describe("session manager task tools", () => {
 
       if (source === "task") ctx.taskStore.updateTask(task.id, { notes: prefix + newTail });
       else ctx.taskGroupStore.updateGroup(group.id, { notes: prefix + newTail });
-      // Continuing across someone's edit is refused, so a reader can't stitch two versions together.
+      // Reading on across an edit is refused, so a reader can't stitch two versions together.
       expect(await read({ notesSource: source, offset: first.nextOffset, revision: first.revision })).toMatchObject({ resultType: "failure" });
       expect(await read({ notesSource: source, offset: 999_999, revision: (await read({ notesSource: source })).revision })).toMatchObject({ resultType: "failure" });
       const edited = await read({ notesSource: source });

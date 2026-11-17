@@ -30,7 +30,7 @@ function describeAutopilotRun(run: AutopilotRunSummary): string {
 
 const SUMMARY_REMARK_PLUGINS = [remarkGfm, remarkBreaks, remarkWikilink];
 
-/** Parsed once per summary. The transcript renders again on every streamed chunk, and a summary can be long. */
+/** Memoized: the transcript re-renders on every streamed chunk, and a summary can be long. */
 const CompletionSummary = memo(function CompletionSummary({ content }: { content: string }) {
   return (
     <ReactMarkdown remarkPlugins={SUMMARY_REMARK_PLUGINS} components={MESSAGE_MARKDOWN_COMPONENTS} urlTransform={bridgeUrlTransform}>

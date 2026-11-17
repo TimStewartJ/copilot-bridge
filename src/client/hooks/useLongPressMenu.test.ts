@@ -75,7 +75,7 @@ describe("useLongPressMenu", () => {
       getReactProps(findButton(harness!))?.onTouchStart?.({ touches: [{ clientX: 20, clientY: 30 }] });
     });
     await advanceTimersByTimeAct(harness.act, 500);
-    // No synthesized click arrived (the row was replaced by reorder mode); leaving the mode resets the guard.
+    // No click arrived (reorder mode replaced the row); leaving the mode resets the guard.
     await harness.act(async () => resetGuard?.());
     await harness.act(async () => {
       getReactProps(findButton(harness!))?.onClick?.({ preventDefault: vi.fn(), stopPropagation: vi.fn() });

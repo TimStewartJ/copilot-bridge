@@ -26,8 +26,7 @@ const TRACKED: WorkMapData["workItems"][number] = {
   relations: [{ type: "parent", workItemId: "500" }],
 };
 
-// A feature that is only context, with a tracked closed bug whose PR is still active, an untracked
-// bug blocked by it, and an epic with no parent that another task tracks.
+// Context-only feature; tracked closed bug with an active PR; a bug it blocks; a tracked root epic.
 const DATA: WorkMapData = {
   enabled: true,
   currentUser: { displayName: "Tim Stewart" },
@@ -406,8 +405,7 @@ describe("DashboardWorkMap", () => {
   });
 
   it("marks a pull request that ADO could not return", async () => {
-    // A link saved from another organization: ADO here has no such pull request, and the saved
-    // repository name is that repository's URL.
+    // Saved from another org: ADO here lacks the PR, and the repository name is its URL.
     const repository = "https://dev.azure.com/otherorg/agency/_git/agency";
     await render({
       map: {

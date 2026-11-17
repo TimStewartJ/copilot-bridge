@@ -1,5 +1,4 @@
-// Runs in a scratch project that has only the packed tarballs installed (npm run packages:verify).
-// It proves the published build resolves by name, and it is the streaming loop the README shows.
+// Run by packages:verify against the packed tarball; it is also the README's streaming loop.
 import assert from "node:assert/strict";
 import {
   classifyBargeIn,

@@ -532,7 +532,7 @@ describe("useBackgroundVoiceJobs restart recovery", () => {
     __resetVoiceRecordingStoreForTests();
   });
 
-  // A job found at start is followed by a poll on a timer, which a test runs itself instead of waiting for it.
+  // Runs the timer poll that follows a job found at start, instead of waiting for it.
   async function runNextPoll() {
     await waitUntilAct(getHarness().act, () => vi.getTimerCount() > 0);
     await getHarness().act(async () => {

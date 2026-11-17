@@ -3,7 +3,7 @@ import { voiceJobRecordingUrl } from "../../api";
 import { describeVoiceReview, type VoiceReviewNotice } from "../../lib/voice-review";
 import { DS, cx } from "../../design/tokens";
 
-/** The line above the composer while a dictation waits for review, with its recording when there is one. */
+/** The line above the composer while a dictation awaits review, with its recording if any. */
 export function VoiceReviewLine({ review }: { review: VoiceReviewNotice }) {
   // The composer stays mounted between chats, and one chat's playback must not carry into the next.
   return <ReviewLine key={review.recordingJobId ?? "no-recording"} review={review} />;

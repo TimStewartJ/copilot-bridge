@@ -6,12 +6,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { makeTestDir } from "./helpers.js";
 
-// A process of its own, logging to files the way the Bridge's processes do, in which one write to
-// stdout is refused. This is the exit of 2026-10-05: with a worker thread in the process, Node no
-// longer drops a line it cannot write, and the error ended the server.
-
-// Loaded with --require, before anything touches process.stdout: Node's file stream takes its
-// reference to fs.writeSync when stdout is first used.
+// Loaded with --require before stdout is used: Node's file stream grabs fs.writeSync on first use.
 const REFUSE_MARKED_STDOUT_WRITES = [
   'const fs = require("node:fs");',
   "const writeSync = fs.writeSync;",

@@ -1,7 +1,4 @@
-// Runs the steps that depend on how the installed agent-browser and a real browser behave:
-// upload (the Bridge answers Chrome's file chooser next to agent-browser), screenshot, drag and
-// download. Unit tests cover them against fakes; this is what tells whether an agent-browser or
-// Chrome update broke one. Run with `npm run check:browser`.
+// Checks upload, screenshot, drag and download on a real agent-browser; `npm run check:browser`.
 
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -11,9 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 
-// The shared setup replaces the host lookups, and with them the browser and its launch arguments,
-// and where agent-browser is installed. Without the second, Windows is asked to start
-// `agent-browser` itself, which there is only npm's launcher script.
+// Use real browser lookups and agent-browser path; the mocked bare name fails on Windows.
 vi.unmock("../browser-launch-host.js");
 vi.unmock("../agent-browser-command.js");
 
@@ -23,7 +18,7 @@ const { BrowserBroker } = await import("../browser-broker.js");
 const { BrowserSessionStore, sessionLease } = await import("../browser-session-store.js");
 const { normalizeBrowserAutomationCommands } = await import("../browser-steps.js");
 
-/** A styled button over a hidden file input, a download link, and two lists that reorder by dragging. */
+/** A button over a hidden file input, a download link, and two lists that reorder by drag. */
 const PAGE = `<!doctype html><title>Steps</title>
 <button onclick="document.getElementById('file').click()">Add photos</button>
 <input type="file" id="file" style="display:none">

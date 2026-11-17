@@ -57,7 +57,7 @@ describe("seedStagingCopilotLogin", () => {
   });
 
   it("copies the signed-in accounts' saved tokens when the CLI keeps them in its config", () => {
-    // On a host without a usable keyring the CLI stores tokens here; without them the preview is signed out.
+    // Without a usable keyring the CLI stores tokens here; without them the preview is signed out.
     const root = makeTestDir("bridge-staging-copilot-login-");
     const source = join(root, "source");
     const target = join(root, "target");
@@ -79,9 +79,7 @@ describe("seedStagingCopilotLogin", () => {
   });
 
   it("reads a source config written as JSONC with a comment header", () => {
-    // The real Copilot CLI config is JSONC: it opens with a comment header and
-    // stores "https://github.com", so neither JSON.parse nor a naive comment
-    // regex handles it. Earlier fixtures used JSON.stringify and missed this.
+    // The real CLI config is JSONC with a comment header and "https://" inside strings.
     const root = makeTestDir("bridge-staging-copilot-login-");
     const source = join(root, "source");
     const target = join(root, "target");

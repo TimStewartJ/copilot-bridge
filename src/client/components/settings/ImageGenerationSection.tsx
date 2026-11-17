@@ -12,8 +12,7 @@ export function ImageGenerationSection({
 }) {
   const { pendingKeys } = useSettingsWriter();
   const enabled = draft.imageGeneration?.enabled !== false;
-  // Each committed change evicts every cached session on the server, so a second toggle waits
-  // until the first has been saved.
+  // Each change evicts every cached session on the server, so a second waits for the first to save.
   const saving = pendingKeys.has("imageGeneration");
 
   return (

@@ -187,8 +187,7 @@ export default function TaskRail({
     () => splitArchivedTasks(tasks),
     [tasks],
   );
-  // Deferred and muted tasks live in a collapsed Set aside section; the main list is for current work,
-  // and for a set-aside task whose revisit date has arrived, until that date is answered.
+  // Set-aside tasks go in a collapsed section, except one with a due revisit, until it is answered.
   const dueSetAsideIds = useDueSetAsideIds(tasks);
   const sortedTasks = useMemo(() => nonArchived.filter((task) => !isSetAsideTask(task) || dueSetAsideIds.has(task.id)), [dueSetAsideIds, nonArchived]);
   const setAsideTasks = useMemo(() => nonArchived.filter((task) => isSetAsideTask(task) && !dueSetAsideIds.has(task.id)), [dueSetAsideIds, nonArchived]);
@@ -200,7 +199,7 @@ export default function TaskRail({
   const moveAndReorderVisible = useMemo(() => onMoveAndReorder
     ? (taskId: string, groupId: string | undefined, ids: string[]) => onMoveAndReorder(taskId, groupId, mergeVisibleOrder(activeTasksForOrder, setAsideIds, ids, groupId ?? null))
     : undefined, [activeTasksForOrder, onMoveAndReorder, setAsideIds]);
-  // A deferred task that asks something or reaches its revisit date must not vanish inside a collapsed section.
+  // A set-aside task that asks something or has a due revisit must not vanish when collapsed.
   const setAsideNeeds = useMemo(() => setAsideAttention(overview.data?.tasks, setAsideIds), [overview.data, setAsideIds]);
   // Unread conversations must not hide inside a collapsed section either.
   const setAsideUnread = useMemo(() => countUnreadTasks(setAsideTasks, taskIndicators), [setAsideTasks, taskIndicators]);
@@ -337,7 +336,7 @@ export default function TaskRail({
               const isCollapsed = group?.collapsed ?? false;
               return (
                 <div key={group?.id ?? "__ungrouped__"} className="flex w-full flex-col items-center gap-2" title={group?.name}>
-                  {/* With no room for a name, a group is a short bar in its colour above its tasks. */}
+                  {/* With no room for a name, a group is a short bar in its colour. */}
                   {group && (
                     <span
                       aria-hidden="true"
@@ -659,9 +658,8 @@ export default function TaskRail({
       </div>
 
       {/* ── Tab content (scrollable) ────────────────────────── */}
-      {/* The padding is on the wrapper inside. A sticky control stops at its scroller's padding, so
-          padding here leaves rows showing past the reorder bar and the unread bands. */}
       <div ref={expandedTaskListRef} className="flex-1 overflow-y-auto">
+        {/* Pad here, not the scroller: sticky bars stop at its padding and rows would show. */}
         <div className="px-2 py-2 space-y-0.5">
           {railTab === "tasks" ? (
             <>

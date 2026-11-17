@@ -36,11 +36,7 @@ const STARTUP_TIMEOUT_MS = 60_000;
 const HEALTH_INTERVAL_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 10_000;
 const HEALTH_FAILURE_THRESHOLD = 3;
-/**
- * Failures are counted over the most recent probes, not only consecutively. A
- * degraded relay session tends to alternate slow/failed and passing probes, so a
- * strictly consecutive count can sit at 1/3 or 2/3 for hours without recycling.
- */
+/** Count failures over recent probes, not in a row: a degraded relay alternates fail and pass. */
 const HEALTH_FAILURE_WINDOW = 5;
 /** Slow but valid forwarding is logged, not counted as a host failure. */
 const HEALTH_SLOW_MS = 3_000;
@@ -83,20 +79,11 @@ export type TunnelSupervisorOptions = {
   dataDir: string;
   port: number;
   log: (message: string) => void;
-  /**
-   * Tunnel to host. `null` hosts nothing and only cleans up a tunnel host that a
-   * previous launcher recorded in this supervisor's state file.
-   */
+  /** Tunnel to host; `null` hosts nothing and only cleans up a host recorded in the state file. */
   tunnelName: string | null;
-  /**
-   * Set for every supervisor except the primary one: gives it its own state file
-   * and log label. Only the primary file feeds the server's public URL.
-   */
+  /** Set on non-primary supervisors for their own state file and log label; not the public URL. */
   additionalName?: string;
-  /**
-   * Host with short-lived tokens from this provider instead of the devtunnel CLI
-   * login. The host restarts with a fresh token before the current one expires.
-   */
+  /** Host with short-lived tokens from this provider, not CLI login; restarts before expiry. */
   hostAuth?: TunnelHostAuth;
   /** Renew a host token this long before it expires (default 1 hour). */
   hostTokenRenewMarginMs?: number;
@@ -196,12 +183,7 @@ export type TunnelSupervisorPlan = {
   githubAccount?: string;
 };
 
-/**
- * One supervisor per configured tunnel; the first is the primary and owns
- * `tunnel-runtime.json`. The primary slot exists even with no tunnel configured, and
- * every additional tunnel that still has a state file keeps a slot after it leaves
- * the list, so a tunnel host a previous launcher left running is still cleaned up.
- */
+/** Removed tunnels that still have a state file keep a slot, so hosts left running get cleaned. */
 export function planTunnelSupervisors(
   tunnels: readonly TunnelSpec[],
   staleAdditionalNames: readonly string[] = [],
@@ -563,10 +545,7 @@ export class TunnelSupervisor {
     return failures;
   }
 
-  /**
-   * Count a failure toward the sliding window and recycle the tunnel once the window
-   * holds `healthFailureThreshold` failures.
-   */
+  /** Recycle the tunnel once the sliding window holds `healthFailureThreshold` failures. */
   private async recordHealthFailure(child: ChildProcess, observation: HealthObservation): Promise<void> {
     this.recordHealthObservation(observation);
     if (this.logHealthFailure(observation) < this.healthFailureThreshold) return;
@@ -618,11 +597,7 @@ export class TunnelSupervisor {
     return credential.issuedAt + Math.max(lifetime - this.hostTokenRenewMarginMs, lifetime / 2);
   }
 
-  /**
-   * Fetch the next token while the current host keeps serving, then restart the host
-   * with it. Returns false when the fetch failed: the host keeps running, health checks
-   * continue, and renewal is retried on the next check.
-   */
+  /** Fetch the new token, then restart the host; on failure keep the host, retry next check. */
   private async renewHostToken(child: ChildProcess): Promise<boolean> {
     if (!this.hostAuth || this.name === null) return false;
     let next: TunnelHostCredential;
@@ -673,8 +648,7 @@ export class TunnelSupervisor {
       : Promise.resolve(null);
 
     const urlPromise = this.waitForUrl(child, generation);
-    // The CLI can exit before process identity capture completes. Mark the
-    // rejection handled immediately; the awaited promise still drives retries.
+    // The CLI can exit before identity capture ends, so mark the rejection handled at once.
     void urlPromise.catch(() => undefined);
     const startingIdentity = await this.identity;
     if (

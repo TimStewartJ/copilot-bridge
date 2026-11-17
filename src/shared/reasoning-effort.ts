@@ -5,12 +5,7 @@ function rank(level: string): number {
   return (REASONING_EFFORT_LEVELS as readonly string[]).indexOf(level);
 }
 
-/**
- * The effort to actually use when `requested` is wanted but a model only supports some levels:
- * the requested level if supported, otherwise the nearest supported level below it, otherwise
- * the lowest the model has. Undefined when the model has no effort control (or the request is
- * not a known level), so callers leave the model's setting alone instead of guessing.
- */
+/** Requested level, else nearest below, else lowest; undefined means leave the model's setting. */
 export function resolveSupportedReasoningEffort(
   requested: string | undefined,
   supported: readonly string[] | undefined,

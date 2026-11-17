@@ -74,8 +74,7 @@ export function DeviceManagementSection() {
       setNow(current);
       if (current >= scheduledAt) {
         clearInterval(id);
-        // The server timer should have fired; confirm real state rather than
-        // assuming the device hibernated.
+        // The server timer should have fired; confirm the real state, do not assume hibernation.
         void fetchHibernateStatus()
           .then((status) => setPending(status.pending ? status : null))
           .catch(() => setPending(null));
@@ -86,8 +85,7 @@ export function DeviceManagementSection() {
 
   const onIdleArmed = Boolean(onIdle?.armed);
 
-  // While armed the countdown and active-session count are server-owned, so
-  // re-read them instead of simulating idleness locally.
+  // While armed, the countdown and session count are server-owned: reread, do not simulate.
   useEffect(() => {
     if (!onIdleArmed) return;
     setNow(Date.now());

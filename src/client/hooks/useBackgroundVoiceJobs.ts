@@ -70,12 +70,9 @@ export interface VoiceBackgroundJob {
   sessionOptions?: CreateSessionOptions;
   /** The send mode (such as Autopilot) an autosend recording goes out with. */
   sendMode?: SendMode;
-  /**
-   * The server job failed without a transcript, so it holds nothing to recover and dismissing the
-   * error can retire it on the server. Unset while a transcript may still need to reach the draft.
-   */
+  /** Server job failed with no transcript, so dismissing the error may retire it on the server. */
   serverFailedWithoutTranscript?: boolean;
-  /** Set with status "review": why the transcript in the draft should be read before it goes out. */
+  /** With status "review": why the transcript in the draft should be read before it goes out. */
   review?: VoiceReviewNotice;
 }
 
@@ -224,7 +221,7 @@ export function useBackgroundVoiceJobs({
 
   const getJobForComposer = useCallback((composerKey: string) => jobs[composerKey] ?? null, [jobs]);
 
-  /** Records how much of a recording has uploaded. `thenStatus` takes over once all of it is sent. */
+  /** Records upload progress; `thenStatus` takes over once all of it is sent. */
   const noteUploadProgress = useCallback((composerKey: string, fraction: number, thenStatus?: "transcribing") => {
     setJobsState((prev) => {
       const job = prev[composerKey];
@@ -259,11 +256,7 @@ export function useBackgroundVoiceJobs({
     await deletePendingVoiceRecording(composerKey, owned).catch(() => {});
   }, []);
 
-  /**
-   * Deletes the stored recording only when it belongs to the server job that just settled. A stale
-   * recovery response must never destroy a recording made after that job started, and a job only
-   * found on the server at start says nothing about an upload that failed on this device.
-   */
+  /** Delete only this job's recording, never a newer one or a local failed upload seen at start. */
   const forgetRecordingForServerJob = useCallback(async (composerKey: string, serverJobId: string) => {
     const record = await getPendingVoiceRecording(composerKey).catch(() => null);
     if (!record) return;
@@ -277,7 +270,7 @@ export function useBackgroundVoiceJobs({
     await patchPendingVoiceRecording(composerKey, recordingId, { lastError: message }).catch(() => {});
   }, []);
 
-  /** Keeps a persisted recording attached to its conversation when a draft becomes a real session. */
+  /** Keeps a stored recording with its conversation when a draft becomes a real session. */
   const moveRecordingOwnership = useCallback(async (fromComposerKey: string, toComposerKey: string) => {
     if (fromComposerKey === toComposerKey) return;
 
@@ -335,8 +328,7 @@ export function useBackgroundVoiceJobs({
     delete pendingRecordingIdsRef.current[composerKey];
     delete persistWarningsRef.current[composerKey];
     hydratedComposerKeysRef.current.delete(composerKey);
-    // Delete unconditionally: an explicit discard must clear the slot even if this tab never
-    // owned the recording (for example after a restart rebuilt the job from storage).
+    // Unconditional: a discard must clear the slot even if this tab never owned the recording.
     void deletePendingVoiceRecording(composerKey).catch(() => {});
     setJobsState((prev) => {
       if (!(composerKey in prev)) return prev;
@@ -552,7 +544,7 @@ export function useBackgroundVoiceJobs({
       if (isDraftComposerKey(originComposerKey) && snapshot.targetSessionId) {
         optionsRef.current.clearDraftSession(originComposerKey);
       }
-      // The message landed (or its transcript was recovered) — the local copy is finally safe to drop.
+      // The message landed or its transcript was recovered, so the local copy is safe to drop.
       await forgetRecordingForServerJob(displayKey, snapshot.id);
       await forgetRecordingForServerJob(originComposerKey, snapshot.id);
       if (snapshot.targetSessionId) {
@@ -570,7 +562,7 @@ export function useBackgroundVoiceJobs({
 
     if (snapshot.status === "held") {
       stopPolling(snapshot.id);
-      // The transcript goes to the target chat's draft, so an origin draft only counts when we go there.
+      // The transcript goes to the target chat's draft; the origin counts only if we go there.
       const canReviewNow =
         optionsRef.current.activeComposerKey === displayKey
         || (optionsRef.current.activeComposerKey === originComposerKey && !!navigateTargetSessionId);
@@ -604,7 +596,7 @@ export function useBackgroundVoiceJobs({
           },
         }, claimedOriginServerJobId));
       } else {
-        // The transcript waits on the server and reaches the draft when this conversation next opens.
+        // The transcript waits on the server until this conversation next opens.
         setJobsState((prev) => clearOwnedVoiceJobs(
           prev,
           { composerKey: originComposerKey, serverJobId: snapshot.id, claimedServerJobId: claimedOriginServerJobId },
@@ -783,8 +775,7 @@ export function useBackgroundVoiceJobs({
         clearUploadTracking(composerKey, controller);
         retryingComposerKeysRef.current.delete(composerKey);
         claimedOriginServerJobIdsRef.current[composerKey] = snapshot.id;
-        // Remember which server job owns this audio so a retry after a restart can resume instead
-        // of re-uploading (and duplicating) a message the server already accepted.
+        // Lets a retry after a restart resume instead of re-uploading an accepted message.
         if (ownedRecordingId) {
           await patchPendingVoiceRecording(composerKey, ownedRecordingId, { serverJobId: snapshot.id })
             .catch(() => {});
@@ -830,8 +821,7 @@ export function useBackgroundVoiceJobs({
   }: StartBackgroundVoiceJobOptions): Promise<VoiceSubmitMode | null> => {
     const effectiveSendMode = submitMode === "autosend" ? sendMode : undefined;
 
-    // Save the audio before touching the network so a crash, reload, or failed upload can never
-    // destroy the only copy of the recording.
+    // Save before any network call, so a crash, reload or failed upload never loses the only copy.
     const recordingId = createVoiceRecordingId();
     let persistResult: VoicePersistResult = { durable: false, reason: "unavailable" };
     try {
@@ -929,7 +919,7 @@ export function useBackgroundVoiceJobs({
             retryable: true,
             serverOwned: existing.serverOwned,
             serverJobId: knownServerJobId,
-            // A failed server job cannot change again except to recovered, so an inconclusive check keeps what was confirmed.
+            // A failed job can only become recovered, so an inconclusive check keeps the failure.
             ...(existing.serverJobId === knownServerJobId && existing.serverFailedWithoutTranscript
               ? { serverFailedWithoutTranscript: true }
               : {}),
@@ -988,8 +978,7 @@ export function useBackgroundVoiceJobs({
     })();
   }, [moveRecordingOwnership, setJobsState]);
 
-  // Rebuild pending recordings for whichever composer the user is looking at. Lazy by design: the
-  // audio for other composers stays on disk instead of being pulled into memory.
+  // Rebuild pending recordings only for the shown composer; others' audio stays on disk.
   useEffect(() => {
     if (!activeComposerKey) return;
     let cancelled = false;
@@ -1062,7 +1051,7 @@ export function useBackgroundVoiceJobs({
     };
   }, [activeComposerKey, applyServerSnapshot, pollServerJob, setJob]);
 
-  // A tab the phone evicted polled nothing, so a dictation held meanwhile would wait where nobody looks.
+  // An evicted tab polled nothing, so catch up on dictations held meanwhile.
   useEffect(() => {
     let cancelled = false;
     const catchUp = async () => {

@@ -38,10 +38,7 @@ type BrowserSessionUseResult<T> = (OkResult<T> & { record: BrowserSessionRecord 
 
 /** A request, still open, for the user to act in a browser session. */
 export interface BrowserHandoff {
-  /**
-   * Name of the single field of the form that asks the user. It is unique to the request, which
-   * is how the form is recognised when the runtime reports it.
-   */
+  /** The form's one field name, unique to the request so the form is recognised when reported. */
   fieldName: string;
   /** Call when the user has answered or the request is gone. */
   end(): void;
@@ -108,10 +105,7 @@ export class BrowserSessionStore {
     if (record) record.lastUsedAt = Date.now();
   }
 
-  /**
-   * Calls the listener with the id of a session whose browser is about to be closed, however that
-   * came about, so that whatever else uses the browser stops before it goes.
-   */
+  /** Calls the listener before a session's browser closes, so other users of it stop first. */
   onSessionClosing(listener: (browserSessionId: string) => void): () => void {
     this.closeListeners.add(listener);
     return () => this.closeListeners.delete(listener);
@@ -135,10 +129,7 @@ export class BrowserSessionStore {
     return undefined;
   }
 
-  /**
-   * Runs something that needs the session's browser but is not one of the owning chat's tool
-   * calls, such as showing it to the user. The session is not closed while it runs.
-   */
+  /** Uses the session's browser outside the chat's tool calls; it cannot close meanwhile. */
   async holdSession<T>(id: string, fn: (record: BrowserSessionRecord) => Promise<T>): Promise<BrowserSessionUseResult<T>> {
     const record = this.sessions.get(id);
     if (!record || this.disposalRuns.has(id)) return err(`Browser session not found: ${id}`);

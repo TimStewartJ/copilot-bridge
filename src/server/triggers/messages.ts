@@ -1,5 +1,4 @@
-// Messages a trigger queues for the chat that owns it: a worker's result, a failure notice, or the
-// trigger's own prompt sent straight in. They go through the chat delivery outbox.
+// Messages a trigger queues for its chat through the delivery outbox: results, notices, prompts.
 
 import { randomUUID } from "node:crypto";
 import { formatTriggerCheckChange, type TriggerCheckChange } from "./check.js";
@@ -94,7 +93,7 @@ export function createFailedTriggerDelivery(
   ].join("\n"));
 }
 
-/** Tells the chat that a recurring trigger keeps failing. The trigger stays active, so the chat decides what to do. */
+/** Tells the chat a recurring trigger keeps failing; it stays active and the chat decides. */
 export function createFailingTriggerDelivery(
   input: { triggerId: string; parentSessionId: string; name?: string },
   failures: number,

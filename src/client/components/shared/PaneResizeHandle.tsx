@@ -50,10 +50,7 @@ export function usePaneWidth(options: PaneWidthOptions) {
 
 const KEYBOARD_STEP = 16;
 
-/**
- * The edge of a pane that can be dragged to resize it. It is a separator to assistive technology,
- * moves with the arrow keys, and returns to the default width on double-click.
- */
+/** A draggable pane edge: an a11y separator, arrow keys move it, double-click resets the width. */
 export default function PaneResizeHandle({
   label,
   width,

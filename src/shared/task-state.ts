@@ -1,4 +1,4 @@
-/** How a task stands right now, derived from existing task, session and schedule facts. Never stored. */
+/** How a task stands now, derived from task, session and schedule facts; never stored. */
 export type TaskState = "needs_you" | "in_motion" | "waiting" | "up_next" | "no_next_step" | "gone_quiet" | "set_aside";
 export type TaskNeedsYouReason = "question" | "stalled" | "revisit";
 
@@ -54,7 +54,7 @@ export function deriveTaskState(input: TaskStateInput, now: number = Date.now())
   const result = (state: TaskState, reasons: TaskNeedsYouReason[] = []): DerivedTaskState => ({ state, reasons, idleDays, staleWait });
 
   const revisitReached = revisit !== undefined && revisit <= now;
-  // Mute silences what a task's conversations raise. A revisit date is a request to see the task again, so it still surfaces.
+  // Mute silences what chats raise, but a revisit date still surfaces the task.
   if (input.muted) return revisitReached ? result("needs_you", ["revisit"]) : result("set_aside");
   const reasons: TaskNeedsYouReason[] = [];
   if (input.inputCount > 0) reasons.push("question");

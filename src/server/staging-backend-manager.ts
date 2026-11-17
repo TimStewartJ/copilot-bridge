@@ -98,11 +98,7 @@ const switchingStagingRouters = new Map<string, RequestHandler>();
 const switchingStagingPreviews = new Map<string, string>();
 const pendingStagingBackendStarts = new Map<string, Promise<StagingBackendStartResult>>();
 const stagingBackendStartFailures = new Map<string, StagingBackendStartFailure>();
-/**
- * Previews whose backend failed to start too many times. Keyed by prefix, valued
- * with the moment the preview was retired, so a rebuilt preview (newer dist
- * mtime) clears the tombstone and is registered again.
- */
+/** Retired previews by prefix and retire time; a newer dist mtime clears the entry. */
 const terminallyFailedPreviews = new Map<string, number>();
 
 let backendIdleReaper: ReturnType<typeof setInterval> | null = null;
@@ -403,18 +399,7 @@ function snapshotProductionDatabase(dbSrc: string, dataDir: string): void {
   }
 }
 
-/**
- * Apply every staging-only override to the freshly seeded database over a single
- * connection: one open, one WAL setup, one transaction for runtime-state
- * isolation, one close.
- *
- * Isolation is required, not best-effort. A staging preview that keeps the
- * production model, live schedules, or live push subscriptions would act on the
- * user's real devices and workspaces, so any failure here aborts preview
- * seeding rather than being downgraded to a warning. Only the Copilot usage
- * index (cosmetic, and absent on older databases) and the search index are
- * cleaned best-effort.
- */
+// Isolation must succeed or seeding aborts: a preview with live schedules/push hits real devices.
 function applyStagingSeedOverrides(dbPath: string): void {
   let stagingDb: DatabaseSync | null = null;
   try {
@@ -429,8 +414,7 @@ function applyStagingSeedOverrides(dbPath: string): void {
       });
     } catch (error) {
       if (!(error instanceof SettingsReadError)) throw error;
-      // This is an isolated copy: discard only its unreadable app row so staging
-      // can start without weakening production settings reads or PATCH behavior.
+      // Isolated copy: drop only its unreadable app row so staging can still start.
       stagingDb.prepare("DELETE FROM settings WHERE key = 'app'").run();
       settingsStore.updateSettings({
         model: STAGING_PREVIEW_MODEL,
@@ -469,8 +453,7 @@ function applyStagingSeedOverrides(dbPath: string): void {
       log(`Warning: could not clear the Copilot usage index in the staging DB: ${err}`);
     }
 
-    // The copied index describes production's chats, and the preview has none of them: its first
-    // search would spend minutes removing them.
+    // The copied index lists production's chats; pruning them would stall the first search.
     try {
       clearSearchIndex(db);
     } catch (err) {
@@ -505,20 +488,10 @@ function resolveStagingPreviewRuntimePaths(
   });
 }
 
-/**
- * Fields in the Copilot CLI config that identify the signed-in account. These
- * are plain identifiers (host and login) and hold no secret material. The token
- * usually lives in the OS credential store, which the preview backend can read
- * because it runs as the same OS user.
- */
+/** Plain account ids (host, login), no secrets; the token stays in the OS credential store. */
 const COPILOT_LOGIN_POINTER_FIELDS = ["loggedInUsers", "lastLoggedInUser"] as const;
 
-/**
- * Where the CLI keeps tokens when the OS credential store is unusable (a headless
- * Linux host without a working keyring). Without them the preview runtime is
- * signed out: it lists no models and every request that needs the account fails.
- * Only the signed-in accounts' entries are copied, into a file only this user can read.
- */
+/** Plaintext tokens when no keyring; copy only signed-in accounts', to a user-only file. */
 const COPILOT_PLAINTEXT_TOKENS_FIELD = "authTokens";
 
 function signedInTokenEntries(config: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -543,17 +516,7 @@ export function resolveDefaultCopilotHome(
   return home ? join(home, ".copilot") : undefined;
 }
 
-/**
- * Merges the signed-in-account pointer from the real Copilot home into the
- * isolated staging one.
- *
- * The staging preview deliberately runs against its own COPILOT_HOME so preview
- * sessions cannot write into the real session store. That directory also holds
- * the record of which account is signed in, so isolating session state also
- * left the preview backend looking signed out and every model-backed API
- * failing with "Not authenticated". Copying just the pointer keeps session
- * isolation intact while letting the preview resolve the existing credential.
- */
+/** Copies only the signed-in pointer into the isolated COPILOT_HOME so the preview is signed in. */
 export function seedStagingCopilotLogin(
   targetCopilotHome: string,
   options: SeedStagingDataOptions = {},
@@ -604,8 +567,7 @@ export function seedStagingCopilotLogin(
   return true;
 }
 
-/** Seed a staging data directory from production data, with runtime-only state isolated.
- *  Uses the worktree's own data/ directory (already gitignored). */
+/** Seeds the worktree's gitignored data/ dir from production, with runtime-only state isolated. */
 export function seedStagingData(stagingDir: string, options: SeedStagingDataOptions = {}): RuntimePaths {
   const runtimePaths = resolveStagingPreviewRuntimePaths(stagingDir, options.dataDir);
   const dataDir = runtimePaths.dataDir;
@@ -631,8 +593,7 @@ export function seedStagingData(stagingDir: string, options: SeedStagingDataOpti
   try {
     applyStagingSeedOverrides(join(dataDir, "bridge.db"));
   } catch (err) {
-    // A partially isolated staging database is worse than no preview: it could
-    // fire real schedules or push notifications. Discard the snapshot.
+    // A half-isolated database could fire real schedules or pushes; discard the snapshot.
     clearSeededSqliteFiles(dataDir);
     throw err;
   }
@@ -645,8 +606,7 @@ export function seedStagingData(stagingDir: string, options: SeedStagingDataOpti
   }
 
   if (runtimePaths.copilotHome && !seedStagingCopilotLogin(runtimePaths.copilotHome, options)) {
-    // Not fatal: the preview still boots, but model-backed UI will report that
-    // models could not be loaded.
+    // Not fatal: the preview boots, but model-backed UI reports that models could not load.
     log("Warning: staging preview has no Copilot login pointer; model-backed APIs will be unauthenticated");
   }
 
@@ -679,9 +639,7 @@ async function preparePreviewRuntime(
   if (options.preserveExisting) {
     const existing = getExistingPreviewRuntime(stagingDir, options.dataDir);
     if (existing) {
-      // Restores skip the full seed, but the login pointer must still be
-      // refreshed here or a preview created before this ran (or one whose
-      // account changed) would come back unauthenticated after a restart.
+      // Restores skip the seed but must refresh the login pointer or come back signed out.
       if (existing.copilotHome) seedStagingCopilotLogin(existing.copilotHome);
       return existing;
     }
@@ -762,9 +720,7 @@ function getLazyStagingRouter(prefix: string): RequestHandler | undefined {
 
 function createLazyStagingHandler(prefix: string): RequestHandler {
   return (req, res, next) => {
-    // Without this the rejection is unhandled and the request hangs with no
-    // response. next(error) is the only safe forwarding: Express closes the
-    // connection itself when headers were already sent.
+    // Use next(error), not a reply: Express closes the socket itself if headers were already sent.
     void handleLazyStagingRequest(prefix, req, res, next).catch((error: unknown) => {
       log(`Lazy staging backend request for ${prefix} failed: ${error instanceof Error ? error.message : String(error)}`);
       next(error);
@@ -940,10 +896,7 @@ async function startRestorableStagingBackend(
   const enforceLimits = deps.enforceLimits ?? enforceStagingBackendResourceLimits;
   const restore = deps.restore ?? restoreStagingBackendWithRetry;
 
-  // Every failure path — including resource-limit enforcement and restore
-  // rejections — must land in the bounded backoff below. Otherwise a thrown
-  // startup error is converted to a plain failure response by the caller and
-  // the next request immediately re-spawns the backend in a hot loop.
+  // All failures, thrown ones too, must hit the backoff below or each request respawns it.
   try {
     await enforceLimits(`before starting ${prefix}`, {
       targetSize: Math.max(0, STAGING_BACKEND_LIVE_LIMIT - 1),
@@ -987,9 +940,7 @@ function recordStagingBackendStartFailure(
   log(`Staging backend start failed for ${prefix}; retry allowed in ${Math.ceil(delayMs / 1_000)}s: ${error}`);
 
   if (attempts >= STAGING_BACKEND_START_MAX_ATTEMPTS) {
-    // Permanently dead preview: stop keeping a registered route that can only
-    // ever answer 502, and release the restorable target so the prefix falls
-    // through to the normal 404 path.
+    // Dead preview: drop its 502-only route and restorable target so the prefix gets a 404.
     log(
       `Staging backend for ${prefix} failed ${attempts} times; removing the dead preview route. `
       + `Re-create the preview to retry. Last error: ${error}`,
@@ -1001,11 +952,6 @@ function recordStagingBackendStartFailure(
   }
 }
 
-/**
- * Whether preview discovery should skip re-registering this prefix. A retired
- * preview stays retired until its build artifacts are newer than the failure,
- * which is exactly the "the user rebuilt it" signal.
- */
 export function isPreviewRetiredAfterStartFailures(prefix: string, distMtimeMs: number): boolean {
   const retiredAt = terminallyFailedPreviews.get(prefix);
   if (retiredAt === undefined) return false;
@@ -1059,10 +1005,7 @@ async function enforceStagingBackendResourceLimits(
   }
 }
 
-/**
- * Forwards a WebSocket upgrade under `/staging/<prefix>/api/…` to a running staged
- * backend. Returns false when no backend is running so the caller can reject it.
- */
+/** Forwards a `/staging/<prefix>/api/…` WebSocket upgrade; false when no staged backend runs. */
 export function proxyStagingUpgrade(
   prefix: string,
   req: IncomingMessage,

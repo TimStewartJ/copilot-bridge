@@ -583,7 +583,7 @@ describe("deferred-prompt-runner", () => {
       ));
       const sm = makeMockDeferSessionManager({ sessions: ["loaded-chat", "unloaded-chat"] }) as any;
       let full = true;
-      // The real manager answers undefined for a chat it already holds: that chat needs no new context.
+      // The real manager answers undefined for a chat it already holds: no new context needed.
       sm.getSessionCapacityWait = vi.fn((sessionId?: string) =>
         full && sessionId !== "loaded-chat" ? FULL : undefined);
       const runner = createDeferredPromptRunner(store, sm, bus);
@@ -620,8 +620,7 @@ describe("deferred-prompt-runner", () => {
         isSessionBusy: () => false,
         hasPersistedUserMessage: async () => false,
         getSessionCapacityWait: vi.fn(() => (full ? FULL : undefined)),
-        // The last context is taken between the runner's question and the resume. The refusal reaches
-        // the runner the way the session runner reports it: a plain error carrying the text.
+        // The last context goes between the check and the resume; refused with a plain error.
         startWorkAndWaitForDelivery: vi.fn(async (_sessionId: string, prompt: string) => {
           if (!refused) {
             refused = true;
@@ -1106,7 +1105,7 @@ describe("deferred-prompt-runner", () => {
         const runner = createDeferredPromptRunner(store, sm as any, bus);
 
         runner.start();
-        // start() armed its watchdog; the next interval is the lease renewal armed right after the claim.
+        // start() armed its watchdog; the next interval is the lease renewal after the claim.
         vi.spyOn(globalThis, "setInterval").mockImplementationOnce(() => {
           throw new Error("simulated renewal setup failure");
         });

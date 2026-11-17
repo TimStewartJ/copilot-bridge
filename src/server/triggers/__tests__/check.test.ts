@@ -2,8 +2,7 @@ import { win32 } from "node:path";
 import { describe, expect, it } from "vitest";
 import { evaluateTriggerCheck, resolveTriggerCheckInvocation } from "../check.js";
 
-// Windows paths are built with path.win32, and file lookups are answered from this list, so the
-// Windows branch runs the same on every host.
+// path.win32 plus this fake file list let the Windows branch run the same on every host.
 const TOOLS = "C:\\Tools";
 const NODE_BIN = "C:\\Users\\user\\AppData\\Roaming\\npm";
 const WORKSPACE = "C:\\work\\repo";

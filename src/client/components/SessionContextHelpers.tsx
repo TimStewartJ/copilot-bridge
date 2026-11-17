@@ -39,16 +39,9 @@ export function getSummaryMetrics(
     & { latestSnapshotAt?: string | null }) | null | undefined,
   live?: SessionUsageMetrics["contextInfo"],
   liveUpdatedAt?: number,
-  /**
-   * The chat is on a routed model (Copilot Fusion). The runtime reports a conservative budget for
-   * the router, but each step runs, and compacts at the usual share, within the window of the
-   * model doing it, so the window the latest step reported is the chat's.
-   */
+  /** Routed (Fusion): each step runs in its model's window, so use the latest step's window. */
   routed = false,
-  /**
-   * When the chat's budget last changed size, from the server (`SessionUsageMetrics.budgetChangedAt`).
-   * A step reading from before then came from another model or another context limit.
-   */
+  /** When the budget last changed size (`budgetChangedAt`); older steps used another window. */
   budgetChangedAt?: string | null,
 ): SummaryMetrics {
   const newerSummary = live !== undefined && liveUpdatedAt !== undefined
@@ -102,7 +95,7 @@ export function formatTokenValue(value: number): string {
   return `${formatNumber(value)} tokens`;
 }
 
-/** "840", "8.4k", "84k", "1.2M": short enough to read at a glance; the exact count goes in a title. */
+/** "840", "8.4k", "84k", "1.2M": glanceable; the exact count goes in a title. */
 export function formatCompactTokens(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "";
   if (value < 1000) return formatNumber(value);
@@ -175,8 +168,7 @@ export function getMeterSegments(
   if (system === undefined || tools === undefined || system + tools > metrics.used) {
     return [{ key: "used", label: "In use", tokens: metrics.used, className: fill }];
   }
-  // The fixed parts come from the latest split; the conversation is whatever else the window holds now.
-  // Shades step from darkest to lightest so the three stay apart in both themes.
+  // Fixed parts from the latest split, the rest is conversation; shades stay apart in both themes.
   return [
     { key: "system", label: "Instructions", tokens: system, className: "bg-text-primary" },
     { key: "tools", label: "Tool definitions", tokens: tools, className: "bg-text-secondary" },

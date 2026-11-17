@@ -1,6 +1,4 @@
-// Locates the Computer Use plugin that ships inside the Copilot SDK platform package.
-// Sessions load it through the SDK's `pluginDirectories` option, so the runtime reads
-// upstream's own plugin manifest and the Bridge setting is the only gate.
+// Finds the SDK's bundled Computer Use plugin; the Bridge setting is its only gate.
 
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";

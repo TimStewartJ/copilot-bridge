@@ -2,10 +2,7 @@ import type { ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { DS, cx } from "../../design/tokens";
 
-/**
- * One usage line that opens for more. Put it in an `@container/usage-models` surface: the figures
- * sit beside the name when it is wide and drop under it, spread across the line, when it is narrow.
- */
+/** Needs an `@container/usage-models` parent: figures sit beside the name, under it if narrow. */
 export default function UsageRow({ name, figures, bodyClassName, children }: {
   name: ReactNode;
   figures: ReactNode;

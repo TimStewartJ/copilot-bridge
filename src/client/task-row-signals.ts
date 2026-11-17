@@ -69,11 +69,7 @@ export function getTaskAttentionSignal(
   }
 }
 
-/**
- * The leading glyph: an attention mark first, then the working spinner for a task with a turn running.
- * Unread replies on a working task keep both as one glyph, and a reached revisit yields the glyph to
- * the spinner (its "Revisit" badge still shows). The spinner never counts as attention.
- */
+/** Attention mark, else spinner; unread+working merge, a due revisit yields to the spinner. */
 export function getTaskLeadingGlyph(attention: TaskRowSignal | null, indicator?: TaskIndicator, activity?: TaskActivity): DsStatusKind | null {
   const working = !!indicator?.busy || (activity?.runCount ?? 0) > 0;
   if (attention && working && (attention.kind === "follow-up-due" || attention.kind === "follow-up-overdue")) return "working";

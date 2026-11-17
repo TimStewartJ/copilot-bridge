@@ -1,7 +1,4 @@
-// Chat lane: triggers that wake the chat that owns them. Each occurrence runs the trigger's check
-// (if any) with no model, then either starts a temporary worker whose result may reach the chat, or
-// queues the trigger's prompt for the chat directly. Built on the per-chat work runner, so a chat
-// gets one automation at a time and capacity waits are never counted as failures.
+// Runs a trigger's check, then a worker or a queued prompt; one automation per chat.
 
 import {
   computeRetryBackoffMs,
@@ -30,7 +27,7 @@ import type { TriggerWorkerInput } from "./worker.js";
 /** A trigger in the chat lane: it always has the chat that owns it. */
 export type ChatTrigger = Trigger & { sessionId: string };
 
-/** The chat is told once when this many runs in a row have failed; the trigger itself carries on. */
+/** The chat is told once after this many failed runs in a row; the trigger carries on. */
 export const FAILING_TRIGGER_NOTICE_AFTER = 3;
 
 type EndStatus = "completed" | "expired";
@@ -43,10 +40,7 @@ export function isRecurringTrigger(trigger: Pick<Trigger, "when">): boolean {
   return trigger.when.kind !== "at";
 }
 
-/**
- * The occurrence after one that settles at `now`. A run asked for ahead of time keeps a cron
- * trigger's next slot; an interval starts counting again from now.
- */
+/** The next occurrence after a run settles at `now`; an early cron run keeps its next slot. */
 export function scheduledNextRunAt(trigger: Pick<Trigger, "when" | "runNow" | "nextRunAt">, now: Date): string | undefined {
   if (trigger.when.kind === "at") return undefined;
   if (trigger.runNow && trigger.when.kind === "cron" && trigger.nextRunAt && Date.parse(trigger.nextRunAt) > now.getTime()) {
@@ -109,7 +103,7 @@ export function buildTriggerWorkerInput(trigger: ChatTrigger, now = new Date()):
 
 export interface TriggerChatRunnerOptions extends Omit<ChatWorkOptions, "onSettled"> {
   emitSummary?: (sessionId: string) => void;
-  /** A message for a chat was queued, or a run let go of its chat and worker: wake the outbox runner. */
+  /** A chat message was queued or a run released its chat and worker: wake the outbox runner. */
   onParentMessageQueued?: () => void;
 }
 
@@ -156,11 +150,7 @@ export function createTriggerChatRunner(
         return ended;
       }
 
-      /**
-       * A run failed. A one-time trigger tries again later until its tries run out. A recurring one
-       * counts the run and keeps its schedule, so one bad run never ends the monitoring; `attempts`
-       * is the number of failed runs in a row.
-       */
+      /** One-time triggers retry until out of tries; recurring ones keep their schedule. */
       function failRun(trigger: ChatTrigger, claimToken: string, error: string): boolean {
         const now = new Date();
         if (!isRecurringTrigger(trigger)) {
@@ -187,10 +177,7 @@ export function createTriggerChatRunner(
         return updated !== undefined;
       }
 
-      /**
-       * Run the trigger's check with no worker held. A result that does not fire settles the run quietly
-       * and becomes the next baseline; a firing result is kept for the action.
-       */
+      /** Runs the check with no worker held; a quiet result settles as the new baseline. */
       async function runCheckGate(trigger: ChatTrigger, check: TriggerCheckSpec, claimToken: string) {
         const cwd = check.cwd ?? sessionManager.getEffectiveSessionCwd?.(trigger.sessionId) ?? process.cwd();
         const result = await runTriggerCheck(check, cwd);
@@ -245,7 +232,7 @@ export function createTriggerChatRunner(
           return trigger?.status === "active" && isChatTrigger(trigger) ? trigger : undefined;
         },
         usesWorker: (trigger) => trigger.action.kind === "chat" && trigger.action.via === "worker",
-        // A trigger with a check runs it first; one with a firing result waiting, or asked to run now, goes to its action.
+        // Run the check first, unless a firing result is waiting or a run-now was asked for.
         gate: (trigger) => {
           const { check } = trigger;
           if (!check || trigger.checkPending || trigger.runNow) return undefined;
@@ -332,7 +319,7 @@ export function createTriggerChatRunner(
                 ...(result.deliveryId ? { deliveryId: result.deliveryId } : {}),
               })
             : undefined;
-          // No row back means the trigger was cancelled or reactivated while it ran; that state wins.
+          // No row back: the trigger was cancelled or reactivated while it ran, and that wins.
           const updated = store.settleOccurrence(trigger.id, claimToken, {
             nextRunAt: next,
             ...(status === "active" ? {} : { status }),

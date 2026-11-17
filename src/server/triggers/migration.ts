@@ -1,6 +1,4 @@
-// One-time move of defers and schedules into triggers. Runs while the database opens, before any
-// runner starts. Rows keep their ids. The old rows are retired in the same transaction, so a release
-// from before triggers that opens this database finds nothing left to run instead of running it twice.
+// Moves defers/schedules to triggers; old rows retire in the same transaction so none run twice.
 
 import type { DatabaseSync } from "node:sqlite";
 import { computeNextRunAt } from "../cron-next-run.js";
@@ -83,7 +81,7 @@ export function migrateToTriggersOnce(db: DatabaseSync, now = new Date()): Trigg
           when: { kind: "every", seconds: loop.intervalSeconds },
           checkJson: check ? JSON.stringify(check) : null,
           action: { kind: "chat", via: "worker" },
-          // A loop the old release was running when it stopped runs again, as an expired lease would have.
+          // A loop running when the old release stopped runs again, as an expired lease would.
           status: "active",
           nextRunAt: loop.status === "running" ? nowIso : loop.nextRunAt,
           runCount: loop.runCount, fireCount: loop.runCount, maxRuns: loop.maxRuns, expiresAt: loop.expiresAt,

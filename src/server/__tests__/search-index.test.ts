@@ -620,7 +620,7 @@ describe("global search index", () => {
       sessionTitles: createSessionTitlesStore(db),
       removalBatchSize: 1,
     };
-    // More chats stay than one sweep batch takes, so a sweep queued after the stop would never drain.
+    // More chats than one sweep batch, so a sweep queued after the stop would never drain.
     const others = Array.from({ length: 30 }, (_, n) => ({ sessionId: `dddddddd-1111-4111-8111-${String(n).padStart(12, "0")}` }));
     let sessions = [{ sessionId: kept! }, ...others, { sessionId: returning! }, { sessionId: gone! }];
     let stopAtNextYield = false;
@@ -634,7 +634,7 @@ describe("global search index", () => {
     await first.waitForIdle();
 
     sessions = [{ sessionId: kept! }, ...others];
-    // Stopped after the first batch of one chat: the second chat is untouched and still known as indexed.
+    // Stopped after one chat's first batch: the second is untouched and still marked indexed.
     stopAtNextYield = true;
     await first.reconcile(request);
     await shutdown;

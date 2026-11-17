@@ -88,7 +88,7 @@ function task(id: string, activeSessionIds: string[]): Task {
   };
 }
 
-/** A library with two unread chats (one in a task, one quick), one read chat and one still working. */
+/** Two unread chats (one in a task, one quick), one read chat and one still working. */
 function unreadLibrary(): ComponentProps<typeof SearchView> {
   const unread = new Set(["in-task", "quick", "working"]);
   return {

@@ -1,5 +1,4 @@
-// The user's own session on the signed-in browser: what Settings opens so that a person can sign
-// in to sites, or pass a check, in the profile agents use, from whatever device they are on.
+// The user's own session on the signed-in browser, to sign in to sites from any device.
 
 import { randomUUID } from "node:crypto";
 
@@ -56,14 +55,9 @@ export class UserBrowserSession {
     });
   }
 
-  /**
-   * Permission to open a live view of the signed-in browser. Its session is made on first use
-   * and kept, so a view that is opened again finds the browser as it was left; the store closes
-   * the session when nobody has used it for a while, which leaves the browser itself running.
-   */
+  /** Live-view ticket; the session persists so a reopened view finds the browser as left. */
   async openLiveView(): Promise<BrowserLiveTicket> {
-    // Two views of one browser, each with its own way of ending, would leave it unclear when
-    // agents may have the browser back.
+    // Two views with separate endings would blur when agents may have the browser back.
     this.refuseWhenHandedOff();
     const ticket = await this.live.createTicket(await this.session());
     // Starting the browser can take a while, and an agent may have handed it off meanwhile.
@@ -92,11 +86,7 @@ export class UserBrowserSession {
     return this.opening;
   }
 
-  /**
-   * The browser is the user's while they have it on screen, so no agent navigates it under them,
-   * and only then: a view left open in a tab that went away would otherwise keep agents out
-   * until the session expired.
-   */
+  /** Hold the browser only while viewed, so a forgotten tab can't lock agents out until expiry. */
   private viewersChanged(viewers: number, dropped: boolean): void {
     this.viewers = viewers;
     if (viewers > 0) {
@@ -127,9 +117,7 @@ export class UserBrowserSession {
     try {
       this.releaseHold = this.broker.holdTarget(lease, HOLD_PURPOSE);
     } catch {
-      // An agent handed this browser to the user in the moment before the view connected. The
-      // user has it either way; the view takes it over as that handoff ends, so the agent does
-      // not carry on in a page the user is still in.
+      // An agent handed it off just before we connected; take the hold over when that ends.
       this.stopWaitingForHold = this.broker.afterHold(lease, () => this.hold());
     }
   }

@@ -149,7 +149,7 @@ function AddPackForm({ packs, tags, onAdd, onCancel }: {
   );
 }
 
-/** Sets of skills synced from a git repository or read from a folder, on top of the bundled ones. */
+/** Skill sets synced from a git repository or read from a folder, on top of the bundled ones. */
 export function SkillPacksSection({ draft, setDraft }: { draft: AppSettings; setDraft: (draft: AppSettings) => void }) {
   const queryClient = useQueryClient();
   const { failedKeys, error: writeError } = useSettingsWriter();

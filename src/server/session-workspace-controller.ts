@@ -135,10 +135,7 @@ export class SessionWorkspaceController {
       ?? ensureNeutralWorkspaceDir(this.deps.runtimePaths);
   }
 
-  /**
-   * Async variant of resolveEffectiveSessionCwdFromWorkspaceYaml for reads of several sessions:
-   * one shared availability lookup, and only keyed store reads for each session.
-   */
+  /** Batch form of resolveEffectiveSessionCwdFromWorkspaceYaml: one shared availability lookup. */
   createWorkspaceYamlCwdResolver(): (sessionId: string, workspaceYamlContent: string) => Promise<string | undefined> {
     const getAvailability = createWorkspaceAvailabilityLookup();
     // Display-only: the neutral workspace counts as available without recreating it here.
@@ -152,7 +149,7 @@ export class SessionWorkspaceController {
 
       if (pinnedAvailability) {
         if (pinnedAvailability.clearStalePin) {
-          // Missing pins are stale preferences; clear them so future SDK resumes do not reuse an invalid cwd.
+          // Clear a missing pin so later SDK resumes do not reuse an invalid cwd.
           this.deps.sessionWorkspaceStore?.deleteWorkspace(sessionId);
         }
         console.warn(

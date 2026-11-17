@@ -42,11 +42,7 @@ export function mergeOptimisticSessions(
     : serverSessions;
 }
 
-/**
- * Session polls return a fresh array every time even when nothing changed. Keep the
- * cached references for unchanged sessions so the list (and every consumer keyed on
- * it) only re-renders for real changes.
- */
+/** Polls return new arrays; keep unchanged sessions' references so only real changes re-render. */
 export function shareSessionsStructurally(
   oldData: Session[] | undefined,
   newData: Session[],
@@ -162,8 +158,7 @@ export function patchSessionQueryData(
     if (patches.size === 0) continue;
     let pending = inFlightSessionPatches.get(query);
     if (query.state.fetchStatus !== "idle" && !pending) {
-      // Keep live updates that arrive during a fetch, including a multi-page archive refetch,
-      // without canceling the fetch or losing its other fresh fields.
+      // Keep live updates that arrive mid-fetch without canceling it or losing its fresh fields.
       const updates = {
         promise: query.promise,
         patches: new Map<string, Partial<Session>>(),

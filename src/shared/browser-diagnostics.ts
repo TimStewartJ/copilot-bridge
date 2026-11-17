@@ -1,10 +1,6 @@
 import type { BrowserLiveCheck } from "./browser-live.js";
 
-/**
- * The oldest agent-browser the Bridge works with. An older one starts and mostly works, which
- * hides what it lacks: the stream of 0.33 stays on a page when the page opens a popup, so a
- * sign-in window cannot be used in a live view, and its upload step does not find the open tab.
- */
+/** Older ones mostly work but their stream ignores popups and upload misses the open tab. */
 export const MIN_AGENT_BROWSER_VERSION = "0.38.0";
 
 /** Whether an agent-browser version, such as "0.33.2", is older than the Bridge works with. */
@@ -85,10 +81,7 @@ export interface AuthenticatedBrowserDiagnostics extends BrowserContextRuntimeDi
   serviceChecks: AuthenticatedServiceCheck[];
 }
 
-/**
- * Where the browser executable comes from. `downloaded` is the newest Chrome for Testing that
- * agent-browser downloaded; `auto-detect` leaves the choice to agent-browser.
- */
+/** `downloaded`: newest Chrome for Testing agent-browser fetched; `auto-detect`: its own choice. */
 export type BrowserExecutableSource = "settings" | "environment" | "system" | "downloaded" | "auto-detect";
 
 export type BrowserBuildKind = "chrome" | "edge" | "chromium" | "chrome-for-testing" | "unknown";
@@ -136,14 +129,11 @@ export interface BrowserDiagnosticsResponse {
     masterProfileDirectoryExists: boolean;
     headed: boolean;
     browser: BrowserBuildDiagnostics;
-    /**
-     * The User-Agent every Bridge browser sends instead of the `HeadlessChrome` one headless mode
-     * would. Absent when the browser's version is unknown, so the browser sends its own.
-     */
+    /** Replaces the `HeadlessChrome` User-Agent; absent when the browser version is unknown. */
     userAgent?: string;
     launch: BrowserLaunchDiagnostics;
     agentBrowserVersion?: string;
-    /** Whether a browser can be shown to the user to watch and act in. Absent until it was tried. */
+    /** Whether the user can be shown a browser to watch and act in; absent until tried. */
     liveView?: BrowserLiveCheck;
   };
   runtime: BrowserRuntimeDiagnostics;

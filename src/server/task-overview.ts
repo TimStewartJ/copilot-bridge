@@ -25,7 +25,7 @@ export function toOverviewSessions(raw: unknown[]): { sessions: OverviewSession[
   return { sessions, invalid };
 }
 
-/** Derives every active task's state from one read of each source; no per-task queries beyond task hydration. */
+/** Derives every active task's state from one read of each source; no per-task queries. */
 export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSession[] | null, now = Date.now(), tasks?: Task[], invalidSessions = 0): TaskOverview {
   const active = (tasks ?? ctx.taskStore.listTasks()).filter(task => task.status === "active");
   const groups = new Map(ctx.taskGroupStore.listGroups().map(group => [group.id, group]));
@@ -85,7 +85,7 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
     }
     for (const id of task.sessionIds) {
       const session = sessionById.get(id);
-      // A linked conversation is always listed unless archived, so one absent from a fully read list was deleted.
+      // Linked chats are listed unless archived, so one missing from a full list was deleted.
       const deleted = !session && !archivedIds.has(id) && !!sessions && !ctx.isStaging && !!ctx.sessionMetaStore && invalidSessions === 0;
       if (!session && !archivedIds.has(id) && !deleted) {
         activity.sessionIndexKnown = false;
@@ -108,7 +108,7 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
       activity.managementJobCount += jobsBySession.get(id) ?? 0;
     }
     const signals = momentum.get(task.id);
-    // Only things Tim did to the task count: editing it or writing in one of its conversations. Looking at it does not.
+    // Only the user's edits and messages count as touches; viewing the task does not.
     const touches: Array<[TaskTouchKind, string | undefined]> = [
       ["edited", signals?.userEditedAt], ["message", signals?.lastMessageAt], ["created", task.createdAt],
     ];

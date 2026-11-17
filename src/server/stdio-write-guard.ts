@@ -1,22 +1,11 @@
-// Keeps a failed write to stdout or stderr from ending the process.
-//
-// The Bridge's processes log to files: stdout and stderr are redirected, and Node writes to a
-// file synchronously. The operating system can refuse such a write. Seen on 2026-10-05: Windows
-// error 1450 ("insufficient system resources") on a Dev Drive while the machine had no free
-// memory, which Node reports as "UNKNOWN: unknown error, write".
-//
-// Node's console drops a line it cannot write, but only while nothing else listens for 'error'
-// on the stream, and the output pipe of a worker thread does. The error was then unhandled, and
-// it ended the server three times that day. A listener of our own keeps the process running.
-// The lines are still lost, so the guard counts them and says so on both streams once writing
-// has had time to recover.
+// Worker pipes add an 'error' listener, so failed stdio writes crash unless we listen too.
 
 import { freemem } from "node:os";
 import { basename } from "node:path";
 
 /** How long after a failed write the guard waits before it reports what was lost. */
 export const STDIO_FAILURE_REPORT_DELAY_MS = 5_000;
-/** The wait grows to this while the report itself cannot be written, so a dead stream costs one write now and then. */
+/** The wait grows to this while the report itself fails, so a dead stream costs a rare write. */
 export const STDIO_FAILURE_REPORT_MAX_DELAY_MS = 5 * 60_000;
 
 export type GuardedStreamName = "stdout" | "stderr";
@@ -125,8 +114,7 @@ export function createStdioWriteGuard(options: StdioWriteGuardOptions): StdioWri
     }
     if (lines.length === 0) return;
     const text = `${lines.join("\n")}\n`;
-    // Both streams: the gap is in one file, and the other is where errors are looked for. A
-    // report that fails is counted like any other write and reported after a longer wait.
+    // Write to both streams; a failed report is counted and retried after a longer wait.
     const longerDelayMs = Math.min(delayMs * 2, maxDelayMs);
     let outstanding = STREAM_NAMES.length;
     let failed = false;

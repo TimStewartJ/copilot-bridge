@@ -12,11 +12,7 @@ import {
 import { buildBrowserLiveWebSocketUrl, type LiveViewport } from "./live-input";
 import { systemTimers, type LiveTimers } from "./mouse-input";
 
-/**
- * The connection behind a live browser view: it gets a ticket, opens the socket, keeps the latest
- * page state, paces frames and reconnects. It knows nothing about React or the DOM, so the view
- * and its tests drive it through plain calls.
- */
+/** Ticket, socket, page state, frame pacing, reconnect. No React or DOM here, for tests. */
 
 export type BrowserLivePhase = "connecting" | "live" | "reconnecting" | "ended";
 
@@ -185,7 +181,7 @@ export class BrowserLiveConnection {
   private run = 0;
   private running = false;
   private socket: LiveSocket | null = null;
-  /** Pointer positions are in the page's units, so none are sent until this socket has reported them. */
+  /** Pointer positions are in page units, so none are sent until this socket reports them. */
   private socketHasViewport = false;
   private failedAttempts = 0;
   private reconnectTimer: unknown = null;
@@ -194,7 +190,7 @@ export class BrowserLiveConnection {
   private latestFrame: string | null = null;
   private drawing = false;
   private waitingFrame: QueuedFrame | null = null;
-  /** A sink arrived while the previous one was still drawing, and has not been given the picture. */
+  /** A sink arrived while the previous one was drawing and has not had the picture yet. */
   private sinkNeedsFrame = false;
 
   constructor(readonly browserSessionId: string, deps: Partial<BrowserLiveDeps> = {}) {
@@ -233,10 +229,7 @@ export class BrowserLiveConnection {
     this.start();
   }
 
-  /**
-   * Where frames are drawn. A frame that arrived before the sink did is drawn at once, because the
-   * server only sends another when the page changes.
-   */
+  /** A frame that came before the sink is drawn at once: the server resends only on change. */
   setFrameSink(sink: BrowserLiveFrameSink | null): void {
     this.sink = sink;
     this.sinkNeedsFrame = false;
@@ -245,7 +238,7 @@ export class BrowserLiveConnection {
     else void this.draw(null, this.latestFrame);
   }
 
-  /** Sends input to the page. Returns false when it was dropped because the view is not ready for it. */
+  /** Sends input to the page; false when dropped because the view is not ready for it. */
   send(message: BrowserLiveClientMessage): boolean {
     const socket = this.socket;
     if (!socket || socket.readyState !== SOCKET_OPEN) return false;
@@ -258,10 +251,7 @@ export class BrowserLiveConnection {
     }
   }
 
-  /**
-   * Sends the files the reader picked to the page that asked for them. The request goes away
-   * once the page has them; what went wrong stays with it, so they can try again.
-   */
+  /** Sends picked files to the page; a failed request stays so the reader can try again. */
   async chooseFiles(files: readonly File[]): Promise<void> {
     const chooser = this.snapshot.fileChooser;
     if (!chooser || chooser.sending || chooser.over || files.length === 0) return;
@@ -288,7 +278,7 @@ export class BrowserLiveConnection {
   answerLogin(action: BrowserLiveLoginActionMessage["action"]): void {
     const login = this.snapshot.login;
     if (!login || login.working || !this.send({ type: "login", action })) return;
-    // Dismissing shows at once; the others take the browser a moment, and the server says how they went.
+    // Dismissing shows at once; for the others the server reports how they went.
     this.update({ login: action === "dismiss" ? null : { ...login, working: true } });
   }
 
@@ -313,8 +303,7 @@ export class BrowserLiveConnection {
     const socket = this.socket;
     this.socket = null;
     this.socketHasViewport = false;
-    // A file chooser is known to the connection it was announced on, and ends with it. The next
-    // connection says anew what sign-in there is to offer.
+    // File chooser and sign-in offer belong to this connection; the next one announces its own.
     if (this.snapshot.fileChooser || this.snapshot.login) this.snapshot = { ...this.snapshot, fileChooser: null, login: null };
     if (!socket) return;
     socket.onopen = null;
@@ -377,7 +366,7 @@ export class BrowserLiveConnection {
     };
   }
 
-  /** The connection dropped or never came up: wait and try again with a new ticket, a bounded number of times. */
+  /** Dropped or never connected: retry with a new ticket, a bounded number of times. */
   private attemptFailed(run: number): void {
     if (run !== this.run) return;
     this.dropSocket();
@@ -438,8 +427,7 @@ export class BrowserLiveConnection {
     this.latestFrame = message.data;
     const frame: QueuedFrame = { seq: message.seq, data: message.data, socket };
     if (this.drawing) {
-      // Only the newest waiting frame is worth drawing. The one it replaces is still acknowledged,
-      // or the server would wait for it forever.
+      // Draw only the newest; still acknowledge the replaced one, or the server waits forever.
       if (this.waitingFrame) this.acknowledge(this.waitingFrame);
       this.waitingFrame = frame;
       return;

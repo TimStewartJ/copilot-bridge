@@ -222,10 +222,7 @@ function SelectBox({ node, context }: { node: WorkMapTreeNode; context: TreeCont
   );
 }
 
-/**
- * What a row says about its neighbours: blocking and duplicate links by name, related links and
- * ADO children that are not shown as counts. The expanded row lists the links in full.
- */
+/** Blocking and duplicate links by name; related links and hidden ADO children as counts. */
 function RowAnnotations({ node, context }: { node: WorkMapTreeNode; context: TreeContext }) {
   const named = node.links.filter((link) => link.type !== "related");
   const shown = named.slice(0, VISIBLE_LINKS);
@@ -250,7 +247,7 @@ function RowAnnotations({ node, context }: { node: WorkMapTreeNode; context: Tre
             target="_blank"
             rel="noopener"
             onClick={(event) => {
-              // A link to a row that is on screen scrolls to it; any other opens the work item in ADO.
+              // A link to an on-screen row scrolls to it; any other opens the work item in ADO.
               const row = document.getElementById(rowElementId(link.workItemId));
               if (!row || isSelectGesture(event)) return;
               event.preventDefault();
@@ -335,7 +332,7 @@ function PullRequestLine({ pullRequest }: { pullRequest: WorkMapPullRequest }) {
         <span className="tabular-nums text-text-secondary">PR {pullRequest.prId} </span>
         {pullRequest.title ?? <span className={DS.tone.warning}>{UNREADABLE}</span>}
       </a>
-      {/* Left out on a phone, where the title needs the line. A link saved from another organization names its repository by URL. */}
+      {/* Hidden on a phone; a link from another organization names its repository by URL. */}
       <span className="max-w-[40%] shrink-0 truncate text-xs text-text-faint max-md:hidden" title={repository}>
         {/\/_git\/([^/]+)\/?$/.exec(repository)?.[1] ?? repository}
       </span>
@@ -425,8 +422,7 @@ function ItemRow({
   const dim = context.highlightTaskId !== null && !node.taskIds.includes(context.highlightTaskId);
   const runStarts = lanes.runStarts.get(index) ?? [];
   const selected = context.selected.has(node.id);
-  // Open work with no task asks for one outright; a row that only places other work, such as a
-  // feature above linked tasks, offers one on hover.
+  // Open work with no task asks for one; a row that only places other work offers one on hover.
   const offersTask = !node.needsTask && node.taskIds.length === 0 && runStarts.length === 0
     && node.item.title !== null && !isClosedWorkItemState(node.item.state);
   const hasAnnotations = node.attention.length > 0 || node.links.length > 0 || node.hiddenChildCount > 0;
@@ -541,7 +537,7 @@ function sectionTitle(section: WorkMapTreeSection): ReactNode {
   );
 }
 
-/** The work items in a section that are on the map, leaving out the ancestors shown to place them. */
+/** Work items in a section that are on the map, not the ancestors shown to place them. */
 function countMapItems(nodes: WorkMapTreeNode[]): number {
   return nodes.reduce((sum, node) => sum + (node.mapItem ? 1 : 0) + countMapItems(node.children), 0);
 }
@@ -559,7 +555,7 @@ function OrphanPullRequests({ orphans, context }: { orphans: WorkMapOrphan[]; co
       <div className={DS.surface.divided}>
         {orphans.map(({ pullRequest, tasks }) => (
           <div key={pullRequest.key} className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1">
-            {/* The title keeps room to be read: tasks that do not fit beside it go on the next line. */}
+            {/* The title keeps room to be read; tasks that do not fit wrap to the next line. */}
             <span className="flex min-w-[min(100%,20rem)] flex-1 items-center gap-2">
               <PullRequestLine pullRequest={pullRequest} />
             </span>
@@ -573,10 +569,7 @@ function OrphanPullRequests({ orphans, context }: { orphans: WorkMapOrphan[]; co
   );
 }
 
-/**
- * The work map drawn as the ADO hierarchy, with one lane per Bridge task beside the rows. A square
- * marks a work item the task links; the line joins it to the linked items beneath it.
- */
+/** The ADO hierarchy with a lane per Bridge task; squares mark linked items, lines join them. */
 export default function WorkMapTree({
   model,
   visibleWorkItemIds,

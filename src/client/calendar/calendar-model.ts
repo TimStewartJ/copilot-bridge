@@ -1,5 +1,4 @@
-// Pure helpers for the calendar screens: which days a view shows, how overlapping blocks share a
-// day column, and the arithmetic behind Home's day line. Everything is local time.
+// Pure calendar helpers (view days, overlap lanes, Home's day line), all in local time.
 import { toDateKey } from "../../shared/typed-date";
 
 export { toDateKey };
@@ -30,7 +29,7 @@ export function dayEndMs(key: string): number {
   return parseDateKey(addDaysKey(key, 1)).getTime();
 }
 
-/** The clock time of `instant` on `dayKey` in minutes after midnight, clipped to the day; the grid is laid out by clock time. */
+/** Clock minutes after midnight of `instant` on `dayKey`, clipped to the day. */
 export function wallMinutes(instant: number, dayKey: string): number {
   if (instant <= parseDateKey(dayKey).getTime()) return 0;
   if (instant >= dayEndMs(dayKey)) return 24 * 60;
@@ -45,11 +44,7 @@ export function minutesIntoDay(iso: string, dayKey: string): number {
 export interface TimedSpan { id: string; start: number; end: number }
 export interface PlacedSpan { id: string; lane: number; lanes: number }
 
-/**
- * Lays timed blocks of one day into side-by-side lanes. Blocks that overlap, directly or through a
- * chain, form a cluster sharing one lane count; each takes the first lane free at its start. Ties
- * break by longer first, then id, so the layout never depends on the order the server sent.
- */
+/** Overlap chains share a lane count; ties go longer first, then by id, so input order is moot. */
 export function layoutLanes(spans: readonly TimedSpan[], minMinutes = 20): PlacedSpan[] {
   const sorted = [...spans]
     .map((span) => ({ ...span, end: Math.max(span.end, span.start + minMinutes) }))
@@ -78,10 +73,7 @@ export function layoutLanes(spans: readonly TimedSpan[], minMinutes = 20): Place
 export const DAY_START_HOUR = 8;
 export const DAY_END_HOUR = 21;
 
-/**
- * Free minutes left in a day: waking hours from now (or the day's start) to the day's end, less the
- * union of busy blocks. Only events count as busy; deadlines, revisits and agent runs never do.
- */
+/** Waking minutes left today minus busy blocks; only events count as busy. */
 export function freeMinutes(busy: ReadonlyArray<{ start: number; end: number }>, nowMinutes: number): number {
   const from = Math.max(DAY_START_HOUR * 60, nowMinutes);
   const to = DAY_END_HOUR * 60;
@@ -130,11 +122,7 @@ export interface DragChange {
   minuteDelta: number;
 }
 
-/**
- * Where a timed event lands after a drag. A move keeps its length; a resize moves only the end and
- * never makes it shorter than one snap. Days are local calendar days, so 9am stays 9am across a
- * change of the clock.
- */
+/** Move keeps length; resize keeps one snap. Shift days by setDate so 9am stays 9am across DST. */
 export function draggedTimes(start: string, end: string, change: DragChange): { start: string; end: string } {
   const startDate = new Date(start);
   const endDate = new Date(end);

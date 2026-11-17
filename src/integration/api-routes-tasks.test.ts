@@ -89,7 +89,7 @@ describe("Task routes", () => {
     expect(listed.body.total).toBe(2);
     expect(listed.body.entries).toHaveLength(2);
     expect(listed.body.entries[1]).toMatchObject({ source: "agent", sessionId: "run-1", scheduleName: "Daily" });
-    // Ordering, paging and search semantics live in task-history-store.test.ts; this checks the query is passed through.
+    // Only checks the query is passed through; semantics are in task-history-store.test.ts.
     const filtered = await request(app).get(`/api/tasks/${task.id}/history?query=Signed&before=${created.body.entry.id}`);
     expect(filtered.body.entries).toEqual([]);
 

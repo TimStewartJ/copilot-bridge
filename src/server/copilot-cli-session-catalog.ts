@@ -5,7 +5,7 @@ import type { CliCatalogListFilter, CliCatalogRead, CliCatalogReadRequest, Copil
 
 export type { CopilotCliCatalogSession } from "./cli-session-store-worker.js";
 
-/** Read access to the sessions the Copilot CLI has indexed. `undefined` means the catalog could not be read. */
+/** Reads the sessions the Copilot CLI indexed; `undefined` means the catalog could not be read. */
 export interface CopilotCliSessionCatalog {
   listSessions(filter?: CliCatalogListFilter): Promise<CopilotCliCatalogSession[] | undefined>;
   getSession(sessionId: string): Promise<CopilotCliCatalogSession | undefined>;

@@ -22,10 +22,7 @@ import {
 
 const DEFAULT_CONTEXT_EVENT_LIMIT = 200;
 const MAX_CONTEXT_EVENT_LIMIT = 500;
-/**
- * Bump when the persisted-event normalizer starts reading something new, so every session log is
- * read once more. Version 1 records `session.compaction_complete`, which older reads skipped.
- */
+/** Bump when the persisted-event normalizer reads something new, so every log is re-read. */
 const BACKFILL_NORMALIZER_VERSION = 1;
 const ZERO_CAPABILITIES: SessionContextCapabilities = {
   contextWindow: "unavailable",
@@ -661,9 +658,7 @@ export function createSessionContextStore(db: DatabaseSync) {
     if (snapshotHash && current?.lastSnapshotHash === snapshotHash) return null;
 
     const dedupeKey = createDedupeKey(normalizedEvent, snapshotHash ?? undefined);
-    // The event insert, the turn touch, and the summary write describe one
-    // observation. Persisting a subset leaves a summary that disagrees with its
-    // own event history. Joins the backfill's transaction when called from it.
+    // One transaction: a partial write leaves the summary disagreeing with its events.
     return runInOwnOrOuterTransaction(db, () => {
       const result = insertEvent.run(
         normalizedEvent.sessionId,
@@ -774,11 +769,6 @@ export function createSessionContextStore(db: DatabaseSync) {
     }
   }
 
-  /**
-   * Delete every row this store owns for a session, in one transaction. Called
-   * when the session itself is deleted so context rows cannot outlive their
-   * owner. Returns per-table delete counts for observability.
-   */
   function deleteSessionContext(sessionId: string): SessionContextDeleteResult {
     db.exec("BEGIN");
     try {

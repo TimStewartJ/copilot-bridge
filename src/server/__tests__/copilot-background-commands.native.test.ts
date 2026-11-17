@@ -10,14 +10,7 @@ import { SessionAgentRegistry } from "../session-agent-registry.js";
 import { makeTestDir, registerTestAppCleanup } from "./helpers.js";
 import { stopCopilotRuntime } from "./copilot-native-runtime.js";
 
-/**
- * The Bridge's handling of background commands rests on four things the runtime does, none of
- * which the SDK documents: it lists a running command as an attached shell task with a start
- * time, it lists a command as "sync" while a tool call is still waiting on it and as "background"
- * once the agent has left it running, it stops the command when the session's handle is released,
- * and a resumed session knows nothing about it. This pins them against the installed runtime with
- * no model in the loop.
- */
+/** Pins undocumented runtime behavior of background commands the Bridge relies on; no model. */
 
 function sdkSession(session: AgentSession): CopilotSession {
   const raw: unknown = Reflect.get(session, "session");
@@ -104,7 +97,7 @@ async function fixture(signal: AbortSignal) {
 describe("native background commands", () => {
   it("tells a foreground command from a background one, and stops the background one when the session is released", async ({ signal }) => {
     const { backend, shell, config, cleanup } = await fixture(signal);
-    // Long enough that it cannot finish on its own while the test runs, short enough not to linger if it survives.
+    // Outlasts the test, yet won't linger long if it survives.
     const runSeconds = 90;
     const command = process.platform === "win32" ? `Start-Sleep -Seconds ${runSeconds}` : `sleep ${runSeconds}`;
     const foregroundCommand = process.platform === "win32" ? "Start-Sleep -Seconds 4" : "sleep 4";
@@ -128,8 +121,7 @@ describe("native background commands", () => {
         getLiveSession: () => session,
       });
       try {
-        // A command whose tool call is still waiting on it is listed as well. The run that made
-        // the call keeps the session, so the Bridge must be able to tell it from one left running.
+        // A command its tool call still awaits is listed too; the Bridge must tell it from a stray.
         const foreground = sdkSession(session).rpc.tools.execute({
           name: shell,
           arguments: { command: foregroundCommand, description: "Native foreground command fixture", mode: "sync", initial_wait: 30 },
@@ -162,8 +154,7 @@ describe("native background commands", () => {
         expect(registry.hasProtectedCommand(session.sessionId)).toBe(true);
         // The runtime does not count a running command as work, which is why the Bridge has to.
         await expect(session.getActivity()).resolves.toMatchObject({ processing: false });
-        // The ID it reports is the command's own process, which is what an agent is sent to look
-        // for when the command may have outlived a crash.
+        // The pid is the command's own process, which an agent looks for after a crash.
         expect(running?.pid).toEqual(expect.any(Number));
         expect(isAlive(running!.pid!)).toBe(true);
       } finally {

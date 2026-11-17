@@ -1,11 +1,6 @@
 import type { SendMode } from "./send-mode.js";
 
-/**
- * Why a chat message the Bridge accepted never reached the agent:
- * - stopped: the user pressed Stop before the agent had it.
- * - failed: starting the turn failed before the agent had it.
- * - interrupted: the Bridge stopped or restarted before the agent had it.
- */
+/** Why an accepted message never reached the agent: Stop, failed turn start, or Bridge restart. */
 export type UnsentMessageState = "stopped" | "failed" | "interrupted";
 
 /** A file the message carried, as saved in the session's files/ folder. */

@@ -13,11 +13,7 @@ vi.mock("node:child_process", () => ({
 
 type BrowserLaunchHost = typeof import("../browser-launch-host.js");
 
-/**
- * The real module: src/test-support/vitest-setup.ts replaces it for every other test file.
- * With a platform, forces that platform's branch; the process the POSIX branch starts is mocked
- * above, and the Windows branch only lists a folder.
- */
+/** Loads the real module (vitest-setup mocks it); `platformName` forces that OS branch. */
 async function importHost(platformName?: NodeJS.Platform): Promise<BrowserLaunchHost> {
   vi.resetModules();
   vi.doUnmock("../browser-launch-host.js");
@@ -178,7 +174,7 @@ describe("isExecutableFile", () => {
     await expect(host.isExecutableFile(path.join(directory, "missing"))).resolves.toBe(false);
   });
 
-  /** Lets a file exist for the host but not be executable, whatever the real host makes of its mode. */
+  /** Makes files exist but never be executable, whatever the real host says of the mode. */
   async function importHostWhereNothingIsExecutable(platformName: NodeJS.Platform) {
     const access = vi.fn(async (_file: string, mode?: number) => {
       if (mode === constants.X_OK) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });

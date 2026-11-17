@@ -35,7 +35,7 @@ describe("server shutdown coordinator", () => {
     const coordinator = createServerShutdownCoordinator(ctx, { exit, saveHandoff });
 
     const operation = coordinator.request("test");
-    // Stopping the services must not wait for the handoff: it stops admitting work in the request's tick.
+    // Stopping services must not wait for the handoff: admission stops in the request's tick.
     expect(shutdownServicesMock).toHaveBeenCalledOnce();
     await Promise.resolve();
     expect(saveHandoff, "started before the services have stopped").toHaveBeenCalledOnce();

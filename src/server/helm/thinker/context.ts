@@ -1,7 +1,4 @@
-// The packet a thinker run starts from: its memory, what Tim said about the last brief, and what
-// each Bridge looks like now, with everything that changed since the last finished run marked.
-// It also records exactly which conversations, questions, checklist items and tasks the run was
-// shown, so a published action can only point at something real.
+// Thinker's input packet; records what it showed so a published action points only at real items.
 import type { HomeInputSummary, HomePage, HomeSection, HomeSnapshot } from "../../../shared/home.js";
 import type { TaskOverviewRow } from "../../../shared/task-overview.js";
 import { HELM_REMOVED_SOURCE, HELM_STALE_AFTER_DAYS, type HelmThreadOwner, type HelmBridgeStatus, type HelmMemoryEntry } from "../../../shared/helm-thinker.js";
@@ -66,16 +63,13 @@ export interface PacketTask {
   threadHoldUntil?: string;
   /** The task's next step, waiting-for or revisit date changed after the line was written. */
   threadOutOfDate?: true;
-  /** Fingerprint of the task's fields now, stamped on a thread this run writes. Not shown to the run. */
+  /** Fingerprint of the task's fields, stamped on threads this run writes; hidden from the run. */
   basis?: string;
   /** On a rebuild, signs that this local task's instructions or notes need tidying. */
   tidy?: string[];
-  /**
-   * Nothing but Tim moves it: "fields" when its live fields say so (no agent working, waiting on no
-   * one), "helm" when only Helm's line says it is his.
-   */
+  /** Only the user moves it: "fields" if live fields say so, "helm" if only Helm's line does. */
   onTim?: "fields" | "helm";
-  /** Why it needs Tim now (dates passed, due soon, before time away); set only when onTim. */
+  /** Why it needs the user now (dates passed, due soon, before time away); set only when onTim. */
   needsTim?: string[];
   /** The earliest date behind needsTim, YYYY-MM-DD. */
   needsTimBy?: string;
@@ -93,7 +87,7 @@ export interface PacketBridge {
   working: Array<{ sessionId: string; conversation: string; task?: string }>;
   /** What did not fit in the packet, so the run knows its view is partial. */
   omitted: { questions: number; replies: number; due: number; tasks: number };
-  /** Conversations Helm may link to or message: everything listed plus every active conversation. */
+  /** Conversations Helm may link to or message: all listed plus every active one. */
   sessionIds: Set<string>;
 }
 
@@ -217,8 +211,7 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
     const entry = threadOf(row.id);
     const thread = entry?.text;
     const basis = taskBasis(row);
-    // Helm's line written before the task's fields last changed (or before lines recorded them) is
-    // out of date; one Tim corrected is his and stays as he wrote it.
+    // Helm's line is stale once the fields change; a line the user corrected stays as written.
     const outOfDate = !!entry && entry.author !== "user" && entry.basis !== basis;
     const threadParts = entry ? {
       thread: entry.text, ...(entry.owner ? { threadOwner: entry.owner } : {}), ...(entry.holdUntil ? { threadHoldUntil: entry.holdUntil } : {}),
@@ -241,7 +234,7 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
         ...fields, ...dates, ...(row.groupName ? { group: row.groupName } : {}), ...(row.busyCount > 0 ? { agentWorking: true } : {}),
         changed: true, ...flags, ...threadParts, basis,
       }
-      // A task that needs Tim always shows its next step and wait, so its thread line is never all the run sees.
+      // A task needing the user always shows its next step and wait, not just its thread line.
       : { taskId: row.id, title: row.title, state: row.state, ...(flags.needsTim ? fields : {}), ...dates, changed: false, ...flags, ...threadParts, basis };
   });
 
@@ -270,7 +263,7 @@ function attentionOf(row: TaskOverviewRow, due: PacketDue[], inputs: AttentionIn
   return attentionOfRow(row, inputs, now ?? new Date(), checklist);
 }
 
-/** One Bridge as Helm's chat reads it: what waits on Tim, what is running, and every task, compactly. */
+/** One Bridge as Helm's chat reads it: what waits on the user, what runs, and every task. */
 export interface ChatBridgeView {
   bridge: string;
   label: string;
@@ -290,7 +283,7 @@ export async function readBridgeForChat(source: HelmSource, attention?: Attentio
   const bridge = await readBridge(source, { watermark: null, rebuild: true, threads: new Map(), ...(attention ? { attention } : {}) });
   const omitted = { ...bridge.omitted, tasks: bridge.omitted.tasks + Math.max(0, bridge.tasks.length - MAX_CHAT_TASKS) };
   const view = chatBridgeView(bridge);
-  // Over budget: drop tasks from the end of the list first, then the last replies, and say how many.
+  // Over budget: drop tasks from the end first, then the last replies, and count what was dropped.
   while (JSON.stringify(view).length > MAX_CHAT_BRIDGE_CHARS && (view.tasks.length > 20 || view.replies.length > 10)) {
     if (view.tasks.length > 20) { view.tasks.pop(); omitted.tasks++; } else { view.replies.pop(); omitted.replies++; }
   }
@@ -374,7 +367,7 @@ export async function buildThinkerPacket(input: {
   };
 }
 
-/** Tasks the live fields say need Tim now, across every Bridge read, those needing him soonest first. */
+/** Tasks whose live fields say they need the user now, across all Bridges, soonest first. */
 export function tasksNeedingTim(packet: ThinkerPacket): Array<{ bridge: string; task: PacketTask }> {
   return packet.bridges.flatMap((bridge) => bridge.tasks.filter((task) => task.needsTim?.length).map((task) => ({ bridge: bridge.id, task })))
     .sort((a, b) => (a.task.needsTimBy ?? "9999").localeCompare(b.task.needsTimBy ?? "9999"));
@@ -388,7 +381,7 @@ export function countChanges(packet: ThinkerPacket): number {
   return packet.bridges.reduce((sum, bridge) => sum + bridge.tasks.filter((task) => task.changed).length + bridge.questions.length + bridge.replies.length, 0);
 }
 
-/** The packet as the model reads it. Unchanged tasks are one line with their dates; long packets lose unchanged tasks first. */
+/** The packet as the model reads it; unchanged tasks are one line, and are dropped first. */
 export function renderThinkerPacket(packet: ThinkerPacket): string {
   const nowMs = Date.parse(packet.now);
   const stale = (entry: HelmMemoryEntry) => nowMs - Date.parse(entry.confirmedAt) > HELM_STALE_AFTER_DAYS * 86_400_000;

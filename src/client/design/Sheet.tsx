@@ -4,18 +4,13 @@ import { useModalDialog } from "../components/shared/useModalDialog";
 import { IconButton } from "./primitives";
 import { DS, cx } from "./tokens";
 
-/**
- * A short list or menu opened over the page: a sheet from the bottom on a phone, so the page keeps
- * the screen, and a panel near the top on a desktop. It names itself, keeps focus inside while
- * open and gives focus back when it closes.
- */
 export default function Sheet({ title, detail, closeLabel = "Close", onClose, bodyClassName = "px-5 pt-2", children }: {
   title: ReactNode;
   /** One quiet line under the title, such as a count or an age. */
   detail?: ReactNode;
   closeLabel?: string;
   onClose: () => void;
-  /** Horizontal and top padding of the scrolling body; the bottom clears the phone's home indicator. */
+  /** Side and top padding of the scrolling body; the bottom clears the phone's home indicator. */
   bodyClassName?: string;
   children: ReactNode;
 }) {

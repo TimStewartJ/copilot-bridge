@@ -1,17 +1,10 @@
 import type { DatabaseSync } from "./db.js";
 import type { EventLogStatsCacheEntry, EventLogStatsPersistence } from "./session-disk-reader.js";
 
-/**
- * Schema stamp for persisted folds. Bump when the fold shape or the scanner's folding
- * rules change so stale rows are ignored instead of producing wrong stats.
- */
+/** Bump when the fold shape or folding rules change, so stale rows are ignored, not misread. */
 export const EVENT_LOG_STATS_FOLD_SCHEMA_VERSION = 7;
 
-/**
- * Durable copy of the event-log stats fold cache. Survives server restarts so the first
- * read of a large session log after a cutover resumes from the persisted offset (verified
- * by the stored fingerprint) instead of rescanning the whole file on the event loop.
- */
+/** Persists the stats fold so a restart resumes from the saved offset instead of rescanning. */
 export function createEventLogStatsFoldStore(db: DatabaseSync): EventLogStatsPersistence {
   const selectStmt = db.prepare(
     `SELECT scannedBytes, fingerprint, fileId, stateJson

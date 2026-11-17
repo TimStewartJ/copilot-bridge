@@ -1,9 +1,4 @@
-// Heavy integration fixture — fully wired Express app + AppContext.
-//
-// Split out of ./helpers.ts on purpose: API services and routing pull a large
-// runtime graph into whatever imports them, and Vitest re-evaluates that graph
-// for every isolated test file. Only files that actually mount HTTP routes
-// should import from here; everything else uses ./helpers.ts.
+// Heavy full-app fixture; import only to mount HTTP routes, else use ./helpers.ts.
 
 import { createSkillUsageStore } from "../skill-usage-store.js";
 import { createTaskPageStore } from "../task-page-store.js";
@@ -73,11 +68,7 @@ function hasNoArgFunction<K extends string>(value: unknown, method: K): value is
     && typeof (value as Record<K, unknown>)[method] === "function";
 }
 
-/**
- * Create a fully wired Express app for integration testing.
- * Uses in-memory SQLite, real stores (including docs), and a mock session manager.
- * Returns the app, AppContext, and db for direct access in assertions.
- */
+/** Full Express app on in-memory SQLite, real stores and a mock session manager. */
 export function createTestApp(overrides?: Partial<AppContext>, routerOptions: ApiRouterOptions = {}) {
   const db = setupTestDb();
   const globalBus = createTestBus();

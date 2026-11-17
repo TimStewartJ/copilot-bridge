@@ -1,19 +1,9 @@
-// image-mime.ts — magic-byte image format detection.
-//
-// Image tool results must be labeled with the MIME type that matches the actual
-// bytes. Some model APIs (notably Anthropic) reject the *entire* request when an
-// image's declared media type disagrees with its magic bytes, which can also
-// permanently wedge a session once the mismatched image is persisted in history.
-// Detecting the real format from the bytes keeps the label honest regardless of
-// what a tool or native addon claims to have produced.
+// Label images by magic bytes: Anthropic rejects a mismatched type and it can wedge the session.
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const DATA_URI_BASE64_PREFIX = /^data:[^;,]*;base64,/i;
 
-/**
- * Detect a raster image MIME type from a buffer's leading magic bytes.
- * Returns undefined when the bytes do not match a known image signature.
- */
+/** Raster image MIME type from leading magic bytes; undefined for an unknown signature. */
 export function sniffImageMime(bytes: Uint8Array): string | undefined {
   const b = bytes;
 
@@ -43,18 +33,12 @@ export function sniffImageMime(bytes: Uint8Array): string | undefined {
   return undefined;
 }
 
-/**
- * Detect a raster image MIME type from base64-encoded image data. Accepts an
- * optional `data:<type>;base64,` prefix and surrounding whitespace. Only a small
- * aligned prefix is decoded — enough to cover every supported signature (WEBP
- * needs the first 12 bytes).
- */
+/** Sniff MIME from base64 (optional data: prefix), decoding only a short prefix. */
 export function sniffImageMimeFromBase64(data: string): string | undefined {
   if (typeof data !== "string") return undefined;
 
   const withoutPrefix = data.trim().replace(DATA_URI_BASE64_PREFIX, "");
-  // Strip whitespace from a bounded prefix (handles line-wrapped base64) before
-  // decoding an aligned chunk — 18 bytes covers every supported signature.
+  // Strip whitespace (line-wrapped base64) from a bounded prefix; 18 bytes covers every signature.
   const head = withoutPrefix.slice(0, 128).replace(/\s+/g, "").slice(0, 24);
   const aligned = head.slice(0, head.length - (head.length % 4));
   if (aligned.length < 4) return undefined;

@@ -1,17 +1,4 @@
-// Guard for the "Agent output" rule in AGENTS.md: the Bridge never decides anything from the words
-// a model wrote. It flags, in production code, regex literals that match natural-language words and
-// multi-word string literals used in includes/startsWith/endsWith/indexOf or ===/!==. Each match
-// must say where the text it reads comes from, in a comment on its line or the line above:
-//
-//   // agent-text-audit: error (SQLite's corruption message)
-//
-// or, for a file whose only job is reading one kind of non-agent text, once near the top:
-//
-//   // agent-text-audit-file: tool-output (agent-browser CLI output)
-//
-// "agent" is never a valid source. The audit is partial on purpose: it cannot see needles held in
-// variables, word sets, regexes built at run time, or single-word checks, so it backs up the rule
-// and review rather than replacing them.
+// Flags word regexes and multi-word string checks lacking an `agent-text-audit: <source>` note.
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";

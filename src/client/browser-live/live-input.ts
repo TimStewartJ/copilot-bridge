@@ -1,3 +1,4 @@
+// Pure live-view rules: pointer position on the page, key mapping, wheel scroll. No state here.
 import { API_BASE } from "../api";
 import {
   BROWSER_LIVE_MODIFIERS,
@@ -6,11 +7,6 @@ import {
   type BrowserLiveKeyboardMessage,
   type BrowserLiveTicket,
 } from "../../shared/browser-live.js";
-
-/**
- * Pure rules of the live browser view: where a pointer is on the remote page, what a key press
- * becomes, how far a wheel turn scrolls. The view and the connection hold the state.
- */
 
 /** The remote page's size in CSS pixels, as the server reports it. */
 export interface LiveViewport {
@@ -46,10 +42,7 @@ export function buildBrowserLiveWebSocketUrl(
 /** A host on this machine or network, which is rarely served over https. */
 const LOCAL_HOST = /^(localhost|\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:]+\])(:\d+)?(\/|$)/i;
 
-/**
- * The web address a person meant by what they typed into the address field: `example.com` is
- * `https://example.com/`. Null for anything that is not the address of a web page.
- */
+/** The URL typed into the address field (`example.com` → `https://example.com/`), or null. */
 export function addressToUrl(text: string): string | null {
   const typed = text.trim();
   if (!typed || /[\s\\]/.test(typed)) return null;
@@ -67,11 +60,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-/**
- * A screen position as a position on the remote page. The image is drawn at another size than the
- * page, so the position inside the image is scaled to the page's CSS pixels. Null while the image
- * has no size on screen.
- */
 export function pointerToViewport(
   clientX: number,
   clientY: number,
@@ -87,11 +75,7 @@ export function pointerToViewport(
   };
 }
 
-/**
- * The size to draw the page at. At zoom 1 the whole page fits the stage and is never drawn larger
- * than it really is; a higher zoom multiplies that size and the stage scrolls. Null until both
- * sizes are known.
- */
+/** Zoom 1 fits the stage but never upscales; higher zoom scales that and the stage scrolls. */
 export function fitDisplaySize(stage: LiveSize, viewport: LiveViewport, zoom: number): LiveSize | null {
   if (!(stage.width > 0) || !(stage.height > 0) || !(viewport.width > 0) || !(viewport.height > 0)) return null;
   const fit = Math.min(stage.width / viewport.width, stage.height / viewport.height, 1);
@@ -102,10 +86,7 @@ export function fitDisplaySize(stage: LiveSize, viewport: LiveViewport, zoom: nu
   };
 }
 
-/**
- * Scrolls a local scroller by `delta` and says how much it could not take, so a gesture pans the
- * zoomed view first and scrolls the remote page with what is left.
- */
+/** Scrolls a local scroller by `delta` and returns what it could not take, for the remote page. */
 export function chainScroll(position: number, max: number, delta: number): { position: number; rest: number } {
   const next = clamp(position + delta, 0, Math.max(0, max));
   return { position: next, rest: delta - (next - position) };
@@ -152,14 +133,7 @@ export function keyModifiers(event: Pick<LiveKeyEvent, "altKey" | "ctrlKey" | "m
     | (event.shiftKey ? BROWSER_LIVE_MODIFIERS.shift : 0);
 }
 
-/**
- * What happens to a key pressed on the live view:
- * - `forward`: it goes to the remote page and must not also act on the Bridge page.
- * - `local`: the Bridge page keeps it. Escape hands the keyboard back, and the paste shortcut
- *   lets the browser raise a paste event, whose text is then sent (the remote clipboard is not
- *   this device's clipboard).
- * - `ignore`: an input method is composing, so there is no key to send.
- */
+/** forward: remote only; local: Escape and paste (remote clipboard is not ours); ignore: IME. */
 export type LiveKeyRoute = "forward" | "local" | "ignore";
 
 function isPrintable(key: string): boolean {
@@ -182,11 +156,7 @@ export function routeKey(event: LiveKeyEvent): LiveKeyRoute {
   return "forward";
 }
 
-/**
- * The character a key press types, if it types one. A shortcut (Ctrl, Meta or Alt held) types
- * nothing, with two exceptions where the held keys only select the character: AltGr, which Windows
- * reports as Ctrl+Alt, and Option on a Mac, which shows as Alt with a character outside ASCII.
- */
+/** Ctrl/Meta/Alt mean a shortcut, except AltGr and Mac Option (Alt + non-ASCII), which type. */
 function typedText(event: LiveKeyEvent): { text: string; modifiers: number } | null {
   if (event.key === "Enter") return { text: "\r", modifiers: keyModifiers(event) };
   if (!isPrintable(event.key)) return null;
@@ -201,11 +171,7 @@ function withModifiers(message: BrowserLiveKeyboardMessage, modifiers: number): 
   return modifiers ? { ...message, modifiers } : message;
 }
 
-/**
- * The messages for a key going down. A key the remote browser can identify is a `keyDown` with its
- * key code, carrying the character when it types one. A character that arrives without a key code
- * (some on-screen keyboards) can only be sent as text, so it is a `char`.
- */
+/** A key with no keyCode (some on-screen keyboards) can only be sent as a char. */
 export function keyDownMessages(event: LiveKeyEvent): BrowserLiveKeyboardMessage[] {
   if (routeKey(event) !== "forward") return [];
   const typed = typedText(event);

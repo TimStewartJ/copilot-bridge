@@ -1,7 +1,4 @@
-// SessionRunner — owns the per-session run loop, live SDK event handling,
-// stale-cache retry, the watchdog that asks the runtime whether a run is over, and
-// tool/sub-agent event rendering. SessionManager remains the public facade
-// and delegates the run-loop concerns here.
+// Run loop, live SDK events, stale-cache retry and run watchdog; SessionManager delegates here.
 
 import type {
   AgentBackend,
@@ -86,14 +83,11 @@ import {
 
 
 const WATCHDOG_INTERVAL_MS = 60_000;
-/**
- * The runtime must report a run idle twice, this far apart, before the watchdog ends it. In autopilot
- * the main agent goes idle for a moment (about 100 ms measured) before the runtime continues it.
- */
+/** The runtime must report idle twice this far apart: autopilot idles ~100 ms between turns. */
 const RUN_ENDED_CONFIRM_MS = 10_000;
 const NO_PROGRESS_WARNING_MS = 10 * 60_000;
 const NO_PROGRESS_ABORT_MS = 60 * 60_000;
-/** Silence this long (no live event, no disk progress) makes the watchdog ping the backend channel. */
+/** This long with no live event or disk progress makes the watchdog ping the backend. */
 const NO_PROGRESS_BACKEND_PROBE_MS = 3 * 60_000;
 const SESSION_TOOL_INITIALIZATION_INCOMPLETE_MESSAGE =
   "Session tool initialization did not complete before prompt delivery";
@@ -111,15 +105,11 @@ const LIVE_RUN_TERMINAL_EVENT_TYPES = new Set([
 type RuntimeAnswer = "working" | "idle" | "unknown";
 
 const SETTLED_AGENT_TASK_STATUSES = new Set(["idle", "completed", "failed", "cancelled"]);
-/** An agent the runtime will wake the main agent for. A status the Bridge does not know counts as running. */
+/** An agent the runtime will wake the main agent for; unknown statuses count as running. */
 const isRunningAgentTask = (task: AgentBackgroundTask): boolean =>
   task.kind === "agent" && !SETTLED_AGENT_TASK_STATUSES.has(task.status);
 
-/**
- * When a background agent finishes, the runtime wakes the main agent with a notice. While other
- * background work such as an attached shell is still going, it holds that notice for 60 s (measured
- * on CLI 1.0.88). A `read_agent` by the main agent consumes it instead, and a cancelled agent sends none.
- */
+/** Runtime holds a finished agent's wake notice up to 60 s (CLI 1.0.88) while other work runs. */
 const AGENT_WAKE_WINDOW_MS = 90_000;
 
 /** A background agent that just finished and whose outcome the main agent has not heard yet. */
@@ -137,24 +127,17 @@ function awaitsWake(
   return (reportedAt?.get(task.id) ?? Number.NEGATIVE_INFINITY) < settledAt;
 }
 
-/**
- * A cached session's one event subscription. It lives as long as the session stays cached and hands
- * events to the open run, so a turn the runtime starts on its own (a background agent's wake-up,
- * autopilot) is seen even when no run is open.
- */
+/** One subscription per cached session, so runtime-started turns are seen with no run open. */
 interface SessionFeed {
   session: AgentSession;
   unsubscribe: () => void;
   /** The open run's event handler, registered by `runSessionOperation`. */
   run?: { controller: SessionRunController; handleEvent: (event: any) => void };
-  /** When the main agent last heard about each background agent: its notice or its own read_agent. */
+  /** When the main agent last heard of each background agent: its notice or its read_agent. */
   agentReportedAt: Map<string, number>;
   readAgentCalls: Map<string, string>;
   attentionMode: SessionAttentionMode;
-  /**
-   * Events from the start of a runtime-started turn, held until a run registers: the run opened
-   * for it (`claimed`), or the next run when the session was busy with something else.
-   */
+  /** A runtime-started turn's events, held for its run (`claimed`) or the next one if busy. */
   heldTurn?: { startedAt: number; events: unknown[]; claimed?: boolean };
 }
 
@@ -309,36 +292,18 @@ export interface CompletionAttentionOptions {
 
 export interface StartWorkOptions {
   attentionMode?: SessionAttentionMode;
-  /**
-   * Who started an automated turn: a defer delivering its result, or a schedule starting its run.
-   * Such turns ran without the user watching, so Home offers a review of them until the user
-   * next writes in the chat.
-   */
+  /** Unattended turn: Home offers a review of it until the user next writes in the chat. */
   origin?: "defer" | "schedule";
   completionAttention?: boolean | CompletionAttentionOptions;
   mode?: SendMode;
   clientMessageId?: string;
-  /**
-   * Shown in the transcript instead of `prompt`. Lets a caller add model-only framing
-   * (for example hands-free voice context) without it appearing as something the user said.
-   */
+  /** Shown instead of `prompt`, so model-only framing (voice context) isn't shown as the user's. */
   displayPrompt?: string;
-  /**
-   * "system" marks an application-generated turn. The runtime records it with system
-   * provenance, so it never appears in the transcript as a user message. An `automation-<name>`
-   * source marks a turn automation started (a trigger's prompt or result): it sets the chat's task
-   * like a user message and shows as one, but the runtime gives it no human authority.
-   */
+  /** "system": app-made, not shown as the user's; `automation-*`: shown, but no human authority. */
   promptSource?: "system" | `automation-${string}`;
-  /**
-   * Reasoning effort for this turn, applied to the session just before the prompt is sent.
-   * Lets one conversation think harder for some turns than others (Helm: typed vs spoken).
-   */
+  /** Reasoning effort for this turn only, set just before the prompt is sent. */
   reasoningEffort?: string;
-  /**
-   * The message is a person's chat message (sent with `clientMessageId`): if the run ends before
-   * the agent has it, it stays in the chat marked not sent instead of being lost.
-   */
+  /** A person's message: if the run ends before the agent has it, keep it marked not sent. */
   keepUndelivered?: boolean;
 }
 
@@ -379,12 +344,7 @@ export function isStaleAgentSessionError(error: unknown): boolean {
     return error.code === ConnectionErrors.Closed || error.code === ConnectionErrors.Disposed;
   }
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  // `Pending response rejected since connection got disposed` is what every RPC
-  // still in flight gets when a lost backend is force-stopped: the session is
-  // no longer addressable, not merely slow.
-  // The provider can also retain an input-item reference from the previous
-  // session connection. It reports that as a 400 instead of a transport error,
-  // but the cached SDK wrapper is stale and must take the same recovery path.
+  // Disposed connection or provider 400 on a prior connection's input item: wrapper is stale.
   // agent-text-audit: error (agent runtime errors)
   return /\bSession not found\b/i.test(message)
     // agent-text-audit: error (agent runtime errors)
@@ -406,9 +366,9 @@ export type PendingQuestion =
 export interface SessionRunnerDeps {
   /** Lazy accessor for the agent backend; the manager owns lifecycle. */
   getBackend(): AgentBackend | null;
-  /** Human-readable reason the backend cannot take work right now (rotating, disconnected, not started). */
+  /** Why the backend can't take work now (rotating, disconnected, not started). */
   getBackendUnavailableReason?(): string | undefined;
-  /** Ask the backend whether its RPC channel still answers; false means disconnect recovery has been triggered. */
+  /** Pings the backend RPC channel; false means disconnect recovery has been triggered. */
   probeBackendHealth?(reason: string): Promise<boolean>;
   /** Shared cache of CopilotSession objects (owned by SessionManager). */
   sessionObjects: ReadonlyMap<string, AgentSession>;
@@ -476,12 +436,7 @@ export interface SessionRunnerDeps {
   abandonCachedSession(sessionId: string, expectedSession: any): Promise<void>;
   abortSession(sessionId: string): Promise<boolean>;
   markCachedSessionForEviction(sessionId: string, reason: string): void;
-  /**
-   * Queue a cached-session eviction without immediately attempting a flush.
-   * The eviction is drained by the run controller's `.finally()` hook after
-   * `setSessionRunState(sessionId, "idle")`, avoiding a race with in-flight
-   * SDK persistence of the current turn's events. See SessionManager.deferMcpStatusSessionEviction.
-   */
+  /** Evicts after the run goes idle, not now, so it can't race SDK persistence of this turn. */
   deferMcpStatusSessionEviction(sessionId: string, reason: string): void;
   flushPendingSessionEviction(sessionId: string): void;
   getPendingUserInputCount(sessionId: string): number;
@@ -490,21 +445,13 @@ export interface SessionRunnerDeps {
   autoAnswerOverdueInteractions(sessionId: string): Promise<void>;
   /** The browser handoff a pending form of this chat stands for, when it is one. */
   matchBrowserHandoff?(sessionId: string, request: PendingElicitationRequestView): BrowserHandoffView | undefined;
-  /**
-   * Answers a question in the user's place before it is shown. Undefined means Bridge never
-   * answers this question itself; otherwise the promise says whether the runtime took the reply.
-   * Never rejects.
-   */
+  /** Answers for the user, unshown: undefined if Bridge won't, else whether the runtime took it. */
   answerQuestionUnshown(
     sessionId: string,
     question: PendingQuestion,
     reason: AutomaticAnswerReason,
   ): Promise<boolean> | undefined;
-  /**
-   * Replies to a question that cannot be shown because the request is invalid, so the run does
-   * not wait on it forever. Undefined when there is nothing to reply to; otherwise the promise
-   * says whether the runtime took the reply. Never rejects.
-   */
+  /** Answers an invalid question so the run stops waiting; resolves to whether it was taken. */
   answerUnshowableQuestion(
     sessionId: string,
     kind: PendingQuestion["kind"],
@@ -519,7 +466,7 @@ export interface SessionRunnerDeps {
   ): void;
   recordSessionAttention(sessionId: string, at?: string): void;
   touchSessionActivity?(sessionId: string, at: number): void;
-  /** Switches the live session to the effort a turn asked for. Best effort; never fails the turn. */
+  /** Switches the live session to the turn's effort. Best effort; never fails the turn. */
   applyTurnReasoningEffort?(sessionId: string, session: AgentSession, reasoningEffort: string): Promise<void>;
   maybeAutoNameSession(
     sessionId: string,
@@ -532,20 +479,13 @@ export class SessionRunner {
   private readonly sessionFeeds = new Map<string, SessionFeed>();
   private readonly providerRetryWaits = new Map<string, () => void>();
   private lastRuntimeEvent: { receivedAtMs: number; sessionId: string; type: string } | undefined;
-  /**
-   * The CLI mode each loaded session's runs use. The CLI keeps a session's mode after a run, so a
-   * turn it starts on its own runs in the mode of the last send. Absent means unknown.
-   */
+  /** Each loaded session's CLI mode; the CLI keeps it, so turns it starts use the last send's. */
   private readonly agentModes = new Map<string, SendMode>();
   private readonly mcpSessionRecoveryAttempts = new Map<string, {
     count: number;
     windowStartedAt: number;
   }>();
-  /**
-   * Whether the runtime has shown that it says whose turn a turn event is, which it does when it
-   * starts its first agent (agent-event-ownership.ts). A runtime that does it keeps doing it, so
-   * the first sighting settles it for every later run.
-   */
+  /** Set on first sighting of turn ownership (agent-event-ownership.ts); sticks for later runs. */
   private runtimeStampsAgentTurns = false;
 
   constructor(private readonly deps: SessionRunnerDeps) {}
@@ -570,7 +510,7 @@ export class SessionRunner {
     return true;
   }
 
-  /** Subscribes once to a cached session's events; SessionManager calls this as it caches the session. */
+  /** Subscribes once to a cached session's events; SessionManager calls it when caching. */
   attachSession(sessionId: string, session: AgentSession): SessionFeed {
     const current = this.sessionFeeds.get(sessionId);
     if (current?.session === session) return current;
@@ -593,11 +533,7 @@ export class SessionRunner {
     return this.agentModes.get(sessionId);
   }
 
-  /**
-   * Records the mode a session's runs use, puts it on the open run's stream, and tells session
-   * lists. `announce` publishes it even when unchanged, because each run start is a new fact for a
-   * list that forgot the previous run.
-   */
+  /** `announce` re-publishes an unchanged mode because lists forget it between runs. */
   private noteAgentMode(sessionId: string, mode: SendMode | undefined, announce = false): void {
     const previous = this.agentModes.get(sessionId);
     if (mode) this.agentModes.set(sessionId, mode);
@@ -609,10 +545,7 @@ export class SessionRunner {
     }
   }
 
-  /**
-   * A resumed session keeps the mode it had, with no event to say so. Ask once, and only use the
-   * answer if nothing has set the mode meanwhile (a send sets it before it resumes the session).
-   */
+  /** A resumed session keeps its mode silently: ask once; use it if nothing set it meanwhile. */
   private readAgentModeOnAttach(sessionId: string, session: AgentSession): void {
     if (this.agentModes.has(sessionId) || typeof session.getSendMode !== "function") return;
     void session.getSendMode().then((value) => {
@@ -622,7 +555,7 @@ export class SessionRunner {
     }, () => { /* unknown stays unknown */ });
   }
 
-  /** Drops a held runtime turn that belongs to a turn Bridge stopped on purpose (an image-budget pause). */
+  /** Drops a held runtime turn of a turn Bridge stopped on purpose (an image-budget pause). */
   discardHeldTurn(sessionId: string): void {
     const feed = this.sessionFeeds.get(sessionId);
     if (feed?.heldTurn && !feed.heldTurn.claimed) feed.heldTurn = undefined;
@@ -656,7 +589,7 @@ export class SessionRunner {
       feed.run.handleEvent(event);
       return;
     }
-    // No run is open to see it: a command or agent that outlived its run started, finished or was stopped.
+    // No run sees it: a command or agent that outlived its run started, finished or was stopped.
     if (event?.type === "session.background_tasks_changed") {
       this.refreshSessionAgents(sessionId, "background_tasks_changed");
     }
@@ -691,18 +624,14 @@ export class SessionRunner {
         const agentId = feed.readAgentCalls.get(data?.toolCallId);
         if (agentId === undefined) break;
         feed.readAgentCalls.delete(data.toolCallId);
-        // A read made before the agent finished is older than its finish, so it still counts as unheard.
+        // A read before the agent finished is older than its finish, so it still counts as unheard.
         if (data?.success === true) feed.agentReportedAt.set(agentId, at);
         break;
       }
     }
   }
 
-  /**
-   * Opens a run for a turn the runtime started on its own, so it is shown and tracked like any other.
-   * While the session is busy the turn stays held; whatever makes it busy calls this again when done
-   * (a run letting go, a resume or an overlay operation ending), or the next run takes the turn.
-   */
+  /** Held while busy; whatever frees the session calls this again, or the next run takes it. */
   followRuntimeTurn(sessionId: string): void {
     const feed = this.sessionFeeds.get(sessionId);
     const heldTurn = feed?.heldTurn;
@@ -802,10 +731,7 @@ export class SessionRunner {
     this.deps.touchSessionActivity?.(sessionId, at);
   }
 
-  /**
-   * Fire-and-forget refresh of the session's background-agent registry. The
-   * registry coalesces concurrent calls and only emits when counts change.
-   */
+  /** Fire-and-forget; the registry coalesces calls and emits only when counts change. */
   private refreshSessionAgents(sessionId: string, reason: string): void {
     void this.deps.agentRegistry.refresh(sessionId, reason);
   }
@@ -880,7 +806,7 @@ export class SessionRunner {
     return runController;
   }
 
-  /** Records a person's message before its turn starts. Returns its id, or nothing when it could not be kept. */
+  /** Records a person's message before its turn; returns its id, or nothing if it was not kept. */
   private recordPendingMessage(
     sessionId: string,
     clientMessageId: string,
@@ -905,11 +831,7 @@ export class SessionRunner {
     }
   }
 
-  /**
-   * Keeps a person's message in the chat if its run ends before the agent has it, and lets it go
-   * once the runtime saved it. The not-sent state is published before the run's terminal event,
-   * which closes the browser's stream.
-   */
+  /** Publish not-sent before the run's terminal event, which closes the browser stream. */
   private keepMessageUntilDelivered(
     sessionId: string,
     bus: SessionEventBus,
@@ -920,7 +842,7 @@ export class SessionRunner {
     runController.onPromptUndelivered((result) => {
       const state = result.reason === "aborted" ? "stopped" : result.reason === "shutdown" ? "interrupted" : "failed";
       const error = result.reason === "error" ? result.message : undefined;
-      // A message already handed to the runtime is the runtime's: its answer settles it, not the stop.
+      // A message the runtime has is the runtime's: its answer settles it, not the stop.
       const kept = this.updateKeptMessage(sessionId, (store) => store.markUndelivered(sessionId, messageId, state, error));
       if (kept && projectedUserMessageId) bus.markPromptUndelivered(projectedUserMessageId, state, error);
     });
@@ -1051,10 +973,7 @@ export class SessionRunner {
     }
   }
 
-  /**
-   * Ties a projected prompt to the runtime's id for the message it was sent as, so its saved
-   * `user.message` commits it, and remembers which browser message that was. Never throws.
-   */
+  /** Ties a prompt to the runtime's message id so `user.message` commits it. Never throws. */
   private claimSentUserMessage(
     sessionId: string,
     bus: SessionEventBus,
@@ -1102,7 +1021,7 @@ export class SessionRunner {
       }
       this.setSessionRunState(sessionId, "idle", {
       });
-      // Before any pending eviction: a turn the runtime started while this run was letting go is next.
+      // Before any pending eviction: a turn the runtime started meanwhile is next.
       this.followRuntimeTurn(sessionId);
       this.deps.notifySessionReleased?.(sessionId);
       void this.deps.agentRegistry.reapFinishedSyncTasks(sessionId);
@@ -1186,7 +1105,7 @@ export class SessionRunner {
             ...(sdkAttachments?.length ? { attachments: sdkAttachments } : {}),
           });
         } catch (error) {
-          // The runtime did not take it: a retry may send it again, or the run ends with it not sent.
+          // The runtime didn't take it: a retry may resend it, or the run ends with it not sent.
           if (keptMessageId) this.updateKeptMessage(sessionId, (store) => store.markSendFailed(sessionId, keptMessageId));
           throw error;
         }
@@ -1223,7 +1142,7 @@ export class SessionRunner {
       retryExecute?: (session: any, claimSend: () => boolean) => Promise<void>;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
-      /** The run follows a turn the runtime already started: there is no prompt to prepare or send. */
+      /** The run follows a turn the runtime started: no prompt to prepare or send. */
       followsRuntimeTurn?: boolean;
     },
   ): Promise<void> {
@@ -1302,9 +1221,7 @@ export class SessionRunner {
       this.deps.abandonCachedSession(sessionId, activeSession);
 
     let session = await resumeSession();
-    // Stopped while the session was being created or resumed: nothing was sent, so the session is
-    // healthy and stays ready for the next message. Dropping it would leave a chat whose runtime
-    // never saved anything impossible to resume.
+    // Stopped before sending: keep the session; dropping it leaves a never-saved chat unresumable.
     if (!session || runController.isCompleted()) return;
     /** A turn the runtime starts after this run is followed with this run's attention mode. */
     const rememberAttentionMode = (activeSession: unknown): boolean => {
@@ -1356,8 +1273,7 @@ export class SessionRunner {
     const toolStartTimes = new Map<string, number>();
     const toolLoopGuard = createToolLoopGuard();
     const correlator = new SubagentCorrelator();
-    // Kept only to notice the moment an agent starts or stops working; the browser reads the
-    // agents themselves from history.
+    // Only to notice agents starting or stopping; the browser reads agents from history.
     const agentLifecycle = new TranscriptAgentFold();
     const subAgentToolCallIds = new Set<string>();
     const activeSubAgentToolCallIds = new Set<string>();
@@ -1438,7 +1354,7 @@ export class SessionRunner {
     let lastLiveEventType: string | undefined;
     let lastLiveEventAt: number | undefined;
     let lastLiveEventOrigin: SessionEventOrigin | undefined;
-    // Main-agent turns only. Sub-agents share the event stream, and their turns say nothing about the run.
+    // Main-agent turns only: sub-agents share the stream, but their turns say nothing of the run.
     let liveTurnStartCount = 0;
     let liveTurnEndCount = 0;
     let lastLiveTurnEndAt: number | undefined;
@@ -1694,10 +1610,7 @@ export class SessionRunner {
       }
     };
 
-    /**
-     * Ends a run whose live ending never arrived, using what the log says about how it ended. The
-     * caller has already established that it ended: the runtime said so, or the ending is conclusive.
-     */
+    /** Ends a run from the log's ending; the caller has already established that it ended. */
     const finishRunFromLog = (ending: PersistedRunEnding, runtimeAnswer: RuntimeAnswer) => {
       if (runController.isCompleted() || pendingProviderRetry) return;
       const context: SessionEventHandlingContext = {
@@ -1736,10 +1649,7 @@ export class SessionRunner {
       pendingTerminalCompletion = undefined;
     };
 
-    /**
-     * Questions Bridge is answering, or has answered, in the user's place without showing them.
-     * The runtime still reports each one as completed, and that is not announced either.
-     */
+    /** Questions Bridge answers unshown; their completion from the runtime isn't shown either. */
     const unshownQuestions = new Set<string>();
     /** Shows the user a question, unless the chat is in Autopilot and Bridge answers it at once. */
     const showOrAnswerQuestion = (question: PendingQuestion, show: () => void): void => {
@@ -1757,8 +1667,7 @@ export class SessionRunner {
         return;
       }
       void answering.then((answered) => {
-        // The runtime did not take the reply, so the question goes to the user after all, unless it
-        // has been completed meanwhile or the run is over.
+        // Not taken: ask the user after all, unless it completed meanwhile or the run is over.
         if (answered || !unshownQuestions.delete(requestId)) return;
         if (!acceptingSessionEvents || runController.isCompleted()) return;
         show();
@@ -1959,8 +1868,7 @@ export class SessionRunner {
         }
         case "assistant.turn_start":
           if (isStampedAgentTurnEvent(event)) {
-            // The runtime says this turn is a sub-agent's: it moves that agent's calls along and
-            // leaves the main agent's turn alone.
+            // A turn stamped as a sub-agent's moves that agent's calls, not the main turn.
             const agentId = getSdkAgentId(event);
             const agentToolCallId = getParentToolCallId(event)
               ?? (agentId ? correlator.resolveAgentToolCallId(agentId) : undefined)
@@ -1974,7 +1882,7 @@ export class SessionRunner {
             }
             break;
           }
-          // A runtime that does not say whose turn this is: with an agent running, take it for an agent's.
+          // Unstamped runtime: with an agent running, take the turn for an agent's.
           if (!this.runtimeStampsAgentTurns && activeSubAgentToolCallIds.size > 0) {
             console.log(`[sdk] [${sid}] ⏳ Sub-agent turn started`);
             break;
@@ -2034,8 +1942,7 @@ export class SessionRunner {
           }
           break;
         case "assistant.reasoning":
-          // The complete block, sent after its deltas. It repairs a block whose deltas were missed
-          // (a reconnect, or a model that does not stream its thinking).
+          // Full block after its deltas: repairs missed ones (reconnect, non-streaming model).
           if (getSdkAgentId(event) || data?.parentToolCallId) break;
           if (typeof data?.content === "string" && data.content.trim()) {
             bus.emit({
@@ -2083,8 +1990,7 @@ export class SessionRunner {
             lastAssistantContent = data.content;
             lastAssistantSourceEventId = getSdkEventId(event);
           }
-          // `reasoningText` is the only copy of the thinking that reaches events.jsonl, so this is
-          // the moment the live block gains the identity its disk entry will be committed under.
+          // Only `reasoningText` reaches events.jsonl, so the live block takes its disk id now.
           if (
             !getSdkAgentId(event)
             && !data?.parentToolCallId
@@ -2343,8 +2249,7 @@ export class SessionRunner {
         case "subagent.completed":
         case "subagent.failed": {
           const subagentToolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
-          // `data.toolCallId` is authoritative here. A background agent's launch has already been
-          // sealed as successful by this point, so the correlator ignores this for that case.
+          // The correlator ignores this for a background launch, already sealed as successful.
           if (event.type === "subagent.failed" && subagentToolCallId) {
             correlator.recordSubagentFailure(subagentToolCallId, data?.error);
           }
@@ -2362,10 +2267,7 @@ export class SessionRunner {
           if (subagentToolCallId) {
             activeSubAgentToolCallIds.delete(subagentToolCallId);
             const resolution = correlator.resolve(subagentToolCallId);
-            // The runtime reports an agent's end more than once. By the repeat, its launching call
-            // has completed and the correlation is gone, so there is nothing left to add, and the
-            // only name still on hand is the raw tool's: sending it would relabel the finished
-            // agent row as "task".
+            // Repeat ends lack correlation; emitting would relabel the agent row "task".
             if (resolution.isSubAgent) {
               bus.emit({
                 type: "tool_update",
@@ -2411,8 +2313,7 @@ export class SessionRunner {
           break;
         }
         case "assistant.idle":
-          // The main agent stopped. `session.idle` follows at once unless a background agent or an
-          // attached shell defers it, so ask the runtime now instead of waiting for the next tick.
+          // `session.idle` follows unless an agent or shell defers it, so ask the runtime now.
           if (!getSdkAgentId(event)) {
             // Until it starts another turn, the main agent is waiting on that background work.
             bus.emit({ type: "main_idle" });
@@ -2458,10 +2359,7 @@ export class SessionRunner {
             && !turnHadSideEffects
             && !runController.isCompleted()
           ) {
-            // Some provider failures arrive as a terminal SDK event after
-            // session.send has already accepted the prompt, so the RPC catch
-            // path cannot see them. Hold the run open and refresh the cached
-            // wrapper before allowing the error to reach the user.
+            // Post-send provider errors come as events: refresh the stale wrapper before surfacing.
             acceptingSessionEvents = false;
             pendingStaleSessionError ??= data?.message;
             if (!sendOperationInFlight && retryStaleCachedSession) {
@@ -2530,8 +2428,7 @@ export class SessionRunner {
         case "session.task_complete": {
           if (pendingProviderRetry) break;
           if (providerRetryCount > 0 && context.origin === "live") {
-            // A late idle from the failed attempt cannot end the retry. Ask the runtime and read
-            // only the new attempt's log before completing, as the watchdog already does.
+            // A failed try's late idle can't end the retry: ask the runtime, as the watchdog does.
             startWatchdogTick();
             break;
           }
@@ -2630,10 +2527,7 @@ export class SessionRunner {
     };
 
     let unsub: (() => void) | undefined;
-    /**
-     * Registers this run with the session's feed and starts accepting its events, beginning with
-     * any held runtime-started turn: in one tick, so each event is handled once and in order.
-     */
+    /** Joins the feed, held turn first, in one tick so each event is handled once and in order. */
     const listenToSession = (activeSession: typeof session) => {
       const feed = this.attachSession(sessionId, activeSession);
       const registration = { controller: runController, handleEvent: (event: any) => handleEvent(event, { origin: "live" }) };
@@ -2730,7 +2624,7 @@ export class SessionRunner {
     let noProgressAbortAttempted = false;
     let backendProbeInFlight = false;
 
-    /** Notes whether events.jsonl changed since the last tick. The first look only sets the baseline. */
+    /** Whether events.jsonl changed since the last tick; the first look only sets the baseline. */
     const noteLogProgress = async (): Promise<boolean> => {
       let fileStat: { mtimeMs: number; size: number };
       try {
@@ -2748,14 +2642,7 @@ export class SessionRunner {
       return changed;
     };
 
-    /**
-     * Whether a run is still going is the runtime's call, never the log's: sub-agents share
-     * events.jsonl, and it cannot show whether the main agent will start another turn. A running
-     * background agent keeps the run alive because the runtime wakes the main agent when it finishes,
-     * and so does one that has finished but whose notice has not reached the main agent yet.
-     * An attached shell does not: a dev server can outlive every run. The session manager keeps the
-     * session loaded for a recently started command instead (see background-commands.ts).
-     */
+    /** Ask the runtime, not the log: agents and pending wake notices keep a run; shells don't. */
     const askRuntime = async (): Promise<RuntimeAnswer> => {
       try {
         const activity = await session?.getActivity();
@@ -2869,9 +2756,7 @@ export class SessionRunner {
         let now = Date.now();
         let noProgressMs = Math.max(0, now - getLastProgressAt());
         if (noProgressMs >= NO_PROGRESS_BACKEND_PROBE_MS && this.deps.probeBackendHealth && !backendProbeInFlight) {
-          // Zero live events and no disk growth is exactly what a dead RPC
-          // channel looks like; a cheap ping distinguishes "slow turn" from
-          // "nothing will ever answer" and escalates to disconnect recovery.
+          // Silence plus no disk growth may be a dead RPC channel; a ping escalates to recovery.
           backendProbeInFlight = true;
           const probeStartedAt = Date.now();
           try {
@@ -2892,8 +2777,7 @@ export class SessionRunner {
           noProgressMs = Math.max(0, now - getLastProgressAt());
         }
         if (this.deps.getPendingInteractionCount(sessionId) > 0) {
-          // Waiting on the user is not a stall, so it never warns or aborts. Overdue questions get
-          // an automatic answer instead; the probe above still catches a dead backend.
+          // Waiting on the user isn't a stall; overdue questions get an automatic answer instead.
           noProgressWarningActive = false;
           await this.deps.autoAnswerOverdueInteractions(sessionId);
           return;

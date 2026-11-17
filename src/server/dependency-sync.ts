@@ -9,15 +9,7 @@ const BACKUP_DIR_PREFIX = ".patch-package-backups-";
 
 export const DEPENDENCY_SYNC_PATHS = [...ROOT_DEP_FILES, PATCHES_DIR] as const;
 
-/**
- * Remove any leftover .patch-package-backups-* directories under
- * <root>/node_modules. These are created by preparePatchedPackagesForInstall
- * and normally cleaned up at the end of the install. If the launcher crashed
- * mid-install (e.g. EPERM on a held-open .node file), the dir can persist and
- * confuse future installs. Safe to call before any install.
- *
- * Returns the names of directories that were swept (or attempted).
- */
+/** Removes patch-package backup dirs a crashed install left behind; they confuse later installs. */
 export function sweepStalePatchPackageBackups(root: string): string[] {
   const nodeModules = join(root, "node_modules");
   if (!existsSync(nodeModules)) return [];
@@ -284,11 +276,7 @@ export function installedDependencyHashPath(dataDir: string): string {
   return join(dataDir, INSTALLED_DEPENDENCY_HASH_FILENAME);
 }
 
-/**
- * Dependency hash the launcher last installed into the production root, or
- * undefined when no install has been recorded (fresh checkout, release mode,
- * unreadable file).
- */
+/** The dependency hash last installed into the production root, or undefined if none recorded. */
 export function readInstalledDependencyHash(dataDir: string): string | undefined {
   try {
     const filePath = installedDependencyHashPath(dataDir);

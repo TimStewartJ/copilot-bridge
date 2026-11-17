@@ -72,10 +72,7 @@ export function canKeepCurrentReasoningEffortForModel({
   return supportedReasoningEfforts.includes(currentReasoningEffort);
 }
 
-/**
- * Changes one session's model, reasoning effort and context tier. Mount it only while it
- * is open: its drafts start from the session's cached state each time it mounts.
- */
+/** Mount only while open: its drafts start from the session's cached state on each mount. */
 export default function SessionModelDialog({
   sessionId,
   sessionSummary,
@@ -125,8 +122,7 @@ export default function SessionModelDialog({
     currentReasoningEffort,
     currentEffortLookupReady,
   });
-  // A model with no advertised efforts keeps whatever the session already has
-  // (the save omits the field), so name that effort instead of "Default".
+  // A model with no listed efforts keeps the session's (save omits it): name it, not "Default".
   const keepCurrentEffortLabel = supportedReasoningEfforts === undefined
     ? formatReasoningEffortLabel(currentReasoningEffort, currentDialogModel)
     : undefined;
@@ -149,10 +145,7 @@ export default function SessionModelDialog({
   const modelPresetMemory = useModelPresets({ enabled: true });
   const dialogPresetSlot = modelPresetDraft
     ?? modelPresetMemory.findSlotForModel(modelDraft, availableModels);
-  /**
-   * Applies a preset or model pick to the unsaved dialog drafts only. Remembered
-   * effort/context are restored when the target model can still honor them.
-   */
+  /** Applies a pick to the drafts; keeps remembered effort/context the model still supports. */
   const applyDialogSelection = useCallback((selection: ModelPresetSelection) => {
     modelDialogTouchedRef.current = true;
     const modelInfo = modelOptions?.find((model) => model.id === selection.modelId);
@@ -292,8 +285,7 @@ export default function SessionModelDialog({
         current?.playbook ? { ...nextState, playbook: current.playbook } : nextState
       ));
       void queryClient.invalidateQueries({ queryKey: queryKeys.sessionUsageMetrics(sessionId), exact: true });
-      // A saved switch is a committed choice, so it feeds the same memory the
-      // new-chat picker reads.
+      // A saved switch is a committed choice, so it feeds the memory the new-chat picker reads.
       if (dialogPresetSlot) {
         modelPresetMemory.remember({
           slot: dialogPresetSlot,

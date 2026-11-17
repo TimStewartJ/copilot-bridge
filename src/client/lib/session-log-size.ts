@@ -1,13 +1,9 @@
 const MB = 1024 * 1024;
 
-/** A chat whose event log is this large is flagged on its row. Smaller chats keep the size in the row's menu. */
+/** Event logs this large are flagged on the chat's row; smaller ones show size in its menu. */
 export const LARGE_SESSION_LOG_BYTES = 50 * MB;
 
-/**
- * From here opening or resuming the chat is a wait the reader notices. Reading a real log in full
- * measured about 7 ms per MB and a cold resume slightly less, so both take about a second at this
- * size and grow with it (a 1.8 GB log took 5 s to resume and 11 s or more to read).
- */
+/** About 1 s to open or resume here (real log read at ~7 ms/MB); cost grows with size. */
 export const VERY_LARGE_SESSION_LOG_BYTES = 150 * MB;
 
 export type SessionLogSizeLevel = "normal" | "large" | "very-large";

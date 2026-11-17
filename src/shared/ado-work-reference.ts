@@ -118,10 +118,7 @@ export function parseAdoWorkReferenceUrl(value: string): AdoWorkReference | null
   return null;
 }
 
-/**
- * Work item and pull request ids are unique across an organization, so a link from any
- * project in the configured organization can be resolved by the provider.
- */
+/** Ids are unique across an organization, so a link from any of its projects can be resolved. */
 export function matchesAdoOrganization(
   reference: Pick<AdoWorkReference, "org">,
   provider: { org: string },

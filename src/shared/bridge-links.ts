@@ -1,6 +1,4 @@
-// Links to Bridge's own concepts (sessions, tasks, docs). Agents write them as
-// `bridge://session/<id>` so they survive any deployment base path; the client renders
-// them natively and resolves them to in-app routes.
+// Agents write bridge://session/<id> links so they survive any deployment base path.
 
 export type BridgeLinkTarget =
   | { kind: "session"; sessionId: string; taskId?: string }
@@ -73,7 +71,7 @@ function parseSchemeSegments(segments: string[]): BridgeLinkTarget | null {
   }
 }
 
-/** Parses an in-app route such as `/tasks/<id>/sessions/<id>` (without any deployment base path). */
+/** Parses an in-app route such as `/tasks/<id>/sessions/<id>`, without a deployment base path. */
 export function parseBridgeAppPath(pathname: string): BridgeLinkTarget | null {
   const segments = decodeSegments(pathname);
   if (!segments || segments.length === 0) return null;
@@ -109,10 +107,7 @@ function stripBasePath(pathname: string, basePath: string | undefined): string |
   return pathname.startsWith(`${base}/`) ? pathname.slice(base.length) : null;
 }
 
-/**
- * Recognizes `bridge://…` links, root-relative app routes, and absolute URLs that point
- * at this Bridge. Returns null for anything else so ordinary links keep rendering normally.
- */
+/** Matches `bridge://` links, app routes and URLs of this Bridge; null for any other link. */
 export function parseBridgeLink(href: string | null | undefined, options: ParseBridgeLinkOptions = {}): BridgeLinkTarget | null {
   const value = href?.trim();
   if (!value) return null;

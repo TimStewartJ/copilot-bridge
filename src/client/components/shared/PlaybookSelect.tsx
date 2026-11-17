@@ -4,11 +4,7 @@ import { Select } from "../../design/primitives";
 import { DIRECT_PLAYBOOK_LABEL, groupPlaybooksByFamily } from "../../lib/playbooks";
 import { NO_PLAYBOOK } from "../../../shared/workflow-vocabulary.js";
 
-/**
- * A native select of the installed playbooks, grouped by family. The empty value is the caller's
- * "nothing chosen" (Automatic for a new chat, None for a pin). A stored id that is no longer
- * installed stays listed, so the select never shows a different value than the one held.
- */
+/** An uninstalled stored id stays listed, so the select never shows another value than it holds. */
 export default function PlaybookSelect({
   playbooks,
   value,

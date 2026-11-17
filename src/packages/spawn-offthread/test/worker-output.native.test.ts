@@ -4,15 +4,13 @@ import { describe, expect, it } from "vitest";
 import { ProcessHost } from "../src/index.js";
 import { relayWorkerOutput } from "../src/worker-output.js";
 
-// Real worker threads. The *.native.test.ts name puts this file in the native project of the
-// Copilot Bridge repository. test/smoke.mjs covers the same ground in a process of its own, where
-// stdout is a file and a write to it is refused.
+// Real workers; .native.test.ts puts it in the native project. smoke.mjs covers refused writes.
 
 function errorListeners(): number[] {
   return [process.stdout.listenerCount("error"), process.stderr.listenerCount("error")];
 }
 
-/** Collects what is written to it, refuses a chunk that contains "REFUSED", and tells a waiting test what has arrived. */
+/** Collects writes, refuses a chunk containing "REFUSED", and lets a test wait for arrivals. */
 function collector() {
   let text = "";
   let attempts = 0;
@@ -79,8 +77,7 @@ describe("worker thread output", () => {
     try {
       relayWorkerOutput(worker, { stdout: out.stream, stderr: collector().stream });
       await out.attempted(1);
-      // The stream reports the failure to the write first and emits 'error' after it. Nothing
-      // listened for that event; had it been thrown, this test would have failed with it.
+      // Nothing listens for the later 'error'; had it been thrown, this test would fail.
       await new Promise((resolve) => setImmediate(resolve));
       expect(out.text()).toBe("");
       expect(out.stream.listenerCount("error")).toBe(0);

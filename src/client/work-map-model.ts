@@ -9,13 +9,8 @@ import type {
 import { isClosedWorkItemState } from "../shared/work-map.js";
 import { IDENTITY_COLORS, type IdentityColor } from "./design/identity";
 
-/**
- * The work map's model: ADO work items placed in their ADO hierarchy, with the Bridge tasks that
- * link to them drawn as lanes beside the rows. Everything here is a pure function of the server's
- * answer and the reader's filters; components/WorkMapTree.tsx draws the result.
- */
+/** Pure work-map model from the server answer and filters; WorkMapTree.tsx draws it. */
 
-/** One work item with everything the map knows about it. */
 export interface WorkMapEntry {
   id: string;
   item: EnrichedWorkItem;
@@ -53,7 +48,7 @@ export interface WorkMapModel {
 
 export interface WorkMapTreeNode extends WorkMapEntry {
   children: WorkMapTreeNode[];
-  /** ADO children that exist but are not shown, because they are not on the map or are filtered out. */
+  /** ADO children not shown, being off the map or filtered out. */
   hiddenChildCount: number;
 }
 
@@ -113,10 +108,7 @@ const lowerCased = (values: Array<string | number | null | undefined>) =>
 const pullRequestWords = (pr: WorkMapPullRequest) => [pr.prId, pr.title, pr.repoName, pr.status];
 const taskWords = (task: WorkMapTask) => [task.title, task.nextAction, task.waitingOn];
 
-/**
- * The one definition of what needs attention on the map. An item with a warning here, or open
- * work with no Bridge task, is what "Needs attention" counts and what "Gaps only" keeps.
- */
+/** The one definition of attention: "Needs attention" counts it and "Gaps only" keeps it. */
 function attentionFor(entry: WorkMapEntry, model: Pick<WorkMapModel, "entries" | "taskById">): string[] {
   const { item } = entry;
   if (item.title === null) return [UNREADABLE];
@@ -143,7 +135,7 @@ export function needsAttention(entry: WorkMapEntry): boolean {
   return entry.needsTask || entry.attention.length > 0;
 }
 
-/** Indexes the server's answer: every work item with its place in the hierarchy, its pull requests and its tasks. */
+/** Indexes each work item with its place in the hierarchy, pull requests and tasks. */
 export function buildWorkMapModel(data: WorkMapData): WorkMapModel {
   const taskById = new Map(data.tasks.map((task) => [task.id, task]));
   const pullRequestByKey = new Map(data.pullRequests.map((pr) => [pr.key, pr]));
@@ -278,10 +270,7 @@ function isAncestor(candidate: string, of: string, entries: WorkMapModel["entrie
   return false;
 }
 
-/**
- * Places the visible map items in the hierarchy. Ancestors of a visible item are included as
- * context even when they are filtered out or not on the map.
- */
+/** Ancestors of visible items are included as context, even if filtered out or off the map. */
 export function buildWorkMapTree(model: WorkMapModel, visibleWorkItemIds: ReadonlySet<string>): WorkMapTreeSection[] {
   const nodes = new Map<string, WorkMapTreeNode>();
   for (const id of visibleWorkItemIds) {
@@ -339,10 +328,7 @@ function rowTaskIds(row: WorkMapTreeRow, collapsed: ReadonlySet<string>): string
   return [...collectTaskIds([row.node])];
 }
 
-/**
- * Lays out one lane per Bridge task. A run joins a linked row to the linked rows beneath it in
- * the same branch; a task that appears in two branches gets two runs in the same lane.
- */
+/** One lane per Bridge task; a task in two branches gets two runs in its lane. */
 export function layoutWorkMapLanes(
   rows: WorkMapTreeRow[],
   collapsed: ReadonlySet<string>,
@@ -389,11 +375,7 @@ export function layoutWorkMapLanes(
   return { laneTaskIds, cells, runStarts };
 }
 
-/**
- * Each task keeps one colour everywhere on the map. Colours are handed out in order of first
- * appearance, skipping any colour already drawn as a lane in a section the task shares, so two
- * lanes side by side never look like the same task while there are colours left.
- */
+/** One colour per task, first-seen order, skipping colours of lanes sharing a section with it. */
 export function assignTaskColors(sections: WorkMapTreeSection[], maxLanes: number): Map<string, IdentityColor> {
   const laneMates = new Map<string, Set<string>>();
   for (const section of sections) {
@@ -438,10 +420,7 @@ export interface WorkMapSelection {
 
 export const NO_SELECTION: WorkMapSelection = { ids: new Set(), anchorId: null };
 
-/**
- * Toggles a row in the selection. With `range`, every row between the last clicked row and this
- * one is added instead. `rowOrder` is the rows as they are on screen.
- */
+/** Toggles a row; with `range`, adds every row since the last click in on-screen `rowOrder`. */
 export function selectRow(
   selection: WorkMapSelection,
   rowOrder: readonly string[],
@@ -459,11 +438,6 @@ export function selectRow(
   return { ids, anchorId: id };
 }
 
-/**
- * What a click inside a row does to the selection. A link, checkbox or button acts on its own. Ctrl,
- * Cmd or Shift selects from anywhere else on the row, and once rows are selected a plain click
- * beside the title toggles the row. Returns whether to select a range, or null to leave it alone.
- */
 export function rowClickSelects(
   clicked: "control" | "title" | "row",
   modifiers: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean },

@@ -43,10 +43,7 @@ const tempDirs: string[] = [];
 function createTempDir(): string {
   const dir = makeTestDir("deploy-check");
   tempDirs.push(dir);
-  // Deploy-check resolves its log directory from the control root, which a running
-  // Bridge exports into the environment — mocking process.cwd() alone is not enough.
-  // Pin the log directory to this temp dir so tests never write to, or prune, the
-  // real validation log directory.
+  // Pin the log dir: the env's control root would make tests prune real validation logs.
   vi.stubEnv("BRIDGE_VALIDATION_LOG_DIR", join(dir, "data", "validation-logs"));
   return dir;
 }
@@ -64,8 +61,7 @@ function mockSpawnResult(result: MockSpawnResult): void {
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
 
-    // A real child reports its result on a later event-loop turn, after the caller has
-    // subscribed. Process creation is asynchronous, so the mock waits for that subscription.
+    // A real child reports after the caller subscribes, so the mock waits for that subscription.
     let finished = false;
     child.on("newListener", (event) => {
       if (event !== "close" || finished) return;

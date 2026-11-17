@@ -79,8 +79,7 @@ describe("the thinker's packet", () => {
 });
 
 describe("a task whose next step is Tim's", () => {
-  // Shaped like a real miss: the task's agent wrote Tim's next step as an instruction, Helm's thread
-  // line called it agent-run, and the brief put it under watching (morning) or left it out (evening).
+  // The agent wrote the user's step as an instruction and Helm's thread line called it agent-run.
   const thread = "Deadline passed: 41 of 64 done, the tab balances. Agent processing the Friday digest and Sam's paintball question, then locks the sheet. Agent-run; stay out unless it asks.";
   const absences = [{ title: "Mission trip", start: "2026-11-22", end: "2026-12-01" }];
   const morning = {
@@ -106,7 +105,7 @@ describe("a task whose next step is Tim's", () => {
     {
       when: "the morning after its deadline, while it still waits on a date that has passed",
       now: "2026-11-13T16:00:00.000Z", lastRunAt: "2026-11-13T02:00:00.000Z", row: morning, notes: "",
-      // The line was written from these same fields, so it is current; the fields still overrule it.
+      // The line is current (same fields), but the fields still overrule it.
       basis: taskBasis(morning), outOfDate: false,
       reason: "what it was waiting for was due Thu, Nov 12, which has passed",
     },
@@ -135,7 +134,7 @@ describe("a task whose next step is Tim's", () => {
     const asTim = validatePublication({ summary: "x", items: [], memory: { threads: [{ bridge: "local", taskId: "t-retreat", text: "Tim nudges the stragglers, then sends amounts.", owner: "tim" }] } }, packet, [memory]);
     expect(asTim.ok && asTim.memory).toEqual([expect.objectContaining({ owner: "tim", holdUntil: null, basis: taskBasis(row) })]);
 
-    // Left out of the items, Home still lists it under On you; an item about it takes its place there.
+    // Left out of the items, Home still lists it under On you; an item about it replaces it.
     expect(onYouList(packet, { items: [] }).onYou).toEqual([{ bridge: "local", taskId: "t-retreat", title: "Retreat trip finances", nextAction: row.nextAction, reasons: expect.arrayContaining([reason]) }]);
     const item = { id: "i1", kind: "due" as const, bridge: "local", title: "Send the amounts", recommendation: "Lock it now.", evidence: [{ label: "Task", target: { bridge: "local", taskId: "t-retreat" } }], actions: [] };
     expect(onYouList(packet, { items: [item] }).onYou).toEqual([]);

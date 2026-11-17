@@ -1,13 +1,4 @@
-/**
- * Client-side conditional GET support.
- *
- * The dev tunnel relay stamps `Cache-Control: no-cache,no-store` onto every response,
- * so the browser's own HTTP cache never revalidates API polls. Remembering the last
- * ETag + parsed body per GET URL lets us send `If-None-Match` ourselves and turn an
- * unchanged poll into a bodyless 304 regardless of what the relay adds. Setting a
- * conditional header also makes fetch() bypass the HTTP cache, so behavior is the
- * same on localhost and through the tunnel.
- */
+// The tunnel relay sends no-store, so the browser never revalidates; send If-None-Match ourselves.
 
 export const CONDITIONAL_GET_CACHE_LIMIT = 64;
 
@@ -27,10 +18,7 @@ export class ConditionalGetCache {
     return entry ? { "If-None-Match": entry.etag } : {};
   }
 
-  /**
-   * Resolve a response for `key`. Returns the cached body on a 304 we can honor;
-   * otherwise `undefined` so the caller parses the fresh response body.
-   */
+  /** The cached body on a 304 we can honor; else `undefined`, so the caller parses the body. */
   reuseIfNotModified(key: string, status: number | undefined): { result: unknown } | undefined {
     if (status !== 304) return undefined;
     const entry = this.entries.get(key);

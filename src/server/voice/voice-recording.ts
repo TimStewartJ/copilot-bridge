@@ -1,5 +1,4 @@
-// Decodes an uploaded chat mic recording. Browsers that can encode Opus send Ogg Opus, about an
-// eighth the size of the WAV that every browser can fall back to.
+// Decodes an uploaded chat mic recording: Ogg Opus where the browser can encode it, else WAV.
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { demuxOggOpus, isOggOpus, oggOpusDurationSeconds, OPUS_CLOCK_RATE } from "../../shared/ogg-opus.js";
 import { decodeWav, type DecodedWav } from "./voice-clip.js";
@@ -26,7 +25,7 @@ async function decodeOggOpus(bytes: Uint8Array, preferredSampleRate: number): Pr
   const decoder = new OpusDecoder({
     sampleRate,
     channels: stream.channels,
-    // The header counts the encoder's delay at 48 kHz; the decoder drops samples at its output rate.
+    // The header counts encoder delay at 48 kHz; the decoder drops samples at its output rate.
     preSkip: Math.round((stream.preSkip * sampleRate) / OPUS_CLOCK_RATE),
   });
   try {
@@ -62,7 +61,7 @@ async function decodeOggOpus(bytes: Uint8Array, preferredSampleRate: number): Pr
   }
 }
 
-/** Decodes a WAV or Ogg Opus recording to mono samples, at `preferredSampleRate` when the format allows it. */
+/** Decodes WAV or Ogg Opus to mono, at `preferredSampleRate` when the format allows it. */
 export async function decodeRecording(bytes: Uint8Array, preferredSampleRate: number): Promise<DecodedRecording> {
   return isOggOpus(bytes) ? decodeOggOpus(bytes, preferredSampleRate) : { format: "wav", ...decodeWav(bytes) };
 }

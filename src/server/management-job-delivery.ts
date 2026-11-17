@@ -1,8 +1,4 @@
-// Sends a management job's final result back to the session whose tool call queued it.
-//
-// The delivery is a `deferred_prompts` row with purpose 'delivery', written in the same
-// transaction that records the job's final status. The deferred prompt runner in the live
-// server hands it to the session once it is idle, the same way returned defer results are.
+// Queues a job's final result as a 'delivery' deferred prompt in its final-status transaction.
 
 import { isRecord } from "../shared/is-record.js";
 import type { DatabaseSync } from "./db.js";
@@ -96,12 +92,7 @@ function isSessionArchived(db: DatabaseSync, sessionId: string): boolean {
   return row?.archived === 1;
 }
 
-/**
- * Queues the job's result for its origin session. Call inside the transaction that wrote the
- * final status. The id is derived from the job, so a repeated final transition (or another
- * process doing the same) never queues a second message. If a later write corrects the final
- * status before the message is sent, the unsent message is rewritten to match it.
- */
+/** Call in the final-status transaction; the job-based id dedupes and pending text tracks fixes. */
 export function queueManagementJobDelivery(db: DatabaseSync, job: ManagementJob, now: string): boolean {
   const sessionId = job.originSessionId;
   if (!sessionId || !isFinalManagementJob(job)) return false;
@@ -119,10 +110,7 @@ export function queueManagementJobDelivery(db: DatabaseSync, job: ManagementJob,
   return Number(result.changes ?? 0) > 0;
 }
 
-/**
- * Drops a still-queued result the session no longer needs: it already read the final status,
- * or it queued a newer job that supersedes this one. A delivery already under way is left alone.
- */
+/** Drops a queued result the session read already or a newer job superseded; not one in flight. */
 export function withdrawPendingManagementJobDeliveries(
   db: DatabaseSync,
   sessionId: string,
@@ -151,8 +139,7 @@ export function suppressManagementJobDelivery(
 ): boolean {
   if (!job.originSessionId) return false;
   const id = managementJobDeliveryId(job.id);
-  // Keep a tombstone even before the job finishes, so the other process and reconciliation
-  // cannot recreate a message after a waiter takes ownership or the user stops the chat.
+  // A tombstone even before the job ends, so nothing recreates a message a waiter or Stop claimed.
   const result = db.prepare(`
     INSERT INTO deferred_prompts
       (id, sessionId, prompt, purpose, sourceId, runAt, status, attempts, lastError, createdAt, updatedAt)
@@ -166,10 +153,7 @@ export function suppressManagementJobDelivery(
   return Number(result.changes ?? 0) > 0;
 }
 
-/**
- * Queues results a final transition did not queue, such as a job finished by a runner still on
- * code that predates result delivery. Rows the session withdrew still exist, so they stay withdrawn.
- */
+/** Queues results a final transition missed (an older runner); withdrawn rows stay withdrawn. */
 export function reconcileManagementJobDeliveries(
   db: DatabaseSync,
   readJob: (id: string) => ManagementJob | null,
@@ -198,10 +182,7 @@ export function reconcileManagementJobDeliveries(
   return queued;
 }
 
-/**
- * Records that the origin session read the job's final status itself, so a result that has
- * not been sent yet is not sent at all. Queuing first covers a result no one queued yet.
- */
+/** The origin session read the final status itself, so an unsent result is never sent. */
 export function markManagementJobResultSeen(db: DatabaseSync, job: ManagementJob, nowMs = Date.now()): boolean {
   if (!job.originSessionId || !isFinalManagementJob(job)) return false;
   const now = new Date(nowMs).toISOString();

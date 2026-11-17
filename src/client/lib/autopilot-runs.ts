@@ -20,13 +20,7 @@ function time(value: string | undefined): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
-/**
- * Pairs each completion with the autopilot run it ended. A run starts at a message sent with
- * Autopilot. The log does not record where a run stopped, so when another message came before the
- * completion (a steering note, or a new run after a stop) the start is uncertain: the completion is
- * still marked as Autopilot, without figures that could be wrong. A run whose start is not loaded,
- * or that an interactive message interrupted, is not marked.
- */
+/** The log lacks run ends: if a message precedes the completion, mark Autopilot without figures. */
 export function summarizeAutopilotRuns(blocks: ChatRenderBlock[]): Map<ChatCompletionEntry, AutopilotRunSummary> {
   const summaries = new Map<ChatCompletionEntry, AutopilotRunSummary>();
   let run: {

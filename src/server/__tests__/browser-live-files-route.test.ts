@@ -7,7 +7,7 @@ import { makeTestDir } from "./helpers.js";
 import { createTestApp } from "./test-app.js";
 import request from "./test-http.js";
 
-/** An app whose live-view gateway has one file chooser open, `c1`, that takes files into `folder`. */
+/** An app whose live view has one file chooser `c1` open that takes files into `folder`. */
 async function appWithChooser(multiple: boolean) {
   const { app, ctx } = createTestApp();
   const live = getBrowserRuntime(ctx).live;

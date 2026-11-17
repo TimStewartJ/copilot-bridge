@@ -78,10 +78,7 @@ function HistoryEntryRow({
   );
 }
 
-/**
- * A task's history: what happened, newest first. Entries are written once; agents read the latest
- * few in every turn's context and search the rest with a tool.
- */
+/** A task's history, newest first; agents see the latest few each turn and search the rest. */
 export default function TaskHistorySheet({
   taskId,
   onClose,

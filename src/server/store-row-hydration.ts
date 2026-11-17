@@ -1,15 +1,4 @@
-/**
- * Per-row hydration guards for SQLite-backed stores.
- *
- * Stores hydrate rows by parsing JSON columns and asserting their shape. Doing
- * that in a bare `rows.map(hydrate)` means one malformed or newly-invalid row
- * throws for the *entire* read, which bricks every caller of the list — including
- * the settings UI the user would need to delete the offending row. It is also a
- * forward-compatibility trap: tightening a validator turns previously-valid
- * persisted rows into a boot-time failure.
- *
- * These helpers keep the read alive by skipping the bad row and logging it once.
- */
+/** Skip and log a bad row; failing the whole read locks users out of fixing it. */
 
 export interface RowHydrationContext<Row> {
   /** Store/table name used in the warning, e.g. "mcp_servers". */

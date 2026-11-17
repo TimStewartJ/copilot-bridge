@@ -1,5 +1,4 @@
-// Trigger store: SQLite persistence for triggers and the chats and tasks they started.
-// Every state change that hands work to a runner is guarded by the row's claim token.
+// Trigger persistence; every change that hands work to a runner is guarded by the claim token.
 
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "../db.js";
@@ -24,7 +23,7 @@ import {
 } from "./types.js";
 import type { TriggerCheckSpec } from "./check.js";
 
-/** After a reactivation the trigger gets at least this long before a passed expiry stops it again. */
+/** A reactivated trigger gets at least this long before a passed expiry stops it again. */
 const REACTIVATED_EXPIRY_MIN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface TriggerListFilter {
@@ -74,7 +73,7 @@ function parseJson<T>(json: unknown): T | undefined {
   }
 }
 
-/** Status a settled occurrence leaves the trigger in, from its limits and whether another occurrence exists. */
+/** The status a settled occurrence leaves, from the limits and whether another occurs. */
 export function occurrenceStatus(
   trigger: Pick<Trigger, "maxRuns" | "expiresAt">,
   runCount: number,
@@ -344,7 +343,7 @@ export function createTriggerStore(db: DatabaseSync) {
     return get(id)!;
   }
 
-  /** Change a trigger's definition. Refused while it runs, so a run never settles on a definition it did not use. */
+  /** Changes a trigger's definition; refused while it runs so a run settles on what it used. */
   function update(id: string, patch: TriggerUpdate, now = new Date().toISOString()): Trigger | undefined {
     const fields: string[] = [];
     const values: Array<string | number | null> = [];
@@ -381,7 +380,7 @@ export function createTriggerStore(db: DatabaseSync) {
     `).run(nextRunAt, now, id));
   }
 
-  /** Return a stopped trigger to the queue with a fresh failure budget, extending a passed expiry. */
+  /** Requeues a stopped trigger with a fresh failure budget, extending a passed expiry. */
   function reactivate(id: string, nextRunAt: string, now = new Date().toISOString()): boolean {
     const existing = get(id);
     if (!existing) return false;
@@ -436,7 +435,7 @@ export function createTriggerStore(db: DatabaseSync) {
     });
   }
 
-  /** Hard-delete every trigger a task owns, when the task is deleted. Chats and tasks they started stay. */
+  /** Hard-deletes a deleted task's triggers; chats and tasks they started stay. */
   function deleteForTask(taskId: string): string[] {
     return transaction(() => {
       const ids = (db.prepare("SELECT id FROM triggers WHERE taskId = ?").all(taskId) as Array<{ id: string }>).map((row) => row.id);
@@ -476,12 +475,12 @@ export function createTriggerStore(db: DatabaseSync) {
     noteWaitStmt.run(reason, id, reason);
   }
 
-  /** Keep a firing check result for the action that will run for it. False when the claim was lost. */
+  /** Keeps a firing check result for its action; false when the claim was lost. */
   function savePendingCheck(id: string, claimToken: string, pending: TriggerPendingCheck): boolean {
     return changed(savePendingStmt.run(JSON.stringify(pending), new Date().toISOString(), id, claimToken));
   }
 
-  /** Record one finished occurrence and schedule the next, with an optional message for the owning chat. */
+  /** Records a finished occurrence and schedules the next, with an optional chat message. */
   function settleOccurrence(id: string, claimToken: string, options: SettleOptions, now = new Date().toISOString()): Trigger | undefined {
     return transaction(() => {
       const row = selectById.get(id) as any;
@@ -521,7 +520,7 @@ export function createTriggerStore(db: DatabaseSync) {
     });
   }
 
-  /** End a trigger that is waiting (limit or expiry reached, or its owner is gone), with an optional message. */
+  /** Ends a waiting trigger (limit, expiry or owner gone), with an optional message. */
   function endWaiting(
     id: string,
     status: Exclude<TerminalTriggerStatus, "cancelled"> | "cancelled",
@@ -534,8 +533,6 @@ export function createTriggerStore(db: DatabaseSync) {
       return true;
     });
   }
-
-  // ── Runs (chats and tasks a trigger started) ─────────────────────
 
   /** Record a chat a fire started. False when this occurrence already recorded one. */
   function recordRun(run: { triggerId: string; sessionId: string; taskId?: string; occurrence?: string }, now = new Date().toISOString()): boolean {
@@ -592,7 +589,7 @@ export function createTriggerStore(db: DatabaseSync) {
     return Number(result.changes ?? 0);
   }
 
-  /** Bounded hard-delete of stopped triggers older than `olderThanIso`. Task triggers are kept until deleted. */
+  /** Bounded hard-delete of old stopped chat triggers; task triggers stay until deleted. */
   function pruneTerminal(olderThanIso: string, limit = DEFAULT_TERMINAL_PRUNE_LIMIT): number {
     const bounded = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_TERMINAL_PRUNE_LIMIT;
     const result = db.prepare(`

@@ -166,7 +166,7 @@ describe("Transcription routes", () => {
       expect(tooLong.status).toBe(400);
       expect(tooLong.body.error).toContain("Audio exceeds 1 seconds");
 
-      // A recording stopped exactly at the limit: the encoder padded it to 51 packets, and it still fits.
+      // Stopped exactly at the limit: the encoder padded it to 51 packets, and it still fits.
       const atTheLimit = Buffer.from(muxOggOpus({
         channels: 1,
         preSkip: 312,
@@ -394,9 +394,7 @@ describe("Voice job routes", () => {
       safeToLeave: true,
     });
 
-    // Processing is registered before the 202 response. shutdown() awaits every
-    // in-flight run, so the job is terminal before the assertion instead of
-    // racing a fixed number of HTTP polls against real filesystem work.
+    // shutdown() awaits in-flight runs, so the job is settled here without racing polls.
     await ctx.voiceJobManager.shutdown();
     const jobRes = await request(app).get(`/api/voice-jobs/${res.body.id}`);
     expect(jobRes.status).toBe(200);

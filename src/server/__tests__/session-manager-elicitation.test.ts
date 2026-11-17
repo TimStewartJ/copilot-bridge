@@ -29,12 +29,7 @@ function pendingRequest(): PendingElicitationRequestView {
   };
 }
 
-/**
- * The Copilot runtime owns elicitation requests but exposes no wire method that
- * enumerates them, so Bridge's event-derived listing index is the only listing
- * source. Seed it the way `session-runner` does when the runtime raises
- * `elicitation.requested`; the runtime still adjudicates every response.
- */
+// The runtime can't list elicitations; seed the Bridge's event index as session-runner does.
 function createManager(pending: PendingElicitationRequestView[] = []) {
   const db = setupTestDb();
   const globalBus = createTestBus();

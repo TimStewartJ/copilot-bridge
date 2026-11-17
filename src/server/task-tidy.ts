@@ -1,8 +1,4 @@
-// Tidying a task's standing instructions and notes. Instructions are read by every session of a
-// task, and notes travel with its messages, so dated stories, ids of past items and reference
-// material in them cost every later session and can mislead it. A tidy-up runs in a chat of its
-// own: it proposes moves, the user picks which to apply, and only then does it change anything.
-// Helm's weekly look offers one for tasks that show the signs below; a task's menu starts one too.
+// Task tidy-up chat: proposes moves out of instructions/notes, applies only what the user picks.
 import type { AppContext } from "./app-context.js";
 import { startTaskChat, type TaskChatLaunch } from "./task-chat-start.js";
 import type { Task } from "./task-store.js";
@@ -18,7 +14,7 @@ const DATED_REFERENCES_FLAGGED = 3;
 const LONG_INSTRUCTIONS = 6_000;
 const LONG_NOTES = 12_000;
 
-/** Signs, in plain words, that a task's instructions or notes need tidying. Empty when they look fine. */
+/** Plain-word signs that a task's instructions or notes need tidying; empty when fine. */
 export function taskTidyHints(task: Pick<Task, "instructions" | "notes">): string[] {
   const hints: string[] = [];
   const instructions = task.instructions ?? "";

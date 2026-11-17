@@ -1,4 +1,4 @@
-/** 2.5 seconds of two tones and seeded noise at 16 kHz: the input the reference values were computed from. */
+/** 2.5 s of two tones and seeded noise at 16 kHz: the input of the reference values. */
 export function deterministicSignal(): Float32Array {
   const signal = new Float32Array(40_000);
   let seed = 12345;

@@ -1,5 +1,4 @@
-// Shared setup for the staging-tools test files. Their vi.mock calls route node:fs, node:child_process
-// and the Bridge modules below through ./staging-tools-mocks.js, so this module sees the mocked versions.
+// Shared staging-tools setup; the test files' vi.mock route modules via ./staging-tools-mocks.js.
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -207,8 +206,7 @@ export type LoadStagingToolsOptions = {
 export async function loadStagingToolsModule(options: LoadStagingToolsOptions = {}) {
   vi.resetModules();
   vi.stubEnv("BRIDGE_STAGING_PREVIEW_DIR", options.previewParent ?? createTempDir("bridge-stage-preview-root-"));
-  // staging_preview seeds from PRODUCTION_DATA_DIR when no seeder is injected.
-  // Pin it to an empty temp dir so no test can snapshot a real bridge.db.
+  // staging_preview seeds from the production data dir; keep it empty, off any real bridge.db.
   const productionDataDir = join(createTempDir("bridge-stage-production-"), "data");
   mkdirSync(productionDataDir, { recursive: true });
   vi.stubEnv("BRIDGE_DATA_DIR", productionDataDir);
@@ -277,12 +275,10 @@ export function successfulCommandOutput(command: string): string {
   return "";
 }
 
-/** Registers the per-test reset of every staging-tools mock. Call once at the top of each test file. */
+/** Registers the per-test reset of every staging-tools mock. Call once per test file. */
 export function useStagingToolsTestEnvironment(): void {
   beforeEach(() => {
-    // Validation log writes are intercepted through the node:fs mock above, but the
-    // retention sweep they trigger uses node:fs/promises. Point every writer and
-    // sweep at a temp directory so no test can touch the real validation log dir.
+    // The log sweep uses node:fs/promises, not the fs mock; a temp dir keeps tests off real logs.
     vi.stubEnv(
       "BRIDGE_VALIDATION_LOG_DIR",
       join(createTempDir("bridge-staging-validation-"), "data", "validation-logs"),
@@ -344,17 +340,14 @@ export interface DeployGitState {
   stashMarker: string;
 }
 
-/**
- * Answers one command before the declared happy path does: return the output, throw (see failCommand)
- * to fail it, or return undefined to leave it to the happy path.
- */
+/** Answers a command before the happy path: return output, throw (failCommand), or undefined. */
 export type DeployCommandOverride = (cmd: string, cwd: string | undefined, git: DeployGitState) => string | undefined;
 
 export function failCommand(message: string, stderr: string): never {
   throw Object.assign(new Error(message), { stderr });
 }
 
-/** The stages of a clean deploy, in order. A scenario allows the commands of the stages up to its `through`. */
+/** A clean deploy's stages, in order; a scenario allows commands of stages up to its `through`. */
 export const DEPLOY_STAGES = ["commit", "stash", "rebase", "validate", "merge", "push", "cleanup"] as const;
 export type DeployStage = (typeof DEPLOY_STAGES)[number];
 
@@ -394,13 +387,7 @@ function deployHappyPath(stagingDir: string, branch: string, git: DeployGitState
   return stages;
 }
 
-/**
- * Makes the mocked command runner behave like a production checkout on main that a staging worktree
- * deploys into cleanly, as far as the stage `through`. Any other command throws, so a deploy that runs
- * a command the test did not expect fails. With `stashChanges`, production has uncommitted changes, so
- * the deploy stashes them and the stash list shows that entry. Restoring the stash (`git stash pop`) is
- * never on the happy path: a test that expects it answers it in `respond`.
- */
+/** Fakes a clean deploy's commands up to `through`; any other command (even stash pop) throws. */
 export function mockDeployCommands(
   stagingDir: string,
   options: { stashChanges?: boolean; through?: DeployStage; respond?: DeployCommandOverride } = {},

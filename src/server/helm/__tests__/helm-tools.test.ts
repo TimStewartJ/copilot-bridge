@@ -156,7 +156,7 @@ describe("Helm tools", () => {
         ["Circles Journaling App", "1h ago"],
         ["Older task 7", "9d ago"],
       ]);
-      // Eight are listed; the count says how many there really are, so a partial list is never mistaken for all of them.
+      // Eight listed; the count gives the real total so a partial list is not taken for all.
       expect(result.activeTasks).toHaveLength(8);
 
     } finally {

@@ -33,19 +33,13 @@ interface SessionAgentsBarProps {
   sessionId: string | null;
   /** Live-gated counts from the session list; they decide whether the bar shows at all. */
   backgroundAgents?: BackgroundAgentsSummary;
-  /** The session's agents as its history records them: the names they were launched under, time worked and steps taken. */
+  /** The session's agents from its history: launch names, time worked and steps taken. */
   agents?: TranscriptAgentDirectory;
   /** The newest step each agent has taken in the open run, by the call that launched the agent. */
   latestSteps?: ReadonlyMap<string, string>;
-  /**
-   * How many of each agent's steps the transcript has loaded, by the call that launched the agent.
-   * The records are read a moment after each step, so a working agent's count comes from here.
-   */
+  /** Steps loaded per launching call; records lag, so a working agent's count comes from here. */
   loadedStepCounts?: ReadonlyMap<string, number>;
-  /**
-   * On a phone the list opens as a sheet. A parent that owns the page's history passes these so
-   * the back button closes it; without them the bar keeps the state itself.
-   */
+  /** Phone sheet state, passed by a parent owning history so Back closes it; else kept locally. */
   sheetOpen?: boolean;
   onOpenSheet?: () => void;
   onCloseSheet?: () => void;
@@ -56,7 +50,7 @@ const REPORT_PREVIEW_CHARS = 5000;
 
 const NON_TERMINAL: ReadonlySet<AgentTaskStatus> = new Set<AgentTaskStatus>(["running", "idle"]);
 
-/** Working agents first, then the ones that can still be sent a message, then the ones that ended. */
+/** Working agents first, then ones that can still take a message, then ended ones. */
 const STATUS_ORDER: Record<AgentTaskStatus, number> = {
   running: 0,
   idle: 1,
@@ -84,10 +78,7 @@ function parseTime(value: string | undefined): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
-/**
- * How long an agent has worked. The runtime reports the periods that have ended; the one in flight
- * is counted from when it began, by the runtime's word or, failing that, by the session's history.
- */
+/** Ended periods come from the runtime; the live one counts from its start (runtime or history). */
 function getElapsedMs(task: SessionAgentTask, agent: TranscriptAgent | undefined, now: number): number | undefined {
   if (task.status !== "running") return task.activeTimeMs ?? agent?.activeMs;
   const since = parseTime(task.activeStartedAt);
@@ -147,8 +138,7 @@ function AgentRow({ sessionId, task, agent, latestStep, loadedStepCount, now, op
   const stateWord = STATUS_WORD[task.status];
   const stepCount = Math.max(agent?.toolCount ?? 0, loadedStepCount);
 
-  // The list carries the start of each brief and report; an opened row reads them in full, again
-  // whenever the agent changes state or the list shows it has said something new.
+  // An open row rereads the full brief and report when the state or the listed text changes.
   const detailVersion = [
     task.status,
     task.idleSince,
@@ -225,7 +215,7 @@ function AgentRow({ sessionId, task, agent, latestStep, loadedStepCount, now, op
         className={cx(DS.row.base, DS.row.interactive, DS.row.touch)}
       >
         <span className={DS.row.iconSlot}><StatusGlyph status={task.status} /></span>
-        {/* The name keeps its width; what it is doing takes whatever is left and truncates first. */}
+        {/* The name keeps its width; the activity text truncates first. */}
         <span className={cx(DS.row.label, "font-medium", task.status === "failed" ? DS.tone.danger : "text-text-secondary")}>
           {name}
         </span>
@@ -343,15 +333,7 @@ function AgentsSheet({ summary, onClose, children }: { summary: string; onClose:
   return <Sheet title="Agents" detail={summary} closeLabel="Close agents" onClose={onClose}>{children}</Sheet>;
 }
 
-/**
- * The agents working in the background of a session, including the ones that outlive the turn
- * that launched them. It is one line that says how many are working, and opens onto a row for each:
- * what it is doing, how long it has worked, its latest report, a way to stop it, and a way to
- * dismiss one that is no longer working.
- *
- * The bar appears only while the session list reports live agents, so it never presents an old
- * reading as current. Opening it reads the runtime's own list of the agents it tracks.
- */
+/** Shown only while the session list reports live agents, so an old reading never looks current. */
 export default function SessionAgentsBar({
   sessionId,
   backgroundAgents,
@@ -442,7 +424,7 @@ export default function SessionAgentsBar({
   const listed = useMemo(() => {
     const startedAt = (task: SessionAgentTask) => parseTime(task.startedAt) ?? 0;
     return tasks
-      // An agent the main agent waits on inside one turn is in the transcript, not in the background.
+      // Sync agents show in the transcript, not here.
       .filter((task) => task.executionMode !== "sync")
       .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || startedAt(a) - startedAt(b));
   }, [tasks]);

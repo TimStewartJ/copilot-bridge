@@ -311,8 +311,7 @@ export default function ChecklistItemRow(props: ChecklistItemRowProps) {
           )}
         </div>
 
-        {/* Hidden date input — uses opacity-0 instead of sr-only so
-             showPicker() works on mobile (clip: rect(0,0,0,0) blocks it) */}
+        {/* opacity-0, not sr-only: its clip blocks showPicker() on mobile. */}
         <input
           ref={dateRef}
           type="date"

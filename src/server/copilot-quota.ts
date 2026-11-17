@@ -1,22 +1,4 @@
-/**
- * Live account quota counter, read through the agent backend's account RPCs.
- *
- * Two calls are merged because neither is complete on its own:
- *  - `account.getQuota` returns the typed per-bucket snapshots (entitlement,
- *    used, percentage, overage), but `usedRequests` is rounded to two
- *    significant figures and its `resetDate` currently repeats the snapshot
- *    timestamp rather than the quota reset date.
- *  - `account.getCurrentAuth` carries the raw Copilot user response, which has
- *    the exact `quota_remaining` and the real `quota_reset_date`.
- *
- * Both are the backend's copy from when it started, so the reader can also take
- * a freshly fetched Copilot user response (`getLiveUser`) that replaces it.
- *
- * The typed shapes are marked @experimental in the SDK, so everything is parsed
- * defensively and a bad payload degrades to "unavailable" instead of throwing.
- * Note the bucket named `premium_interactions` is billed in AI credits, not
- * premium requests, whenever `tokenBasedBilling` is set.
- */
+// Quota: merges getQuota (rounded used, bad resetDate) with getCurrentAuth (exact counts, reset).
 import { isRecord } from "../shared/is-record.js";
 
 export type CopilotQuotaUnit = "ai_credits" | "premium_requests";
@@ -54,7 +36,7 @@ export interface CopilotQuotaStatus {
 
 export interface CopilotQuotaReader {
   read(options?: { refresh?: boolean }): Promise<CopilotQuotaStatus>;
-  /** Forgets the cached reading; a read already under way neither answers later reads nor caches. */
+  /** Forgets the cached reading; a read in flight neither answers later reads nor caches. */
   invalidate?(): void;
 }
 
@@ -62,11 +44,7 @@ export interface CreateCopilotQuotaReaderOptions {
   getQuota: () => Promise<unknown>;
   /** Optional: supplies the exact remaining balance and the real reset date. */
   getAuth?: () => Promise<unknown>;
-  /**
-   * Optional: the raw Copilot user response fetched from GitHub now. The
-   * backend's `getAuth`/`getQuota` copies are only fetched when it starts, so
-   * without this a refresh keeps returning the same numbers.
-   */
+  /** Live Copilot user response; without it a refresh repeats the backend's startup numbers. */
   getLiveUser?: () => Promise<unknown>;
   /** Told about each new live-fetch failure; a repeat of the last one is not reported again. */
   onLiveUserError?: (message: string) => void;
@@ -237,8 +215,7 @@ function parseCopilotQuotaSnapshot(
   if (!record) return null;
   const rawUser = context.rawUserSnapshot;
 
-  // The raw user response wins: it may be freshly fetched, while the typed
-  // snapshot is always the backend's copy from startup.
+  // The raw user response wins: it may be fresh, while the typed snapshot is from startup.
   const tokenBasedBilling = readBoolean(rawUser?.token_based_billing)
     ?? readBoolean(record.tokenBasedBilling)
     ?? false;
@@ -275,11 +252,7 @@ function parseCopilotQuotaSnapshot(
   };
 }
 
-/**
- * `resetDate` on the typed snapshot currently repeats the snapshot timestamp,
- * which would render as "resets today". Only trust it when it is actually in
- * the future.
- */
+/** The snapshot's resetDate repeats its timestamp ("resets today"), so trust only a future one. */
 function futureResetDate(value: unknown, fetchedAt: string): string | null {
   const candidate = readNonEmptyString(value);
   if (!candidate) return null;
@@ -289,10 +262,7 @@ function futureResetDate(value: unknown, fetchedAt: string): string | null {
   return candidateMs > fetchedAtMs ? candidate : null;
 }
 
-/**
- * Prefer the bucket that carries real numbers. On seat-quota accounts `chat`
- * and `completions` are unlimited with zeroed counters, so they are noise.
- */
+/** Prefers a bucket with real numbers; on seat accounts chat and completions are zeroed noise. */
 function pickPrimarySnapshot(snapshots: readonly CopilotQuotaSnapshot[]): CopilotQuotaSnapshot | null {
   if (snapshots.length === 0) return null;
   const named = snapshots.find((snapshot) => snapshot.bucket === PRIMARY_QUOTA_BUCKET);

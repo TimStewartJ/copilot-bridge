@@ -27,10 +27,7 @@ interface UseLongPressMenuReturn<T> {
   closeMenu: () => void;
   /** Whether this id is currently being long-pressed (for visual feedback) */
   isTarget: (id: T) => boolean;
-  /**
-   * Forget a pending "swallow the next click" guard. Call it when the rows that were long-pressed
-   * were swapped out (reorder mode), so the first click on them afterwards is not eaten.
-   */
+  /** Forget the swallow-next-click guard when long-pressed rows were swapped out (reorder mode). */
   resetClickGuard: () => void;
   /** Close the menu and forget any press in progress, for when the pressed control goes away. */
   reset: () => void;
@@ -39,10 +36,7 @@ interface UseLongPressMenuReturn<T> {
 const LONG_PRESS_MS = 500;
 const MOVE_THRESHOLD_SQ = 100; // 10px squared
 
-/**
- * Generic hook for long-press / right-click context menus on mobile & desktop.
- * Handles touch timing, movement cancellation, click guards, and menu state.
- */
+/** Long-press and right-click context menus: touch timing, move cancel, click guard, menu state. */
 export default function useLongPressMenu<T>(): UseLongPressMenuReturn<T> {
   const [menu, setMenu] = useState<MenuState<T> | null>(null);
   const [longPressTarget, setLongPressTarget] = useState<T | null>(null);

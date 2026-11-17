@@ -203,8 +203,7 @@ describe("createTouchMouse", () => {
     expect(clock.pending()).toBe(0);
   });
 
-  // A second finger that lands after the wait finds the button already down. Letting go of it is
-  // the only way to stop the page dragging, even though the page sees that as a click.
+  // Past the wait the button is down; only releasing it ends the drag, even though it clicks.
   it("ends a press that already started before a second finger scrolls", () => {
     const { events, scrolls, touch, clock } = setup();
     touch.down(finger(1, 200, 400));

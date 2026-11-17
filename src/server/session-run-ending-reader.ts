@@ -6,17 +6,11 @@ const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 /** After one of these the main agent cannot continue the run, whatever else is happening. */
 const CONCLUSIVE_ENDING_TYPES = new Set(["session.error", "abort", "session.shutdown"]);
 
-/**
- * How events.jsonl says a run ended. It never says *whether* the run ended: that is the
- * runtime's call (`AgentSession.getActivity`).
- */
+/** How events.jsonl says a run ended; whether it ended is `AgentSession.getActivity`'s call. */
 export interface PersistedRunEnding {
   /** The main agent's ending event since the run started, when the log has one. */
   event?: any;
-  /**
-   * An error, abort or shutdown ends the run by itself. A turn end does not, because the runtime
-   * may start the next turn on its own (autopilot, or a background task that just finished).
-   */
+  /** Error, abort or shutdown; not a turn end, as the runtime may start the next turn itself. */
   conclusive: boolean;
   /** The main agent's last reply since the run started. */
   assistantContent?: string;
@@ -50,11 +44,7 @@ async function readBoundedTail(eventsPath: string): Promise<string> {
   }
 }
 
-/**
- * Reads how the main agent's run ended. Sub-agents write to the same log, and their turns and
- * errors end nothing but themselves, so every event that carries an `agentId` is skipped. The
- * first conclusive ending wins; otherwise the ending is the main agent's last turn end.
- */
+/** Skips events with an agentId: sub-agent turns and errors share the log but end no run. */
 export async function readPersistedRunEnding(
   eventsPath: string,
   runStartedAt: number,

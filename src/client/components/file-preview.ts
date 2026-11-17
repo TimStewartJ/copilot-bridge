@@ -1,9 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-/**
- * What the chat can show of a file in place, and how it reads the file to do so. The components
- * are in FilePreview.tsx; this module has no markup so the rules can be tested by themselves.
- */
+// File preview rules without markup (components are in FilePreview.tsx), so they test alone.
 
 export interface PreviewFile {
   url: string;
@@ -38,21 +35,18 @@ export function fileExtension(name: string): string {
   return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
-/**
- * How a file is shown in the chat, or null when all the chat can do is offer it for download.
- * Any extension not listed is tried as text; reading it settles whether it is.
- */
-/** True for a vector image, which may state no size of its own and is usually drawn for a light page. */
+/** A vector image may state no size of its own and is usually drawn for a light page. */
 export function isVectorImage(src: string): boolean {
   return /\.svg(?:[?#]|$)/i.test(src);
 }
 
+/** How the chat shows a file, or null for download only; unlisted extensions are tried as text. */
 export function filePreviewKind(name: string): FilePreviewKind | null {
   const ext = fileExtension(name);
   return KIND_BY_EXTENSION[ext] ?? (OPAQUE_EXTENSIONS.has(ext) ? null : "text");
 }
 
-/** The address at which the server shows a file for the browser to display, instead of downloading it. */
+/** The URL at which the server serves a file for the browser to display, not download. */
 export function inlineFileUrl(url: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}inline=1`;
 }
@@ -66,11 +60,7 @@ export function imageTabUrl(src: string): string | null {
 const SESSION_FILE_URL_RE = /\/api\/sessions\/[a-f0-9-]{36}\/(?:attachments|files)\/[^/?#]+$/i;
 const FILE_TAB_PATH_RE = /^(.*)\/file\/([a-f0-9-]{36})\/(attachments|files)\/([^/]+)$/i;
 
-/**
- * Where a new tab shows a file, or null when the file can only be downloaded. A browser shows an
- * image, a PDF, a player or a sandboxed page by itself. Text and tables open in the Bridge's own
- * viewer at a /file/ path, since a browser would show them unrendered or download them.
- */
+/** Text and tables open in the /file/ viewer, since a browser shows them raw or downloads them. */
 export function fileTabUrl({ url, name }: PreviewFile): string | null {
   const kind = filePreviewKind(name);
   if (!kind) return null;
@@ -81,10 +71,7 @@ export function fileTabUrl({ url, name }: PreviewFile): string | null {
   return inlineFileUrl(url);
 }
 
-/**
- * The file a tab at this path shows, or null for any other page of the app. The path names a
- * session's file rather than carrying a URL, so a link cannot point the viewer anywhere else.
- */
+/** The path names a session file, not a URL, so a link cannot point the viewer anywhere else. */
 export function fileFromTabPath(pathname: string): PreviewFile | null {
   const match = FILE_TAB_PATH_RE.exec(pathname);
   if (!match) return null;
@@ -160,10 +147,7 @@ export function loadFileText(url: string, limit: number): Promise<FileText> {
   return entry.loading;
 }
 
-/**
- * What an earlier read of the same part of a file returned. The transcript draws a reply's card
- * again when the reply finishes streaming, and this lets it show its text at once.
- */
+/** An earlier read's result, so a card redrawn after streaming shows its text at once. */
 export function loadedFileText(url: string, limit: number): FileText | null {
   return textCache.get(textKey(url, limit))?.loaded ?? null;
 }
@@ -195,22 +179,17 @@ export function parseDelimitedRows(text: string, delimiter: string, maxRows: num
   return rows;
 }
 
-/**
- * How many canvas pixels to draw per CSS pixel for a PDF page of the given size: as sharp as the
- * screen, up to twice, and never more pixels in total than the device can hold in one canvas.
- */
+/** Canvas pixels per CSS pixel: screen sharpness, at most 2x, within the device's canvas limit. */
 export function pdfCanvasScale(cssWidth: number, cssHeight: number, devicePixelRatio: number, maxPixels: number): number {
   return Math.min(devicePixelRatio || 1, 2, Math.sqrt(maxPixels / (cssWidth * cssHeight)));
 }
 
-// The one file open in the full-screen viewer. A single viewer is mounted at the app's root
-// (FileViewerHost), outside any message, so the styles and touch handling of the message a file
-// was opened from do not reach it.
+// One viewer at app root (FileViewerHost): the opening message's styles and touch can't reach it.
 let shownFile: PreviewFile | null = null;
 let openedFrom: Element | null = null;
 const listeners = new Set<() => void>();
 
-/** Opens a file in the viewer, or closes the viewer with null and returns focus to what opened it. */
+/** Opens a file in the viewer, or with null closes it and returns focus to what opened it. */
 export function showFile(file: PreviewFile | null): void {
   if (file && !shownFile) openedFrom = document.activeElement;
   shownFile = file;

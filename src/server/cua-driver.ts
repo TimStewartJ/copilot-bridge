@@ -1,6 +1,4 @@
-// Cua Driver (github.com/trycua/cua) as the Bridge's desktop automation engine: a pinned
-// release installed on demand into the data directory, run by each chat as its own MCP server.
-// The Bridge keeps one connection per chat because Cua's element tokens belong to a connection.
+// Pinned Cua Driver as MCP; one connection per chat since element tokens are per connection.
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
@@ -37,10 +35,7 @@ export const CUA_DRIVER_RELEASE = {
   } as Record<string, CuaAsset>,
 } as const;
 
-/**
- * The desktop tools chats get. Cua's browser tools are left out because the Bridge has its own,
- * and so are its update, configuration, extension, recording and agent-cursor tools.
- */
+/** Desktop tools chats get; Cua's browser tools and its admin and recording tools are left out. */
 export const CUA_TOOLS = [
   "list_apps", "list_windows", "launch_app", "kill_app", "bring_to_front", "set_window_frame",
   "get_window_state", "verify_state", "zoom", "get_desktop_state", "get_screen_size", "get_cursor_position",
@@ -74,12 +69,12 @@ export function buildCuaMcpServerConfig(executablePath: string): LocalMcpServerC
   return {
     type: "local",
     command: executablePath,
-    // --direct runs the driver inside this process instead of attaching to a daemon someone else started.
+    // --direct runs the driver in this process instead of attaching to someone else's daemon.
     args: ["mcp", "--direct"],
     env: { DO_NOT_TRACK: "1", CUA_DRIVER_RS_UPDATE_CHECK: "false" },
     tools: [...CUA_TOOLS],
     executionScope: "session",
-    // About 50k tokens of tool definitions: loaded through tool search only in chats that drive the desktop.
+    // ~50k tokens of tool definitions, loaded via tool search only in chats driving the desktop.
     deferTools: "auto",
   };
 }
@@ -96,10 +91,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const INPUT_TOOLS = new Set(["click", "double_click", "right_click", "drag", "scroll", "type_text", "press_key", "hotkey"]);
 
-/**
- * Whether a Cua call would bring a window to the front or send real input. A safety net for a
- * cooperating agent: a script can still build a foreground call from computed strings.
- */
+/** Whether a Cua call would focus a window or send real input; a safety net, not a guarantee. */
 export function cuaCallTakesForeground(tool: string, args: unknown): boolean {
   if (tool === "bring_to_front" || tool === "invoke_menu") return true;
   if (!isRecord(args)) return INPUT_TOOLS.has(tool);
@@ -129,11 +121,7 @@ export interface CuaForegroundDecision {
 /** Input this soon after a Cua call ends is taken to be that call's own. */
 const OWN_INPUT_GRACE_MS = 3_000;
 
-/**
- * Refuses Cua calls that would take the foreground while the user is at the PC, so their typing
- * never lands in the wrong window. Cua's own input resets Windows' idle timer, so once a chat has
- * taken over, input during or just after its Cua calls doesn't count as the user coming back.
- */
+/** Deny foreground Cua calls while the user is active; input from our own calls doesn't count. */
 export function createCuaForegroundGuard(options: CuaForegroundGuardOptions) {
   const now = options.now ?? Date.now;
   let takenOver = false;

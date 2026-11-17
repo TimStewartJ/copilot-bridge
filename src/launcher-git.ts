@@ -1,6 +1,4 @@
-// Synchronous git helpers for the launcher only. The launcher is a supervisor whose event loop
-// serves no requests, so a blocking read is acceptable there. The server runtime must never
-// import this module: it goes through the process host (see server/git-command.ts).
+// Launcher only, where sync git is fine; server code must use server/git-command.ts.
 
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";

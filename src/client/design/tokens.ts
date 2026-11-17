@@ -1,16 +1,5 @@
-/**
- * Bridge design system: the class recipes every screen is built from.
- *
- * Read README.md in this folder first. It holds the rules; this file holds the one place each rule
- * is spelled out in classes, so a screen that uses these cannot drift from the others. Colours come
- * from the theme variables in index.css and are referred to by role, never by value, so both themes
- * keep working.
- *
- * Every class below is written out in full because Tailwind finds classes by scanning source text.
- * Do not build class names from pieces.
- */
+/** Write every class in full: Tailwind finds classes by scanning text, so never build names. */
 
-/** Keyboard focus, identical on every interactive element. */
 const FOCUS = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50";
 const GROUP_SURFACE = "rounded-xl border border-surface-edge bg-surface-group";
 const INSET_SURFACE = "rounded-lg border border-surface-edge bg-surface-inset";
@@ -20,10 +9,7 @@ const NOTICE_SURFACE = `${INSET_SURFACE} px-3 py-2 text-xs leading-relaxed text-
 export const DS = {
   focus: FOCUS,
 
-  /**
-   * Text roles. Content is the only full-contrast text on a screen; every label, detail and figure
-   * around it is one step quieter than the thing it describes.
-   */
+  /** Content is the only full-contrast text; labels and figures are a step quieter than it. */
   text: {
     /** What the reader came for: a reply, a task's brief, a document. */
     content: "text-sm leading-[1.7] text-text-primary",
@@ -55,10 +41,7 @@ export const DS = {
     attention: "text-xs font-medium text-accent",
   },
 
-  /**
-   * A row: one line that says what something is, and may open to show more. The negative margin
-   * lets the hover fill extend past the text so the text itself stays on the column's left edge.
-   */
+  /** The negative margin lets the hover fill pass the text, which stays on the column edge. */
   row: {
     base: `-mx-1.5 flex w-[calc(100%+0.75rem)] min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-[13px] transition-colors ${FOCUS}`,
     /** A multi-line navigation result or history entry must grow with its content. */
@@ -69,7 +52,7 @@ export const DS = {
     /** Navigation and list controls need a full touch target, even when the value is short. */
     touch: "min-h-10 md:min-h-7",
     inert: "cursor-default",
-    /** The current item in a list. Selection is a neutral fill; accent is kept for unread and focus. */
+    /** The current item: a neutral fill, since accent is kept for unread and focus. */
     selected: "bg-surface-selected text-text-primary",
     /** The label keeps its width; the detail takes what is left and truncates first. */
     label: "min-w-0 shrink truncate",
@@ -84,10 +67,7 @@ export const DS = {
   /** Content opened beneath a row hangs from a hairline rail instead of sitting in a box. */
   rail: "ml-[5px] mt-1 border-l border-border pl-4",
 
-  /**
-   * A native <details> drawn as a row, for a disclosure that needs no state of its own. The
-   * browser's marker is replaced by the chevron every other row uses.
-   */
+  /** A native <details> drawn as a row, with the browser's marker replaced by the row chevron. */
   details: {
     root: "group/details min-w-0",
     summary: `-mx-1.5 flex cursor-pointer list-none items-center gap-1.5 rounded-md px-1.5 py-1 text-[13px] transition-colors hover:bg-bg-hover/60 [&::-webkit-details-marker]:hidden ${FOCUS}`,
@@ -114,15 +94,7 @@ export const DS = {
     floatingPill: "inline-flex items-center gap-2 rounded-full border border-surface-edge bg-surface-overlay py-1.5 pl-2.5 pr-3 text-xs font-medium text-text-primary shadow-lg shadow-black/10 transition-colors hover:bg-surface-selected",
     /** The shadow alone, for a floating control with a shape of its own, such as a round button. */
     lift: "shadow-lg shadow-black/10",
-    /**
-     * A jump control pinned to the edge of a scrolling list: rows fade out under a band so the
-     * control reads as sitting on the edge rather than on top of a row. The band is sticky, and a
-     * sticky box stops at its scroller's padding, so pad a wrapper inside the scroller instead;
-     * otherwise rows show, unfaded, in the gap between the band and the edge. The band also runs
-     * 2px past the edge, where the scroller clips it, because at a fractional display scale a band
-     * that ends on the edge can stop a device pixel short of the rows. That overhang sits in the
-     * wrapper's padding when the list is scrolled to its end.
-     */
+    /** Pad a wrapper, not the scroller (sticky stops at padding); -*-0.5 covers scaled-px gaps. */
     edgeBand: "pointer-events-none absolute inset-x-0 flex h-11.5 justify-center",
     edgeFade: {
       pane: { above: "-top-0.5 items-start pt-2 bg-linear-to-b from-surface-pane from-38% to-transparent", below: "-bottom-0.5 items-end pb-2 bg-linear-to-t from-surface-pane from-38% to-transparent" },
@@ -133,7 +105,7 @@ export const DS = {
     composer: "rounded-2xl border border-control-edge bg-surface-group shadow-lg shadow-black/10 transition-colors focus-within:border-text-secondary",
     /** A dialog, and the scrim that holds the page back while it is open. */
     dialog: "rounded-2xl border border-surface-edge bg-surface-overlay shadow-2xl shadow-black/30",
-    /** Long content opened over the page: a sheet from the bottom on a phone, a dialog on a desktop. */
+    /** Long content over the page: a bottom sheet on a phone, a dialog on a desktop. */
     sheet: `${SHEET} md:max-w-2xl`,
     compactSheet: `${SHEET} md:max-w-lg`,
     scrim: "fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4",
@@ -142,10 +114,7 @@ export const DS = {
     hairline: "border-surface-edge",
   },
 
-  /**
-   * Buttons. One primary action per screen, and on a chat screen it is Send. Everything else is
-   * secondary (a quiet fill) or ghost (text). Accent colour is never used as a fill.
-   */
+  /** One primary action per screen (Send in chat); the rest secondary or ghost; no accent fill. */
   button: {
     base: `inline-flex shrink-0 items-center justify-center font-medium transition-colors disabled:cursor-not-allowed ${FOCUS}`,
     size: {
@@ -180,10 +149,7 @@ export const DS = {
     disabled: "disabled:cursor-default",
   },
 
-  /**
-   * Options that may be many, long, or chosen several at a time, so they wrap instead of sharing
-   * one segmented control. Selection is the same neutral fill.
-   */
+  /** Many, long or multi-select options wrap instead of a segmented control; same neutral fill. */
   choice: {
     group: "flex flex-wrap gap-1.5",
     option: `inline-flex min-h-10 max-w-full items-center gap-1.5 rounded-lg border px-3 py-1.5 text-left text-[13px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 md:min-h-9 ${FOCUS}`,
@@ -191,10 +157,7 @@ export const DS = {
     unselected: "border-border text-text-secondary hover:bg-bg-hover/60 hover:text-text-primary",
   },
 
-  /**
-   * A badge names a state in a word or two. Colour sits on the words that carry the state and
-   * nowhere else: a tinted box around a whole section is not a badge.
-   */
+  /** A state in a word or two; colour sits on those words only, never a tinted section box. */
   badge: {
     base: "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium",
     tone: {
@@ -209,10 +172,7 @@ export const DS = {
     },
   },
 
-  /**
-   * A tag is a name the user chose, in the colour the user chose (tag-colors.ts). It has the shape
-   * of a badge, a size smaller, so that it reads as a label and not as a state.
-   */
+  /** A user-named, user-coloured label (tag-colors.ts), smaller than a badge so not a state. */
   tag: {
     base: "inline-flex min-w-0 items-center gap-1 rounded-md font-medium leading-none",
     size: {
@@ -223,11 +183,7 @@ export const DS = {
     inherited: "opacity-75 ring-1 ring-current/20",
   },
 
-  /**
-   * A count that wants attention: unread results, questions waiting. It is the one coloured fill in
-   * the system, because here the number is the state. The figure takes the page colour so it reads
-   * on a bright fill in either theme.
-   */
+  /** The one coloured fill; text-bg-primary keeps the figure readable on it in both themes. */
   count: {
     base: "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold leading-none tabular-nums text-bg-primary",
     /** Horizontal room for two digits, kept apart from `base` so a single digit stays round. */
@@ -244,13 +200,10 @@ export const DS = {
     },
   },
 
-  /** A neutral dot: a separator or a series marker in a legend. States use StatusIcon, identity a swatch. */
+  /** A neutral separator or legend marker; states use StatusIcon, identity a swatch. */
   dot: "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
 
-  /**
-   * A state drawn as a glyph (StatusIcon). Shape carries the state so the glyphs stay apart without
-   * colour; colour confirms it. Each kind has one meaning everywhere in the app.
-   */
+  /** StatusIcon glyphs: shape carries the state without colour; each kind has one meaning. */
   status: {
     base: "inline-flex shrink-0 items-center justify-center",
     size: {
@@ -320,10 +273,7 @@ export const DS = {
     agent: "text-agent",
   },
 
-  /**
-   * Text inputs and selects. The text is 16px on a phone because iOS zooms the page when a smaller
-   * field takes focus.
-   */
+  /** Text is 16px on a phone because iOS zooms the page when a smaller field takes focus. */
   field: {
     input: `w-full rounded-lg border border-control-edge bg-surface-inset px-3 text-base text-text-primary placeholder:text-text-faint transition-colors focus:border-text-secondary focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 md:text-[13px]`,
     inputSize: { sm: "h-10 md:h-8", md: "h-10 md:h-9" },
@@ -337,12 +287,12 @@ export const DS = {
     help: "text-xs text-text-secondary",
   },
 
-  /** A settings row (SettingRow): the name, a short hint, and the control at the end of the line. */
+  /** A settings row (SettingRow): name, short hint, and the control at the end of the line. */
   setting: {
     label: "block text-[13px] font-medium text-text-primary",
     hint: "mt-0.5 text-xs leading-relaxed text-text-secondary",
     control: "flex min-w-0 shrink-0 flex-wrap items-center gap-2 @[30rem]/setting-row:justify-end",
-    /** A select or short input at the end of a row: full width when stacked, a fixed column beside the label. */
+    /** A select or short input at a row's end: full width when stacked, else a fixed column. */
     field: "w-full @[30rem]/setting-row:w-64",
     /** A short select that shares the end of a row with a button. */
     compactField: "w-full @[30rem]/setting-row:w-40",
@@ -365,7 +315,7 @@ export const DS = {
   /** Inline notices keep their surface neutral; state belongs to their icon or title. */
   notice: {
     base: `flex items-start gap-2.5 ${NOTICE_SURFACE}`,
-    /** Existing status regions that own their DOM composition share the surface, not flex layout. */
+    /** For status regions that own their DOM: the surface without the flex layout. */
     surface: NOTICE_SURFACE,
   },
 
@@ -376,7 +326,7 @@ export const DS = {
     unchecked: "border-border",
   },
 
-  /** Motion says something is alive. It is never decoration, and index.css turns it off on request. */
+  /** Motion says something is alive, never decorates; index.css turns it off on request. */
   motion: {
     /** The label of work that is still happening. */
     live: "shimmer-text",
@@ -389,7 +339,7 @@ export const DS = {
     readingColumn: "mx-auto w-full max-w-4xl px-3 sm:px-4 md:px-6 lg:px-8",
     /** A full-page view such as a task overview. */
     pageColumn: "mx-auto w-full max-w-5xl px-4 py-5 md:px-8 md:py-7",
-    /** One quiet line of chrome on the page's background. Its container owns the bottom hairline. */
+    /** One quiet line of chrome on the page background; its container owns the bottom hairline. */
     headerBar: "flex min-h-10 shrink-0 items-center gap-2 px-3 text-xs text-text-muted sm:px-4",
     /** One neutral group per dashboard or inspector region; its rows and values stay unboxed. */
     section: `${GROUP_SURFACE} min-w-0 p-3 sm:p-4`,

@@ -330,8 +330,7 @@ describe("session list routes", () => {
   }
 
   it("lists a chat whose creation has answered but not finished, and drops it when the creation fails", async () => {
-    // What SessionManager does for a background creation: the id at once; the folder, or the
-    // failure, and the announcement of either only when the runtime is done.
+    // Like a background creation: the id at once; folder or failure only once the runtime is done.
     const pending = new Set<string>();
     const onDisk: SessionListRow[] = [];
     let created = 0;
@@ -460,7 +459,7 @@ describe("session list routes", () => {
     const answer = await staying.body;
     expect(answer.status).toBe(200);
     expect(JSON.parse(answer.text).sessions).toEqual([expect.objectContaining({ sessionId: "chat" })]);
-    // One reader of volatile state at build time, one for the client that stayed, none for the one that left.
+    // One volatile-state read at build, one for the client that stayed, none for the one that left.
     expect(overlayRead.mock.calls.length - overlayReadsBefore).toBe(2);
     expect(listSessionsFromDisk).toHaveBeenCalledTimes(1);
   });

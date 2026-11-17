@@ -1,7 +1,4 @@
-// Chat work runner: takes work queued for a chat through its whole life: wait until the Bridge and
-// the chat can take it, claim it, run it, and record the outcome. The chat delivery outbox and the
-// chat lane of triggers each supply a ChatWork.
-// All timers are recomputed from SQLite on startup; no in-memory state is authoritative.
+// Runs queued chat work; SQLite is the only truth, and timers are rebuilt from it on start.
 
 import type { GlobalBus } from "./global-bus.js";
 import {
@@ -27,10 +24,7 @@ export const CHAT_WORK_WATCHDOG_INTERVAL_MS = 60_000;
 const PAST_WAKE_RETRY_MS = 1_000;
 export const LEASE_EXPIRED_ERROR = "Deferred execution lease expired before completion.";
 
-/**
- * Whether a failed try says the Bridge could not take the work, not that the work failed.
- * Such a try is not counted: the item stays due and is tried again when the Bridge can take it.
- */
+/** The Bridge could not take the work, not a failure: the try is not counted and retried later. */
 export function isChatWorkWaitError(error: unknown): boolean {
   return error instanceof SessionCapacityError
     || isPromptDeliveryInterruptedError(error)
@@ -45,11 +39,7 @@ export function computeRetryBackoffMs(attempts: number): number {
   );
 }
 
-/**
- * "blocked" means the item's chat cannot take anything right now, so nothing queued behind the item is
- * tried either. "waiting" means only this item is held up (it needs a worker or a new context), so the
- * pass goes on to the chat's next due item.
- */
+/** blocked: chat takes nothing now, skip its queue; waiting: only this item is held. */
 export type ProcessOneResult = "changed" | "blocked" | "waiting" | "unchanged" | "claimed";
 
 /** What the scheduler needs from each due item to enforce one-per-session-per-pass FIFO. */
@@ -61,32 +51,24 @@ export interface ChatWorkDueItem {
 
 /** One kind of deferred work: where its items are queued and what trying one means. */
 export interface ChatWork<Item extends { id: string; sessionId: string }> {
-  // ── Queue ──
   listDue(): ReadonlyArray<ChatWorkDueItem>;
   /** Earliest future due time or running lease expiry. */
   getNextWakeAt(): string | undefined;
-  /** Recover items whose claim outlived its lease (the server stopped mid-run). Returns the chats affected. */
+  /** Recovers claims that outlived their lease (server stopped mid-run); returns affected chats. */
   reclaimExpired(now: string): string[];
   cancelForSession(sessionId: string): number;
 
-  // ── One item ──
   /** The item, if it is still waiting to run. */
   load(id: string): Item | undefined;
-  /** True when the item runs in a worker session of its own; false when it is a message for the chat itself. */
+  /** True when the item runs in its own worker session; false for a message to the chat itself. */
   usesWorker(item: Item): boolean;
-  /**
-   * A step to run before the item takes a worker, or undefined to go straight to `run`. The step
-   * runs with the item claimed but no worker slot or session, and either records the outcome itself
-   * ("settled") or saves what the worker needs and asks for one ("wake"). After "wake" the claim is
-   * given back without counting the try and the item is taken again, this time with a worker.
-   * The step gets the item as claimed. Throwing means the try failed.
-   */
+  /** Pre-step, run claimed without a worker: "settled" ends it, "wake" retakes it with one. */
   gate?(item: Item): ChatWorkGate<Item> | undefined;
   /** True when the item should still reach a chat that has been archived. */
   reachesArchived(item: Item): boolean;
   /** The chat is gone: end the item. Returns whether anything changed. */
   orphaned(item: Item): boolean;
-  /** Reasons of the item's own to end it before running. Returns whether it ended one, or undefined to go on. */
+  /** The item's own reasons to end before running: whether it ended, or undefined to go on. */
   preflight(item: Item): Promise<boolean | undefined> | boolean | undefined;
   /** Record why the item is not being started yet. */
   noteWait(item: Item, reason: string): void;
@@ -111,7 +93,7 @@ export interface ChatWorkContext {
 
 export interface ChatWorkOptions {
   telemetryStore?: Pick<TelemetryStore, "recordSpan">;
-  /** Called after an item was tried and has let go of its chat and worker, so work waiting on either can start. */
+  /** Called once a tried item frees its chat and worker, so work waiting on either can start. */
   onSettled?: () => void;
 }
 
@@ -227,7 +209,7 @@ export function createChatWorkRunner<Item extends { id: string; sessionId: strin
     const nextWakeAt = work.getNextWakeAt();
     if (!nextWakeAt) return;
     const wakeAtMs = Date.parse(nextWakeAt);
-    // A wake time already past is a lease the last pass could not recover; look again shortly, not at once.
+    // A past wake time is a lease the last pass could not recover; look again shortly, not at once.
     const untilWake = wakeAtMs - Date.now();
     const delay = untilWake > 0 ? untilWake : PAST_WAKE_RETRY_MS;
     armTimer(delay, () => {
@@ -239,7 +221,7 @@ export function createChatWorkRunner<Item extends { id: string; sessionId: strin
     });
   }
 
-  /** While the Bridge as a whole cannot take deferred work, leave everything due and look again shortly. */
+  /** While the Bridge cannot take deferred work, leave everything due and look again shortly. */
   function holdIfNotReady(dueCount: number): boolean {
     if (dueCount === 0) {
       holdLogged = false;
@@ -271,10 +253,7 @@ export function createChatWorkRunner<Item extends { id: string; sessionId: strin
     };
   }
 
-  /**
-   * Process all currently due items.
-   * Starts at most one item per session per pass, FIFO by wake time then createdAt.
-   */
+  /** Processes due items, at most one per session per pass, FIFO by wake time then createdAt. */
   function processDue(): Promise<void> {
     if (processDuePromise) {
       rerunRequested = true;
@@ -291,7 +270,7 @@ export function createChatWorkRunner<Item extends { id: string; sessionId: strin
         await processDueOnce();
       } while (started && rerunRequested);
     } finally {
-      // Cleared in the same step as the loop's last check, so a rerun asked for after it starts a new pass.
+      // Cleared with the loop's last check, so a rerun asked for after it starts a new pass.
       processDuePromise = undefined;
     }
   }
@@ -329,7 +308,7 @@ export function createChatWorkRunner<Item extends { id: string; sessionId: strin
     }
   }
 
-  /** Take a chat's due items in order until one is started, changes, or shows the chat cannot take any. */
+  /** Takes a chat's due items in order until one starts, changes, or shows the chat is full. */
   async function processSession(items: ChatWorkDueItem[]): Promise<ProcessOneResult> {
     for (const item of items) {
       try {
@@ -357,8 +336,7 @@ export function createChatWorkRunner<Item extends { id: string; sessionId: strin
     const { sessionId } = item;
     if (deliveryGuard.isActive(sessionId)) return "blocked";
 
-    // Asked of this one session, now: a chat restored a moment ago is there, one whose folder is gone is not.
-    // A folder that could not be read throws instead, and the item stays as it is for a later pass.
+    // Read fresh: a just-restored chat exists, a deleted one not; a read error throws.
     const [session] = await sessionManager.readSessionsFromDisk([sessionId], {
       includeArchived: work.reachesArchived(item),
       failOnReadError: true,
@@ -385,7 +363,7 @@ export function createChatWorkRunner<Item extends { id: string; sessionId: strin
     const capacityWait = gate ? undefined : sessionManager.getSessionCapacityWait?.(usesWorker ? undefined : sessionId);
     if (capacityWait) {
       work.noteWait(item, capacityWait);
-      // A check waits for a context of its own; a message waits for its chat, and so do the messages after it.
+      // A check waits for its own context; a message and those after it wait for its chat.
       return usesWorker ? "waiting" : "blocked";
     }
     if (!deliveryGuard.tryClaim(sessionId)) return "blocked";
@@ -464,7 +442,7 @@ export function createChatWorkRunner<Item extends { id: string; sessionId: strin
       } else if (
         isChatWorkWaitError(error)
         || !getReadiness().ready
-        // A message's capacity refusal arrives as plain text, so ask again whether its chat can be loaded.
+        // A message's capacity refusal is plain text, so ask again whether its chat can load.
         || (!lease && sessionManager.getSessionCapacityWait?.(sessionId) !== undefined)
       ) {
         waiting = true;
@@ -481,9 +459,9 @@ export function createChatWorkRunner<Item extends { id: string; sessionId: strin
       // Release before looking for more work, so a same-session follow-up is not stranded.
       deliveryGuard.release(sessionId);
       emitSummary(sessionId);
-      // Not after a wait: two runners that each hold a waiting item would wake each other without end.
+      // Not after a wait: two runners each holding a waiting item would wake each other forever.
       if (!waiting) options.onSettled?.();
-      // A waiting item is retried by the hold poll while the Bridge is not ready, else by the watchdog or an idle chat.
+      // Waiting items retry via the hold poll while not ready, else the watchdog or an idle chat.
       const nextPass = !started
         ? undefined
         : waiting

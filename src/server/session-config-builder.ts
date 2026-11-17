@@ -94,10 +94,7 @@ export interface ScheduleContext {
 export interface SessionConfigOptions {
   sessionId?: string;
   task?: Task | null;
-  /**
-   * Adds this task's tag-linked MCP servers without the rest of the task (prompt context, working
-   * directory). Trigger workers use it to get their parent chat's servers.
-   */
+  /** Adds only this task's tag-linked MCP servers (for trigger workers), not its prompt or cwd. */
   mcpServerTask?: Pick<Task, "id" | "groupId"> | null;
   scheduleContext?: ScheduleContext;
   modelOverride?: string;
@@ -109,15 +106,9 @@ export interface SessionConfigOptions {
   promptRole?: string;
   /** Guidance appended after the Bridge's own, for chats with a role of their own (Helm). */
   extraGuidance?: string;
-  /** False for chats that do not use playbooks (Helm's chat): the method and roles leave them out. */
+  /** False for chats without playbooks (Helm's chat): the method and roles are left out. */
   playbooks?: false;
-  /**
-   * When true, omit `model` and `reasoningEffort` from the config.
-   * The SDK silently overwrites _selectedModel via updateOptions() without sanitizing
-   * chat history, so passing those on resume would corrupt cross-family tool_call
-   * shapes. Resume trusts the SDK's persisted session model (recorded in session
-   * event logs) rather than re-applying the global settings default.
-   */
+  /** Omits model and effort: the SDK swaps models on resume without fixing history's tool calls. */
   forResume?: boolean;
   modelMetadata?: readonly CopilotModelContextMetadata[];
 }
@@ -134,17 +125,14 @@ export interface SessionConfigBuilderDeps {
   resolveBuiltInMcpServers?: (opts: { sessionId?: string }) => Record<string, McpServerConfig>;
   nativeBridgeTools?: readonly unknown[];
   permissionPolicy?: AgentPermissionPolicy;
-  /**
-   * Answers passwords and other prompts of the agent's shell commands from the chat. Only chats a
-   * person can answer get it; without it such a command fails for lack of a terminal.
-   */
+  /** Answers shell command prompts such as passwords; only for chats a person can answer. */
   shellAuthenticationHandler?: ShellAuthHandler;
   clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
   resolveComputerUsePlugin?: () => ComputerUsePluginStatus;
   /** Cua Driver's install state; without it the Cua engine has no tools. */
   resolveCuaDriver?: () => CuaDriverStatus;
-  /** Seconds since the user's last input on this PC; defaults to the Windows session's own reading. */
+  /** Seconds since the user's last input on this PC; defaults to the Windows session's reading. */
   readIdleSeconds?: () => Promise<number | undefined>;
   computerUsePlatform?: NodeJS.Platform;
   /** The last skill scan: playbooks, roles and extensions for <skill_roles>. */
@@ -217,11 +205,7 @@ function shouldUseSdkGitHubMcp(
     && !servers[GITHUB_COPILOT_MCP_SERVER_NAME];
 }
 
-/**
- * The runtime keeps the first skill it finds under a name, so folders go in precedence order:
- * the user's home skills, then packs, then the Bridge's bundled skills. A home copy of a bundled
- * playbook (Settings › Skills › Customize) therefore replaces it on this machine.
- */
+/** Runtime keeps the first skill per name, so home overrides packs, which override bundled. */
 export function orderSkillDirectories(dirs: { bundled: string; packs: readonly string[]; home: string }): string[] {
   return [...new Set([dirs.home, ...dirs.packs, dirs.bundled])];
 }
@@ -269,13 +253,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       home: getHomeSkillsDir(callbacks.getCopilotHome()),
     }),
   };
-  // Explicitly disable Copilot's cloud-backed agentic memory. The feature stores
-  // and recalls facts via the remote Memory API (`/v1/memory_stores/.../memories`)
-  // with user- or repository-scoped visibility, and is designed around a per-store
-  // human confirmation prompt. The Bridge uses native automatic tool approvals,
-  // which would let sessions silently persist memories server-side — and repository
-  // scope shares them with repo collaborators. Forwarded on both create and resume
-  // so memory stays off even when resuming older sessions.
+  // Cloud memory off: auto-approvals would save memories server-side; set on resume too.
   cfg.memory = { enabled: false };
 
   if (deps.permissionPolicy) {
@@ -290,8 +268,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   }
 
   const settings = deps.settingsStore?.getSettings();
-  // Applied by the backend on create and resume (the runtime drops it on resume) and again
-  // whenever the chat's model changes, since rubber-duck's model depends on it.
+  // Sent again on resume (the runtime drops it) and on model change (rubber-duck's depends on it).
   if (settings) {
     const models = params.options?.modelMetadata;
     cfg.subagents = buildSubagentPlan({
@@ -300,12 +277,11 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       tiers: [...MODEL_PRESET_SLOTS].reverse().map((slot) => settings.modelPresets?.[slot]),
     }, models);
   }
-  // Experimental (Settings › Experimental). The Copilot backend gives it only to a session on Fusion.
+  // Experimental setting; the Copilot backend applies it only to a session on Fusion.
   const fusionContextTokens = settings?.experimental?.fusionContextTokens;
   if (fusionContextTokens !== undefined) cfg.fusionContextTokens = fusionContextTokens;
 
-  // Desktop automation: Cua Driver as a per-chat MCP server (the default on Windows), or upstream's
-  // Computer Use plugin from the SDK platform package. The Bridge setting is the only gate either way.
+  // Cua Driver MCP (Windows default) or the SDK's Computer Use plugin; the setting gates both.
   const computerUseEnabled = settings?.computerUse?.enabled === true;
   const computerUseEngine = resolveComputerUseEngine(settings, deps.computerUsePlatform);
   let computerUseGuidance: string | undefined = computerUseEnabled ? undefined : COMPUTER_USE_OFF_GUIDANCE;
@@ -335,22 +311,16 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     }
   }
 
-  // The runtime offers its image tool only when asked, and a resident session keeps whatever it
-  // was last given, so the switch is sent explicitly on create and on every resume.
+  // A resident session keeps the last value given, so send this on create and every resume.
   const imageGenerationEnabled = isImageGenerationEnabled(settings);
   cfg.imageGeneration = { enabled: imageGenerationEnabled };
 
-  // Model + reasoningEffort only belong on createSession. On resume the SDK
-  // overwrites _selectedModel without sanitizing chat history (which corrupts
-  // cross-family tool_call shapes). Resume intentionally trusts the SDK's
-  // persisted session model; only Bridge-owned runtime config (tools, MCP,
-  // user-input handlers, system context) is refreshed on resume.
+  // Create only: setting the model on resume corrupts history (see forResume).
   if (!forResume) {
     if (sessionId) cfg.sessionId = sessionId;
 
     const modelMetadata = params.options?.modelMetadata;
-    // A tier (a schedule's, or a model A/B test arm) gives its model, effort and context as one
-    // choice, never New chats' values. When the tier can't be used, the chat follows New chats.
+    // A tier sets model, effort and context together; if it can't be used, New chats applies.
     const tierSlot = modelTier ?? scheduleContext?.modelTier;
     const scheduleTier = tierSlot && !modelOverride
       ? resolveModelTier(settings, tierSlot, modelMetadata)
@@ -375,8 +345,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       ? modelMetadata?.find((candidate) => candidate.id === model)
       : undefined;
 
-    // An explicit model override must not inherit an unsupported effort from
-    // the global model. Unknown override models use their SDK default.
+    // An override model must not inherit an unsupported effort; unknown ones use the SDK default.
     const scheduleReasoningEffort = tierChoice?.reasoningEffort;
     if (reasoningEffortOverride) {
       cfg.reasoningEffort = reasoningEffortOverride;
@@ -454,12 +423,10 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
     }
   }
 
-  // Staging rules — only when working on the bridge repo itself. A session without a
-  // resolved cwd is not evidence of Bridge work.
+  // Staging rules apply only in the Bridge repo; a session without a cwd is not Bridge work.
   const isSelfRepo = !!workingDirectory && pathsEqual(workingDirectory, REPO_ROOT);
   const sections: Partial<Record<string, AgentSectionOverride>> = {};
-  // The staging workflow is an operational rule of this repository, so it applies to every chat
-  // there; the CLI's general coding rules apply only to chats with a project folder.
+  // Staging applies to every chat in this repo; the CLI coding rules only with a project folder.
   const stagingApplies = isSelfRepo
     && isBridgeSourceManagementAvailable(deps.runtimePaths?.env ?? process.env, REPO_ROOT);
   if (hasProjectFolder) {
@@ -470,9 +437,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
       : { action: "remove" };
   }
 
-  // `identity` is a section group that also carries tone, tool efficiency, search
-  // guidance and the model self-identification, so only the preamble is replaced.
-  // Child overrides apply before the group transform sees the rendered group.
+  // `identity` also carries tone, tool and search guidance, so only its preamble is replaced.
   const identityText = settings?.identity?.trim() || DEFAULT_IDENTITY;
   const preambleText = `${identityText}\n\n${params.options?.promptRole ?? BASE_METHOD_ROLE}`;
   sections.identity = { action: createCodingModeStatementRemover(preambleText) };
@@ -493,9 +458,6 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
         : removeConciseReplyDirective,
   };
 
-  // Tighten the SDK's native task/write_agent contract, say how to use the time a slow command
-  // takes, make ask_user forms carry their own context, and teach web_fetch escalation without
-  // replacing the broader per-tool guidance.
   sections.tool_instructions = {
     action: "append",
     content: `${AGENT_LIFECYCLE_GUIDANCE}\n\n${LONG_RUNNING_WORK_GUIDANCE}\n\n${ASK_USER_CONTEXT_GUIDANCE}\n\n${BROWSER_GUIDANCE}`,
@@ -520,8 +482,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   // After the tag merge, which rebuilds the server list.
   if (cuaMcpServer) cfg.mcpServers = { ...cfg.mcpServers, [CUA_MCP_SERVER_NAME]: cuaMcpServer };
 
-  // Upstream current_datetime now carries a local offset, but we still expose the
-  // server's IANA zone name for scheduling and timezone-specific prompts.
+  // current_datetime has only an offset; scheduling needs the IANA zone name.
   const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   sections.environment_context = { action: "append", content: `\n* Server timezone: ${serverTz}` };
 

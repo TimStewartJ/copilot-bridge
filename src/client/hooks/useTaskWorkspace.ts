@@ -16,11 +16,7 @@ import {
 import { useTaskGitStatusQuery } from "./queries/useTaskGitStatus";
 import { isSessionLinkedToTask } from "../lib/task-session-links";
 
-/**
- * Consolidates shared setup for TaskPanel and TaskDashboard:
- * enrichment, triggers, trigger detail sheet, notes sheet,
- * checklist items, linked sessions, effective tags, and related docs.
- */
+/** Setup shared by TaskPanel and TaskDashboard. */
 export function useTaskWorkspace(
   task: Task | undefined,
   taskGroups: TaskGroup[],

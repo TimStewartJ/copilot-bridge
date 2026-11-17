@@ -52,8 +52,7 @@ export function ComputerUseSection({
   const cuaSupported = status?.cua.supported === true;
   const engine: ComputerUseEngine = cuaSupported ? computerUse.engine ?? "cua" : "github";
   const engineReady = !status ? true : engine === "cua" ? status.cua.installed : status.plugin.available;
-  // Each committed change evicts every cached session on the server, so a second change waits
-  // until the first has been saved.
+  // Each change evicts every cached session on the server, so a second waits for the first to save.
   const saving = pendingKeys.has("computerUse");
 
   const update = (next: NonNullable<AppSettings["computerUse"]>) => {

@@ -20,7 +20,7 @@ function archiveName(asset: VoiceAsset): string {
   return asset.kind === "npm" ? `${asset.name}-${asset.version}.tgz` : asset.fileName ?? asset.url.split("/").at(-1)!;
 }
 
-/** Re-pins the catalog to small fake archives so a whole install runs without the network or npm. */
+/** Re-pins the catalog to small fake archives so an install runs without network or npm. */
 function pinFakeAssets() {
   const packages = selectVoiceEnginePackages(TARGET);
   const byUrl = new Map<string, Buffer>();
@@ -70,11 +70,7 @@ const unreachable = (async () => {
   throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND github.com"), { code: "ENOTFOUND" }) });
 }) as unknown as typeof fetch;
 
-/**
- * Builds an installer that never sleeps between move retries. With `only`, every other asset is
- * marked as installed so a scenario touches the file system for just the asset it is about: the
- * suite runs under heavy load, where hundreds of real file operations per test invite timeouts.
- */
+/** No retry sleeps; `only` pre-marks other assets installed to keep file work low under load. */
 function createInstaller(prefix: string, options: Pick<VoiceInstallerOptions, "npmClient"> & Partial<VoiceInstallerOptions> & { only?: string[] }) {
   const { only, ...installerOptions } = options;
   const paths = resolveVoicePaths({ dataDir: makeTestDir(prefix), env: {} });

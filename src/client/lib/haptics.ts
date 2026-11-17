@@ -1,13 +1,4 @@
-/**
- * Haptic feedback for pages shown inside a native app that offers it, such as Tether on iPhone. Web
- * pages cannot vibrate an iPhone themselves, so the host app posts the feedback for us through a
- * one-way WebKit message handler named `bridgeHaptic`. Anywhere else (a browser, desktop) every call
- * is a no-op.
- *
- * Use it for things that happen, not for every tap: a value snapping into place (`selection`), a
- * gesture reaching its trigger or a message leaving (`light`, `medium`), and outcomes (`success`,
- * `warning`, `error`). Navigation, scrolling, typing and background updates get none.
- */
+/** Haptics via the host app's bridgeHaptic handler (no-op elsewhere); for events, not every tap. */
 export type HapticKind = "selection" | "light" | "medium" | "success" | "warning" | "error";
 
 export const HAPTIC_KINDS: readonly HapticKind[] = ["selection", "light", "medium", "success", "warning", "error"];
@@ -59,10 +50,7 @@ function flush() {
   }
 }
 
-/**
- * Asks the host app for haptic feedback. Requests made while one task runs (a click handler and the
- * promise callbacks it settles, say a copy and its "Copied" toast) merge into the strongest of them.
- */
+/** Haptic feedback from the host app; requests within one task merge into the strongest. */
 export function haptic(kind: HapticKind): void {
   if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
   if (!findHost()) return;

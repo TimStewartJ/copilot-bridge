@@ -160,7 +160,7 @@ describe("SessionManager with the Helm profile", () => {
         expect(config.tools.map((tool: { name: string }) => tool.name)).toEqual(expect.arrayContaining(["staging_deploy", "task_list", "bridge_overview"]));
         expect(config.availableTools).toBeUndefined();
         expect(config.excludedTools).toEqual(expect.arrayContaining(["ask_user", "playbook_select", "verify_complete"]));
-        // No playbooks: neither the method's step that picks one nor the skills that need the tools.
+        // No playbooks: neither the step that picks one nor the skills that need the tools.
         expect(config.systemMessage.sections.guidelines.content).not.toContain("playbook_select");
         expect(config.systemMessage.sections.guidelines.content).not.toContain("verify_complete");
         expect(config.disabledSkills).toEqual(["bug-fix"]);

@@ -26,10 +26,7 @@ export function createSessionPlaybookStore(db: DatabaseSync) {
 
 export type SessionPlaybookStore = ReturnType<typeof createSessionPlaybookStore>;
 
-/**
- * The playbook a chat follows. A pick by the user or the agent wins; otherwise the task's pin;
- * otherwise what the chat's schedule pinned when it started it.
- */
+/** The chat's playbook: a user or agent pick, else the task's pin, else the schedule's pin. */
 export function resolveSessionPlaybook(
   stored: { playbook: string; source: PlaybookSource } | undefined,
   taskPin: string | undefined,

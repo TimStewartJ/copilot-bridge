@@ -10,7 +10,7 @@ import { createGlobalBus } from "../global-bus.js";
 import { makeTestDir } from "./helpers.js";
 
 const oldSchema = readFileSync(new URL("./fixtures/dashboard-retirement.sql", import.meta.url), "utf8");
-// What version 1 of the retirement left behind: an immutable archive and a manifest naming old records and a backup.
+// What version 1 left: an immutable archive and a manifest naming old records and a backup.
 const versionOneArchive = `
   CREATE TABLE dashboard_legacy_rows (tableName TEXT NOT NULL, rowKey TEXT NOT NULL, rowJson TEXT NOT NULL, PRIMARY KEY(tableName,rowKey));
   CREATE TABLE dashboard_legacy_objects (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT NOT NULL, rawJson TEXT NOT NULL);

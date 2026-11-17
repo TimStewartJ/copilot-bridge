@@ -58,11 +58,7 @@ interface SearchIndexDeps {
   removalBatchSize?: number;
 }
 
-/**
- * What one pass over every chat cost. `deleteMs` is spent reading the whole message table to find
- * one chat's old rows, and says whether the index needs to record each chat's rows.
- * `titleLookupMs` is the one read of every indexed title.
- */
+/** Cost of one sweep; deleteMs is the full-table scan per chat delete (no sessionId index). */
 interface SweepCost {
   startedAt: number;
   chats: number;
@@ -106,10 +102,7 @@ function runTransaction(db: DatabaseSync, operation: () => void): void {
   }
 }
 
-/**
- * Empties the index. For a database copied from another Bridge, whose chats this one does not have;
- * `createSearchIndex` creates the tables again.
- */
+/** Empties the index of a database copied from another Bridge; `createSearchIndex` rebuilds it. */
 export function clearSearchIndex(db: DatabaseSync): void {
   runTransaction(db, () => {
     for (const table of SEARCH_TABLES) db.exec(`DROP TABLE IF EXISTS ${table}`);
@@ -135,7 +128,7 @@ function hasDateRange(request: BridgeSearchRequest): boolean {
   return Boolean(request.after || request.before);
 }
 
-/** `AND` conditions keeping `column` inside the request's date range, with their parameters in order. */
+/** `AND` conditions keeping `column` inside the request's date range, with ordered parameters. */
 function dateRangeClause(column: string, request: BridgeSearchRequest): { sql: string; params: string[] } {
   let sql = "";
   const params: string[] = [];
@@ -210,7 +203,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
   if (!indexedSessionColumns.some((column) => column.name === "ctimeMs")) {
     db.exec("ALTER TABLE search_indexed_sessions ADD COLUMN ctimeMs REAL NOT NULL DEFAULT -1");
   }
-  // One transaction: a column added without its values would stay empty, since unchanged chats are not re-read.
+  // One transaction: a column added without values stays empty, as unchanged chats are not re-read.
   if (!indexedSessionColumns.some((column) => column.name === "lastMessageAt")) {
     runTransaction(db, () => {
       db.exec("ALTER TABLE search_indexed_sessions ADD COLUMN lastMessageAt TEXT");
@@ -231,9 +224,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
   let backgroundScheduled = false;
   let sweepSessions: SearchSession[] = [];
   let sweep: SweepCost | undefined;
-  // Every indexed title, read once for the batches that drain one queue. The table has no index
-  // on `sessionId`, so asking for one chat's title reads all of it: 1.4 ms a chat, 22 s for a pass
-  // over 15,000 chats, against 22 ms for this. The three places that write a title keep it current.
+  // Read once: no sessionId index, so per-chat title reads scan the table; title writers update it.
   let indexedTitles: Map<string, string> | undefined;
   let stopped = false;
   const deferredChangedSessionIds = new Set<string>();
@@ -390,11 +381,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     return deleteMs;
   }
 
-  /**
-   * Drops chats that left the catalog. The FTS tables have no index on `sessionId`, so a delete by
-   * chat reads the whole table: each batch of chats shares one read, with a yield after it.
-   * Returns false when indexing stopped part-way; the next reconcile removes the rest.
-   */
+  /** No sessionId index, so each batch shares one table read; false means it stopped part-way. */
   async function removeSessions(sessionIds: readonly string[]): Promise<boolean> {
     const batchSize = deps.removalBatchSize ?? REMOVAL_BATCH_SIZE;
     const removed = "SELECT sessionId FROM search_removed_sessions";
@@ -868,8 +855,7 @@ export function createSearchIndex(db: DatabaseSync, deps: SearchIndexDeps) {
     if (scopedTaskIds.length === 0) return { items: [], total: 0 };
     const placeholders = scopedTaskIds.map(() => "?").join(", ");
     const params = [fts, ...scopedTaskIds];
-    // Ranked in code rather than by BM25 alone: long notes dilute BM25, so a task named for the
-    // query lost to a short archived task that only mentioned it. Task counts are small.
+    // Ranked in code, not BM25 alone: long notes dilute BM25 and bury a task named for the query.
     const matched = db.prepare(`
       SELECT rowid, taskId, bm25(search_tasks, 0.0, 10.0, 1.0) AS score FROM search_tasks
       WHERE search_tasks MATCH ? AND taskId IN (${placeholders})

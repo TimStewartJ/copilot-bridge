@@ -22,10 +22,7 @@ export function managementJobWaitGuidance(job: ManagementJob, sessionId?: string
     : MANAGEMENT_JOB_DEFER_GUIDANCE;
 }
 
-/**
- * The session that should hear a queued job's result. A disposable defer worker is deleted when
- * its check ends, so it has nobody to tell.
- */
+/** The session to hear a job's result; never a disposable defer worker, deleted when it ends. */
 export function managementJobOriginSessionId(invocation?: Pick<BridgeToolInvocation, "sessionId">): string | undefined {
   const sessionId = invocation?.sessionId?.trim();
   if (!sessionId || isDisposableDeferWorkerSessionId(sessionId)) return undefined;

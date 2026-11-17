@@ -17,35 +17,19 @@ export interface TaskPanelSummaryDisclosureProps {
   trailing?: ReactNode;
   titleClassName?: string;
 
-  // Disclosure control
   /** Total number of items represented by this row. */
   itemCount: number;
   /** Task and section identity used to persist expansion state. */
   taskId?: string;
   disclosureId?: TaskPanelDisclosureId;
-  /**
-   * Called when itemCount === 1 and the row is clicked.
-   * Omit to make the row non-clickable for single items (e.g. missing provider URLs).
-   */
+  /** Called when a single item's row is clicked; omit to make it non-clickable (e.g. no URL). */
   onOpenSingle?: () => void;
-  /**
-   * When true, a single item with no `onOpenSingle` toggles inline expansion
-   * instead of being a dead non-interactive row.
-   */
+  /** A single item with no `onOpenSingle` expands inline instead of being a dead row. */
   expandWhenSingle?: boolean;
   /** Content rendered inside the expanded disclosure panel. */
   children: ReactNode;
 }
 
-/**
- * Shared disclosure row for task-panel summary sections.
- *
- * - Multiple items: clicking the row toggles inline expansion.
- * - Single item with `onOpenSingle`: clicking the row fires the action.
- * - Single item without `onOpenSingle` and `expandWhenSingle`: row is non-interactive.
- * - Single item without `onOpenSingle` but with `expandWhenSingle`: row toggles expansion.
- * - Task disclosures restore their last expanded state from browser storage.
- */
 export default function TaskPanelSummaryDisclosure({
   label,
   icon,

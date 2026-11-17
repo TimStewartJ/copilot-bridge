@@ -1,33 +1,4 @@
-// SessionAgentRegistry — projects the Copilot SDK's authoritative per-session
-// task registry (`session.rpc.tasks.list()`) into a freshness-aware in-memory
-// cache the Bridge can surface in the UI.
-//
-// The same listing also names the commands still running in the session's
-// attached shells. The registry keeps those too, because both kinds of
-// background work decide whether a session may be unloaded: releasing its
-// runtime handle stops them. Commands are never part of the agent counts or
-// the UI snapshot.
-//
-// Design rule (see plan + rubber-duck review): never present stale data as live
-// truth. Every snapshot records whether it came from a live SDK refresh and
-// when, so `getSummary()` can label counts `live` / `lastSeen` / `unknown`. The
-// UI only drives an active "background agent running" indicator on `live` data.
-//
-// Freshness is maintained two ways:
-//   1. `SessionRunner` calls `refresh()` when the SDK signals a task change:
-//      session.background_tasks_changed at any time a session is cached, and
-//      subagent.* / agent notifications while a run is open.
-//   2. A bounded poll runs ONLY while a session has non-terminal background
-//      agents or a recently started command AND a live session object is cached.
-//      It stops as soon as that work is done, the session object is gone, or a
-//      hard safety cap elapses, so it can never leak or churn idle sessions.
-//
-// The poll is NOT redundant with (1). Protection reads only `live` snapshots,
-// and a snapshot ages out after FRESHNESS_WINDOW_MS. Background work routinely
-// outlives its parent run and can go minutes without a task event; without the
-// poll `hasRunningAgents()` and `hasProtectedCommand()` would report false and
-// the session manager would become free to evict a session whose agents or
-// command are genuinely still running.
+// The poll isn't redundant: snapshots expire while agents run silent, freeing them for eviction.
 
 import type { GlobalBus } from "./global-bus.js";
 import type { AgentBackgroundTask, AgentSession } from "./agent-backend/index.js";
@@ -51,22 +22,13 @@ import {
 
 /** After this window without a live refresh, a snapshot degrades to `lastSeen`. */
 const FRESHNESS_WINDOW_MS = 60_000;
-/**
- * How long a session stays protected after a background command leaves its running set. The
- * runtime starts the turn that tells the agent a moment after the command ends (under half a
- * second when measured in production), and unloading the session in that gap would lose the
- * news. Must stay below FRESHNESS_WINDOW_MS, which nothing refreshes here.
- */
+/** Covers the gap before the runtime's post-command turn; must stay below FRESHNESS_WINDOW_MS. */
 const COMMAND_SETTLE_MS = 10_000;
 /** Interval for the bounded in-flight poll. */
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 /** Hard cap on a single session's poll lifetime, so a stuck task can't leak a timer. */
 const POLL_MAX_DURATION_MS = 10 * 60_000;
-/**
- * Soft cap on retained `entries`. When exceeded, the least-recently-refreshed
- * entries without a live session are dropped so the map cannot grow unbounded
- * across long-lived servers. Entries with a live SDK object are always kept.
- */
+/** Soft cap; evicts least-recently-refreshed entries that have no live session. */
 const DEFAULT_MAX_ENTRIES = 500;
 
 const KNOWN_STATUSES: ReadonlySet<string> = new Set<AgentTaskStatus>([
@@ -80,7 +42,7 @@ const KNOWN_STATUSES: ReadonlySet<string> = new Set<AgentTaskStatus>([
 interface RegistryEntry {
   tasks: SessionAgentTask[];
   tasksSignature?: string;
-  /** Background commands still running in the session's attached shells, from the same listing as `tasks`. */
+  /** Background commands running in the session's attached shells, from the `tasks` listing. */
   commands: RunningBackgroundCommand[];
   commandsSignature: string;
   /** Epoch ms until which a command that just left the running set still protects the session. */
@@ -138,10 +100,7 @@ export class SessionAgentRegistry {
     this.logger = deps.logger ?? console;
   }
 
-  /**
-   * Pure synchronous counts projection for the session-list DTO. Computes
-   * `source` from freshness without touching the SDK or disk.
-   */
+  /** Counts for the session-list DTO; `source` comes from freshness, without SDK or disk. */
   getSummary(sessionId: string): BackgroundAgentsSummary {
     const entry = this.entries.get(sessionId);
     if (!entry || !entry.hadLiveRefresh) return emptyBackgroundAgentsSummary("unknown");
@@ -153,10 +112,7 @@ export class SessionAgentRegistry {
     );
   }
 
-  /**
-   * Pure in-memory aggregate for server-wide activity reporting. Only fresh
-   * snapshots contribute agent counts; stale snapshots are reported separately.
-   */
+  /** Server-wide activity; only fresh snapshots add agent counts, stale ones are reported apart. */
   getAggregate(): BackgroundAgentsAggregate {
     const aggregate: BackgroundAgentsAggregate = {
       running: 0,
@@ -273,11 +229,7 @@ export class SessionAgentRegistry {
     });
   }
 
-  /**
-   * Take one agent off the runtime's list for good. An agent that waits for a follow-up is ended
-   * first, because the runtime only removes an agent that has ended. A working agent is left
-   * alone. The answer comes from reading the list again, not from what the runtime replied.
-   */
+  /** Ends an idle agent first (only ended ones are removed); checks by re-reading the list. */
   async dismissTask(sessionId: string, agentId: string): Promise<AgentDismissResult> {
     if (!this.deps.getLiveSession(sessionId)) return { dismissed: false, reason: "unavailable" };
     let entry = this.entries.get(sessionId);
@@ -300,7 +252,7 @@ export class SessionAgentRegistry {
       if (task === undefined) return { dismissed: false, reason: "unavailable" };
       if (task === null) return { dismissed: false, reason: "not-found" };
 
-      // The runtime can take a moment to show an ended agent as ended, so removal gets a second try.
+      // The runtime can be slow to show an agent as ended, so removal gets a second try.
       for (let attempt = 0; attempt < 2; attempt++) {
         if (task.status === "running") return { dismissed: false, reason: "running" };
         if (task.status === "idle") await session.cancelTask(agentId);
@@ -321,13 +273,7 @@ export class SessionAgentRegistry {
       && entry.tasks.some((task) => task.status === "running");
   }
 
-  /**
-   * True while a background command started within the protection window is still running in the
-   * session's attached shell, and for a moment after one ends. Unloading the session would stop a
-   * running command, and its agent is most likely waiting for it; just after it ends, the runtime
-   * is about to start the turn that tells the agent. An older command that is still running no
-   * longer counts: one that never finishes must not pin the session.
-   */
+  /** True while a recent command runs or just ended; old ones don't count, so none pins forever. */
   hasProtectedCommand(sessionId: string): boolean {
     const entry = this.entries.get(sessionId);
     return !!entry
@@ -340,11 +286,7 @@ export class SessionAgentRegistry {
     return (this.entries.get(sessionId)?.commands ?? []).map((command) => ({ ...command }));
   }
 
-  /**
-   * Refresh a session's tasks from its live SDK session object. No-ops (leaving
-   * any prior snapshot to age into `lastSeen`) when no session is cached or the
-   * backend lacks the experimental tasks RPC.
-   */
+  /** No-op (prior snapshot ages into `lastSeen`) without a cached session or the tasks RPC. */
   async refresh(sessionId: string, reason: string): Promise<void> {
     const session = this.deps.getLiveSession(sessionId);
     if (!session) return;
@@ -363,9 +305,7 @@ export class SessionAgentRegistry {
       try {
         const result = await listTasks();
         if (this.deps.getLiveSession(sessionId) !== session) {
-          // Session was evicted while the refresh was in flight. Don't repopulate
-          // heavy task text or emit a `live` update for a session we can no longer
-          // vouch for; leave any prior (now text-cleared) snapshot to age out.
+          // Evicted mid-refresh: don't restore text or emit `live` for a session we can't vouch for
           return;
         }
         const rawTasks = Array.isArray(result?.tasks) ? result!.tasks! : [];
@@ -389,12 +329,7 @@ export class SessionAgentRegistry {
     }
   }
 
-  /**
-   * Signal that a session's live object is gone (evicted / disconnected).
-   * Stops polling and, if surfaced background agents were still tracked, pushes
-   * a `lastSeen` demotion so clients stop presenting the snapshot as live.
-   * Commands that were still running in it are reported as stopped.
-   */
+  /** Live object gone: stop polling, demote to lastSeen, report its commands as stopped. */
   markSessionUnavailable(sessionId: string): void {
     const entry = this.entries.get(sessionId);
     if (!entry) return;
@@ -415,13 +350,9 @@ export class SessionAgentRegistry {
       }
     }
     this.emitLastSeenIfSurfaced(sessionId, entry);
-    // Drop heavy untruncated free-text the evicted session no longer needs:
-    // counts/status/freshness are enough to age the snapshot out, and the
-    // live-gated UI bar won't reopen for an evicted session. A re-resumed
-    // session repopulates text via the detail endpoint's live refresh.
+    // Evicted: drop heavy task text; counts suffice and a resumed session refetches it.
     this.clearHeavyTaskFields(entry);
-    // Eviction can make older entries prunable; converge the bound now so the
-    // map shrinks even without a subsequent refresh.
+    // Eviction can make older entries prunable; enforce the bound now, not at the next refresh.
     this.enforceEntryBound(sessionId);
   }
 
@@ -453,7 +384,7 @@ export class SessionAgentRegistry {
     return { tasks: [], commands: [], commandsSignature: "", refreshedAt: 0, hadLiveRefresh: false };
   }
 
-  /** Runs a change to the runtime's task list after any earlier change and any refresh in flight. */
+  /** Runs a task-list change after any earlier change and any refresh in flight. */
   private async runTaskMutation<T>(entry: RegistryEntry, mutate: () => Promise<T>): Promise<T> {
     const previous = entry.mutationPromise;
     const mutation = (async (): Promise<T> => {
@@ -469,7 +400,7 @@ export class SessionAgentRegistry {
     }
   }
 
-  /** Reads the runtime's list and records it. Undefined when the session object was replaced meanwhile. */
+  /** Reads and records the runtime's list; undefined if the session object was replaced. */
   private async readAndCommitTasks(
     sessionId: string,
     entry: RegistryEntry,
@@ -485,13 +416,7 @@ export class SessionAgentRegistry {
     return tasks;
   }
 
-  /**
-   * The commands an agent left running in the session's attached shells. The runtime also lists a
-   * foreground command while its tool call is still waiting on it, with execution mode "sync".
-   * That one belongs to a run in flight, which keeps the session by itself, and it becomes
-   * "background" under the same ID and start time if it outlives the wait. A detached command
-   * outlives the session's runtime handle, so it is not the Bridge's to keep alive or report.
-   */
+  /** Agents' running shell commands minus sync (a live run's) and detached (outlive the handle). */
   private readRunningCommands(
     entry: RegistryEntry,
     rawTasks: readonly AgentBackgroundTask[],
@@ -505,8 +430,7 @@ export class SessionAgentRegistry {
         && task.attachmentMode !== "detached")
       .map((task) => ({
         shellId: task.id,
-        // The start time is the command's identity and its age, so one the runtime did not give
-        // stays whatever it was first taken to be.
+        // Start time is identity and age: without one from the runtime, keep the first one seen.
         startedAt: task.startedAt && Number.isFinite(Date.parse(task.startedAt))
           ? task.startedAt
           : known.get(task.id)?.startedAt ?? firstSeenAt,
@@ -532,8 +456,7 @@ export class SessionAgentRegistry {
     const tasksSignature = this.getTasksSignature(tasks);
     const tasksChanged = entry.tasksSignature !== tasksSignature;
     const commandKey = (command: RunningBackgroundCommand) => `${command.shellId}\u0000${command.startedAt}`;
-    // The runtime can list a command a moment before it reports the command's process ID, so
-    // the ID arriving counts as a change to record, though not as a command ending.
+    // A pid can arrive after the command is listed: record it as a change, not a command ending.
     const commandsSignature = commands
       .map((command) => `${commandKey(command)}\u0000${command.pid ?? ""}`)
       .sort()
@@ -602,14 +525,7 @@ export class SessionAgentRegistry {
     }
   }
 
-  /**
-   * Enforce the soft cap on retained entries. Drops the least-recently-refreshed
-   * entries that have no live session and aren't mid-refresh/reap, using the same
-   * teardown as `forget`. The just-touched session (`keepSessionId`) and any
-   * entry with a live SDK object are never evicted, so the per-session live
-   * snapshot stays fully intact (the cap may be exceeded while many sessions are
-   * live, which is bounded by the live session cache anyway).
-   */
+  /** Never evicts the touched, live or mid-refresh entries, so the cap may be exceeded. */
   private enforceEntryBound(keepSessionId: string): void {
     if (this.entries.size <= this.maxEntries) return;
     const evictable: Array<{ id: string; entry: RegistryEntry }> = [];
@@ -679,13 +595,7 @@ export class SessionAgentRegistry {
     });
   }
 
-  /**
-   * Push a `lastSeen` demotion when we stop refreshing a session that still has
-   * surfaced (running/idle) background agents — e.g. the poll hit its cap or the
-   * live session was evicted. Without this, a client that received a `live`
-   * snapshot would keep showing an active indicator against data the server can
-   * no longer vouch for. Terminal-only snapshots carry nothing to demote.
-   */
+  /** Without this, clients keep a live indicator the server can no longer vouch for. */
   private emitLastSeenIfSurfaced(sessionId: string, entry: RegistryEntry): void {
     if (!entry.hadLiveRefresh) return;
     const summary = summarizeBackgroundAgents(entry.tasks, "lastSeen");

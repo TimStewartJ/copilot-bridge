@@ -8,7 +8,7 @@ export type HomeSection = "overview" | "inputs" | "actions" | "replies" | "quiet
 export interface HomePage<T> { items: T[]; total: number | null; offset: number; hasMore: boolean }
 export interface HomeSessionRef {
   sessionId: string; title: string; taskId?: string; taskTitle?: string;
-  /** The conversation's only tasks are archived: it is listed because something new arrived after they were closed. */
+  /** All its tasks are archived; listed because something new arrived after they closed. */
   taskArchived?: boolean;
 }
 export type HomeInput = HomeSessionRef & (
@@ -27,7 +27,7 @@ export interface HomeReply extends HomeSessionRef {
 }
 export interface HomeSnapshot {
   section: HomeSection;
-  /** Tasks needing Tim for a task-level reason (reached revisit, stalled session). Questions are in `inputs`. */
+  /** Tasks needing the user (revisit reached, stalled session); questions are in `inputs`. */
   attention: TaskOverviewRow[];
   /** Up to five tasks in motion, most recently engaged first. */
   resume: TaskOverviewRow[];

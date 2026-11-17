@@ -1,6 +1,4 @@
-// Hands-free settings: the voice, how it listens, announcements, and the names list. One set for
-// every chat, saved on this Bridge (and shared with Tether). Voice changes apply at once, even
-// mid-conversation. Shown in Settings › Voice and in a sheet from the hands-free dock.
+// Hands-free settings: one set per Bridge, shared with Tether; voice changes apply at once.
 import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { ChevronDown, X } from "lucide-react";

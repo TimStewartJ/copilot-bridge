@@ -1,7 +1,3 @@
-// The Ogg Opus container (RFC 7845), just enough for chat mic recordings: the browser writes one
-// mono stream, the server reads it back. Staying on the standard container keeps a stored recording
-// playable in any audio tool when something needs a listen.
-
 /** Opus counts time in 48 kHz samples whatever rate the audio was captured at. */
 export const OPUS_CLOCK_RATE = 48_000;
 
@@ -14,11 +10,7 @@ export interface OggOpusStream {
   /** Rate the audio was captured at. Informational: Opus decodes to any of its rates. */
   inputSampleRate: number;
   packets: Uint8Array[];
-  /**
-   * Where the recording ends, in 48 kHz samples from the start of the first packet. An encoder pads
-   * its last packet to a whole frame; this says how much of the stream is audio, and a reader drops
-   * the rest (RFC 7845 section 4.4). Absent means all of it.
-   */
+  /** End of audio in 48 kHz samples; readers drop encoder padding past it (RFC 7845 4.4). */
   endSample?: number;
 }
 
@@ -40,7 +32,7 @@ const CRC_TABLE = (() => {
   return table;
 })();
 
-/** Ogg's page checksum: CRC-32 with polynomial 0x04c11db7, no reflection, computed with the checksum field zeroed. */
+/** Ogg page CRC-32: polynomial 0x04c11db7, no reflection, checksum field zeroed. */
 export function oggPageChecksum(page: Uint8Array): number {
   let crc = 0;
   for (let i = 0; i < page.length; i++) {
@@ -70,11 +62,6 @@ export function opusPacketSamples(packet: Uint8Array): number {
   return samples;
 }
 
-/**
- * Playable length of a stream: up to where it says the recording ends, less the encoder delay. The
- * packets bound it, so a stream cannot claim more audio than it carries, and a reader that trims to
- * this length plays exactly what was measured.
- */
 export function oggOpusDurationSeconds(stream: Pick<OggOpusStream, "packets" | "preSkip" | "endSample">): number {
   const samples = stream.packets.reduce((sum, packet) => sum + opusPacketSamples(packet), 0);
   return Math.max(0, Math.min(samples, stream.endSample ?? samples) - stream.preSkip) / OPUS_CLOCK_RATE;
@@ -131,7 +118,7 @@ export function muxOggOpus(stream: OggOpusStream, serial = 1): Uint8Array<ArrayB
   let pendingSamples = 0;
   const flush = (last: boolean) => {
     if (pending.length === 0 && !last) return;
-    // Only the last page may stop short of its packets: that is how the end of the recording is marked.
+    // Only the last page may stop short of its packets: that marks the end of the recording.
     const pageGranule = last ? Math.max(previousPageGranule, Math.min(granule, stream.endSample ?? granule)) : granule;
     pages.push(buildPage(serial, pages.length, last ? HEADER_ENDS_STREAM : 0, pageGranule, pending));
     previousPageGranule = pageGranule;
@@ -159,7 +146,7 @@ export function muxOggOpus(stream: OggOpusStream, serial = 1): Uint8Array<ArrayB
   return file;
 }
 
-/** Reads a complete first Opus stream; damaged or missing pages must not become a partial transcript. */
+/** Reads a whole first Opus stream; damaged or missing pages must not give a partial transcript. */
 export function demuxOggOpus(bytes: Uint8Array): OggOpusStream {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const packets: Uint8Array[] = [];

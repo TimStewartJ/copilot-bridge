@@ -26,13 +26,6 @@ import { HTML_SANDBOX_PERMISSIONS } from "./visualDisplay";
 import { DS, cx } from "../design/tokens";
 import { EmptyHint, IconButton } from "../design/primitives";
 
-/**
- * A file shown in the chat itself. In the transcript it is a card: a glimpse of the content in a
- * frame, and a line that names it with Expand, New tab and Download. Opening it shows the whole file
- * full screen, where it scrolls, selects and (for a web page) responds. Downloading is the other
- * option, never the only one, except for formats the browser cannot show.
- */
-
 /** Stands in when pdf.js cannot be loaded (offline, or a tab older than the running build). */
 function PdfUnavailable({ onError }: Pick<PdfPreviewProps, "onError">) {
   useEffect(onError, [onError]);
@@ -56,12 +49,11 @@ interface FilePreviewBodyProps {
 
 const PROSE = `ds-prose max-w-none break-words text-sm leading-[1.7] text-text-primary ${APP_PROSE} prose-pre:bg-bg-surface prose-th:bg-bg-surface`;
 const TABLE_ROWS = { card: 12, viewer: 500 } as const;
-/** A cell is as wide as its value up to a limit and wraps beyond it; a wide table scrolls sideways. */
+/** Cells fit their value up to a limit, then wrap; a wide table scrolls sideways. */
 const TABLE_CELL = "w-max max-w-48 whitespace-pre-wrap break-words sm:max-w-80";
 const PDF_ZOOM_STEPS = [1, 1.5, 2, 3];
 
-// A file's markdown is a document, not a chat reply: its links leave the app instead of
-// navigating it, and none of the chat's cards are built from them.
+// A file's markdown is a document: links leave the app and no chat cards are built from them.
 const FILE_MARKDOWN_COMPONENTS: Components = {
   pre: CodeBlock,
   a: ({ node: _node, children, href, ...props }) => (
@@ -148,7 +140,7 @@ function FilePreviewBody(props: FilePreviewBodyProps) {
         preload="metadata"
         src={file.url}
         onError={onError}
-        // A fixed shape in the transcript, so the reply does not jump when the video's size arrives.
+        // A fixed shape, so the reply does not jump when the video's size arrives.
         className={cx("not-prose block w-full bg-surface-inset", viewer ? "max-h-full" : "aspect-video rounded-2xl border border-surface-edge")}
       />
     );
@@ -170,7 +162,7 @@ function FilePreviewBody(props: FilePreviewBodyProps) {
   return <TextPreview {...props} />;
 }
 
-/** A PDF, with pdf.js fetched when the file first comes near the screen, not when its chat opens. */
+/** Fetches pdf.js when the file first nears the screen, not when its chat opens. */
 function PdfBody({ file, viewer = false, zoom = 1, onError }: FilePreviewBodyProps) {
   const holderRef = useRef<HTMLDivElement>(null);
   const [near, setNear] = useState(viewer);
@@ -224,7 +216,7 @@ export const OutboundAttachment = memo(function OutboundAttachment({ url, name }
   const open = () => showFile(file);
   const { Icon, kind: label } = describeFile(name);
   return (
-    // The reply's prose styles space a figure like a pull quote; a file sits as close as a paragraph.
+    // Prose spaces a figure like a pull quote; a file sits as close as a paragraph.
     <figure className="my-2! flex min-w-0 max-w-2xl flex-col gap-2">
       {isPlayer(kind) ? (
         <FilePreviewBody file={file} kind={kind} onError={fail} />
@@ -236,7 +228,7 @@ export const OutboundAttachment = memo(function OutboundAttachment({ url, name }
           )}
         >
           <div inert><FilePreviewBody file={file} kind={kind} onError={fail} /></div>
-          {/* Sits where a full-height glimpse ends, so a file shorter than the frame shows no fade. */}
+          {/* Placed where a full glimpse ends, so a file shorter than the frame shows no fade. */}
           {!isPage(kind) && (
             <div className="pointer-events-none absolute inset-x-0 top-[15.5rem] h-10 bg-gradient-to-t from-surface-group to-transparent" aria-hidden />
           )}
@@ -300,7 +292,7 @@ function FileViewer({ file, onClose }: { file: PreviewFile; onClose?: () => void
             className={cx(
               "min-h-0 flex-1 overflow-auto rounded-xl",
               isPlayer(shown) && "flex items-center justify-center",
-              // Code brings its own box and a player has none; everything else is a page on the backdrop.
+              // Code has its own box and a player none; anything else is a page on the backdrop.
               shown !== "text" && !isPlayer(shown) && "border border-surface-edge",
               shown === "html" && "bg-white",
               (shown === "markdown" || shown === "table") && "bg-surface-group",
@@ -320,7 +312,7 @@ function FileViewer({ file, onClose }: { file: PreviewFile; onClose?: () => void
   );
 }
 
-/** The one full-screen file viewer, mounted at the app's root. Anything opens it with `showFile`. */
+/** The one full-screen file viewer, mounted at the app root; open it with `showFile`. */
 export function FileViewerHost() {
   const file = useOpenFile();
   return file ? <FileViewer key={file.url} file={file} onClose={() => showFile(null)} /> : null;

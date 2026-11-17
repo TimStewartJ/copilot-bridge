@@ -77,8 +77,7 @@ function pullRequest(prId: number, status: WorkMapPullRequest["status"], extra: 
 const task = (id: string, title: string, status: "active" | "archived" = "active") =>
   ({ id, title, kind: "task" as const, status, deferred: false, priority: 0, nextAction: null, waitingOn: null });
 
-// Mirrors a real shape: an epic with a feature whose tasks are tracked by one Bridge task, a bug
-// in a second branch tracked by the same task, and an unparented bug.
+// An epic whose feature and a bug in another branch share one Bridge task, plus a lone bug.
 const DATA: WorkMapData = {
   enabled: true,
   currentUser: null,
@@ -193,7 +192,7 @@ describe("work map task colours", () => {
   const section = (key: string, taskIds: string[]): WorkMapTreeSection => ({ key, kind: "hierarchy", nodes: [], taskIds });
 
   it("never draws two lanes of a section in one colour, even with more tasks than colours", () => {
-    // Ten tasks use every colour once. The eleventh would be blue again, beside the task that is blue.
+    // Ten tasks use every colour once; the eleventh would be blue again, beside the blue one.
     const first = Array.from({ length: IDENTITY_COLORS.length }, (_, index) => `first-${index}`);
     const sections = [section("a", first), section("b", ["first-0", "late", "later"])];
 

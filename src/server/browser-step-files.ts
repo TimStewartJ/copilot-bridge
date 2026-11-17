@@ -1,6 +1,3 @@
-// The browser steps that read or write a file on the Bridge's machine: where the file is, and
-// `screenshot`, which is an agent-browser command plus a file. `upload` and `download` ask
-// Chrome itself and have modules of their own, browser-upload.ts and browser-download.ts.
 
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
@@ -12,10 +9,7 @@ import { SCREENSHOT_OPTIONS } from "./browser-steps.js";
 import { getSessionFilesDir, isCanonicalSessionId } from "./outbound-attachments.js";
 import { err, ok, type Result } from "./tool-results.js";
 
-/**
- * One picture is refused by the model's provider above 5 MB once encoded or 8000 px a side, and
- * a refused picture stays in the conversation, which then fails on every later request.
- */
+/** The provider refuses a picture over 5 MB or 8000 px, and then fails every later request. */
 const MAX_SCREENSHOT_BYTES = 3_500_000;
 const MAX_SCREENSHOT_SIDE = 7_900;
 
@@ -60,10 +54,7 @@ function imageSize(image: Buffer): { width: number; height: number } | undefined
   return undefined;
 }
 
-/**
- * The `screenshot` step: `[ref] [file] [--full] [--annotate]`. The picture goes to the model
- * with the tool result; it is also kept when the step names a file.
- */
+/** The `screenshot [ref] [file] [--full] [--annotate]` step; the picture goes to the model. */
 export async function takeScreenshot(
   args: readonly string[],
   timeoutMs: number | undefined,

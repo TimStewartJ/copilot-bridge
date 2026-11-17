@@ -32,8 +32,7 @@ vi.mock("node:fs", () => ({
   unlinkSync: unlinkSyncMock,
 }));
 
-// Replaced once for the file, with a switch: two replacements of one module that are both still
-// waiting for the next import are applied in no fixed order.
+// One mock with a switch: two pending mocks of one module apply in no fixed order.
 const agentBrowserCommand = vi.hoisted(() => ({ shell: false }));
 vi.mock("../agent-browser-command.js", () => ({
   getAgentBrowserCommand: () => ({ file: "agent-browser", shell: agentBrowserCommand.shell }),
@@ -83,13 +82,12 @@ function spanRecorder() {
   };
 }
 
-// What Chrome prints when the host does not let it create its sandbox, and what agent-browser
-// reports with it: that the browser never wrote its DevTools port.
+// Chrome's output when it cannot create its sandbox, plus agent-browser's missing-port error.
 const NO_SANDBOX_OUTPUT = "No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro "
   + "that has disabled unprivileged user namespaces with AppArmor, see the Chromium sandbox documentation.";
 const NO_SANDBOX_WITH_PORT_OUTPUT = `Chrome exited early without writing DevToolsActivePort\n${NO_SANDBOX_OUTPUT}`;
 
-// The arguments every Bridge browser gets; src/server/__tests__/browser-launch.test.ts has the detail.
+// The arguments every Bridge browser gets; browser-launch.test.ts has the detail.
 const BRIDGE_LAUNCH_ARGS = [
   "--disable-blink-features=AutomationControlled",
   "--enable-unsafe-swiftshader",
@@ -402,7 +400,7 @@ describe("agent-browser wrapper", () => {
 
     it.each([
       ["the missing sandbox when the output also names DevToolsActivePort", NO_SANDBOX_WITH_PORT_OUTPUT, "launch.no_usable_sandbox", "DevToolsActivePort"],
-      // Chrome names files it looked for in vain in the same output; that is not a missing agent-browser.
+      // Chrome's own "not found" lines do not mean agent-browser is missing.
       ["the missing sandbox when the output also says that something was not found", `${NO_SANDBOX_OUTPUT}\nchrome-sandbox: not found`, "launch.no_usable_sandbox", undefined],
       ["a missing agent-browser", "sh: 1: agent-browser: not found", "binary_missing", undefined],
       ["a DevToolsActivePort failure without the sandbox line", "Chrome exited early without writing DevToolsActivePort", "launch.devtools_active_port", "DevToolsActivePort"],
@@ -439,7 +437,7 @@ describe("agent-browser wrapper", () => {
     });
 
     it("returns the failure after one run and leaves the profile's browser processes alone", async () => {
-      // Without a lock file, a DevToolsActivePort failure has the profile's processes listed and killed.
+      // Without a lock file, a DevToolsActivePort failure lists and kills the profile's processes.
       execFileMock.mockImplementation((
         file: string,
         _args: string[],
@@ -679,12 +677,11 @@ describe("agent-browser wrapper", () => {
       ]) {
         vi.stubEnv(name, undefined);
       }
-      // The launch configuration is remembered for a few seconds by the module instance the
-      // wrapper imports, which is this one until the next vi.resetModules().
+      // The wrapper's module instance caches the launch config briefly; clear it here.
       (await import("../browser-launch.js")).resetBrowserLaunchCachesForTests();
     });
 
-    /** Runs one command (the default) or a shutdown and returns the environment of each agent-browser run. */
+    /** Runs one command (default) or a shutdown; returns each agent-browser run's environment. */
     async function commandEnvsFor(
       target: (mod: typeof import("../agent-browser.js")) => import("../agent-browser.js").BrowserTarget,
       action: "command" | "shutdown" = "command",
@@ -811,7 +808,7 @@ describe("agent-browser wrapper", () => {
       })));
     }
 
-    /** Forces the platform branch; process creation, signals and the file system are mocked already. */
+    /** Forces the platform branch; processes, signals and files are already mocked. */
     async function importForPlatform(platformName: NodeJS.Platform) {
       vi.doMock("node:os", async (importOriginal) => ({
         ...(await importOriginal<typeof import("node:os")>()),

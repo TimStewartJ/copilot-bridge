@@ -1,5 +1,4 @@
-// Settings › Helm: when Helm looks over everything, which Bridges it reads, what it may do by
-// itself, and what it runs on. What Helm knows (its memory) has its own page.
+// Settings › Helm: schedule, Bridges read, autonomy and model; its memory has its own page.
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -120,7 +119,7 @@ function SourceServerRow({ server, selected, onSave }: { server: McpServer; sele
   const [draft, setDraft] = useState<string[]>(selected?.tools ?? []);
   const [dirty, setDirty] = useState(false);
   const saved = (selected?.tools ?? []).join("\n");
-  // A refetch of the settings brings this row's saved tools back; it never overwrites edits not saved yet.
+  // A settings refetch restores this row's saved tools, but never over unsaved edits.
   useEffect(() => { if (!dirty) setDraft(saved ? saved.split("\n") : []); }, [saved, dirty]);
   const toggle = (name: string, on: boolean) => {
     setDirty(true);

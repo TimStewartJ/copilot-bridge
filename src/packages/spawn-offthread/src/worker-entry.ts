@@ -9,14 +9,7 @@ export interface WorkerEntry {
   execArgv?: string[];
 }
 
-/**
- * Locates a worker module that sits beside the module at `moduleUrl` (pass `import.meta.url`).
- * The published build always takes the first path: compiled code loads the .js worker and
- * inherits execArgv. When this package runs from its TypeScript source (tsx, Vitest) the .ts
- * worker is loaded with the tsx loader passed explicitly: loader hooks registered by a tsx parent
- * are not reliably inherited by worker threads. Inherited execArgv is never re-passed, because
- * `new Worker` rejects process-level flags that inheritance silently tolerates.
- */
+/** From .ts add tsx (hooks miss workers); never re-pass execArgv (Worker rejects its flags). */
 export function resolveWorkerEntry(name: string, moduleUrl: string): WorkerEntry {
   const isSource = moduleUrl.endsWith(".ts");
   const entry = join(dirname(fileURLToPath(moduleUrl)), `${name}.${isSource ? "ts" : "js"}`);

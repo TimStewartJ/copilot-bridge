@@ -1,8 +1,7 @@
 import { defineConfig } from "vitest/config";
 import { sharedTestConfig } from "./vitest.shared.js";
 
-// Checks that need agent-browser and a real browser on the machine. They are not part of
-// `npm test`: run `npm run check:browser` after either of the two was updated.
+// Needs agent-browser and a real browser; not in `npm test`, run `npm run check:browser` instead.
 export default defineConfig({
   test: {
     ...sharedTestConfig,

@@ -193,7 +193,7 @@ export default function ModelPresetPicker({
   showSlotLabels?: boolean;
   onSelectPreset: (slot: ModelPresetSlot) => void;
   onSelectModel: (slot: ModelPresetSlot, modelId: string) => void;
-  /** Called after a preset or model is chosen, so the host can move focus onward (e.g. to the composer). */
+  /** Called after a pick, so the host can move focus onward (e.g. to the composer). */
   onSelectionCommitted?: () => void;
 }) {
   const [openSlot, setOpenSlot] = useState<ModelPresetSlot | null>(null);

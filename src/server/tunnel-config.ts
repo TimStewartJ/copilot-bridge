@@ -4,29 +4,18 @@ const GITHUB_ACCOUNT_RE = /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i;
 const OFF_RE = /^(0|false|no|off)$/i;
 const GITHUB_PREFIX = "github:";
 
-/**
- * How the launcher authenticates `devtunnel host`. `cli` uses the devtunnel CLI's own
- * login. `github` is for a tunnel owned by a GitHub account: the launcher mints a host
- * token with the GitHub credential Git Credential Manager already stores, so this tunnel
- * can run next to tunnels owned by the CLI's Microsoft login.
- */
+/** cli: devtunnel's own login; github: host token from Git Credential Manager's GitHub login. */
 export type TunnelHostAuthKind = "cli" | "github";
 
 export type TunnelSpec = {
   name: string;
   auth: TunnelHostAuthKind;
-  /**
-   * GitHub account whose stored credential hosts a `github` tunnel. Without one, the
-   * credential helper's default github.com account is used.
-   */
+  /** GitHub account whose stored credential hosts a `github` tunnel; unset uses the default. */
   githubAccount?: string;
 };
 
 export type TunnelConfig = {
-  /**
-   * Persistent dev tunnels the launcher hosts. The first is the primary one whose URL
-   * the Bridge publishes for links. Empty means the launcher hosts no tunnel.
-   */
+  /** Dev tunnels the launcher hosts; the first one's URL is published. Empty means none. */
   tunnels: TunnelSpec[];
   /** Configuration problems and deprecation notes for the launcher log. */
   warnings: string[];
@@ -57,13 +46,7 @@ function parseTunnelEntry(entry: string): TunnelSpec | null {
   return GITHUB_ACCOUNT_RE.test(githubAccount) ? { name, auth: "github", githubAccount } : null;
 }
 
-/**
- * Reads `BRIDGE_TUNNEL_NAMES`. An entry written `github:<name>` names a tunnel owned
- * by a GitHub account, and `github:<account>/<name>` also says which stored GitHub
- * credential hosts it. When the list is not set at all, a legacy `BRIDGE_TUNNEL_NAME`
- * still names a single tunnel unless `BRIDGE_ENABLE_TUNNEL` turns it off, so existing
- * installs keep their tunnel. Invalid names are reported and skipped.
- */
+// Entries: name, github:name or github:account/name; unset falls back to legacy BRIDGE_TUNNEL_NAME.
 export function resolveTunnelConfig(env: NodeJS.ProcessEnv = process.env): TunnelConfig {
   const warnings: string[] = [];
   const legacyName = env.BRIDGE_TUNNEL_NAME?.trim() ?? "";

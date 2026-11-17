@@ -580,7 +580,7 @@ describe("ChatInput voice retry", () => {
     });
     expect(findButtonByAriaLabel(getHarness().dom.container, "Autopilot").getAttribute("aria-pressed")).toBe("true");
     expect(findButtonByAriaLabel(getHarness().dom.container, "Start Autopilot")).toBeDefined();
-    // The toggle already shows Autopilot, so the send button keeps its arrow instead of repeating the mark.
+    // The toggle already shows Autopilot, so the send button keeps its arrow.
     const sendIcons = findAllByTag(findButtonByAriaLabel(getHarness().dom.container, "Start Autopilot"), "svg")
       .map((svg) => svg.getAttribute("class") ?? "").join(" ");
     expect(sendIcons).toContain("lucide-arrow-up");
@@ -753,7 +753,7 @@ describe("ChatInput voice retry", () => {
     expect(onSubmitVoiceCapture).toHaveBeenCalledWith(expect.objectContaining({ submitMode: "autosend" }));
   });
 
-  /** Records in the composer the props describe, presses Finish and hands over the captured audio. */
+  /** Records in a composer with these props, presses Finish and hands over the audio. */
   async function finishRecording(props: Partial<ComponentProps<typeof ChatInput>>, contextKey = "session-1") {
     let phase: "idle" | "recording" = "idle";
     const baseVoice = useVoiceInputMock();
@@ -1015,8 +1015,7 @@ describe("ChatInput voice retry", () => {
     expect(onSend).toHaveBeenCalledWith("run autonomously", undefined, "autopilot");
   });
 
-  // How each key, modifier and device classifies is covered in lib/composer-enter.test.ts; these
-  // cases prove the composer acts on that classification.
+  // Key classification is tested in lib/composer-enter.test.ts; these prove the composer obeys it.
   it.each([
     { label: "new chat with the keyboard visible", visualHeight: 480, isDraft: true, steering: false },
     { label: "steering note without viewport shrink", visualHeight: 800, isDraft: false, steering: true },

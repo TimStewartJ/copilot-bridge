@@ -588,17 +588,7 @@ describe("SessionManager stale cached session recovery", () => {
   });
 
   it("defers MCP-status eviction without flushing, even when no run is busy", async () => {
-    // Regression: previously markCachedSessionForEviction (called inline from
-    // the mcp_server_status_changed handler) immediately invoked
-    // flushPendingSessionEviction. If isSessionBusy transiently returned
-    // false (e.g. around terminal-event ordering), the cached AgentSession
-    // was disconnected while the SDK was still persisting the in-flight
-    // turn's `fc_call_*` items to disk, leading to duplicate items on the
-    // next resume and upstream `CAPIError: 400 Duplicate item found`.
-    //
-    // The new deferMcpStatusSessionEviction must only enqueue the eviction
-    // and rely on the run controller's `.finally()` drain — it must never
-    // call flush itself, regardless of busy state.
+    // Flushing here can cut a turn mid-write and cause `400 Duplicate item found` on resume.
     const { manager } = createManager();
     const cachedSession = createSession(() => {});
     manager.sessionObjects.set("session-1", cachedSession);
@@ -623,8 +613,7 @@ describe("SessionManager stale cached session recovery", () => {
     );
     expect(cachedSession.disconnect).not.toHaveBeenCalled();
 
-    // The drain path (invoked by SessionRunner's `.finally()` after
-    // setSessionRunState(sessionId, "idle")) performs the eviction.
+    // The drain path, which SessionRunner runs once the session goes idle, performs the eviction.
     manager.flushPendingSessionEviction("session-1");
     await manager._drainCacheQueue();
     expect(cachedSession.disconnect).toHaveBeenCalledTimes(1);

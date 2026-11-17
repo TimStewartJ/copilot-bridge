@@ -28,10 +28,7 @@ import type { BridgeToolDefinition, BridgeToolsMcpServer } from "./agent-tools-m
 import { toolFailure } from "./tool-results.js";
 
 const MAX_HANDOFF_REASON_LENGTH = 500;
-/**
- * A site that takes a moment to let someone in still shows its form meanwhile, so a form that is
- * still there is looked at again this often, this many times, before the login counts as refused.
- */
+/** Sites can show the form a moment after accepting, so recheck before counting a refusal. */
 const SIGN_IN_LOOK_AGAIN_MS = 2_000;
 const SIGN_IN_LOOKS = 5;
 const base64 = (script: string): string => Buffer.from(script, "utf-8").toString("base64");
@@ -326,8 +323,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
                 + "Hand off with browser_session_handoff.", { ...pageBlockFields(check, record.id), state });
             }
             if (after?.form) {
-              // The form is still there, so the site turned the login down. The login is not
-              // tried again until the user saves it anew.
+              // The form stayed, so the site refused it; not retried until the user saves it anew.
               await clearPassword();
               await logins.markFailed(login.id);
               return answer("rejected", `${host} still shows its sign-in form, so it did not accept the saved login. ${HAND_OFF_SIGN_IN}`, { state });
@@ -437,7 +433,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
               return { ...unattended, ...(typeof answer === "string" && answer ? { reply: answer } : {}) };
             }
             outcome = answer === BROWSER_HANDOFF_ANSWERS.done ? "completed" : "not_completed";
-            // The answer can come after the Bridge closed the browser, as it does when it shuts down.
+            // The answer can come after the Bridge closed the browser, as on shutdown.
             if (!browserSessionStore.getSession(record.id)) {
               return { browserSessionId: record.id, handoff: outcome, guidance: "The browser session has ended since; start a new one to continue." };
             }

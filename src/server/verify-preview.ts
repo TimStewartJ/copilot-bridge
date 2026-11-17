@@ -1,11 +1,4 @@
-// `npm run verify:preview -- --url <previewBaseUrl>`: proves a running staging preview works from the
-// outside, the way a person uses it. It reads and writes the preview's API with synthetic fixtures
-// it removes again, optionally runs one live chat turn, and screenshots the main screens in a real
-// browser at phone and desktop sizes in light and dark theme. `preview:smoke` checks the preview
-// machinery itself in-process; this checks a preview that is already being served.
-//
-// Writes need a staging preview (`/api/server/runtime-status` says `isStaging`); any other Bridge is
-// only read, and only with --read-only. Prints a JSON summary and exits non-zero on any failure.
+// verify:preview: checks a served staging preview via API and screenshots; writes only to staging.
 
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -161,7 +154,7 @@ function modelCost(model: Record<string, unknown>): number {
   return Number.POSITIVE_INFINITY;
 }
 
-/** The model and effort for the chat check: the one asked for, else the cheapest enabled model the preview lists. */
+/** The chat check's model: the one asked for, else the preview's cheapest enabled model. */
 async function chooseChatModel(
   client: PreviewClient,
   requested: string | undefined,
@@ -214,7 +207,7 @@ async function waitForRunEnd(client: PreviewClient, sessionId: string): Promise<
         if (type === "error" || type === "shutdown" || type === "aborted") {
           throw new Error(`the run ended with ${type}: ${String(event.message ?? event.content ?? "")}`.trim());
         }
-        // The message was delivered before the stream opened, so a complete snapshot means the run ended.
+        // Delivered before the stream opened, so a complete snapshot means the run ended.
         if (type === "snapshot" && event.complete === true && event.terminalType !== "done") {
           throw new Error(`the run ended with ${String(event.terminalType ?? "no outcome")}`);
         }
@@ -301,7 +294,7 @@ async function captureScreens(input: {
             const filePath = join(outDir, fileName);
             await checks.run(`screen ${page.name} ${viewport.name} ${theme}`, async () => {
               const pageUrl = new URL(page.path.replace(/^\//, ""), options.baseUrl).toString();
-              // A busy shared server occasionally misses agent-browser's 30-second read; one retry covers it.
+              // A busy server can miss agent-browser's 30-second read; one retry covers it.
               await command(["open", pageUrl]).catch(async (error: unknown) => {
                 log(`open ${page.name} failed once, retrying: ${describeError(error).slice(0, 120)}`);
                 await command(["open", pageUrl]);
@@ -407,7 +400,7 @@ async function verify(options: VerifyPreviewOptions, outDir: string): Promise<{ 
   const nonce = randomUUID().slice(0, 8);
 
   const health = await checks.run("health", async () => {
-    // A preview's backend starts lazily on the first request and answers 503 with retryAfterSeconds meanwhile.
+    // The backend starts lazily and answers 503 with retryAfterSeconds until ready.
     const deadline = Date.now() + BACKEND_START_WAIT_MS;
     for (;;) {
       const response = await client.request("GET", "/health");
@@ -631,8 +624,7 @@ async function main(): Promise<number> {
   return summary.ok ? 0 : 1;
 }
 
-// Exit once the event loop drains: process.exit with fetch's keep-alive sockets still open can crash
-// Node on Windows. The timer only fires if something (a browser helper) keeps the loop alive.
+// Let the loop drain: exiting with open keep-alive sockets can crash Node on Windows.
 main().then(
   (code) => {
     process.exitCode = code;

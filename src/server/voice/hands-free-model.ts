@@ -1,13 +1,4 @@
-// The hands-free layer's own small model ("Hands-free" in Settings › Models). It sits between the
-// user's speech and the chat: it decides what a transcript is for (send it, ignore it, report
-// progress, …) and turns the chat's replies and running work into a few spoken sentences. It never
-// does the chat's work and never answers from its own knowledge.
-//
-// Measured on 26 Oct 2026 (394 calls, prompts below): gpt-6.1-terra at low decided correctly on all
-// 46 routing cases, median 1.26 s (first token 0.97 s, p90 1.66 s); spoken summaries and progress
-// lines took 1.4-1.6 s and were the best of six fast models. A fresh helper session costs ~30 ms,
-// so every call gets its own and nothing builds up between calls. SPEAK answered in plain text then;
-// it has answered in JSON since 14 Nov 2026, so the Bridge, not the model's wording, decides the offer.
+// Hands-free helper model: routes transcripts, writes spoken lines; fresh session per call.
 import type { AgentModelInfo, AgentSession, AgentSessionConfig } from "../agent-backend/index.js";
 import type { AppSettings } from "../settings-store.js";
 import { resolveModelRole } from "../model-roles.js";
@@ -100,7 +91,7 @@ export interface HandsFreeSpokenSummary {
   plain?: boolean;
 }
 
-/** Reads a SPEAK reply: its JSON, or plain words when the model ignored the format; undefined when empty. */
+/** Reads a SPEAK reply as JSON, or as plain words if the model ignored the format. */
 export function parseSpokenSummary(content: unknown): HandsFreeSpokenSummary | undefined {
   if (typeof content !== "string") return undefined;
   const start = content.indexOf("{");
@@ -182,10 +173,7 @@ function enabled(model: AgentModelInfo): boolean {
   return !policy || policy.state === "enabled";
 }
 
-/**
- * The layer's model: the Hands-free role (a tier or a model of its own) at low effort unless a model
- * of its own names one, else the Small jobs model, else the cheapest model that answers quickly.
- */
+/** Hands-free role at low effort, else the Small jobs model, else the cheapest quick model. */
 export function chooseHandsFreeModel(settings: AppSettings, allModels: readonly AgentModelInfo[]): HandsFreeModelChoice {
   const models = allModels.filter(enabled);
   const role = resolveModelRole(settings, "handsFree", models);

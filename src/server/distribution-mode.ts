@@ -46,12 +46,7 @@ export function isBridgeReleaseMode(
   return resolveBridgeDistribution(env, rootDir).mode === "release";
 }
 
-/**
- * The control distribution decides whether source management (staging, self
- * update) is available. The launcher sets BRIDGE_CONTROL_DISTRIBUTION_MODE for
- * every child it starts; a process started directly falls back to its own
- * runtime mode.
- */
+/** Control mode gates staging/self-update; launcher sets it for children, else own runtime mode. */
 export function resolveBridgeControlDistribution(
   env: NodeJS.ProcessEnv = process.env,
   rootDir = process.cwd(),

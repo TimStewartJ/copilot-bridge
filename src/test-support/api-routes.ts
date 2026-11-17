@@ -31,7 +31,7 @@ const TRANSCRIPTION_ENV_KEYS = [
   "BRIDGE_VOICE_DIR",
 ] as const;
 
-/** Omit the callback when each test creates its own app; the environment and cleanup hooks still apply. */
+/** Omit the callback when each test makes its own app; env and cleanup hooks still apply. */
 export function installApiRouteTestHooks(assign?: (state: ApiRouteTestState) => void): void {
   beforeEach(() => {
     for (const key of TRANSCRIPTION_ENV_KEYS) {
@@ -74,7 +74,7 @@ export function createRestartRuntimePaths() {
   return makeTestRuntimePaths("api-restart");
 }
 
-/** A data dir where a restart was asked for and the launcher has begun its cutover. No route may refuse work for it. */
+/** A data dir mid-restart with the launcher's cutover begun; no route may refuse work for it. */
 export async function createPendingRestartRuntimePaths() {
   const runtimePaths = createRestartRuntimePaths();
   await requestRestart(runtimePaths.dataDir, { validationMode: "operational", source: "test" });
@@ -118,8 +118,7 @@ export async function eventually(
   assertion: () => void | Promise<void>,
   options: { maxAttempts?: number } = {},
 ): Promise<void> {
-  // Deterministic retries only: callers that depend on timers should advance
-  // fake timers or await an explicit operation inside the assertion.
+  // Deterministic retries only: timer-based callers advance fake timers inside the assertion.
   const maxAttempts = options.maxAttempts ?? 50;
   let lastError: unknown;
 

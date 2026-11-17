@@ -65,11 +65,6 @@ interface AskUserRecordViewProps {
   waiting?: boolean;
 }
 
-/**
- * A question the agent asked and what came of it. The question is the agent speaking, so it reads
- * as content. Below it is the answer as the CLI recorded it, or, when there is none, the fields
- * the question offered.
- */
 export function AskUserRecordView({ toolCall, record, variant = "transcript", waiting = false }: AskUserRecordViewProps) {
   const durationMs = getToolDurationMs(toolCall);
   const time = formatTime(toolCall.startedAt);

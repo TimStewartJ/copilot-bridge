@@ -21,7 +21,7 @@ function readClosedHeldNotices(): string[] {
   }
 }
 
-/** A held dictation stays held after its notice is closed, so the app has to remember not to raise it again. */
+/** A closed notice's dictation stays held, so remember not to raise the notice again. */
 export function isHeldNoticeClosed(jobId: string): boolean {
   return readClosedHeldNotices().includes(jobId);
 }
@@ -40,7 +40,7 @@ export function describeVoiceReview(reason: VoiceReviewReason): string {
   return reason === "coverage" ? "Not sent. Some speech may be missing." : "Not sent. Couldn't check for missing speech.";
 }
 
-/** A dictation transcribed in the browser goes out from the composer, so it is checked here first. */
+/** Browser-transcribed dictation goes out from the composer, so it is checked here first. */
 export function reviewForInsertedTranscript(coverage: SpeechCoverage | null | undefined): VoiceReviewNotice | null {
   const reason = decideVoiceReview(coverage);
   return reason ? { reason, ...(coverage ? { gapStartSeconds: coverage.gapStartSeconds } : {}) } : null;

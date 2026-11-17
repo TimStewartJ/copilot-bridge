@@ -304,7 +304,7 @@ describe("boot recovery of background commands", () => {
 
     expect(result).toEqual({ stopped: 3, woken: ["recent"] });
     expect(prompts.listDeliveriesForSession("recent")).toHaveLength(1);
-    // A crash leaves the command running, so the agent is sent to look for its process before rerunning it.
+    // A crash leaves the command running, so the agent checks for its process before rerunning.
     const prompt = prompts.listDeliveriesForSession("recent")[0]?.prompt;
     expect(prompt).toContain("as process 4242, cut off when the Bridge restarted, possibly still running");
     expect(prompt).toContain("Before you rerun it, look for its process");

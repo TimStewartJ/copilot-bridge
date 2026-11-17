@@ -19,12 +19,7 @@ function writeStored(key: string, text: string | null): void {
   } catch {}
 }
 
-/**
- * Free text that is saved on request rather than as it is typed: identity, instructions, paths.
- * Save and Cancel appear once the text differs from the saved value. Unsaved text is kept for this
- * tab in sessionStorage until the server has accepted it, so leaving Settings, reloading or a
- * failed save does not lose it, and closing the tab asks first.
- */
+/** Saved on request; unsaved text lives in sessionStorage until the server accepts it. */
 export function DraftTextField({
   storageKey,
   label,
@@ -76,8 +71,7 @@ export function DraftTextField({
   const dirty = text !== value;
   const unsaved = dirty || submitted !== null;
 
-  // A new saved value replaces the text only when the reader has not edited it and no save of
-  // theirs is outstanding; a failed save puts the old value back, and the attempt must survive.
+  // Take a new saved value only if unedited with no save pending: a failed save restores the old.
   useEffect(() => {
     if (submittedRef.current === null && textRef.current === savedRef.current) setText(value);
     savedRef.current = value;

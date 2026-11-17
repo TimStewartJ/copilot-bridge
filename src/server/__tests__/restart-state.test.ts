@@ -270,11 +270,7 @@ describe("restart-state transient FS retry under fake timers", () => {
   });
 
   it("retries and resolves under fake timers without manual timer advancement", async () => {
-    // Regression guard: the default retry backoff is bound to the real timer at
-    // module load (restart-state.ts), so a transient FS error still retries and
-    // resolves even though the suite installed fake timers — no manual
-    // advanceTimers needed. If the backoff is ever rebound to the faked timer,
-    // this hangs and fails, reproducing the original parallel-load flake.
+    // Backoff is bound to the real setTimeout at load; rebinding it to fake timers makes this hang.
     renameMock
       .mockRejectedValueOnce(Object.assign(new Error("locked"), { code: "EBUSY" }))
       .mockResolvedValueOnce(undefined);

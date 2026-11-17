@@ -365,8 +365,7 @@ describe("event-bus", () => {
         requestedSchema: { type: "object", properties: {} },
       });
 
-      // Copilot CLI >= 1.0.74 has no wire method that lists pending requests, so
-      // a reconnecting browser can only re-render an in-flight prompt from here.
+      // The CLI cannot list pending requests, so a reconnecting browser re-renders from here.
       expect(bus.getSnapshot()).toMatchObject({
         pendingUserInputs: [{ requestId: "request-1", allowFreeform: true }],
         pendingElicitations: [{ requestId: "el-1", message: "Configure deployment" }],
@@ -495,8 +494,7 @@ describe("event-bus", () => {
         progressText: "Searching...",
       });
 
-      // A finished tool keeps its result on the stream so the view can render it before the next
-      // disk read; it is marked complete rather than dropped.
+      // A finished tool stays on the stream, marked complete, until the next disk read shows it.
       bus.emit({ type: "tool_done", toolCallId: "tc1", success: true, result: "found it" });
       const afterDone = bus.getSnapshot().liveTools;
       expect(afterDone).toHaveLength(2);
@@ -568,8 +566,7 @@ describe("event-bus", () => {
       bus.emit({ type: "delta", content: "first " });
       bus.emit({ type: "delta", content: "message" });
       bus.emit({ type: "assistant_partial" });
-      // Discarding here would lose text the user is already reading, and stamping it would
-      // claim a disk identity that never materializes.
+      // Discarding would lose text the user is reading; stamping it would claim a missing disk id.
       expect(bus.getSnapshot().streamingContent).toBe("first message");
       expect(bus.getSnapshot().liveAssistantSegments).toEqual([]);
     });
@@ -630,8 +627,7 @@ describe("event-bus", () => {
         { artifactId: "artifact-1", kind: "mermaid", title: "Diagram" },
       ]);
 
-      // The client's read of that turn may still be in flight when the next one starts, so the
-      // visual stays for one more turn; the client hides it by artifact id once disk carries it.
+      // The client may still be reading that turn, so the visual stays one more turn.
       bus.emit({ type: "thinking", turnId: "turn-2" });
       expect(bus.getSnapshot().liveVisuals).toMatchObject([{ artifactId: "artifact-1" }]);
 
@@ -977,7 +973,7 @@ describe("event-bus sub-agents", () => {
     bus.emit({ type: "tool_done", toolCallId: "bg-done", success: true });
     bus.emit({ type: "tool_start", toolCallId: "bg-open", name: "bash", parentToolCallId: "task-bg" });
 
-    // The main agent moves on twice. Its own finished call lasts one turn; the agent's are untouched.
+    // The main agent moves on twice: its finished call lasts one turn; the agent's are untouched.
     bus.emit({ type: "thinking", turnId: "1", turnInstanceId: "main-2" });
     expect(liveToolIds(bus)).toEqual(["task-bg", "bg-done", "bg-open"]);
     bus.emit({ type: "thinking", turnId: "2", turnInstanceId: "main-3" });

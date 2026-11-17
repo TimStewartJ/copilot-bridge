@@ -56,8 +56,7 @@ export function createTagToolDefinitions(ctx: AppContext): BridgeToolDefinition[
         if (error instanceof InvalidTagColorError) return toolFailure(error.message);
         throw error;
       }
-      // Only name/instructions feed session prompts, so a colour-only change
-      // must not nuke every cached session.
+      // Only name and instructions feed prompts; a colour change must not evict every session.
       if (updates.name !== undefined || updates.instructions !== undefined) {
         await ctx.sessionManager.evictAllCachedSessions();
       }

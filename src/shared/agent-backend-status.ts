@@ -1,6 +1,4 @@
-// Shared (server + client) shape of the agent backend connection status that
-// the Bridge reports in /api/health, /api/server/runtime-status, and over the
-// status stream as `backend:status`.
+// Agent backend status shape for /api/health, runtime-status and the `backend:status` event.
 
 export type AgentBackendLifecycleState =
   | "starting"
@@ -15,10 +13,7 @@ export interface AgentBackendDisconnectSummary {
   detail?: string;
 }
 
-/**
- * Why the backend was replaced, in plain words, to follow "the agent backend". Not every reason
- * is a disconnect: the Bridge restarts a runtime that reported no failure when a session will not release.
- */
+/** Why the backend was replaced, worded to follow "the agent backend"; not always a disconnect. */
 export function describeAgentBackendLoss(reason: string): string {
   switch (reason) {
     case "cleanup-stalled": return "Bridge restarted it because a session did not release in time";
@@ -53,11 +48,7 @@ export interface AgentBackendStatus {
   recoveryCount: number;
   lastRecoveryAt: string | null;
   lastRecoveryError: string | null;
-  /**
-   * When automatic recovery gave up and the Bridge needs a server restart, or
-   * null while the backend is ready or still recovering on its own. A
-   * supervising launcher restarts the server once this has persisted.
-   */
+  /** Set when auto recovery gave up; a supervising launcher restarts once it persists. */
   recoveryBlockedAt: string | null;
   /** Sessions whose in-flight turn was failed by the most recent disconnect. */
   lastInterruptedSessionCount: number;

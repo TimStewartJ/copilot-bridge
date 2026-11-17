@@ -1,6 +1,4 @@
-// Mock state shared by the staging-tools test files. Each test file registers it with its own vi.mock
-// calls (see the top of staging-tools.test.ts). This module is loaded before those mocks exist, so it
-// must not statically import node:fs, node:child_process or any other module the test files mock.
+// Loaded before the vi.mock calls: never statically import node:fs or any module tests mock.
 import { vi } from "vitest";
 import { basename, dirname, join } from "node:path";
 
@@ -48,8 +46,7 @@ export const spawnMock = (() => {
       },
       on(event: string, listener: Listener) {
         listeners.set(event, [...(listeners.get(event) ?? []), listener]);
-        // A real child reports its result on a later event-loop turn, after the caller has
-        // subscribed. Process creation is asynchronous, so the mock waits for that subscription.
+        // A real child reports its result only after the caller has subscribed, so wait for that.
         if (event === "close") queueMicrotask(finish);
         return child;
       },
@@ -184,9 +181,7 @@ export function mockDataFilePresence(
 
 mockDataFilePresence();
 
-// Paths for which the mocked node:fs rmSync should fail, simulating EPERM/EBUSY
-// (e.g. a Windows file lock) after retries are exhausted. Used to exercise
-// staging preview data-removal failure handling.
+// Paths where the mocked rmSync fails as a Windows file lock does after its retries.
 export const rmSyncThrowDirs = new Set<string>();
 export const stagingLogMock = vi.fn<(msg: string) => void>();
 
@@ -249,9 +244,7 @@ export async function mockNodeFs(actual: typeof import("node:fs")): Promise<Reco
     readFileSync: (path: Parameters<typeof actual.readFileSync>[0], ...args: unknown[]) => {
       const override = readFileSyncOverrideMock(path);
       if (typeof override === "string") return override;
-      // Keep the SDK-driven restart gate deterministic: never read the real
-      // production restart-state.json from tests. Default to idle unless a test
-      // explicitly overrides it.
+      // Never read the real restart-state.json; the restart gate is idle unless a test says so.
       if (isDataFilePath(String(path), "restart-state.json")) {
         return JSON.stringify({ phase: "idle" });
       }
