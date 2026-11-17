@@ -30,6 +30,12 @@ export function classifierName(classifier: string): string {
   return CLASSIFIER_NAMES[classifier] ?? classifier;
 }
 
+/**
+ * Classifiers that describe a chat's structure rather than how it went: where tasks split, the
+ * prompt's language, and the per-turn copy of the kind of work that session_taxonomy already shows.
+ */
+const HIDDEN_CLASSIFIERS: ReadonlySet<string> = new Set(["turn_splitting", "prompt_language", "task_taxonomy"]);
+
 function defaultRange(now = new Date()): { from: string; to: string } {
   const start = new Date(now);
   start.setDate(start.getDate() - (DEFAULT_RANGE_DAYS - 1));
@@ -77,7 +83,7 @@ export function ChatGradesSection() {
 
   const names = useMemo(() => new Map((data?.models ?? []).map((model) => [model.id, model.name])), [data?.models]);
   const modelName = (id: string) => names.get(id) ?? id;
-  const classifiers = data?.report.classifiers ?? [];
+  const classifiers = (data?.report.classifiers ?? []).filter((entry) => !HIDDEN_CLASSIFIERS.has(entry.classifier));
   const classifier: ChatGradesClassifier | undefined = classifiers.find((entry) => entry.classifier === classifierChoice)
     ?? classifiers.find((entry) => entry.classifier === DEFAULT_CLASSIFIER)
     ?? classifiers[0];
