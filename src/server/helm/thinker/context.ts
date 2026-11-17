@@ -13,7 +13,7 @@ import { attentionOfRow, byAttention, taskBasis, type AttentionAbsence, type Att
 export interface PacketQuestion {
   sessionId: string;
   requestId: string;
-  kind: "user_input" | "elicitation";
+  kind: HomeInputSummary["kind"];
   question: string;
   choices?: string[];
   allowFreeform?: boolean;

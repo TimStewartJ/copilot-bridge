@@ -40,11 +40,11 @@ describe("native Home API and retained Bridge routes", () => {
     const { app, ctx } = createTestApp();
     const form = { requestId: "native-request", message: "Choose", mode: "form" as const, requestedSchema: {
       type: "object" as const, properties: { choice: { type: "string" as const, enum: ["A", "B"] } } } };
-    const read = vi.spyOn(ctx.sessionManager, "hydratePendingInteractions").mockResolvedValue({ pendingUserInputs: [], pendingElicitations: [form] });
+    const read = vi.spyOn(ctx.sessionManager, "hydratePendingInteractions").mockResolvedValue({ pendingUserInputs: [], pendingElicitations: [form], pendingShellAuths: [] });
     const received = await request(app).get("/api/home/inputs/session/elicitation/native-request");
     expect(received.status).toBe(200);
     expect(received.body).toMatchObject({ kind: "elicitation", sessionId: "session", request: form });
-    read.mockResolvedValue({ pendingUserInputs: [], pendingElicitations: [] });
+    read.mockResolvedValue({ pendingUserInputs: [], pendingElicitations: [], pendingShellAuths: [] });
     expect((await request(app).get("/api/home/inputs/session/elicitation/native-request")).status).toBe(404);
   });
 });

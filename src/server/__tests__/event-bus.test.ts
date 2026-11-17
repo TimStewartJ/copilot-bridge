@@ -405,6 +405,7 @@ describe("event-bus", () => {
       expect(bus.getPendingInteractionIndex()).toEqual({
         pendingUserInputs: [],
         pendingElicitations: [],
+        pendingShellAuths: [],
       });
     });
 
@@ -451,6 +452,7 @@ describe("event-bus", () => {
           mode: "form",
           requestedSchema: { type: "object", properties: {} },
         }],
+        pendingShellAuths: [],
       });
 
       // An explicit runtime snapshot always wins over the listing cache.

@@ -70,6 +70,7 @@ describe("SessionManager SDK-owned user input", () => {
         toolCallId: "tool-1",
       }],
       pendingElicitations: [],
+      pendingShellAuths: [],
     });
 
     await expect(manager.submitUserInputResponse("session-1", snapshot.pendingUserInputs[0]!.requestId, {
@@ -174,6 +175,7 @@ describe("SessionManager SDK-owned user input", () => {
     await expect(manager.hydratePendingInteractions("session-1")).resolves.toEqual({
       pendingUserInputs: [],
       pendingElicitations: [],
+      pendingShellAuths: [],
     });
     expect(respondToUserInput).toHaveBeenCalledWith("request-1", {
       answer: "",

@@ -6,6 +6,7 @@ import type {
   ElicitationSchema,
   McpServerStatus,
   PendingElicitationRequestView,
+  PendingShellAuthRequestView,
   PendingUserInputRequestView,
   ToolArgs,
 } from "./api";
@@ -164,6 +165,8 @@ export interface StreamState {
   liveCompletion: LiveCompletion | null;
   pendingUserInputs: PendingUserInputRequestView[];
   pendingElicitations: PendingElicitationRequestView[];
+  /** Shell commands waiting for a password or answer from the user. */
+  pendingShellAuths: PendingShellAuthRequestView[];
   elicitationCancellation: ElicitationCancellationNotice | null;
   runNotice: RunNotice | null;
   providerRetry?: ProviderRetryState;
@@ -200,6 +203,7 @@ function createState(status: StreamStatus, partial: Partial<StreamState> = {}): 
     liveCompletion: null,
     pendingUserInputs: [],
     pendingElicitations: [],
+    pendingShellAuths: [],
     elicitationCancellation: null,
     runNotice: null,
     intentText: "",
@@ -460,6 +464,31 @@ function normalizePendingElicitationRequests(input: unknown): PendingElicitation
   });
 }
 
+function normalizePendingShellAuthRequest(
+  input: unknown,
+  fallbackTimestamp?: string,
+): PendingShellAuthRequestView | undefined {
+  if (!isRecord(input) || typeof input.requestId !== "string" || !input.requestId) return undefined;
+  const requestedAt = optionalString(input.requestedAt) ?? fallbackTimestamp;
+  return {
+    requestId: input.requestId,
+    program: optionalString(input.program) ?? "shell",
+    prompt: typeof input.prompt === "string" ? input.prompt : "",
+    inputKind: input.inputKind === "text" || input.inputKind === "confirm" ? input.inputKind : "secret",
+    command: typeof input.command === "string" ? input.command : "",
+    cwd: typeof input.cwd === "string" ? input.cwd : "",
+    ...(requestedAt ? { requestedAt } : {}),
+  };
+}
+
+function normalizePendingShellAuthRequests(input: unknown): PendingShellAuthRequestView[] {
+  if (!Array.isArray(input)) return [];
+  return input.flatMap((request) => {
+    const normalized = normalizePendingShellAuthRequest(request);
+    return normalized ? [normalized] : [];
+  });
+}
+
 function upsertByRequestId<T extends { requestId: string }>(items: T[], next: T): T[] {
   const index = items.findIndex((item) => item.requestId === next.requestId);
   if (index < 0) return [...items, next];
@@ -662,6 +691,7 @@ export function useSessionStream(
       runNotice: pendingOrigin === "reconnect" ? current.runNotice : null,
       pendingUserInputs: pendingOrigin === "reconnect" ? current.pendingUserInputs : [],
       pendingElicitations: pendingOrigin === "reconnect" ? current.pendingElicitations : [],
+      pendingShellAuths: pendingOrigin === "reconnect" ? current.pendingShellAuths : [],
       liveAssistantSegments: pendingOrigin === "reconnect" ? current.liveAssistantSegments : [],
       liveReasoning: pendingOrigin === "reconnect" ? current.liveReasoning : [],
       pendingUserMessages: pendingOrigin === "reconnect"
@@ -764,6 +794,7 @@ export function useSessionStream(
             pendingElicitations: complete
               ? []
               : normalizePendingElicitationRequests(event.pendingElicitations),
+            pendingShellAuths: complete ? [] : normalizePendingShellAuthRequests(event.pendingShellAuths),
             intentText: complete ? "" : optionalString(event.intentText) ?? "",
             contextSummary: contextSummary ?? current.contextSummary,
             elicitationCancellation: current.elicitationCancellation,
@@ -1152,6 +1183,27 @@ export function useSessionStream(
             },
           };
         });
+        return;
+      }
+      if (eventType === "shell_auth_requested") {
+        const request = normalizePendingShellAuthRequest(event, optionalString(event.timestamp));
+        if (request && !streamStateRef.current.pendingShellAuths.some((entry) => entry.requestId === request.requestId)) {
+          haptic("warning");
+        }
+        if (request) setStreamState((current) => ({
+          ...current,
+          pendingShellAuths: upsertByRequestId(current.pendingShellAuths, request),
+          streamStatus: current.streamingContent || current.liveTools.length > 0 ? "streaming" : "thinking",
+          isStreaming: true,
+        }));
+        return;
+      }
+      if (eventType === "shell_auth_resolved" || eventType === "shell_auth_canceled") {
+        const requestId = optionalString(event.requestId);
+        if (requestId) setStreamState((current) => ({
+          ...current,
+          pendingShellAuths: removeByRequestId(current.pendingShellAuths, requestId),
+        }));
         return;
       }
       if (eventType === "title_changed") {

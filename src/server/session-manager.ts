@@ -32,9 +32,12 @@ import type { Task } from "./task-store.js";
 import type { TaskGroupStore } from "./task-group-store.js";
 import { createTaskGroupStore } from "./task-group-store.js";
 import {
+  emptyPendingInteractions,
   type PendingInteractionSnapshot,
   type SessionEventBus,
 } from "./event-bus.js";
+import { ShellAuthRequests } from "./shell-auth-requests.js";
+import type { ShellAuthRequestId, SubmittedShellAuthResponse } from "./shell-auth-types.js";
 import {
   buildSessionConfig as buildSessionConfigWithDeps,
   type ScheduleContext,
@@ -323,6 +326,27 @@ const DISMISSED_USER_INPUT_RESPONSE = {
   dismissed: true,
 } as const;
 const CANCELED_ELICITATION_RESPONSE = { action: "cancel" } as const;
+
+type PendingInteractionKind = "user_input" | "elicitation" | "shell_auth";
+interface PendingInteractionCounts {
+  userInput: number;
+  elicitation: number;
+  shellAuth: number;
+}
+const NO_PENDING_INTERACTIONS: Readonly<PendingInteractionCounts> = { userInput: 0, elicitation: 0, shellAuth: 0 };
+const PENDING_COUNT_KEY = {
+  user_input: "userInput",
+  elicitation: "elicitation",
+  shell_auth: "shellAuth",
+} as const satisfies Record<PendingInteractionKind, keyof PendingInteractionCounts>;
+
+function countPendingInteractions(snapshot: PendingInteractionSnapshot): PendingInteractionCounts {
+  return {
+    userInput: snapshot.pendingUserInputs.length,
+    elicitation: snapshot.pendingElicitations.length,
+    shellAuth: snapshot.pendingShellAuths.length,
+  };
+}
 /**
  * A question nobody has answered for this long is answered automatically so the turn can continue.
  * Where the number comes from (main-agent questions, 18 August to 2 October 2026): of 303 the
@@ -933,10 +957,15 @@ export class SessionManager {
   private modelMetadataLoad: ModelMetadataRequest | null = null;
   private modelMetadataGeneration = 0;
   private pendingSessionEvictions = new Set<string>();
-  private readonly pendingInteractionCounts = new Map<string, {
-    userInput: number;
-    elicitation: number;
-  }>();
+  private readonly pendingInteractionCounts = new Map<string, PendingInteractionCounts>();
+  /** Passwords and answers shell commands of user-facing chats are waiting for. */
+  private readonly shellAuthRequests = new ShellAuthRequests({
+    getLiveBus: (sessionId) => {
+      const bus = this.deps.eventBusRegistry.getBus(sessionId);
+      return bus && !bus.complete ? bus : undefined;
+    },
+    onPendingChange: (sessionId, state, at) => this.recordPendingInteractionEvent(sessionId, "shell_auth", state, at),
+  });
   private readonly pendingInteractionReconcileGeneration = new Map<string, number>();
   private readonly pendingInteractionCleanups = new Map<string, Promise<void>>();
   private cacheQueue: Promise<void> = Promise.resolve();
@@ -1721,6 +1750,8 @@ export class SessionManager {
     this.slashCommandListCache.delete(sessionId);
     this.agentRegistry.markSessionUnavailable(sessionId);
     this.pendingInteractionReconcileGeneration.delete(sessionId);
+    // The runtime stops waiting for a session it lets go of; take its prompts off screen with it.
+    this.shellAuthRequests.cancelSession(sessionId, "session_ended");
     if (this.pendingInteractionCounts.delete(sessionId)) {
       this.emitPendingInteractionStatus(sessionId);
     }
@@ -2583,7 +2614,7 @@ export class SessionManager {
 
   private getPendingInteractionCount(sessionId: string): number {
     const counts = this.pendingInteractionCounts.get(sessionId);
-    return (counts?.userInput ?? 0) + (counts?.elicitation ?? 0);
+    return (counts?.userInput ?? 0) + (counts?.elicitation ?? 0) + (counts?.shellAuth ?? 0);
   }
 
   private getPendingUserInputOnlyCount(sessionId: string): number {
@@ -2602,15 +2633,16 @@ export class SessionManager {
 
   private setPendingInteractionCounts(
     sessionId: string,
-    counts: { userInput: number; elicitation: number },
+    counts: PendingInteractionCounts,
     emit = true,
   ): void {
-    const normalized = {
+    const normalized: PendingInteractionCounts = {
       userInput: Math.max(0, counts.userInput),
       elicitation: Math.max(0, counts.elicitation),
+      shellAuth: Math.max(0, counts.shellAuth),
     };
-    const current = this.pendingInteractionCounts.get(sessionId);
-    if (normalized.userInput === 0 && normalized.elicitation === 0) {
+    const current = this.pendingInteractionCounts.get(sessionId) ?? NO_PENDING_INTERACTIONS;
+    if (normalized.userInput === 0 && normalized.elicitation === 0 && normalized.shellAuth === 0) {
       this.pendingInteractionCounts.delete(sessionId);
     } else {
       this.pendingInteractionCounts.set(sessionId, normalized);
@@ -2619,8 +2651,9 @@ export class SessionManager {
     if (
       emit
       && (
-        (current?.userInput ?? 0) !== normalized.userInput
-        || (current?.elicitation ?? 0) !== normalized.elicitation
+        current.userInput !== normalized.userInput
+        || current.elicitation !== normalized.elicitation
+        || current.shellAuth !== normalized.shellAuth
       )
     ) {
       this.emitPendingInteractionStatus(sessionId);
@@ -2641,6 +2674,8 @@ export class SessionManager {
    * runtime-owned leftovers in the background.
    */
   private cancelPendingInteractions(sessionId: string): void {
+    // Bridge holds shell prompts itself, so they are answered (cancelled) here and now.
+    this.shellAuthRequests.cancelSession(sessionId, "session_ended");
     // Capture the bus instance and its listing index synchronously: the terminal
     // event fires immediately after this returns, which completes the bus and
     // lets the registry hand out a *new* one for the next run. Re-reading the
@@ -2651,10 +2686,7 @@ export class SessionManager {
       || (indexed?.pendingUserInputs.length ?? 0) > 0
       || (indexed?.pendingElicitations.length ?? 0) > 0;
     this.nextPendingInteractionReconcileGeneration(sessionId);
-    this.setPendingInteractionCounts(sessionId, {
-      userInput: 0,
-      elicitation: 0,
-    });
+    this.setPendingInteractionCounts(sessionId, NO_PENDING_INTERACTIONS);
 
     const session = this.sessionObjects.get(sessionId);
     if (!hadPendingInteractions || !session || this.shuttingDown) {
@@ -2915,18 +2947,15 @@ export class SessionManager {
 
   private recordPendingInteractionEvent(
     sessionId: string,
-    kind: "user_input" | "elicitation",
+    kind: PendingInteractionKind,
     state: "requested" | "completed",
     at?: string,
   ): void {
-    const current = this.pendingInteractionCounts.get(sessionId) ?? {
-      userInput: 0,
-      elicitation: 0,
-    };
-    const delta = state === "requested" ? 1 : -1;
+    const current = this.pendingInteractionCounts.get(sessionId) ?? NO_PENDING_INTERACTIONS;
+    const key = PENDING_COUNT_KEY[kind];
     this.setPendingInteractionCounts(sessionId, {
-      userInput: kind === "user_input" ? current.userInput + delta : current.userInput,
-      elicitation: kind === "elicitation" ? current.elicitation + delta : current.elicitation,
+      ...current,
+      [key]: current[key] + (state === "requested" ? 1 : -1),
     });
     this.touchUserInputActivity(sessionId, at);
     const session = this.sessionObjects.get(sessionId);
@@ -2941,7 +2970,7 @@ export class SessionManager {
     // it needs to cancel *before* the terminal event lands, so refusing to serve
     // a completed bus here cannot strand a request — it only stops a run that
     // already ended from resurrecting its prompt into a reconnect snapshot.
-    if (!bus || bus.complete) return { pendingUserInputs: [], pendingElicitations: [] };
+    if (!bus || bus.complete) return emptyPendingInteractions();
     return bus.getPendingInteractionIndex();
   }
 
@@ -2987,11 +3016,7 @@ export class SessionManager {
     await Promise.resolve();
     if (this.sessionObjects.get(sessionId) !== session) return;
     if (this.pendingInteractionReconcileGeneration.get(sessionId) !== generation) return;
-    const snapshot = this.busPendingInteractionIndex(sessionId);
-    this.setPendingInteractionCounts(sessionId, {
-      userInput: snapshot.pendingUserInputs.length,
-      elicitation: snapshot.pendingElicitations.length,
-    });
+    this.setPendingInteractionCounts(sessionId, countPendingInteractions(this.busPendingInteractionIndex(sessionId)));
   }
 
   /**
@@ -3006,16 +3031,13 @@ export class SessionManager {
     // outstanding rather than awaiting only the first.
     await this.settlePendingInteractionCleanups(sessionId);
     if (!this.sessionObjects.has(sessionId)) {
-      return { pendingUserInputs: [], pendingElicitations: [] };
+      return emptyPendingInteractions();
     }
     const snapshot = this.busPendingInteractionIndex(sessionId);
     // A cleanup that outlived the drain owns the counts for the run it ended.
     if (!this.pendingInteractionCleanups.has(sessionId)) {
       this.nextPendingInteractionReconcileGeneration(sessionId);
-      this.setPendingInteractionCounts(sessionId, {
-        userInput: snapshot.pendingUserInputs.length,
-        elicitation: snapshot.pendingElicitations.length,
-      });
+      this.setPendingInteractionCounts(sessionId, countPendingInteractions(snapshot));
     }
     return snapshot;
   }
@@ -3073,6 +3095,7 @@ export class SessionManager {
         ...this.deps,
         nativeBridgeTools,
         permissionPolicy: this.backend?.permissionPolicy,
+        shellAuthenticationHandler: this.shellAuthRequests.handler,
       },
       options: {
         ...(opts.forResume && opts.sessionId
@@ -4911,6 +4934,17 @@ export class SessionManager {
     };
   }
 
+  /** The user's answer to a shell command's prompt. The answer goes to the waiting command only. */
+  submitShellAuthResponse(
+    sessionId: string,
+    requestId: ShellAuthRequestId,
+    payload: unknown,
+  ): SubmittedShellAuthResponse {
+    const normalizedSessionId = this.normalizeUserInputIdentifier(sessionId, "sessionId");
+    const normalizedRequestId = this.normalizeUserInputIdentifier(requestId, "requestId");
+    return this.shellAuthRequests.respond(normalizedSessionId, normalizedRequestId, payload);
+  }
+
   async createSession(options: {
     background?: boolean;
     model?: string;
@@ -5602,6 +5636,8 @@ export class SessionManager {
     const openQuestions = open && {
       pendingUserInputs: [...open.pendingUserInputs],
       pendingElicitations: [...open.pendingElicitations],
+      // A command waiting for a password keeps waiting; only the user answers it.
+      pendingShellAuths: [],
     };
     await this.sessionRunner.steerSession(sessionId, prompt, attachments, clientMessageId);
     this.noteUserPrompt(sessionId);

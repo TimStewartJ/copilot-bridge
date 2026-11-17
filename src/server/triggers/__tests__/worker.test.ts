@@ -861,6 +861,7 @@ describe("trigger worker", () => {
     const buildSessionConfig = vi.fn((_options: Record<string, unknown>) => ({
       mcpServers: { ado: { type: "http" } },
       pendingInteractionEvents: true,
+      onShellAuthenticationRequest: vi.fn(),
       enableConfigDiscovery: true,
       enableFileHooks: false,
       excludedTools: ["report_intent"],
@@ -961,6 +962,8 @@ describe("trigger worker", () => {
       // Nor did anybody ask it for an image, even with chats allowed to make them.
       imageGeneration: { enabled: false },
     }));
+    // A shell command's password prompt has nobody to answer it either.
+    expect(createSession.mock.calls[0]![0]).not.toHaveProperty("onShellAuthenticationRequest");
     const helper = await createSession.mock.results[0]!.value;
     expect(helper.sendAndWait).toHaveBeenCalledWith(expect.objectContaining({
       prompt: buildTriggerWorkerPrompt({

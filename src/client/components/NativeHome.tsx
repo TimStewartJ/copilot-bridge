@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertTriangle, ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Clock3, MessageCircle, Pin, RefreshCw } from "lucide-react";
-import { fetchHome, fetchHomeInput, submitElicitationResponse, submitUserInputResponse } from "../api";
+import { fetchHome, fetchHomeInput, submitElicitationResponse, submitShellAuthResponse, submitUserInputResponse } from "../api";
 import type { HomeInputSummary, HomePage, HomeSection } from "../../shared/home";
 import type { TaskOverviewRow } from "../../shared/task-overview";
 import { Badge, Button, EmptyHint, IdentitySwatch, Notice, Section } from "../design/primitives";
@@ -14,6 +14,7 @@ import { contextLine, describeIdle, stateBadge } from "../lib/task-state-ui";
 import { useTaskOutcomes } from "../hooks/useTaskOutcomes";
 import { useTaskOverviewQuery } from "../hooks/queries/useTaskOverview";
 import ElicitationCard from "./ElicitationCard";
+import ShellAuthCard from "./ShellAuthCard";
 import HomeChecklist from "./HomeChecklist";
 import HomeUnattendedRuns from "./HomeUnattendedRuns";
 import UserInputQuestionCard from "./UserInputQuestionCard";
@@ -229,6 +230,11 @@ export default function NativeHome({ onSelectTask, onSelectSession, scrollRestor
         if (!answerable) throw new Error("The native question is not currently verified as answerable. Open its conversation.");
         setPending(true);
         try { await submitUserInputResponse(openInput.sessionId, id, value); await changed(); setOpenInput(undefined); }
+        finally { setPending(false); }
+      }} /> : input.kind === "shell_auth" ? <ShellAuthCard key={input.request.requestId} request={input.request} onSubmit={async (id, value) => {
+        if (!answerable) throw new Error("The native question is not currently verified as answerable. Open its conversation.");
+        setPending(true);
+        try { await submitShellAuthResponse(openInput.sessionId, id, value); await changed(); setOpenInput(undefined); }
         finally { setPending(false); }
       }} /> : <ElicitationCard key={input.request.requestId} request={input.request} onSubmit={async (id, value) => {
         if (!answerable) throw new Error("The native question is not currently verified as answerable. Open its conversation.");

@@ -1,4 +1,5 @@
 import type { AgentPermissionPolicy, AgentSectionOverride } from "./agent-backend/index.js";
+import type { ShellAuthHandler } from "./shell-auth-requests.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBridgeControlRoot } from "./control-root.js";
@@ -133,6 +134,11 @@ export interface SessionConfigBuilderDeps {
   resolveBuiltInMcpServers?: (opts: { sessionId?: string }) => Record<string, McpServerConfig>;
   nativeBridgeTools?: readonly unknown[];
   permissionPolicy?: AgentPermissionPolicy;
+  /**
+   * Answers passwords and other prompts of the agent's shell commands from the chat. Only chats a
+   * person can answer get it; without it such a command fails for lack of a terminal.
+   */
+  shellAuthenticationHandler?: ShellAuthHandler;
   clientEnv?: Record<string, string | undefined>;
   runtimePaths?: RuntimePaths;
   resolveComputerUsePlugin?: () => ComputerUsePluginStatus;
@@ -274,6 +280,9 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   if (deps.permissionPolicy) {
     cfg.onPermissionRequest = deps.permissionPolicy;
+  }
+  if (deps.shellAuthenticationHandler) {
+    cfg.onShellAuthenticationRequest = deps.shellAuthenticationHandler;
   }
 
   if (shouldUseSdkGitHubMcp(deps, resolvedMcpServers)) {

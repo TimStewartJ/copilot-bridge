@@ -2692,6 +2692,25 @@ export function createApiRouter(
     }
   });
 
+  // The answer goes to the waiting shell command only: it is not logged, stored, or sent back.
+  router.post("/sessions/:sessionId/shell-auth/:requestId/respond", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "A shell prompt answer")) return;
+    try {
+      const response = ctx.sessionManager.submitShellAuthResponse(
+        req.params.sessionId,
+        req.params.requestId,
+        req.body,
+      );
+      noteUserMessage(req.params.sessionId);
+      res.json(response);
+    } catch (err) {
+      if (err instanceof PendingInteractionError) {
+        return res.status(err.statusCode).json({ error: err.message, code: err.code });
+      }
+      res.status(500).json({ error: "Could not deliver the answer." });
+    }
+  });
+
   // POST /sessions/:id/abort — abort an in-progress session turn
   router.post("/sessions/:id/abort", async (req, res) => {
     const sessionId = req.params.id;
@@ -2773,6 +2792,7 @@ export function createApiRouter(
             contextSummary: null,
             pendingUserInputs: [],
             pendingElicitations: [],
+            pendingShellAuths: [],
             hold: reason,
           });
           return true;
@@ -2809,6 +2829,7 @@ export function createApiRouter(
           contextSummary: null,
           pendingUserInputs: [],
           pendingElicitations: [],
+          pendingShellAuths: [],
           ...(terminalOverlay?.turnId ? { turnId: terminalOverlay.turnId } : {}),
           ...(terminalOverlay?.turnInstanceId
             ? { turnInstanceId: terminalOverlay.turnInstanceId }

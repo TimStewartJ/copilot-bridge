@@ -78,6 +78,10 @@ import type {
   ElicitationResponseEndpointPayload as ElicitationResponseEndpointPayloadType,
   SubmittedElicitationResponse as SubmittedElicitationResponseType,
 } from "../server/elicitation-types.js";
+import type {
+  ShellAuthResponseEndpointPayload as ShellAuthResponseEndpointPayloadType,
+  SubmittedShellAuthResponse as SubmittedShellAuthResponseType,
+} from "../server/shell-auth-types.js";
 import {
   isSessionForkJobTerminal,
   type SessionForkJob,
@@ -138,6 +142,12 @@ export type {
   PendingElicitationRequestView,
   SubmittedElicitationResponse,
 } from "../server/elicitation-types.js";
+export type {
+  PendingShellAuthRequestView,
+  ShellAuthInputKind,
+  ShellAuthResponseEndpointPayload,
+  SubmittedShellAuthResponse,
+} from "../server/shell-auth-types.js";
 
 export interface SessionWorkspaceOverride {
   cwd: string;
@@ -1566,6 +1576,17 @@ export async function submitElicitationResponse(
 ): Promise<SubmittedElicitationResponseType> {
   return apiFetch<SubmittedElicitationResponseType>(
     `/api/sessions/${encodeURIComponent(sessionId)}/elicitation/${encodeURIComponent(requestId)}/respond`,
+    payload,
+  );
+}
+
+export async function submitShellAuthResponse(
+  sessionId: string,
+  requestId: string,
+  payload: ShellAuthResponseEndpointPayloadType,
+): Promise<SubmittedShellAuthResponseType> {
+  return apiFetch<SubmittedShellAuthResponseType>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/shell-auth/${encodeURIComponent(requestId)}/respond`,
     payload,
   );
 }

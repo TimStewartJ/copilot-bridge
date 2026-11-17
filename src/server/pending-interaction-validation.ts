@@ -21,6 +21,17 @@ import type {
   NativeUserInputResponse,
   PendingUserInputRequestView,
 } from "./user-input-types.js";
+import {
+  MAX_SHELL_AUTH_COMMAND_LENGTH,
+  MAX_SHELL_AUTH_CWD_LENGTH,
+  MAX_SHELL_AUTH_PROGRAM_LENGTH,
+  MAX_SHELL_AUTH_PROMPT_LENGTH,
+  MAX_SHELL_AUTH_VALUE_LENGTH,
+  SHELL_AUTH_CONFIRM_VALUE,
+  type PendingShellAuthRequestView,
+  type ShellAuthInputKind,
+  type ShellAuthResponseEndpointPayload,
+} from "./shell-auth-types.js";
 import { isRecord } from "../shared/is-record.js";
 
 export type PendingInteractionErrorCode =
@@ -754,4 +765,65 @@ export function validateElicitationResponse(
     }
   }
   return { action, content };
+}
+
+function clipString(value: unknown, maxLength: number): string {
+  return typeof value === "string" ? value.slice(0, maxLength) : "";
+}
+
+/**
+ * Normalizes a shell authentication request from the runtime. Only a missing request id is
+ * rejected; anything else is shown as well as it can be, since a rejected request makes the
+ * command fail. An unknown input kind is masked.
+ */
+export function normalizePendingShellAuthRequest(
+  input: unknown,
+  requestedAt?: string,
+): PendingShellAuthRequestView {
+  if (!isRecord(input)) {
+    throw makeError("invalid_request", "Shell authentication request must be an object");
+  }
+  const requestId = normalizeIdentifier(input.requestId, "requestId");
+  const inputKind: ShellAuthInputKind = input.inputKind === "text" || input.inputKind === "confirm"
+    ? input.inputKind
+    : "secret";
+  return {
+    requestId,
+    program: clipString(input.program, MAX_SHELL_AUTH_PROGRAM_LENGTH).trim() || "shell",
+    prompt: clipString(input.prompt, MAX_SHELL_AUTH_PROMPT_LENGTH),
+    inputKind,
+    command: clipString(input.command, MAX_SHELL_AUTH_COMMAND_LENGTH),
+    cwd: clipString(input.cwd, MAX_SHELL_AUTH_CWD_LENGTH),
+    ...(requestedAt ? { requestedAt } : {}),
+  };
+}
+
+/** Error messages here never include the submitted value. */
+export function validateShellAuthResponse(
+  view: PendingShellAuthRequestView,
+  payload: unknown,
+): ShellAuthResponseEndpointPayload {
+  if (!isRecord(payload)) {
+    throw makeError("invalid_response", "Shell authentication response must be an object");
+  }
+  assertOnlyKeys(payload, new Set(["action", "value"]), "Shell authentication response");
+  if (payload.action === "cancel") {
+    if (payload.value !== undefined) {
+      throw makeError("invalid_response", "A canceled response cannot include a value");
+    }
+    return { action: "cancel" };
+  }
+  if (payload.action !== "accept") {
+    throw makeError("invalid_response", "Shell authentication action must be accept or cancel");
+  }
+  if (typeof payload.value !== "string") {
+    throw makeError("invalid_response", "Response value must be a string");
+  }
+  if (payload.value.length > MAX_SHELL_AUTH_VALUE_LENGTH) {
+    throw makeError("invalid_response", `Response value must be at most ${MAX_SHELL_AUTH_VALUE_LENGTH} characters`);
+  }
+  if (view.inputKind === "confirm" && payload.value !== SHELL_AUTH_CONFIRM_VALUE) {
+    throw makeError("invalid_response", `A confirmation is accepted only with "${SHELL_AUTH_CONFIRM_VALUE}"`);
+  }
+  return { action: "accept", value: payload.value };
 }

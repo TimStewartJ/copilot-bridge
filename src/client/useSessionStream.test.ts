@@ -1098,14 +1098,26 @@ describe("useSessionStream pending interactions", () => {
         pendingElicitations: [
           { requestId: "elicit-1", message: "Pick one", mode: "form", requestedSchema: { properties: {} } },
         ],
+        pendingShellAuths: [
+          { requestId: "auth-1", program: "sudo", prompt: "Password:", inputKind: "secret", command: "sudo -A true", cwd: "/" },
+        ],
       }), () => getState().pendingUserInputs.length === 1);
 
       expect(getState().pendingElicitations).toHaveLength(1);
+      expect(getState().pendingShellAuths).toEqual([expect.objectContaining({ requestId: "auth-1", inputKind: "secret" })]);
 
       await emitAndWait(act, source, { type: "user_input_answered", requestId: "input-1" },
         () => getState().pendingUserInputs.length === 0);
       await emitAndWait(act, source, { type: "elicitation_resolved", requestId: "elicit-1" },
         () => getState().pendingElicitations.length === 0);
+      await emitAndWait(act, source, { type: "shell_auth_resolved", requestId: "auth-1", action: "accept" },
+        () => getState().pendingShellAuths.length === 0);
+      await emitAndWait(act, source, {
+        type: "shell_auth_requested", requestId: "auth-2", program: "ssh", prompt: "Continue connecting?",
+        inputKind: "confirm", command: "ssh host.example.com", cwd: "/",
+      }, () => getState().pendingShellAuths.length === 1);
+      await emitAndWait(act, source, { type: "shell_auth_canceled", requestId: "auth-2", reason: "expired" },
+        () => getState().pendingShellAuths.length === 0);
     });
   });
 

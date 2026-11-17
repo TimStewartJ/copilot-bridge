@@ -354,6 +354,35 @@ describe("Elicitation response route", () => {
   });
 });
 
+describe("Shell authentication response route", () => {
+  it("delivers the answer and maps an ended prompt to 404", async () => {
+    const submitShellAuthResponse = vi.fn().mockReturnValue({
+      requestId: "auth-1",
+      action: "accept",
+      timestamp: "2026-11-16T12:00:00.000Z",
+    });
+    ctx.sessionManager.submitShellAuthResponse = submitShellAuthResponse;
+    const payload = { action: "accept", value: "example-password" };
+
+    const res = await request(app)
+      .post("/api/sessions/session-123/shell-auth/auth-1/respond")
+      .send(payload);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ requestId: "auth-1", action: "accept", timestamp: "2026-11-16T12:00:00.000Z" });
+    expect(submitShellAuthResponse).toHaveBeenCalledWith("session-123", "auth-1", payload);
+
+    submitShellAuthResponse.mockImplementation(() => {
+      throw new PendingInteractionError("request_not_found", "Pending shell authentication request not found", { statusCode: 404 });
+    });
+    const ended = await request(app)
+      .post("/api/sessions/session-123/shell-auth/auth-1/respond")
+      .send(payload);
+    expect(ended.status).toBe(404);
+    expect(ended.body.code).toBe("request_not_found");
+  });
+});
+
 describe("Status stream", () => {
 
   it("GET /api/status-stream forwards user-input status events", async () => {

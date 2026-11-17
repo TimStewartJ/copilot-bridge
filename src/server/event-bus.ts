@@ -15,6 +15,12 @@ import type {
   ElicitationRequestId,
   PendingElicitationRequestView,
 } from "./elicitation-types.js";
+import type {
+  PendingShellAuthRequestView,
+  ShellAuthAction,
+  ShellAuthCancelReason,
+  ShellAuthRequestId,
+} from "./shell-auth-types.js";
 import type { SessionContextSummary } from "../shared/session-context.js";
 import type { TranscriptCompletion } from "./event-transform.js";
 import type { AgentInstruction } from "../shared/subagent.js";
@@ -191,6 +197,8 @@ export interface BusSnapshot {
   pendingUserInputs: PendingUserInputRequestView[];
   /** Pending native elicitation requests only; resolved/canceled requests are omitted. */
   pendingElicitations: PendingElicitationRequestView[];
+  /** Shell commands waiting for a password or answer; resolved/canceled requests are omitted. */
+  pendingShellAuths: PendingShellAuthRequestView[];
   runNotice?: RunNotice;
   providerRetry?: ProviderRetryState;
   /** The CLI mode this run is in, when Bridge knows it. */
@@ -220,6 +228,11 @@ export interface BusTerminalState {
 export interface PendingInteractionSnapshot {
   pendingUserInputs: PendingUserInputRequestView[];
   pendingElicitations: PendingElicitationRequestView[];
+  pendingShellAuths: PendingShellAuthRequestView[];
+}
+
+export function emptyPendingInteractions(): PendingInteractionSnapshot {
+  return { pendingUserInputs: [], pendingElicitations: [], pendingShellAuths: [] };
 }
 
 export interface ProjectedUserMessage {
@@ -266,6 +279,11 @@ interface UserInputCanceledOptions {
 interface ElicitationCanceledOptions {
   reason?: ElicitationCancelReason;
   message?: string;
+  timestamp?: string;
+}
+
+interface ShellAuthCanceledOptions {
+  reason?: ShellAuthCancelReason;
   timestamp?: string;
 }
 
@@ -468,6 +486,8 @@ export class SessionEventBus {
    */
   private pendingUserInputIndex = new Map<UserInputRequestId, PendingUserInputRequestView>();
   private pendingElicitationIndex = new Map<ElicitationRequestId, PendingElicitationRequestView>();
+  /** Bridge holds these requests itself (see shell-auth-requests.ts); this is their listing for the stream. */
+  private pendingShellAuthIndex = new Map<ShellAuthRequestId, PendingShellAuthRequestView>();
   /** Server-only: last assistant text observed this run, used for abort/shutdown fallback. */
   private lastAssistantSegment?: LiveAssistantSegment;
   private finalContent?: string;
@@ -825,6 +845,29 @@ export class SessionEventBus {
     });
   }
 
+  emitShellAuthRequested(request: PendingShellAuthRequestView, timestamp?: string): void {
+    const requestedAt = request.requestedAt ?? timestamp;
+    const view = { ...request, ...(requestedAt ? { requestedAt } : {}) };
+    this.pendingShellAuthIndex.set(request.requestId, view);
+    this.emit({ type: "shell_auth_requested", ...view, timestamp });
+  }
+
+  /** Takes the action alone: the answer never reaches the bus. */
+  emitShellAuthResolved(requestId: ShellAuthRequestId, action: ShellAuthAction, timestamp?: string): void {
+    this.pendingShellAuthIndex.delete(requestId);
+    this.emit({ type: "shell_auth_resolved", requestId, action, timestamp });
+  }
+
+  emitShellAuthCanceled(requestId: ShellAuthRequestId, options: ShellAuthCanceledOptions = {}): void {
+    this.pendingShellAuthIndex.delete(requestId);
+    this.emit({
+      type: "shell_auth_canceled",
+      requestId,
+      reason: options.reason,
+      timestamp: options.timestamp,
+    });
+  }
+
   /**
    * The only listing of in-flight interaction requests Bridge has.
    *
@@ -843,6 +886,8 @@ export class SessionEventBus {
         .map((request) => structuredClone(request)),
       pendingElicitations: [...this.pendingElicitationIndex.values()]
         .map((request) => structuredClone(request)),
+      pendingShellAuths: [...this.pendingShellAuthIndex.values()]
+        .map((request) => ({ ...request })),
     };
   }
 
@@ -854,6 +899,7 @@ export class SessionEventBus {
   clearPendingInteractionIndex(): void {
     this.pendingUserInputIndex.clear();
     this.pendingElicitationIndex.clear();
+    this.pendingShellAuthIndex.clear();
   }
 
   emit(event: StreamEvent): void {
@@ -1191,7 +1237,7 @@ export class SessionEventBus {
     // listing index past terminal even if cancellation could not drain it.
     const pending = pendingInteractions
       ?? (this._complete
-        ? { pendingUserInputs: [], pendingElicitations: [] }
+        ? emptyPendingInteractions()
         : this.getPendingInteractionIndex());
     return {
       type: "snapshot",
@@ -1211,6 +1257,7 @@ export class SessionEventBus {
       contextSummary: this.contextSummary,
       pendingUserInputs: pending.pendingUserInputs.map((request) => structuredClone(request)),
       pendingElicitations: pending.pendingElicitations.map((request) => structuredClone(request)),
+      pendingShellAuths: pending.pendingShellAuths.map((request) => ({ ...request })),
       ...(this.runNotice ? { runNotice: { ...this.runNotice } } : {}),
       ...(this.providerRetry ? { providerRetry: { ...this.providerRetry } } : {}),
       ...(this.runMode ? { runMode: this.runMode } : {}),

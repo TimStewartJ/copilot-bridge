@@ -666,6 +666,19 @@ Only the agent's own form gets a reply. Anything else, such as a question from a
 server, is left for the user in Autopilot too and is cancelled after the 30 minutes. If the
 runtime does not take an Autopilot reply, the question is shown like any other.
 
+### Shell passwords
+
+When a shell command the agent runs asks for a password or an answer (`sudo -A`, `ssh`,
+`git` over HTTPS), the chat shows a card with the program, the command and its prompt: a
+masked field for a password, a text field for a value, or Yes/No for a confirmation such as
+an ssh host-key check. It also shows on Home and counts as a chat that needs you. The answer
+goes to that command only (`POST /api/sessions/:sessionId/shell-auth/:requestId/respond`):
+the model never sees it, and Bridge does not log, store or send it back. Bridge never answers
+these prompts itself, not even in Autopilot; the card goes away when the command stops
+waiting, the run ends or the chat is unloaded. Only chats a person can answer get this
+(`ShellAuthRequests` in `src/server/shell-auth-requests.ts`). Trigger workers and helper
+sessions do not, so such a command fails there for lack of a terminal.
+
 ### Background commands
 
 An agent can start a shell command in the background (or a foreground one can outlive its

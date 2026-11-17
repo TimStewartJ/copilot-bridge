@@ -103,6 +103,7 @@ export function createHomeReader(ctx: HomeContext, getSessions: () => Promise<un
         const requests: HomeInputSummary[] = [
           ...native.pendingUserInputs.map(request => ({ ...ref, kind: "user_input" as const, requestId: request.requestId, question: clip(request.question, 350)!, requestedAt: request.requestedAt, pendingCount: 0 })),
           ...native.pendingElicitations.map(request => ({ ...ref, kind: "elicitation" as const, requestId: request.requestId, question: clip(request.message, 350)!, requestedAt: request.requestedAt, pendingCount: 0 })),
+          ...native.pendingShellAuths.map(request => ({ ...ref, kind: "shell_auth" as const, requestId: request.requestId, question: clip(request.prompt.trim() || `${request.program} is waiting for input`, 350)!, requestedAt: request.requestedAt, pendingCount: 0 })),
         ].sort((a,b) => (a.requestedAt ?? "").localeCompare(b.requestedAt ?? "") || a.requestId.localeCompare(b.requestId));
         if (requests[0]) inputRows.push({ ...requests[0], pendingCount: requests.length });
         else ended++;
@@ -191,14 +192,16 @@ export function registerHomeRoutes(router: Router, ctx: HomeContext, getSessions
   });
   router.get("/home/inputs/:sessionId/:kind/:requestId", async (req, res) => {
     const { sessionId, kind, requestId } = req.params;
-    if ((kind !== "user_input" && kind !== "elicitation") || sessionId.length > 200 || requestId.length > 500) {
+    if ((kind !== "user_input" && kind !== "elicitation" && kind !== "shell_auth") || sessionId.length > 200 || requestId.length > 500) {
       res.status(400).json({ error: "Invalid native request identity" }); return;
     }
     try {
       const native = await ctx.sessionManager.hydratePendingInteractions(sessionId);
       const input: HomeInput | undefined = kind === "user_input"
         ? native.pendingUserInputs.filter(request => request.requestId === requestId).map((request): HomeInput => ({ kind: "user_input", sessionId, title: "Conversation", request }))[0]
-        : native.pendingElicitations.filter(request => request.requestId === requestId).map((request): HomeInput => ({ kind: "elicitation", sessionId, title: "Conversation", request }))[0];
+        : kind === "elicitation"
+          ? native.pendingElicitations.filter(request => request.requestId === requestId).map((request): HomeInput => ({ kind: "elicitation", sessionId, title: "Conversation", request }))[0]
+          : native.pendingShellAuths.filter(request => request.requestId === requestId).map((request): HomeInput => ({ kind: "shell_auth", sessionId, title: "Conversation", request }))[0];
       if (!input) { res.status(404).json({ error: "This native question is no longer active. Open its conversation to inspect the outcome." }); return; }
       res.json(input);
     } catch (error) {

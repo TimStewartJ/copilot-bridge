@@ -1,5 +1,6 @@
 import type { PendingUserInputRequestView } from "../server/user-input-types.js";
 import type { PendingElicitationRequestView } from "../server/elicitation-types.js";
+import type { PendingShellAuthRequestView } from "../server/shell-auth-types.js";
 import type { TaskOverviewRow } from "./task-overview.js";
 import type { TaskState } from "./task-state.js";
 
@@ -13,6 +14,7 @@ export interface HomeSessionRef {
 export type HomeInput = HomeSessionRef & (
   | { kind: "user_input"; request: PendingUserInputRequestView }
   | { kind: "elicitation"; request: PendingElicitationRequestView }
+  | { kind: "shell_auth"; request: PendingShellAuthRequestView }
 );
 export interface HomeInputSummary extends HomeSessionRef {
   kind: HomeInput["kind"]; requestId: string; question: string; pendingCount: number; requestedAt?: string;

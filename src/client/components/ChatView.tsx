@@ -25,6 +25,7 @@ import {
   fetchSessionContext,
   reportTiming,
   submitElicitationResponse,
+  submitShellAuthResponse,
   submitUserInputResponse,
   undoSessionTurn,
   type Attachment,
@@ -36,6 +37,7 @@ import {
   type ChatMessageDelivery,
   type ChatVisualEntry,
   type ElicitationResponseEndpointPayload,
+  type ShellAuthResponseEndpointPayload,
   type SlashCommandInfo,
   type ToolCall,
   type UserInputAnswerEndpointPayload,
@@ -108,6 +110,7 @@ import DocPreviewSheet from "./DocPreviewSheet";
 import { BridgeReferenceContext } from "./BridgeReference";
 import { docsRoute } from "./docs/docs-model";
 import ElicitationCard from "./ElicitationCard";
+import ShellAuthCard from "./ShellAuthCard";
 import ElicitationCancellationNotice from "./ElicitationCancellationNotice";
 import { MessageActionsMenu, type MessageActionMenuTarget } from "./MessageActions";
 import VisualArtifactCard from "./VisualArtifactCard";
@@ -837,6 +840,7 @@ export default function ChatView({
     runMode,
     pendingUserInputs = [],
     pendingElicitations = [],
+    pendingShellAuths = [],
     elicitationCancellation,
     runNotice,
     providerRetry,
@@ -863,7 +867,7 @@ export default function ChatView({
   useEffect(() => {
     if (isStreaming) setRetryRunError(null);
   }, [isStreaming]);
-  const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length;
+  const pendingInteractionCount = pendingUserInputs.length + pendingElicitations.length + pendingShellAuths.length;
   const {
     scrollContainerRef, stickToBottomRef, anchoredMessageKeyRef, messageElementRefs, programmaticScrollRef,
     showJumpToLatest, setShowJumpToLatest, cancelFollowScroll, clearProgrammaticScroll,
@@ -1822,8 +1826,13 @@ export default function ChatView({
     () => sortPendingRequests(pendingElicitations),
     [pendingElicitations],
   );
+  const pendingShellAuthRequests = useMemo(
+    () => sortPendingRequests(pendingShellAuths),
+    [pendingShellAuths],
+  );
   const hasPendingInteractions = pendingUserInputRequests.length > 0
-    || pendingElicitationRequests.length > 0;
+    || pendingElicitationRequests.length > 0
+    || pendingShellAuthRequests.length > 0;
 
   const handleSubmitUserInput = useCallback(async (
     requestId: string,
@@ -1839,6 +1848,14 @@ export default function ChatView({
   ) => {
     if (!sessionId) throw new Error("Session not available");
     await submitElicitationResponse(sessionId, requestId, payload);
+  }, [sessionId]);
+
+  const handleSubmitShellAuth = useCallback(async (
+    requestId: string,
+    payload: ShellAuthResponseEndpointPayload,
+  ) => {
+    if (!sessionId) throw new Error("Session not available");
+    await submitShellAuthResponse(sessionId, requestId, payload);
   }, [sessionId]);
 
   const activeToolCalls = useMemo<ToolCall[]>(
@@ -2342,6 +2359,7 @@ export default function ChatView({
     liveEntries.length,
     pendingUserInputRequests.length,
     pendingElicitationRequests.length,
+    pendingShellAuthRequests.length,
     runHeaderState?.phase,
     scrollToLatest,
   ]);
@@ -2432,6 +2450,16 @@ export default function ChatView({
       );
     }
 
+    for (const request of pendingShellAuthRequests) {
+      parts.push(
+        <ShellAuthCard
+          key={`shell-auth-${request.requestId}`}
+          request={request}
+          onSubmit={handleSubmitShellAuth}
+        />,
+      );
+    }
+
     if (elicitationCancellation) {
       parts.push(
         <ElicitationCancellationNotice
@@ -2460,6 +2488,7 @@ export default function ChatView({
     return <div className="space-y-3 pb-4">{parts}</div>;
   }, [
     handleSubmitElicitation,
+    handleSubmitShellAuth,
     handleSubmitUserInput,
     handleRetryRun,
     historicalMode,
@@ -2475,6 +2504,7 @@ export default function ChatView({
     elicitationCancellation,
     intentText,
     pendingElicitationRequests,
+    pendingShellAuthRequests,
     pendingUserInputRequests,
     reconnectIsSlow,
     runHeaderState,
@@ -3192,7 +3222,7 @@ export default function ChatView({
       {!historicalMode && composerAccessory}
       {!historicalMode && isStreaming && runMode === "autopilot" && (
         <AutopilotRunLine
-          waitingForAnswer={pendingUserInputRequests.length > 0 || pendingElicitationRequests.length > 0}
+          waitingForAnswer={hasPendingInteractions}
         />
       )}
       {!historicalMode && <ChatInput

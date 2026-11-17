@@ -298,6 +298,7 @@ export function createMockSessionManager() {
     hydratePendingInteractions: async () => ({
       pendingUserInputs: [],
       pendingElicitations: [],
+      pendingShellAuths: [],
     }),
     getActiveSessions: () => [],
     getLifecycleBlockingSessionCount: () => 0,
@@ -333,6 +334,11 @@ export function createMockSessionManager() {
       requestId,
       action: payload?.action,
       timestamp: "2026-07-13T12:00:00.000Z",
+    }),
+    submitShellAuthResponse: (_sessionId: string, requestId: string, payload: any) => ({
+      requestId,
+      action: payload?.action,
+      timestamp: "2026-11-16T12:00:00.000Z",
     }),
     deleteSession: async () => {},
     gracefulShutdown: async () => {},

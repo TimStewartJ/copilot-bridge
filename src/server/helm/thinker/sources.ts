@@ -35,7 +35,7 @@ export interface HelmSource {
   sessions(): Promise<SourceSession[]>;
   snapshot(section: HomeSection, offset?: number): Promise<HomeSnapshot>;
   overview(): Promise<TaskOverview>;
-  input(sessionId: string, kind: "user_input" | "elicitation", requestId: string): Promise<HomeInput | undefined>;
+  input(sessionId: string, kind: HomeInput["kind"], requestId: string): Promise<HomeInput | undefined>;
   messages(sessionId: string, limit: number): Promise<SourceMessage[]>;
   answer(sessionId: string, requestId: string, answer: string, wasFreeform: boolean): Promise<void>;
   /** clientMessageId makes a retried send land once. */
@@ -85,6 +85,10 @@ export function createLocalSource(ctx: AppContext, readSessions: () => Promise<a
       const native = await ctx.sessionManager.hydratePendingInteractions(sessionId);
       if (kind === "user_input") {
         const request = native.pendingUserInputs.find((candidate) => candidate.requestId === requestId);
+        return request ? { kind, sessionId, title: "Conversation", request } : undefined;
+      }
+      if (kind === "shell_auth") {
+        const request = native.pendingShellAuths.find((candidate) => candidate.requestId === requestId);
         return request ? { kind, sessionId, title: "Conversation", request } : undefined;
       }
       const request = native.pendingElicitations.find((candidate) => candidate.requestId === requestId);

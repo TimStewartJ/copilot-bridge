@@ -2192,6 +2192,7 @@ describe("SessionManager run state", () => {
     expect(eventBusRegistry.getBus(sessionId)?.getPendingInteractionIndex()).toEqual({
       pendingUserInputs: [],
       pendingElicitations: [],
+      pendingShellAuths: [],
     });
     expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
   });
@@ -2279,7 +2280,7 @@ describe("SessionManager run state", () => {
       ["el-mcp", { action: "cancel" }],
     ]);
     expect(manager.getPendingUserInputCount(sessionId)).toBe(0);
-    expect(await manager.hydratePendingInteractions(sessionId)).toEqual({ pendingUserInputs: [], pendingElicitations: [] });
+    expect(await manager.hydratePendingInteractions(sessionId)).toEqual({ pendingUserInputs: [], pendingElicitations: [], pendingShellAuths: [] });
     expect(inputStatus).toHaveBeenCalledWith(expect.objectContaining({ type: "session:user-input", sessionId, needsUserInput: false }));
     expect(manager.getSessionRunState(sessionId)).toBe("busy");
     expect(session.abort).not.toHaveBeenCalled();
@@ -2472,6 +2473,7 @@ describe("SessionManager run state", () => {
       expect(await run.manager.hydratePendingInteractions(sessionId)).toEqual({
         pendingUserInputs: [],
         pendingElicitations: [],
+        pendingShellAuths: [],
       });
       expect(run.manager.getSessionRunState(sessionId)).toBe("busy");
       const spans = run.telemetryStore!.querySpans({ name: "session.pending_interaction.auto_answer", sessionId });

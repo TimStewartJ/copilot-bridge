@@ -461,7 +461,7 @@ export class DisposableTriggerWorker {
         : undefined;
       const workingDirectory = this.deps.getParentWorkingDirectory(input.parentSessionId);
       const parentTask = this.deps.getParentTask?.(input.parentSessionId);
-      const baseConfig = this.deps.buildSessionConfig({
+      const { onShellAuthenticationRequest: _noShellPrompts, ...baseConfig } = this.deps.buildSessionConfig({
         sessionId,
         ...(parentTask ? { mcpServerTask: parentTask } : {}),
         ...(model ? { modelOverride: model } : {}),
@@ -477,7 +477,8 @@ export class DisposableTriggerWorker {
       }
       const sessionConfig = {
         ...baseConfig,
-        // Nobody can answer a worker, so it gets neither ask_user nor the elicitation capability.
+        // Nobody can answer a worker, so it gets neither ask_user nor the elicitation capability,
+        // and a shell command that asks for a password fails as it would without a terminal.
         pendingInteractionEvents: false,
         // Nobody asked for an image either, and each one is billed.
         imageGeneration: { enabled: false },

@@ -194,6 +194,7 @@ describe("SessionManager elicitation terminal cleanup", () => {
         elicitationSource: "deployment-mcp",
         requestedSchema: pendingRequest().requestedSchema,
       }],
+      pendingShellAuths: [],
     });
 
     let releaseCancel!: () => void;
@@ -218,6 +219,7 @@ describe("SessionManager elicitation terminal cleanup", () => {
     await expect(hydration).resolves.toEqual({
       pendingUserInputs: [],
       pendingElicitations: [],
+      pendingShellAuths: [],
     });
   });
 
@@ -287,6 +289,7 @@ describe("SessionManager elicitation terminal cleanup", () => {
     await expect(manager.hydratePendingInteractions("session-1")).resolves.toMatchObject({
       pendingUserInputs: [],
       pendingElicitations: [],
+      pendingShellAuths: [],
     });
     expect(manager.getPendingUserInputCount("session-1")).toBe(0);
   });

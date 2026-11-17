@@ -20,7 +20,7 @@ describe("native Home composition", () => {
     const manager = {
       getSessionRunState: vi.fn<SessionManager["getSessionRunState"]>(() => "idle"),
       getPendingUserInputCount: vi.fn<SessionManager["getPendingUserInputCount"]>(() => 0),
-      hydratePendingInteractions: vi.fn<SessionManager["hydratePendingInteractions"]>(async () => ({ pendingUserInputs: [], pendingElicitations: [] })),
+      hydratePendingInteractions: vi.fn<SessionManager["hydratePendingInteractions"]>(async () => ({ pendingUserInputs: [], pendingElicitations: [], pendingShellAuths: [] })),
       readMessagesFromDisk: vi.fn<SessionManager["readMessagesFromDisk"]>(async id => ({ messages: [{ id: "message", type: "message", role: "assistant", sourceEventId: `reply-${id}`, content: "A source-backed answer" }], total: 1, hasMore: false, coverage: {}, agents: [] })),
     };
     const triggerStore = createTriggerStore(db);
@@ -49,7 +49,7 @@ describe("native Home composition", () => {
     for (const session of ["waiting", "reply"]) app.taskStore.linkSession(task.id, session);
     app.manager.getPendingUserInputCount.mockImplementation(id => id === "waiting" ? 1 : 0);
     app.manager.getSessionRunState.mockImplementation(id => id === "waiting" ? "busy" : "idle");
-    app.manager.hydratePendingInteractions.mockResolvedValue({ pendingElicitations: [], pendingUserInputs: [{ requestId: "ask", question: "Choose", allowFreeform: true }] });
+    app.manager.hydratePendingInteractions.mockResolvedValue({ pendingElicitations: [], pendingShellAuths: [], pendingUserInputs: [{ requestId: "ask", question: "Choose", allowFreeform: true }] });
     const action = app.checklistStore.createChecklistItem(task.id, "Accepted deadline", "2000-01-01");
     const home = await app.snapshot();
     expect(home.attention).toEqual([expect.objectContaining({ id: task.id, deferred: true, reasons: expect.arrayContaining(["revisit"]) })]);
@@ -95,7 +95,7 @@ describe("native Home composition", () => {
     app.taskStore.updateTask(mutedClosed.id, { status: "archived" });
     app.manager.getPendingUserInputCount.mockImplementation(id => id === "late-question" ? 1 : 0);
     app.manager.getSessionRunState.mockImplementation(id => id === "late-question" ? "busy" : "idle");
-    app.manager.hydratePendingInteractions.mockResolvedValue({ pendingElicitations: [], pendingUserInputs: [{ requestId: "ask", question: "Proceed?", allowFreeform: true }] });
+    app.manager.hydratePendingInteractions.mockResolvedValue({ pendingElicitations: [], pendingShellAuths: [], pendingUserInputs: [{ requestId: "ask", question: "Proceed?", allowFreeform: true }] });
 
     const home = await app.snapshot("replies");
     expect(home.replies.items.map(reply => [reply.sessionId, reply.taskTitle, reply.taskArchived])).toEqual(expect.arrayContaining([
@@ -133,12 +133,12 @@ describe("native Home composition", () => {
     app.manager.getPendingUserInputCount.mockReturnValue(1);
     const request = { requestId: "native-form", message: "Choose", mode: "form" as const,
       requestedSchema: { type: "object" as const, properties: { value: { type: "string" as const, enum: ["A", "B"] } } } };
-    app.manager.hydratePendingInteractions.mockResolvedValue({ pendingUserInputs: [], pendingElicitations: [request] });
+    app.manager.hydratePendingInteractions.mockResolvedValue({ pendingUserInputs: [], pendingElicitations: [request], pendingShellAuths: [] });
     const first = await app.snapshot();
     expect(first.inputs.total).toBe(1);
     expect(first.inputs.items[0]).toMatchObject({ kind: "elicitation", sessionId: "shared", requestId: request.requestId, question: request.message, pendingCount: 1 });
     expect(first.inputs.items[0]).not.toHaveProperty("requestedSchema");
-    app.manager.hydratePendingInteractions.mockResolvedValue({ pendingUserInputs: [], pendingElicitations: [] });
+    app.manager.hydratePendingInteractions.mockResolvedValue({ pendingUserInputs: [], pendingElicitations: [], pendingShellAuths: [] });
     expect((await app.snapshot()).inputs.total).toBe(0);
   });
   it("preserves global checklist items and excludes context-only waiting from due attention", async () => {
@@ -204,7 +204,7 @@ describe("native Home composition", () => {
   it("bounds native hydration to the current page of waiting conversations", async () => {
     const app = setup(Array.from({ length: 55 }, (_, index) => ({ sessionId: `waiting-${index}` })));
     app.manager.getPendingUserInputCount.mockReturnValue(1);
-    app.manager.hydratePendingInteractions.mockImplementation(async id => ({ pendingElicitations: [],
+    app.manager.hydratePendingInteractions.mockImplementation(async id => ({ pendingElicitations: [], pendingShellAuths: [],
       pendingUserInputs: [{ requestId: `${id}-request`, question: "Choose", allowFreeform: true }] }));
     const first = await app.snapshot();
     expect(app.manager.hydratePendingInteractions).toHaveBeenCalledTimes(3);
