@@ -91,6 +91,13 @@ describe("ChatGradesSection", () => {
     await harness.act(async () => { mocks.clicks.at(-1)!({}, { datum: { model: "model-a", value: "succeeded" } }); });
     expect(links(harness.dom.container)).toEqual([]);
 
+    // The grade control lists the outcome first and switches the chart to another grade.
+    const gradeButtons = findAllByTag(harness.dom.container, "button").filter((element) => element.getAttribute("aria-pressed") !== null
+      && ["Outcome", "Kind of work"].includes(element.textContent));
+    expect(gradeButtons.map((element) => element.textContent)).toEqual(["Outcome", "Kind of work"]);
+    await harness.act(async () => { getReactProps(gradeButtons[1]!)!.onClick(); });
+    await waitUntilAct(harness.act, () => mocks.specs.at(-1)!.data.values.some((row: any) => row.value !== "succeeded" && row.value !== "failed"), { label: "chart switched" });
+
     const grade = findAllByTag(harness.dom.container, "button").find((element) => element.textContent === "Grade 2 chats")!;
     await harness.act(async () => { await getReactProps(grade)!.onClick(); });
     expect(mocks.startChatGrading).toHaveBeenCalledWith({ from: "2026-03-01", to: "2026-03-28", includeScheduled: false }, false);

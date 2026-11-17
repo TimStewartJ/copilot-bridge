@@ -7,7 +7,7 @@ import { fetchChatGrades, startChatGrading } from "../../api";
 import { queryKeys } from "../../queryClient";
 import { copilotUsageDayKey } from "../../../shared/copilot-usage-range";
 import type { ChatGradesClassifier, ChatGradesFilters } from "../../../shared/chat-grades.js";
-import { Button, ChoiceButton, EmptyHint, IconButton, MetaLine, Section, Select, Switch, TextInput } from "../../design/primitives";
+import { Button, ChoiceButton, EmptyHint, IconButton, MetaLine, Section, SegmentedControl, Switch, TextInput } from "../../design/primitives";
 import { DS, cx } from "../../design/tokens";
 import { formatUsageCount, formatUsageNumber } from "../../lib/usage-presentation";
 import { finalizeVegaEmbed, renderVegaLite, type VegaEmbedResult } from "../VegaLiteVisual";
@@ -19,14 +19,21 @@ const DEFAULT_CLASSIFIER = "task_outcome";
 
 /** Names for the classifiers the runtime ships today; any other is shown by its own name. */
 const CLASSIFIER_NAMES: Readonly<Record<string, string>> = {
-  task_outcome: "Task outcome",
+  task_outcome: "Outcome",
   user_message_sentiment: "Sentiment",
   session_taxonomy: "Kind of work",
   requested_task_demand: "Request size",
 };
+const CLASSIFIER_ORDER = Object.keys(CLASSIFIER_NAMES);
 
 export function classifierName(classifier: string): string {
   return CLASSIFIER_NAMES[classifier] ?? classifier;
+}
+
+/** Known grades in a fixed order, the outcome first; any other after them. */
+function classifierRank(classifier: string): number {
+  const index = CLASSIFIER_ORDER.indexOf(classifier);
+  return index < 0 ? CLASSIFIER_ORDER.length : index;
 }
 
 // Classifiers about a chat's structure, not how it went; task_taxonomy repeats session_taxonomy.
@@ -79,7 +86,9 @@ export function ChatGradesSection() {
 
   const names = useMemo(() => new Map((data?.models ?? []).map((model) => [model.id, model.name])), [data?.models]);
   const modelName = (id: string) => names.get(id) ?? id;
-  const classifiers = (data?.report.classifiers ?? []).filter((entry) => !HIDDEN_CLASSIFIERS.has(entry.classifier));
+  const classifiers = (data?.report.classifiers ?? [])
+    .filter((entry) => !HIDDEN_CLASSIFIERS.has(entry.classifier))
+    .sort((left, right) => classifierRank(left.classifier) - classifierRank(right.classifier));
   const classifier: ChatGradesClassifier | undefined = classifiers.find((entry) => entry.classifier === classifierChoice)
     ?? classifiers.find((entry) => entry.classifier === DEFAULT_CLASSIFIER)
     ?? classifiers[0];
@@ -158,12 +167,16 @@ export function ChatGradesSection() {
                 ? <EmptyHint>Nothing graded yet.</EmptyHint>
                 : (
                   <div className="space-y-2">
-                    <Select inputSize="sm" aria-label="Classifier" className="w-auto" value={classifier.classifier}
-                      onChange={(event) => setClassifierChoice(event.target.value)}>
-                      {classifiers.map((entry) => (
-                        <option key={entry.classifier} value={entry.classifier}>{classifierName(entry.classifier)}</option>
-                      ))}
-                    </Select>
+                    <SegmentedControl
+                      ariaLabel="Grade to chart"
+                      fullWidth
+                      options={classifiers.map((entry) => ({ value: entry.classifier, label: classifierName(entry.classifier) }))}
+                      value={classifier.classifier}
+                      onChange={(value) => {
+                        setClassifierChoice(value);
+                        setSelected(null);
+                      }}
+                    />
                     <ChatGradesChart
                       classifier={classifier}
                       modelName={modelName}
