@@ -346,6 +346,8 @@ describe("Chat grades routes", () => {
       hasEventsLog: async () => true,
       chatTitles: async (sessionIds) => new Map(sessionIds.map((sessionId) => [sessionId, `Title ${sessionId}`])),
       modelNames: async () => new Map([["model-a", "Model A"]]),
+      chatContext: (sessionIds) => new Map(sessionIds.map((sessionId) => [sessionId, { playbook: "feature" }])),
+      readEvents: async () => ({ kind: "missing" }),
     });
 
     const started = await request(local.app).post("/api/chat-grades/runs").send({ from: "2026-03-01", models: ["model-a"] });
@@ -365,5 +367,16 @@ describe("Chat grades routes", () => {
       run: { running: false, total: 1, done: 1 },
       report: { classifiers: [], chats: [{ sessionId: "chat-a", title: "Title chat-a", model: "model-a" }] },
     });
+
+    const units = await request(local.app).get("/api/chat-grades/units").query({ from: "2026-03-01" });
+    expect(units.status).toBe(200);
+    expect(units.headers["cache-control"]).toBe("no-store");
+    expect(units.body).toEqual({
+      chats: [{ sessionId: "chat-a", title: "Title chat-a", model: "model-a", date: "2026-03-02", scheduled: false, playbook: "feature" }],
+      units: [],
+    });
+    expect((await request(local.app).get("/api/chat-grades/units").query({ excerpts: "1" })).status).toBe(400);
+    expect((await request(local.app).get("/api/chat-grades/units").query({ sessionIds: "chat-a" })).status).toBe(400);
+    expect((await request(local.app).post("/api/chat-grades/runs").send({ sessionIds: [] })).status).toBe(400);
   });
 });

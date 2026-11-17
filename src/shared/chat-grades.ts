@@ -7,6 +7,8 @@ export interface ChatGradesFilters {
   models?: string[];
   /** Include chats a trigger or schedule started. Off by default. */
   includeScheduled?: boolean;
+  /** Only these chats, of those the other filters match. */
+  sessionIds?: string[];
 }
 
 /** Why a chat has no grade: no log, log too big, log the runtime rejected, or a failed call. */
@@ -82,4 +84,51 @@ export interface ChatGradesView {
   models: ChatGradesModelOption[];
   run: ChatGradesRunStatus;
   report: ChatGradesReport;
+}
+
+/** A graded chat with the Bridge context needed to read its units. */
+export interface ChatGradesUnitChat {
+  sessionId: string;
+  title: string;
+  model: string;
+  /** The last local day (YYYY-MM-DD) in the range the chat was active, or "" when unknown. */
+  date: string;
+  scheduled: boolean;
+  playbook?: string;
+  taskId?: string;
+  taskTitle?: string;
+  /** Set when excerpts were asked for but this chat's log could not give them. */
+  excerpts?: "too-large" | "unreadable";
+}
+
+/** The message that opened a unit and the agent's last reply before the next, cut short. */
+export interface ChatGradesExcerpt {
+  user: string;
+  agent: string;
+}
+
+/** One classifier unit as the runtime gave it. Labels are model output: count, never act on one. */
+export interface ChatGradesUnit {
+  sessionId: string;
+  classifier: string;
+  classifierVersion: number;
+  /** prompt, turn, task or session. */
+  scope: string;
+  unitId: string;
+  ordinal: number;
+  anchorEventId?: string;
+  /** success, declined, abandoned or failed; only success carries labels. */
+  status: string;
+  labels: Record<string, string>;
+  metrics: Record<string, number>;
+  textTruncated: boolean;
+  unresolvedBoundaries: number;
+  judgeModel?: string;
+  excerpt?: ChatGradesExcerpt;
+}
+
+/** GET /api/chat-grades/units */
+export interface ChatGradesUnits {
+  chats: ChatGradesUnitChat[];
+  units: ChatGradesUnit[];
 }

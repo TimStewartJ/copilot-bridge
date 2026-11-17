@@ -3,9 +3,11 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { makeTestDir, setupTestDb } from "./helpers.js";
 import {
+  buildChatGradeUnits,
   buildChatGradesReport,
   createChatGradeStore,
   createChatGrader,
+  excerptsFor,
   readChatEventsForGrading,
   selectChatsForGrading,
   type ChatGrade,
@@ -86,6 +88,8 @@ describe("choosing chats to grade", () => {
     expect(Object.fromEntries(withScheduled.modelCounts)).toEqual({ "model-a": 2, "model-b": 1 });
 
     expect((await select({})).matching.map((chat) => chat.sessionId)).toEqual(["chat-mixed", "chat-a", "chat-old"]);
+    expect((await select({ sessionIds: ["chat-old", "chat-no-log", "chat-scheduled"] })).matching.map((chat) => chat.sessionId))
+      .toEqual(["chat-old"]);
   });
 });
 
@@ -136,6 +140,46 @@ describe("chat grades report", () => {
       sessionId: "chat-1", title: "Fix the build", model: "model-a", date: "2026-03-02",
       labels: { task_outcome: ["succeeded", "failed"], session_taxonomy: ["debugging"], requested_task_demand: ["high"] },
     });
+  });
+});
+
+describe("chat grade units", () => {
+  it("keeps the latest row per classifier, scope and unit, with failed rows and only typed values", () => {
+    const units = buildChatGradeUnits([
+      graded("chat-1", [
+        row({ classifier: "session_taxonomy", scope: "session", unitId: "s", ordinal: 1, labels: { l1: "coding" } }),
+        row({ classifier: "session_taxonomy", scope: "session", unitId: "s", ordinal: 2, labels: { l1: "debugging" }, model: "judge-x" }),
+        row({ classifier: "session_taxonomy", scope: "turn", unitId: "s", labels: { l1: "chat" } }),
+        row({ unitId: "task-1", anchorEventId: "ev-1", labels: { outcome: "failed", skipped: undefined }, metrics: { confidence: 0.7 } }),
+        row({ unitId: "task-2", status: "failed", errorKind: "http", textTruncated: true }),
+      ]),
+      { ...graded("chat-2", [row({})]), status: "skipped", reason: "too-large" },
+    ]);
+    expect(units.map((unit) => [unit.classifier, unit.scope, unit.unitId, unit.status, unit.labels])).toEqual([
+      ["session_taxonomy", "session", "s", "success", { l1: "debugging" }],
+      ["session_taxonomy", "turn", "s", "success", { l1: "chat" }],
+      ["task_outcome", "task", "task-1", "success", { outcome: "failed" }],
+      ["task_outcome", "task", "task-2", "failed", {}],
+    ]);
+    expect(units[0].judgeModel).toBe("judge-x");
+    expect(units[2]).toMatchObject({ sessionId: "chat-1", anchorEventId: "ev-1", metrics: { confidence: 0.7 } });
+    expect(units[3].textTruncated).toBe(true);
+  });
+
+  it("excerpts a user anchor with the agent's last own reply before the next user message", () => {
+    const events = [
+      { type: "user.message", id: "u1", data: { content: "Make the build pass" } },
+      { type: "assistant.message", id: "a1", data: { content: "Looking." } },
+      { type: "assistant.message", id: "a2", agentId: "helper", data: { content: "sub-agent text" } },
+      { type: "assistant.message", id: "a3", data: { content: "" } },
+      { type: "assistant.message", id: "a4", data: { content: "Done, tests pass." } },
+      { type: "user.message", id: "u2", data: { content: "x".repeat(700) } },
+      { type: "tool.execution_start", id: "t1", data: {} },
+    ];
+    const excerpts = excerptsFor(events, new Set(["u1", "u2", "t1", "missing"]));
+    expect(excerpts.get("u1")).toEqual({ user: "Make the build pass", agent: "Done, tests pass." });
+    expect(excerpts.get("u2")).toEqual({ user: `${"x".repeat(599)}\u2026`, agent: "" });
+    expect([...excerpts.keys()]).toEqual(["u1", "u2"]);
   });
 });
 

@@ -285,6 +285,18 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
       ]));
     },
     modelNames: async () => new Map((await sessionManager.listModels()).map((model) => [model.id, model.name])),
+    chatContext: (sessionIds) => {
+      const states = bridgeSessionStateStore.listStatesFor(sessionIds);
+      return new Map(sessionIds.map((sessionId) => {
+        const task = taskStore.findTaskBySessionId(sessionId);
+        const playbook = states[sessionId]?.playbook;
+        return [sessionId, {
+          ...(playbook ? { playbook } : {}),
+          ...(task ? { taskId: task.id, taskTitle: task.title } : {}),
+        }];
+      }));
+    },
+    readEvents: (sessionId, maxBytes) => readChatEventsForGrading(resolveSessionEventsPath(copilotHome, sessionId), maxBytes),
   });
   ctx.searchIndex = createSearchIndex(db, {
     copilotHome: copilotHome ?? join(homedir(), ".copilot"),

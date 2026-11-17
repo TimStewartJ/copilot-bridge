@@ -138,7 +138,7 @@ import { SESSION_HOLD_INTENT } from "./session-holds.js";
 import { createHelmRouter } from "./helm/helm-router.js";
 import { describeModelRoles } from "./model-roles.js";
 import { buildModelAbTestReport } from "./model-ab-test.js";
-import { parseChatGradesFilters } from "./chat-grading.js";
+import { CHAT_GRADES_MAX_EXCERPT_CHATS, parseChatGradesFilters } from "./chat-grading.js";
 import { MODEL_ROLES, isTierChoice } from "../shared/model-roles.js";
 import { createHelmThinkerRouter } from "./helm/thinker/router.js";
 import { createVoiceRouter } from "./voice/voice-router.js";
@@ -1325,6 +1325,32 @@ export function createApiRouter(
     }
     try {
       res.json(await ctx.chatGrades.view(parsed.filters));
+    } catch (err) {
+      console.error("[chat-grades] Error:", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : "Unable to read chat grades." });
+    }
+  });
+
+  // GET /chat-grades/units — graded chats' units and context; excerpts on request.
+  router.get("/chat-grades/units", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const parsed = parseChatGradesFilters(req.query);
+    if ("error" in parsed) {
+      res.status(400).json({ error: parsed.error });
+      return;
+    }
+    const excerpts = req.query.excerpts === "1" || req.query.excerpts === "true";
+    const named = parsed.filters.sessionIds?.length ?? 0;
+    if (excerpts && (named === 0 || named > CHAT_GRADES_MAX_EXCERPT_CHATS)) {
+      res.status(400).json({ error: `Name 1 to ${CHAT_GRADES_MAX_EXCERPT_CHATS} chats to read excerpts.` });
+      return;
+    }
+    if (!ctx.chatGrades) {
+      res.status(503).json({ error: "Grading is not available on this server." });
+      return;
+    }
+    try {
+      res.json(await ctx.chatGrades.units(parsed.filters, { excerpts }));
     } catch (err) {
       console.error("[chat-grades] Error:", err);
       res.status(500).json({ error: err instanceof Error ? err.message : "Unable to read chat grades." });

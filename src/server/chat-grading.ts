@@ -8,6 +8,7 @@ import type {
 } from "./agent-backend/types.js";
 import { scanJsonlRecords, withoutCarriageReturn } from "./jsonl-lines.js";
 import { isUnlistedSessionId } from "./unlisted-sessions.js";
+import { isCanonicalSessionId } from "./outbound-attachments.js";
 import type {
   ChatGradeSkipReason,
   ChatGradesChat,
@@ -16,6 +17,10 @@ import type {
   ChatGradesModelOption,
   ChatGradesReport,
   ChatGradesRunStatus,
+  ChatGradesExcerpt,
+  ChatGradesUnit,
+  ChatGradesUnitChat,
+  ChatGradesUnits,
   ChatGradesView,
 } from "../shared/chat-grades.js";
 
@@ -26,6 +31,12 @@ const MAX_DETAIL_CHARS = 500;
 /** Chats graded at once: each is one long request with several judge calls of its own. */
 const GRADING_CONCURRENCY = 2;
 const LOG_CHECK_CONCURRENCY = 16;
+/** Most chats one filter may name. */
+export const CHAT_GRADES_MAX_SESSION_IDS = 200;
+/** Most chats one units request may read excerpts from; each log is read and parsed whole. */
+export const CHAT_GRADES_MAX_EXCERPT_CHATS = 20;
+const EXCERPT_MAX_LOG_BYTES = 8 * 1024 * 1024;
+const EXCERPT_CHARS = 600;
 
 export interface ChatGrade {
   sessionId: string;
@@ -252,7 +263,10 @@ export async function selectChatsForGrading(input: {
   const modelCounts = new Map<string, number>();
   for (const candidate of withLog) modelCounts.set(candidate.model, (modelCounts.get(candidate.model) ?? 0) + 1);
   const models = new Set(input.filters.models ?? []);
-  const matching = models.size > 0 ? withLog.filter((candidate) => models.has(candidate.model)) : withLog;
+  const ids = input.filters.sessionIds ? new Set(input.filters.sessionIds) : undefined;
+  const matching = withLog
+    .filter((candidate) => models.size === 0 || models.has(candidate.model))
+    .filter((candidate) => !ids || ids.has(candidate.sessionId));
   return { modelCounts, matching };
 }
 
@@ -379,6 +393,82 @@ export function buildChatGradesReport(chats: readonly ChatGradeReportChat[], gra
     .sort((left, right) => left.classifier.localeCompare(right.classifier));
   reportChats.sort((left, right) => right.date.localeCompare(left.date) || left.sessionId.localeCompare(right.sessionId));
   return { classifiers, chats: reportChats };
+}
+
+// ── Units ──────────────────────────────────────────────────────
+
+const stringEntries = (values: Record<string, string | undefined>): Record<string, string> =>
+  Object.fromEntries(Object.entries(values).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+
+const numberEntries = (values: Record<string, number | undefined>): Record<string, number> =>
+  Object.fromEntries(Object.entries(values).filter((entry): entry is [string, number] => typeof entry[1] === "number"));
+
+/** Every unit of each graded chat: the latest row per classifier, scope and unit. */
+export function buildChatGradeUnits(grades: readonly ChatGrade[]): ChatGradesUnit[] {
+  const units: ChatGradesUnit[] = [];
+  for (const grade of grades) {
+    if (grade.status !== "graded" || !grade.result) continue;
+    const latest = new Map<string, AgentTrajectoryClassification>();
+    for (const row of grade.result.classifications) {
+      const key = `${row.classifier}\u0000${row.scope}\u0000${row.unitId}`;
+      const kept = latest.get(key);
+      if (!kept || row.ordinal >= kept.ordinal) latest.set(key, row);
+    }
+    for (const row of latest.values()) {
+      units.push({
+        sessionId: grade.sessionId,
+        classifier: row.classifier,
+        classifierVersion: row.classifierVersion,
+        scope: row.scope,
+        unitId: row.unitId,
+        ordinal: row.ordinal,
+        ...(row.anchorEventId ? { anchorEventId: row.anchorEventId } : {}),
+        status: row.status,
+        labels: stringEntries(row.labels),
+        metrics: numberEntries(row.metrics),
+        textTruncated: row.textTruncated,
+        unresolvedBoundaries: row.unresolvedBoundaries,
+        ...(row.model ? { judgeModel: row.model } : {}),
+      });
+    }
+  }
+  return units.sort((left, right) =>
+    left.sessionId.localeCompare(right.sessionId)
+    || left.classifier.localeCompare(right.classifier)
+    || scopeRank(right.scope) - scopeRank(left.scope)
+    || left.ordinal - right.ordinal);
+}
+
+interface MessageEvent { id: string; type: "user" | "agent"; content: string }
+
+function messageEvent(event: unknown): MessageEvent | undefined {
+  if (!event || typeof event !== "object") return undefined;
+  const record = event as { type?: unknown; id?: unknown; agentId?: unknown; data?: unknown };
+  if (typeof record.id !== "string" || (typeof record.agentId === "string" && record.agentId)) return undefined;
+  const data = (record.data ?? {}) as { content?: unknown; parentToolCallId?: unknown };
+  if (typeof data.parentToolCallId === "string" && data.parentToolCallId) return undefined;
+  const content = typeof data.content === "string" ? data.content.trim() : "";
+  if (record.type === "user.message") return { id: record.id, type: "user", content };
+  if (record.type === "assistant.message" && content) return { id: record.id, type: "agent", content };
+  return undefined;
+}
+
+const clip = (text: string): string => (text.length > EXCERPT_CHARS ? `${text.slice(0, EXCERPT_CHARS - 1)}\u2026` : text);
+
+/** For anchors that are user messages: that message and the agent's last reply before the next. */
+export function excerptsFor(events: readonly unknown[], anchorIds: ReadonlySet<string>): Map<string, ChatGradesExcerpt> {
+  const messages = events.map(messageEvent).filter((message): message is MessageEvent => message !== undefined);
+  const excerpts = new Map<string, ChatGradesExcerpt>();
+  messages.forEach((message, index) => {
+    if (message.type !== "user" || !anchorIds.has(message.id)) return;
+    let agent = "";
+    for (const next of messages.slice(index + 1)) {
+      if (next.type === "user") break;
+      agent = next.content;
+    }
+    excerpts.set(message.id, { user: clip(message.content), agent: clip(agent) });
+  });
+  return excerpts;
 }
 
 // ── Grading run ────────────────────────────────────────────────
@@ -543,12 +633,25 @@ export function parseChatGradesFilters(source: Record<string, unknown>): { filte
     .map((value) => value.trim())
     .filter(Boolean);
   const includeScheduled = source.includeScheduled === true || source.includeScheduled === "true" || source.includeScheduled === "1";
+  const rawIds = source.sessionIds;
+  const idValues = Array.isArray(rawIds) ? rawIds : [rawIds];
+  const sessionIds = [...new Set(idValues
+    .flatMap((value) => (typeof value === "string" ? value.split(",") : []))
+    .map((value) => value.trim())
+    .filter(Boolean))];
+  // A present but empty list must not widen to every chat: a run would grade them all.
+  const badIds = rawIds !== undefined && (sessionIds.length === 0 || idValues.some((value) => typeof value !== "string"));
+  if (badIds || sessionIds.some((id) => !isCanonicalSessionId(id))) return { error: "Give chats by their full chat ID." };
+  if (sessionIds.length > CHAT_GRADES_MAX_SESSION_IDS) {
+    return { error: `Name at most ${CHAT_GRADES_MAX_SESSION_IDS} chats at once.` };
+  }
   return {
     filters: {
       ...(from ? { from } : {}),
       ...(to ? { to } : {}),
       ...(models.length > 0 ? { models: [...new Set(models)] } : {}),
       includeScheduled,
+      ...(sessionIds.length > 0 ? { sessionIds } : {}),
     },
   };
 }
@@ -564,6 +667,9 @@ export interface ChatGradesServiceDeps {
   chatTitles: (sessionIds: readonly string[]) => Promise<ReadonlyMap<string, string>>;
   /** Model id to the catalog's name. */
   modelNames: () => Promise<ReadonlyMap<string, string>>;
+  /** Each chat's playbook and linked task, when it has them. */
+  chatContext: (sessionIds: readonly string[]) => ReadonlyMap<string, Pick<ChatGradesUnitChat, "playbook" | "taskId" | "taskTitle">>;
+  readEvents: (sessionId: string, maxBytes: number) => Promise<ChatEventsRead>;
 }
 
 export function createChatGradesService(deps: ChatGradesServiceDeps) {
@@ -601,12 +707,50 @@ export function createChatGradesService(deps: ChatGradesServiceDeps) {
     };
   }
 
+  /** Graded chats' units with their Bridge context; excerpts need named chats. */
+  async function units(filters: ChatGradesFilters, options: { excerpts?: boolean } = {}): Promise<ChatGradesUnits> {
+    const { matching } = await select(filters);
+    const grades = deps.store.listFor(matching.map((chat) => chat.sessionId))
+      .filter((grade) => grade.status === "graded" && grade.result);
+    const gradedIds = new Set(grades.map((grade) => grade.sessionId));
+    const graded = matching.filter((chat) => gradedIds.has(chat.sessionId));
+    const ids = graded.map((chat) => chat.sessionId);
+    const [titles, context, scheduled] = [await deps.chatTitles(ids), deps.chatContext(ids), deps.scheduledSessionIds(ids)];
+    const chats: ChatGradesUnitChat[] = graded.map((chat) => ({
+      sessionId: chat.sessionId,
+      title: titles.get(chat.sessionId) ?? "",
+      model: chat.model,
+      date: chat.date,
+      scheduled: scheduled.has(chat.sessionId),
+      ...context.get(chat.sessionId),
+    }));
+    const all = buildChatGradeUnits(grades);
+    if (options.excerpts) {
+      for (const sessionId of ids.slice(0, CHAT_GRADES_MAX_EXCERPT_CHATS)) {
+        const anchors = new Set(all.flatMap((unit) => (unit.sessionId === sessionId && unit.anchorEventId ? [unit.anchorEventId] : [])));
+        if (anchors.size === 0) continue;
+        const read = await deps.readEvents(sessionId, EXCERPT_MAX_LOG_BYTES).catch(() => undefined);
+        if (read?.kind !== "ok") {
+          const chat = chats.find((entry) => entry.sessionId === sessionId);
+          if (chat) chat.excerpts = read?.kind === "too-large" ? "too-large" : "unreadable";
+          continue;
+        }
+        const excerpts = excerptsFor(read.events, anchors);
+        for (const unit of all) {
+          const excerpt = unit.sessionId === sessionId && unit.anchorEventId ? excerpts.get(unit.anchorEventId) : undefined;
+          if (excerpt) unit.excerpt = excerpt;
+        }
+      }
+    }
+    return { chats, units: all };
+  }
+
   async function startRun(filters: ChatGradesFilters, regrade: boolean): Promise<ChatGradingStart> {
     const { matching } = await select(filters);
     return deps.grader.start(matching.map((chat) => chat.sessionId), { regrade });
   }
 
-  return { view, startRun, status: () => deps.grader.status() };
+  return { view, units, startRun, status: () => deps.grader.status() };
 }
 
 export type ChatGradesService = ReturnType<typeof createChatGradesService>;
