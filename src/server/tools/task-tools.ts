@@ -10,6 +10,7 @@ import type { AppContext } from "../app-context.js";
 import type { Task, TaskChangeActor, TaskStore } from "../task-store.js";
 import type { ProvidersConfig } from "../providers/types.js";
 import type { TagStore } from "../tag-store.js";
+import { describeMomentumStamp, type MomentumFieldStamp } from "../../shared/momentum-age.js";
 import { applyNotesEdit, notesContinuationRefusal, notesLengthRefusal, notesWriteRefusal, notesWriteTokenField, readTaskNotesPage, TASK_NOTES_MAX_LENGTH } from "../task-note-pages.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
 import {
@@ -416,7 +417,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
     },
   }),
   defineBridgeTool("task_get_info", {
-    description: "Get task details, instructions, notes, links, checklist and history count (entries: task_history_list). Set notesSource to read only the task or group notes in pages.",
+    description: "Get task details, instructions, notes, links, checklist, when the next step and waiting-for were last set and by whom, and history count (entries: task_history_list). Set notesSource to read only the task or group notes in pages.",
     parameters: {
       type: "object",
       properties: {
@@ -446,8 +447,16 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       const tags = (ctx.tagStore?.getEntityTags("task", args.taskId) ?? [])
         .map(({ id, name, color }) => ({ id, name, color }));
       const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId);
+      const stamps = ctx.taskStore.getMomentumFieldStamps(task.value.id);
+      const now = Date.now();
+      const stampView = (stamp: MomentumFieldStamp | null) => stamp ? {
+        at: stamp.at, summary: describeMomentumStamp(stamp, now), source: stamp.source,
+        ...(stamp.sessionId ? { sessionId: stamp.sessionId } : {}), ...(stamp.scheduleName ? { scheduleName: stamp.scheduleName } : {}),
+      } : { at: null, summary: describeMomentumStamp(null, now) };
       return {
         ...task.value,
+        ...(task.value.nextAction ? { nextActionSet: stampView(stamps.nextAction) } : {}),
+        ...(task.value.waitingOn ? { waitingOnSet: stampView(stamps.waitingOn) } : {}),
         ...notesWriteTokenField(task.value.notes),
         ...compactTaskInfoSessionIds(task.value.sessionIds),
         tags,

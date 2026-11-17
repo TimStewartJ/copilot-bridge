@@ -128,6 +128,8 @@ export function buildTaskOverview(ctx: TaskOverviewContext, sessions: OverviewSe
       ...(task.nextAction ? { nextAction: task.nextAction } : {}), ...(task.waitingOn ? { waitingOn: task.waitingOn } : {}),
       ...(task.nextTouchAt ? { nextTouchAt: task.nextTouchAt } : {}),
       ...(task.waitingOn && signals?.waitingChangedAt ? { waitingSince: signals.waitingChangedAt } : {}),
+      ...(task.nextAction ? { nextActionSet: signals?.nextActionSet ?? null } : {}),
+      ...(task.waitingOn ? { waitingOnSet: signals?.waitingOnSet ?? null } : {}),
       ...derived, ...(lastEngagedAt ? { lastEngagedAt } : {}), ...(lastTouchKind ? { lastTouchKind } : {}),
       busyCount, stalledCount, inputCount, automationCount, activity,
       ...(linked[0] ? { sessionId: linked[0].sessionId } : {}),

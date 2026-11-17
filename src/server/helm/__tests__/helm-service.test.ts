@@ -438,8 +438,8 @@ describe("Helm session profiles", () => {
     const conversation = await helm.createConversation();
     const profile = helm.getSessionProfile();
     const index = profile.conversationContext?.(conversation.sessionId, { afterLoss: false });
-    expect(index?.split("\n").slice(4, 7)).toEqual([
-      "- [Trip plans](bridge://task/t-trip) NEEDS YOU (its revisit date (Tue, Sep 1) has passed): [Helm's line is out of date] next step: Book the hotel",
+    expect(index?.split("\n").slice(5, 8)).toEqual([
+      "- [Trip plans](bridge://task/t-trip) NEEDS YOU (its revisit date (Tue, Sep 1) has passed) [next step set at an unknown time, unverified]: [Helm's line is out of date] next step: Book the hotel",
       "- [Copilot Bridge](bridge://task/t-bridge): [an agent's] Calendar import in review. [from Mail]",
       "- [Gift list](bridge://task/t-gift): Waiting on Sam's sizes.",
     ]);

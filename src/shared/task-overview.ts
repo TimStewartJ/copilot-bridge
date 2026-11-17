@@ -1,5 +1,6 @@
 import type { TaskNeedsYouReason, TaskState } from "./task-state.js";
 import type { TaskActivity } from "./task-attention.js";
+import type { MomentumFieldStamp } from "./momentum-age.js";
 
 /** What the user last did to a task; opening it or reading a chat does not count. */
 export type TaskTouchKind = "edited" | "message" | "created";
@@ -20,6 +21,10 @@ export interface TaskOverviewRow {
   nextTouchAt?: string;
   /** When waiting-for last changed, when known. */
   waitingSince?: string;
+  /** Who set nextAction and when; null when unrecorded, absent from older servers. */
+  nextActionSet?: MomentumFieldStamp | null;
+  /** Who set waitingOn and when; null when unrecorded, absent from older servers. */
+  waitingOnSet?: MomentumFieldStamp | null;
   state: TaskState;
   reasons: TaskNeedsYouReason[];
   staleWait: boolean;

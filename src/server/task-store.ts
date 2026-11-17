@@ -1,4 +1,5 @@
 import { isPlaybookName } from "../shared/workflow-vocabulary.js";
+import type { MomentumFieldStamp } from "../shared/momentum-age.js";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "./db.js";
 import type { GlobalBus } from "./global-bus.js";
@@ -580,11 +581,36 @@ export function createTaskStore(
       JOIN session_user_messages m ON m.sessionId = ts.sessionId GROUP BY ts.taskId`).all()) {
       add(row.taskId, { lastMessageAt: String(row.at) });
     }
-    for (const row of db.prepare(`SELECT taskId, MAX(at) AS at FROM task_momentum_events
-      WHERE changesJson LIKE '%"field":"waitingOn"%' GROUP BY taskId`).all()) {
-      add(row.taskId, { waitingChangedAt: String(row.at) });
-    }
+    for (const [taskId, stamp] of latestFieldStamps("nextAction")) add(taskId, { nextActionSet: stamp });
+    for (const [taskId, stamp] of latestFieldStamps("waitingOn")) add(taskId, { waitingOnSet: stamp, waitingChangedAt: stamp.at });
     return signals;
+  }
+
+  /** Per task, the latest audit event that changed `field`, optionally for one task only. */
+  function latestFieldStamps(field: "nextAction" | "waitingOn", taskId?: string): Map<string, MomentumFieldStamp> {
+    // Changes are JSON, so a value containing this text is escaped and cannot match.
+    const pattern = `%"field":"${field}"%`;
+    const rows = db.prepare(`SELECT e.taskId, e.at, e.source, e.sessionId, e.scheduleId, e.scheduleName
+      FROM task_momentum_events e JOIN (
+        SELECT MAX(id) AS id FROM task_momentum_events
+        WHERE changesJson LIKE ? ${taskId ? "AND taskId = ?" : ""} GROUP BY taskId
+      ) latest ON latest.id = e.id`).all(...(taskId ? [pattern, taskId] : [pattern])) as Array<{
+      taskId: string; at: string; source: string; sessionId: string | null; scheduleId: string | null; scheduleName: string | null;
+    }>;
+    return new Map(rows.map((row) => [String(row.taskId), {
+      at: String(row.at), source: row.source as TaskChangeSource,
+      ...(row.sessionId ? { sessionId: String(row.sessionId) } : {}),
+      ...(row.scheduleId ? { scheduleId: String(row.scheduleId) } : {}),
+      ...(row.scheduleName ? { scheduleName: String(row.scheduleName) } : {}),
+    }]));
+  }
+
+  /** When the task's current next step and waiting-for were set; null when there is no record. */
+  function getMomentumFieldStamps(taskId: string): { nextAction: MomentumFieldStamp | null; waitingOn: MomentumFieldStamp | null } {
+    return {
+      nextAction: latestFieldStamps("nextAction", taskId).get(taskId) ?? null,
+      waitingOn: latestFieldStamps("waitingOn", taskId).get(taskId) ?? null,
+    };
   }
 
   function getTask(id: string): Task | undefined {
@@ -1143,6 +1169,7 @@ export function createTaskStore(
     getTaskSessionCounts, listTaskSessionSummaries,
     linkSession, unlinkSession, unlinkSessionFromAllTasks, listSessionLinks, removeSessionLinks, linkWorkItem, unlinkWorkItem,
     findTaskBySessionId, linkPR, unlinkPR, listMomentumEvents, attributeMomentumEventsToSchedule, recordUserMessage, listMomentumSignals,
+    getMomentumFieldStamps,
   };
 }
 
@@ -1151,4 +1178,10 @@ export type TaskStore = ReturnType<typeof createTaskStore>;
 // A type alias, not an interface, so a node:sqlite row array casts to it.
 export type SessionLink = { taskId: string; sessionId: string; linkedAt: string };
 
-export interface MomentumSignals { userEditedAt?: string; lastMessageAt?: string; waitingChangedAt?: string }
+export interface MomentumSignals {
+  userEditedAt?: string;
+  lastMessageAt?: string;
+  waitingChangedAt?: string;
+  nextActionSet?: MomentumFieldStamp;
+  waitingOnSet?: MomentumFieldStamp;
+}

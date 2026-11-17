@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { buildThinkerPacket, readBridgeForChat, renderThinkerPacket } from "../thinker/context.js";
 import type { HelmSource } from "../thinker/sources.js";
 import type { HelmMemoryEntry } from "../../../shared/helm-thinker.js";
@@ -40,6 +40,33 @@ describe("read_bridge for Helm's chat", () => {
     const view = await readBridgeForChat(source(3));
     expect(view.tasks).toHaveLength(3);
     expect(view.omitted).toBeUndefined();
+  });
+
+  it("dates each next step and marks the old or undated ones on the user unverified, without dropping them", async () => {
+    const now = new Date("2026-11-17T20:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    onTestFinished(() => { vi.useRealTimers(); });
+    const daysAgo = (days: number) => ({ at: new Date(now.getTime() - days * 86_400_000).toISOString(), source: "agent", sessionId: "s-1" });
+    const rows = [
+      { id: "old", nextActionSet: daysAgo(5) },
+      { id: "fresh", nextActionSet: daysAgo(1) },
+      { id: "unrecorded", nextActionSet: null },
+      { id: "older-bridge" },
+    ].map((row) => ({ title: row.id, state: "active", reasons: [], muted: false, busyCount: 0, idleDays: 1, nextAction: "Do it", ...row }));
+    const view = await readBridgeForChat(
+      { ...source(0), overview: async () => ({ tasks: rows }) as any },
+      { timeZone: "America/Los_Angeles", absences: [] },
+    );
+    const byId = Object.fromEntries(view.tasks.map((task) => [task.taskId, task]));
+    expect(Object.keys(byId).sort()).toEqual(["fresh", "old", "older-bridge", "unrecorded"]);
+    expect(byId.old).toMatchObject({ onYou: true, nextActionSet: "set 5d ago by session s-1", nextActionUnverified: true });
+    expect(byId.fresh).toMatchObject({ onYou: true, nextActionSet: "set 1d ago by session s-1" });
+    expect(byId.fresh!.nextActionUnverified).toBeUndefined();
+    expect(byId.unrecorded).toMatchObject({ onYou: true, nextActionSet: "set at an unknown time", nextActionUnverified: true });
+    expect(byId["older-bridge"]).toMatchObject({ onYou: true });
+    expect(byId["older-bridge"]!.nextActionUnverified).toBeUndefined();
+    expect(view.unverified).toEqual(expect.any(String));
   });
 });
 

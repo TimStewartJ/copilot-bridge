@@ -5,6 +5,7 @@ import { toolFailure } from "../tool-results.js";
 import type { AgentModelInfo } from "../agent-backend/types.js";
 import { formatBridgeLink } from "../../shared/bridge-links.js";
 import { liveLocalAttention, threadOutOfDate, type LiveTaskAttention } from "./attention-live.js";
+import { describeMomentumStamp, momentumAgeFields, NEXT_STEP_UNVERIFIED_NOTE } from "../../shared/momentum-age.js";
 
 export interface HelmSessionSummary {
   sessionId: string;
@@ -347,8 +348,10 @@ export function createHelmToolDefinitions(
           .filter((task) => task.status === "active" && !task.muted)
           .map((task) => ({ task, lastActivityAt: Math.max(Date.parse(task.updatedAt) || 0, sessionActivity.get(task.id) ?? 0) }))
           .sort((a, b) => b.task.priority - a.task.priority || b.lastActivityAt - a.lastActivityAt);
+        const signals = ctx.taskStore.listMomentumSignals();
         const tasks = activeTasks.slice(0, 8).map(({ task, lastActivityAt }) => {
           const lastActivity = lastActivityAt > 0 ? formatAgo(new Date(lastActivityAt).toISOString(), now) : undefined;
+          const set = signals.get(task.id);
           return {
             taskId: task.id,
             title: task.title,
@@ -356,6 +359,10 @@ export function createHelmToolDefinitions(
             ...(lastActivity ? { lastActivity } : {}),
             ...(task.nextAction ? { nextAction: task.nextAction } : {}),
             ...(task.waitingOn ? { waitingOn: task.waitingOn } : {}),
+            ...momentumAgeFields({
+              ...(task.nextAction ? { nextAction: task.nextAction } : {}), ...(task.waitingOn ? { waitingOn: task.waitingOn } : {}),
+              nextActionSet: set?.nextActionSet ?? null, waitingOnSet: set?.waitingOnSet ?? null,
+            }, now),
           };
         });
         return {
@@ -506,6 +513,7 @@ export function createHelmToolDefinitions(
           taskInfo = {
             taskLink: formatBridgeLink({ kind: "task", taskId: task.id }),
             ...(task.nextAction ? { taskNextAction: task.nextAction } : {}),
+            ...(task.nextAction ? { taskNextActionSet: describeMomentumStamp(ctx.taskStore.getMomentumFieldStamps(task.id).nextAction, Date.now()) } : {}),
             ...(others.length ? { otherMatchingTasks: others.map((other) => other.title) } : {}),
           };
           if (!latest) return { task: task.title, ...taskInfo, latestReply: null, note: "This task has no sessions." };
@@ -797,7 +805,10 @@ export function createHelmToolDefinitions(
             const row = item.key?.startsWith("local:") ? rows.get(item.key.slice(6)) : undefined;
             // A line written before this task last changed is replaced by what the task says now.
             if (row && threadOutOfDate(item, row)) {
-              return { task: item.key, outOfDate: true, ...(row.nextAction ? { nextAction: row.nextAction } : {}), ...(row.waitingOn ? { waitingOn: row.waitingOn } : {}) };
+              return {
+                task: item.key, outOfDate: true, ...(row.nextAction ? { nextAction: row.nextAction } : {}), ...(row.waitingOn ? { waitingOn: row.waitingOn } : {}),
+                ...momentumAgeFields(row, Date.now()),
+              };
             }
             return {
               task: item.key, text: item.text, ...(item.owner ? { owner: item.owner } : {}), ...(item.holdUntil ? { holdUntil: item.holdUntil } : {}),
@@ -928,19 +939,22 @@ function liveAttentionSafe(ctx: AppContext): LiveTaskAttention[] {
 }
 
 /** Local tasks waiting on the user now, from live fields: the floor for "what needs me". */
-function liveOnYou(entries: LiveTaskAttention[]): Record<string, unknown> {
+function liveOnYou(entries: LiveTaskAttention[], now = Date.now()): Record<string, unknown> {
   if (entries.length === 0) return {};
   const onYou = entries.filter((entry) => entry.attention.onTim);
   const noNextStep = entries.filter((entry) => entry.row.state === "no_next_step" && (entry.row.idleDays ?? 0) >= 7);
+  const shown = onYou.slice(0, LIVE_ON_YOU_MAX).map(({ row, attention }) => ({
+    task: row.title, link: formatBridgeLink({ kind: "task", taskId: row.id }),
+    ...(attention.reasons.length ? { needsYou: attention.reasons } : {}),
+    ...(row.nextAction ? { nextAction: row.nextAction } : {}), ...(row.waitingOn ? { waitingOn: row.waitingOn } : {}),
+    ...momentumAgeFields(row, now, { onYou: true }),
+    ...(row.idleDays !== null ? { idleDays: row.idleDays } : {}),
+  }));
   return {
     onYouNow: {
-      note: "Worked out just now from this Bridge's live task fields: no agent is working on these and they wait on no one but the user, or your own line says they are the user's. needsYou says why a date presses. When asked what needs the user or what they have fallen behind on, account for every one of these, whatever a thread line says; for other Bridges, read_bridge marks tasks the same way.",
-      tasks: onYou.slice(0, LIVE_ON_YOU_MAX).map(({ row, attention }) => ({
-        task: row.title, link: formatBridgeLink({ kind: "task", taskId: row.id }),
-        ...(attention.reasons.length ? { needsYou: attention.reasons } : {}),
-        ...(row.nextAction ? { nextAction: row.nextAction } : {}), ...(row.waitingOn ? { waitingOn: row.waitingOn } : {}),
-        ...(row.idleDays !== null ? { idleDays: row.idleDays } : {}),
-      })),
+      note: "Worked out just now from this Bridge's live task fields: no agent is working on these and they wait on no one but the user, or your own line says they are the user's. needsYou says why a date presses. When asked what needs the user or what they have fallen behind on, account for every one of these, whatever a thread line says; for other Bridges, read_bridge marks tasks the same way. nextActionSet and waitingOnSet say when each field was last set and by whom.",
+      ...(shown.some((task) => task.nextActionUnverified) ? { unverified: NEXT_STEP_UNVERIFIED_NOTE } : {}),
+      tasks: shown,
       ...(onYou.length > LIVE_ON_YOU_MAX ? { more: onYou.length - LIVE_ON_YOU_MAX } : {}),
     },
     ...(noNextStep.length ? {

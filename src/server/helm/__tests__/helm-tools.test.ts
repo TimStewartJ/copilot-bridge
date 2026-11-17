@@ -146,11 +146,17 @@ describe("Helm tools", () => {
         task("task-4", "Archived task", "2026-09-17T05:59:30.000Z", { status: "archived" }),
         ...Array.from({ length: 8 }, (_, index) => task(`old-${index}`, `Older task ${index}`, `2026-09-0${index + 1}T00:00:00.000Z`)),
       ];
+      (ctx.taskStore as { listMomentumSignals(): unknown }).listMomentumSignals = () => new Map([
+        ["task-1", { nextActionSet: { at: "2026-09-12T00:00:00.000Z", source: "agent", sessionId: "aaaaaaaa-1111-4000-8000-000000000001" } }],
+      ]);
       const result = await tool(ctx, createFacade(), "bridge_overview").run({});
       expect(result.counts).toEqual({ waitingOnYou: 1, running: 1, unread: 1, activeTasks: 10 });
       expect(result.waitingOnYou[0]).toMatchObject({ title: "Deploy check", questions: ["Deploy now?"], link: "bridge://session/cccccccc-3333-4000-8000-000000000003" });
       expect(result.unreadReplies[0]).toMatchObject({ title: "Tellus worldgen transition fix", task: "Tellus Expeditions", taskLink: "bridge://task/task-1" });
-      expect(result.activeTasks[0]).toMatchObject({ nextAction: "Review biome blend", link: "bridge://task/task-1" });
+      expect(result.activeTasks[0]).toMatchObject({
+        nextAction: "Review biome blend", link: "bridge://task/task-1",
+        nextActionSet: "set 5d ago by session aaaaaaaa-1111-4000-8000-000000000001",
+      });
       expect(result.activeTasks.slice(0, 3).map((entry: any) => [entry.title, entry.lastActivity])).toEqual([
         ["Tellus Expeditions", "3m ago"],
         ["Circles Journaling App", "1h ago"],

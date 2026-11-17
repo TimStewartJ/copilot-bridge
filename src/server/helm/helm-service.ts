@@ -23,6 +23,7 @@ import { buildHelmChatGuidance, HELM_CHAT_ROLE } from "./helm-prompt.js";
 import { buildHelmTaskIndex } from "./helm-task-index.js";
 import { liveLocalAttention, localThreads, threadOutOfDate } from "./attention-live.js";
 import type { TaskAttention } from "./attention.js";
+import type { TaskOverviewRow } from "../../shared/task-overview.js";
 import { applyHelmChatProfile, HELM_CHAT_EXCLUDED_TOOLS } from "./helm-session-profile.js";
 import { chooseHelmModel } from "./helm-model.js";
 import type { HelmConversationRecord, HelmStore } from "./helm-store.js";
@@ -271,12 +272,15 @@ export class HelmService implements HelmToolRuntime {
       }
     }
     let attention: Map<string, TaskAttention> | undefined;
+    let momentum: Map<string, Pick<TaskOverviewRow, "nextActionSet" | "waitingOnSet">> | undefined;
     try {
-      attention = new Map(liveLocalAttention(this.ctx).map((entry) => [entry.row.id, entry.attention]));
+      const live = liveLocalAttention(this.ctx);
+      attention = new Map(live.map((entry) => [entry.row.id, entry.attention]));
+      momentum = new Map(live.map((entry) => [entry.row.id, entry.row]));
     } catch (error) {
       console.warn("[helm] Could not work out which tasks need the user:", error);
     }
-    return buildHelmTaskIndex({ tasks, threads, lastActivity, ...(attention ? { attention } : {}) });
+    return buildHelmTaskIndex({ tasks, threads, lastActivity, ...(attention ? { attention } : {}), ...(momentum ? { momentum } : {}) });
   }
 
   /** Keeps a hands-free conversation from being retired or deleted; returns an unbind function. */

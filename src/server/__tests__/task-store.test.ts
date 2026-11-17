@@ -616,6 +616,35 @@ describe("task-store", () => {
       store.deleteTask(task.id);
       expect(db.prepare("SELECT COUNT(*) AS n FROM task_momentum_events").get()).toEqual({ n: 0 });
     });
+
+    it("stamps each field with the latest change to it, not a later change to another field", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const task = store.createTask("Stamped");
+        const untouched = store.createTask("Never set");
+        vi.setSystemTime(Date.parse("2026-11-10T10:00:00.000Z"));
+        store.updateTask(task.id, { nextAction: "Old step" }, { source: "agent", sessionId: "run-0" });
+        vi.setSystemTime(Date.parse("2026-11-12T10:00:00.000Z"));
+        store.updateTask(task.id, { nextAction: "Draft the ask" }, { source: "agent", sessionId: "run-1", scheduleId: "s", scheduleName: "Sweep" });
+        vi.setSystemTime(Date.parse("2026-11-14T10:00:00.000Z"));
+        // A value that spells out another field's audit key must not count as a change to it.
+        store.updateTask(task.id, { waitingOn: "Reply to {\"field\":\"nextAction\"}" }, { source: "user" });
+        vi.setSystemTime(Date.parse("2026-11-16T10:00:00.000Z"));
+        store.updateTask(task.id, { nextTouchAt: "2026-11-20T10:00:00.000Z" }, { source: "agent", sessionId: "run-2" });
+
+        const expected = {
+          nextAction: { at: "2026-11-12T10:00:00.000Z", source: "agent", sessionId: "run-1", scheduleId: "s", scheduleName: "Sweep" },
+          waitingOn: { at: "2026-11-14T10:00:00.000Z", source: "user" },
+        };
+        expect(store.getMomentumFieldStamps(task.id)).toEqual(expected);
+        expect(store.listMomentumSignals().get(task.id)).toMatchObject({
+          nextActionSet: expected.nextAction, waitingOnSet: expected.waitingOn, waitingChangedAt: expected.waitingOn.at,
+        });
+        expect(store.getMomentumFieldStamps(untouched.id)).toEqual({ nextAction: null, waitingOn: null });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("link/unlink sessions", () => {

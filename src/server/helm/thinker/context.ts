@@ -6,6 +6,7 @@ import type { HelmFeedbackRecord } from "./store.js";
 import type { HelmSource, SourceSession } from "./sources.js";
 import { mapWithConcurrency } from "../../map-with-concurrency.js";
 import { attentionOfRow, byAttention, taskBasis, type AttentionAbsence, type AttentionInputs, type TaskAttention } from "../attention.js";
+import { momentumAgeFields, NEXT_STEP_UNVERIFIED_NOTE } from "../../../shared/momentum-age.js";
 
 export interface PacketQuestion {
   sessionId: string;
@@ -51,6 +52,11 @@ export interface PacketTask {
   reasons?: string[];
   nextAction?: string;
   waitingOn?: string;
+  /** When and by whom nextAction and waitingOn were last set. */
+  nextActionSet?: string;
+  waitingOnSet?: string;
+  /** On a task only the user moves: its next step is over a few days old or of unknown age. */
+  nextActionUnverified?: true;
   nextTouchAt?: string;
   lastEngagedAt?: string;
   idleDays?: number | null;
@@ -221,11 +227,16 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
       || after(row.lastEngagedAt, options.watermark) || after(taskActivity.get(row.id), options.watermark);
     // Every task carries its dates, so the run can see what has gone stale without opening it.
     const dates = { ...(row.nextTouchAt ? { nextTouchAt: row.nextTouchAt } : {}), ...(row.lastEngagedAt ? { lastEngagedAt: row.lastEngagedAt } : {}), idleDays: row.idleDays };
-    const fields = { ...(row.nextAction ? { nextAction: clip(row.nextAction, 300) } : {}), ...(row.waitingOn ? { waitingOn: clip(row.waitingOn, 200) } : {}) };
-    const flags: Pick<PacketTask, "onTim" | "needsTim" | "needsTimBy"> = attention.onTim
+    const ages = momentumAgeFields(row, (options.now ?? new Date()).getTime(), { onYou: attention.onTim });
+    const fields = {
+      ...(row.nextAction ? { nextAction: clip(row.nextAction, 300) } : {}), ...(row.waitingOn ? { waitingOn: clip(row.waitingOn, 200) } : {}),
+      ...(ages.nextActionSet ? { nextActionSet: ages.nextActionSet } : {}), ...(ages.waitingOnSet ? { waitingOnSet: ages.waitingOnSet } : {}),
+    };
+    const flags: Pick<PacketTask, "onTim" | "needsTim" | "needsTimBy" | "nextActionUnverified"> = attention.onTim
       ? {
         onTim: attention.fromFields ? "fields" : "helm",
         ...(attention.reasons.length ? { needsTim: attention.reasons, ...(attention.soonest ? { needsTimBy: attention.soonest } : {}) } : {}),
+        ...(ages.nextActionUnverified ? { nextActionUnverified: true as const } : {}),
       }
       : {};
     return changed
@@ -235,7 +246,7 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
         changed: true, ...flags, ...threadParts, basis,
       }
       // A task needing the user always shows its next step and wait, not just its thread line.
-      : { taskId: row.id, title: row.title, state: row.state, ...(flags.needsTim ? fields : {}), ...dates, changed: false, ...flags, ...threadParts, basis };
+      : { taskId: row.id, title: row.title, state: row.state, ...(flags.needsTim || flags.nextActionUnverified ? fields : {}), ...dates, changed: false, ...flags, ...threadParts, basis };
   });
 
   const working = active.filter((session) => session.runState !== "idle" && !session.needsUserInput).slice(0, 15).map((session) => ({
@@ -271,7 +282,12 @@ export interface ChatBridgeView {
   replies: Array<{ sessionId: string; conversation: string; excerpt?: string; task?: string; at?: string; automated?: boolean }>;
   due: Array<{ text: string; deadline?: string; task?: string }>;
   working: Array<{ sessionId: string; conversation: string; task?: string }>;
-  tasks: Array<{ taskId: string; title: string; state?: string; nextAction?: string; waitingOn?: string; idleDays?: number | null; onYou?: true; needsYou?: string[] }>;
+  tasks: Array<{
+    taskId: string; title: string; state?: string; nextAction?: string; waitingOn?: string; nextActionSet?: string; waitingOnSet?: string;
+    idleDays?: number | null; onYou?: true; needsYou?: string[]; nextActionUnverified?: true;
+  }>;
+  /** Present when a listed task's next step is marked unverified. */
+  unverified?: string;
   omitted?: { questions: number; replies: number; due: number; tasks: number };
 }
 
@@ -292,6 +308,14 @@ export async function readBridgeForChat(source: HelmSource, attention?: Attentio
 }
 
 function chatBridgeView(bridge: PacketBridge): ChatBridgeView {
+  const tasks = bridge.tasks.slice(0, MAX_CHAT_TASKS).map((task) => ({
+    taskId: task.taskId, title: task.title, ...(task.state ? { state: task.state } : {}),
+    ...(task.nextAction ? { nextAction: clip(task.nextAction, 160) } : {}), ...(task.waitingOn ? { waitingOn: clip(task.waitingOn, 120) } : {}),
+    ...(task.nextActionSet ? { nextActionSet: task.nextActionSet } : {}), ...(task.waitingOnSet ? { waitingOnSet: task.waitingOnSet } : {}),
+    ...(task.idleDays !== undefined ? { idleDays: task.idleDays } : {}),
+    ...(task.onTim ? { onYou: true as const } : {}), ...(task.needsTim ? { needsYou: task.needsTim } : {}),
+    ...(task.nextActionUnverified ? { nextActionUnverified: true as const } : {}),
+  }));
   return {
     bridge: bridge.id,
     label: bridge.label,
@@ -305,12 +329,8 @@ function chatBridgeView(bridge: PacketBridge): ChatBridgeView {
     })),
     due: bridge.due.map((item) => ({ text: item.text, ...(item.deadline ? { deadline: item.deadline } : {}), ...(item.task ? { task: item.task } : {}) })),
     working: bridge.working,
-    tasks: bridge.tasks.slice(0, MAX_CHAT_TASKS).map((task) => ({
-      taskId: task.taskId, title: task.title, ...(task.state ? { state: task.state } : {}),
-      ...(task.nextAction ? { nextAction: clip(task.nextAction, 160) } : {}), ...(task.waitingOn ? { waitingOn: clip(task.waitingOn, 120) } : {}),
-      ...(task.idleDays !== undefined ? { idleDays: task.idleDays } : {}),
-      ...(task.onTim ? { onYou: true as const } : {}), ...(task.needsTim ? { needsYou: task.needsTim } : {}),
-    })),
+    tasks,
+    ...(tasks.some((task) => task.nextActionUnverified) ? { unverified: NEXT_STEP_UNVERIFIED_NOTE } : {}),
   };
 }
 
@@ -417,9 +437,12 @@ export function renderThinkerPacket(packet: ThinkerPacket): string {
           const { basis: _basis, ...shown } = task;
           const view = task.changed ? shown : {
             taskId: task.taskId, title: task.title, state: task.state,
-            ...(task.needsTim ? { nextAction: task.nextAction, waitingOn: task.waitingOn } : {}),
+            ...(task.needsTim || task.nextActionUnverified ? {
+              nextAction: task.nextAction, waitingOn: task.waitingOn, nextActionSet: task.nextActionSet, waitingOnSet: task.waitingOnSet,
+            } : {}),
             nextTouchAt: task.nextTouchAt, lastEngagedAt: task.lastEngagedAt, idleDays: task.idleDays,
             ...(task.onTim ? { onTim: task.onTim } : {}), ...(task.needsTim ? { needsTim: task.needsTim, needsTimBy: task.needsTimBy } : {}),
+            ...(task.nextActionUnverified ? { nextActionUnverified: true } : {}),
             thread: task.thread, threadOwner: task.threadOwner, threadHoldUntil: task.threadHoldUntil,
           };
           return cited && view.thread ? { ...view, threadFrom: cited } : view;
