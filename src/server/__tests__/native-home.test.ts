@@ -273,7 +273,7 @@ describe("native Home composition", () => {
     expect(home.taskCounts.no_next_step).toBe(1);
   });
 
-  it("counts messages Tim sends, never conversations he only read", async () => {
+  it("counts messages the user sends, never conversations they only read", async () => {
     const app = setup([{ sessionId: "read-only" }, { sessionId: "written" }]);
     const old = new Date(Date.now() - 90 * 86_400_000).toISOString();
     const read = app.taskStore.createTask("Only read");
@@ -292,7 +292,7 @@ describe("native Home composition", () => {
     expect(home.resume.map(row => ({ id: row.id, kind: row.lastTouchKind }))).toEqual([{ id: written.id, kind: "message" }]);
   });
 
-  it("treats Tim's own edits as engagement, silently from the task's point of view", async () => {
+  it("treats the user's own edits as engagement, silently from the task's point of view", async () => {
     const app = setup();
     const task = app.taskStore.createTask("Old but just edited");
     db.prepare("UPDATE tasks SET createdAt = ? WHERE id = ?").run(new Date(Date.now() - 90 * 86_400_000).toISOString(), task.id);

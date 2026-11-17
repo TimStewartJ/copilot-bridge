@@ -105,11 +105,11 @@ class Fft {
           const a = start + k;
           const b = a + half;
           const tre = re[b]! * cos + im[b]! * sin;
-          const tim = -re[b]! * sin + im[b]! * cos;
+          const tImag = -re[b]! * sin + im[b]! * cos;
           re[b] = re[a]! - tre;
-          im[b] = im[a]! - tim;
+          im[b] = im[a]! - tImag;
           re[a] = re[a]! + tre;
-          im[a] = im[a]! + tim;
+          im[a] = im[a]! + tImag;
         }
       }
     }

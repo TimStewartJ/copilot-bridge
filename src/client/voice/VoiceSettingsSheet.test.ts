@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../helm/helm-settings", () => ({
-  useHelmPreferences: () => ({ data: { settings: { glossary: "devbox = Timmy PC" } }, error: null }),
+  useHelmPreferences: () => ({ data: { settings: { glossary: "devbox = Desk PC" } }, error: null }),
   patchHelmSettings: mocks.patchHelmSettings,
 }));
 
@@ -95,12 +95,12 @@ describe("Hands-free settings sheet", () => {
   it("edits the names list and saves it only when it changed and the field loses focus", async () => {
     await renderSheet();
     const [field] = findAllByTag(harness.dom.container, "textarea");
-    expect(getReactProps(field)!.value).toBe("devbox = Timmy PC");
+    expect(getReactProps(field)!.value).toBe("devbox = Desk PC");
     expect(findAllByTag(harness.dom.container, "label").some((label) => getReactProps(label)?.htmlFor === "hands-free-setting-glossary")).toBe(true);
     await harness.act(() => getReactProps(field)!.onBlur());
     expect(mocks.patchHelmSettings).not.toHaveBeenCalled();
-    await harness.act(() => getReactProps(field)!.onChange({ target: { value: "devbox = Timmy PC; Tether = my iPhone app" } }));
+    await harness.act(() => getReactProps(field)!.onChange({ target: { value: "devbox = Desk PC; Tether = my iPhone app" } }));
     await harness.act(() => getReactProps(findAllByTag(harness.dom.container, "textarea")[0])!.onBlur());
-    expect(mocks.patchHelmSettings).toHaveBeenCalledWith({ glossary: "devbox = Timmy PC; Tether = my iPhone app" });
+    expect(mocks.patchHelmSettings).toHaveBeenCalledWith({ glossary: "devbox = Desk PC; Tether = my iPhone app" });
   });
 });

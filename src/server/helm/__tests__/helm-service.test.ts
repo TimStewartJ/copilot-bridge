@@ -240,7 +240,7 @@ describe("HelmService conversations", () => {
     const announced: unknown[] = [];
     globalBus.subscribe((event) => { if (event.type === "helm:changed") announced.push(event); });
 
-    // A turn that ended without a reply (aborted, or only Tim's own message) is not a reply.
+    // A turn that ended without a reply (aborted, or only the user's own message) is not a reply.
     advance(HOUR);
     visibleActivity.set(conversation.sessionId, "2026-09-18T09:05:00.000Z");
     globalBus.emit({ type: "session:idle", sessionId: conversation.sessionId });
@@ -427,7 +427,7 @@ describe("Helm session profiles", () => {
           { kind: "thread", key: "local:t-bridge", text: "Calendar import in review.", status: "active", fromSources: ["mail-server"], owner: "agent", basis: taskBasis({}) },
           // Written before the task's next step was set: the task's live fields stand in for it.
           { kind: "thread", key: "local:t-trip", text: "Agent books it; stay out.", status: "active", fromSources: [], owner: "agent", author: "helm" },
-          // Tim corrected this one himself: it stays as he wrote it.
+          // The user corrected this one: it stays as they wrote it.
           { kind: "thread", key: "local:t-gift", text: "Waiting on Sam's sizes.", status: "active", fromSources: [], author: "user" },
           { kind: "thread", key: "laptop:t-bridge", text: "A peer Bridge's line.", status: "active", fromSources: [] },
           { kind: "rule", key: null, text: "Not a thread.", status: "active", fromSources: [] },

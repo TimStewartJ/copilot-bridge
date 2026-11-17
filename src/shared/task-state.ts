@@ -13,7 +13,7 @@ export interface TaskStateInput {
   nextAction?: string;
   waitingOn?: string;
   nextTouchAt?: string;
-  /** When Tim last edited the task or wrote in one of its conversations. */
+  /** When the user last edited the task or wrote in one of its conversations. */
   lastEngagedAt?: string;
   /** When the current waiting-for text was last set, when known. */
   waitingSince?: string;
@@ -22,14 +22,14 @@ export interface TaskStateInput {
   inputCount: number;
   /** Enabled schedules plus active session defers: automation still working on the task. */
   automationCount: number;
-  /** Linked conversation status could not be read, so the task may be working or waiting on Tim. */
+  /** Linked chat status is unreadable, so the task may be working or waiting on the user. */
   sessionSignalsUnknown?: boolean;
 }
 
 export interface DerivedTaskState {
   state: TaskState;
   reasons: TaskNeedsYouReason[];
-  /** Waiting for something without Tim touching the task in a while. */
+  /** Waiting for something without the user touching the task in a while. */
   staleWait: boolean;
   /** Whole days since the last engagement, or null when unknown. */
   idleDays: number | null;
@@ -65,7 +65,7 @@ export function deriveTaskState(input: TaskStateInput, now: number = Date.now())
   if (input.busyCount > 0 || (idleDays !== null && idleDays < IN_MOTION_DAYS)) return result("in_motion");
   // Never offer to close a task whose conversations might be working or asking something.
   if ((idleDays === null || idleDays >= QUIET_DAYS) && !futureRevisit && input.automationCount === 0 && !input.sessionSignalsUnknown) return result("gone_quiet");
-  // Waiting on someone else, or on a revisit date Tim chose.
+  // Waiting on someone else, or on a revisit date the user chose.
   if (hasWait || futureRevisit) return result("waiting");
   if (input.nextAction?.trim()) return result("up_next");
   return result("no_next_step");

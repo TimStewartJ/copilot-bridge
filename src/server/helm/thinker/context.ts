@@ -74,11 +74,11 @@ export interface PacketTask {
   /** On a rebuild, signs that this local task's instructions or notes need tidying. */
   tidy?: string[];
   /** Only the user moves it: "fields" if live fields say so, "helm" if only Helm's line does. */
-  onTim?: "fields" | "helm";
-  /** Why it needs the user now (dates passed, due soon, before time away); set only when onTim. */
-  needsTim?: string[];
-  /** The earliest date behind needsTim, YYYY-MM-DD. */
-  needsTimBy?: string;
+  onUser?: "fields" | "helm";
+  /** Why it needs the user now (dates passed, due soon, before time away); set only when onUser. */
+  needsUser?: string[];
+  /** The earliest date behind needsUser, YYYY-MM-DD. */
+  needsUserBy?: string;
 }
 
 export interface PacketBridge {
@@ -209,7 +209,7 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
 
   const threadOf = (taskId: string) => options.threads.get(`${source.id}:${taskId}`);
   const attentionInputs = options.attention ? { ...options.attention, helm: (taskId: string) => threadOf(taskId) } : undefined;
-  // Tasks that need Tim come first, so no limit below can leave one out.
+  // Tasks that need the user come first, so no limit below can leave one out.
   const rows = overview.tasks.filter((row) => !row.muted)
     .map((row) => ({ row, attention: attentionOf(row, due, attentionInputs, options.now) }))
     .sort(byAttention);
@@ -227,15 +227,15 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
       || after(row.lastEngagedAt, options.watermark) || after(taskActivity.get(row.id), options.watermark);
     // Every task carries its dates, so the run can see what has gone stale without opening it.
     const dates = { ...(row.nextTouchAt ? { nextTouchAt: row.nextTouchAt } : {}), ...(row.lastEngagedAt ? { lastEngagedAt: row.lastEngagedAt } : {}), idleDays: row.idleDays };
-    const ages = momentumAgeFields(row, (options.now ?? new Date()).getTime(), { onYou: attention.onTim });
+    const ages = momentumAgeFields(row, (options.now ?? new Date()).getTime(), { onYou: attention.onUser });
     const fields = {
       ...(row.nextAction ? { nextAction: clip(row.nextAction, 300) } : {}), ...(row.waitingOn ? { waitingOn: clip(row.waitingOn, 200) } : {}),
       ...(ages.nextActionSet ? { nextActionSet: ages.nextActionSet } : {}), ...(ages.waitingOnSet ? { waitingOnSet: ages.waitingOnSet } : {}),
     };
-    const flags: Pick<PacketTask, "onTim" | "needsTim" | "needsTimBy" | "nextActionUnverified"> = attention.onTim
+    const flags: Pick<PacketTask, "onUser" | "needsUser" | "needsUserBy" | "nextActionUnverified"> = attention.onUser
       ? {
-        onTim: attention.fromFields ? "fields" : "helm",
-        ...(attention.reasons.length ? { needsTim: attention.reasons, ...(attention.soonest ? { needsTimBy: attention.soonest } : {}) } : {}),
+        onUser: attention.fromFields ? "fields" : "helm",
+        ...(attention.reasons.length ? { needsUser: attention.reasons, ...(attention.soonest ? { needsUserBy: attention.soonest } : {}) } : {}),
         ...(ages.nextActionUnverified ? { nextActionUnverified: true as const } : {}),
       }
       : {};
@@ -246,7 +246,7 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
         changed: true, ...flags, ...threadParts, basis,
       }
       // A task needing the user always shows its next step and wait, not just its thread line.
-      : { taskId: row.id, title: row.title, state: row.state, ...(flags.needsTim || flags.nextActionUnverified ? fields : {}), ...dates, changed: false, ...flags, ...threadParts, basis };
+      : { taskId: row.id, title: row.title, state: row.state, ...(flags.needsUser || flags.nextActionUnverified ? fields : {}), ...dates, changed: false, ...flags, ...threadParts, basis };
   });
 
   const working = active.filter((session) => session.runState !== "idle" && !session.needsUserInput).slice(0, 15).map((session) => ({
@@ -269,7 +269,7 @@ async function readBridge(source: HelmSource, options: { watermark: string | nul
 }
 
 function attentionOf(row: TaskOverviewRow, due: PacketDue[], inputs: AttentionInputs | undefined, now: Date | undefined): TaskAttention {
-  if (!inputs) return { onTim: false, fromFields: false, reasons: [] };
+  if (!inputs) return { onUser: false, fromFields: false, reasons: [] };
   const checklist = due.filter((item) => item.taskId === row.id).map((item) => ({ text: item.text, ...(item.deadline ? { deadline: item.deadline } : {}) }));
   return attentionOfRow(row, inputs, now ?? new Date(), checklist);
 }
@@ -313,7 +313,7 @@ function chatBridgeView(bridge: PacketBridge): ChatBridgeView {
     ...(task.nextAction ? { nextAction: clip(task.nextAction, 160) } : {}), ...(task.waitingOn ? { waitingOn: clip(task.waitingOn, 120) } : {}),
     ...(task.nextActionSet ? { nextActionSet: task.nextActionSet } : {}), ...(task.waitingOnSet ? { waitingOnSet: task.waitingOnSet } : {}),
     ...(task.idleDays !== undefined ? { idleDays: task.idleDays } : {}),
-    ...(task.onTim ? { onYou: true as const } : {}), ...(task.needsTim ? { needsYou: task.needsTim } : {}),
+    ...(task.onUser ? { onYou: true as const } : {}), ...(task.needsUser ? { needsYou: task.needsUser } : {}),
     ...(task.nextActionUnverified ? { nextActionUnverified: true as const } : {}),
   }));
   return {
@@ -388,9 +388,9 @@ export async function buildThinkerPacket(input: {
 }
 
 /** Tasks whose live fields say they need the user now, across all Bridges, soonest first. */
-export function tasksNeedingTim(packet: ThinkerPacket): Array<{ bridge: string; task: PacketTask }> {
-  return packet.bridges.flatMap((bridge) => bridge.tasks.filter((task) => task.needsTim?.length).map((task) => ({ bridge: bridge.id, task })))
-    .sort((a, b) => (a.task.needsTimBy ?? "9999").localeCompare(b.task.needsTimBy ?? "9999"));
+export function tasksNeedingUser(packet: ThinkerPacket): Array<{ bridge: string; task: PacketTask }> {
+  return packet.bridges.flatMap((bridge) => bridge.tasks.filter((task) => task.needsUser?.length).map((task) => ({ bridge: bridge.id, task })))
+    .sort((a, b) => (a.task.needsUserBy ?? "9999").localeCompare(b.task.needsUserBy ?? "9999"));
 }
 
 export function bridgeStatuses(packet: ThinkerPacket): HelmBridgeStatus[] {
@@ -432,22 +432,22 @@ export function renderThinkerPacket(packet: ThinkerPacket): string {
       ? {
         bridge: bridge.id, label: bridge.label,
         questions: bridge.questions, unreadReplies: bridge.replies, checklistDue: bridge.due, agentsWorking: bridge.working,
-        tasks: bridge.tasks.filter((task) => task.changed || task.needsTim || !trimUnchanged).map((task) => {
+        tasks: bridge.tasks.filter((task) => task.changed || task.needsUser || !trimUnchanged).map((task) => {
           const cited = threadFrom.get(`${bridge.id}:${task.taskId}`);
           const { basis: _basis, ...shown } = task;
           const view = task.changed ? shown : {
             taskId: task.taskId, title: task.title, state: task.state,
-            ...(task.needsTim || task.nextActionUnverified ? {
+            ...(task.needsUser || task.nextActionUnverified ? {
               nextAction: task.nextAction, waitingOn: task.waitingOn, nextActionSet: task.nextActionSet, waitingOnSet: task.waitingOnSet,
             } : {}),
             nextTouchAt: task.nextTouchAt, lastEngagedAt: task.lastEngagedAt, idleDays: task.idleDays,
-            ...(task.onTim ? { onTim: task.onTim } : {}), ...(task.needsTim ? { needsTim: task.needsTim, needsTimBy: task.needsTimBy } : {}),
+            ...(task.onUser ? { onUser: task.onUser } : {}), ...(task.needsUser ? { needsUser: task.needsUser, needsUserBy: task.needsUserBy } : {}),
             ...(task.nextActionUnverified ? { nextActionUnverified: true } : {}),
             thread: task.thread, threadOwner: task.threadOwner, threadHoldUntil: task.threadHoldUntil,
           };
           return cited && view.thread ? { ...view, threadFrom: cited } : view;
         }),
-        ...(trimUnchanged ? { unchangedTasksOmitted: bridge.tasks.filter((task) => !task.changed && !task.needsTim).length } : {}),
+        ...(trimUnchanged ? { unchangedTasksOmitted: bridge.tasks.filter((task) => !task.changed && !task.needsUser).length } : {}),
         ...(Object.values(bridge.omitted).some((count) => count > 0) ? { notShownHere: bridge.omitted } : {}),
       }
       : { bridge: bridge.id, label: bridge.label, unavailable: bridge.error }),

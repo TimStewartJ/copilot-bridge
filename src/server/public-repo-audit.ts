@@ -1,15 +1,16 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findOwnerName, isAuthorLine, readOwnerIdentity, type OwnerIdentity } from "./owner-identity.js";
 
 // Allowlist on purpose: private terms must not live in this public repo (deploy denylist has them).
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PUBLIC_NPM_HOST = "registry.npmjs.org";
 const EXAMPLE_ADO_ORGS = new Set(["acme", "example", "exampleorg", "org", "other", "otherorg"]);
-const SCANNED_DIRS = [".github", "scripts", "skills", "src"];
+const SCANNED_DIRS = [".github", "public", "scripts", "skills", "src"];
 const SCANNED_ROOT_FILES = [".env.example", "AGENTS.md", "README.md", "package.json"];
-const TEXT_EXTENSIONS = new Set([".css", ".html", ".json", ".md", ".mjs", ".ps1", ".ts", ".tsx", ".yml"]);
+const TEXT_EXTENSIONS = new Set([".cjs", ".css", ".html", ".js", ".json", ".md", ".mjs", ".ps1", ".ts", ".tsx", ".yml"]);
 const SKIPPED_DIRS = new Set(["dist", "node_modules"]);
 const ADO_ORG_PATTERNS = [
   /\bdev\.azure\.com\/([A-Za-z0-9_-]+)/g,
@@ -47,8 +48,25 @@ export function findAdoOrgs(text: string): Array<{ line: number; org: string }> 
   return found;
 }
 
+/** Lines that name the repository owner; package.json `author` lines are where the name belongs. */
+export function findOwnerNames(fileName: string, text: string, owner: OwnerIdentity): Array<{ line: number; word: string }> {
+  const found: Array<{ line: number; word: string }> = [];
+  const isManifest = basename(fileName) === "package.json";
+  text.split(/\r?\n/).forEach((content, index) => {
+    if (isManifest && isAuthorLine(content)) return;
+    const word = findOwnerName(content, owner);
+    if (word) found.push({ line: index + 1, word });
+  });
+  return found;
+}
+
 function listScannedFiles(rootDir: string): string[] {
-  const files = SCANNED_ROOT_FILES.map((file) => join(rootDir, file)).filter((file) => existsSync(file));
+  const rootFiles = readdirSync(rootDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && TEXT_EXTENSIONS.has(extname(entry.name)) && entry.name !== "package-lock.json")
+    .map((entry) => entry.name);
+  const files = [...new Set([...SCANNED_ROOT_FILES, ...rootFiles])]
+    .map((file) => join(rootDir, file))
+    .filter((file) => existsSync(file));
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
@@ -78,10 +96,16 @@ export function auditPublicRepo(rootDir: string): string[] {
       );
     }
   }
+  const manifest = join(rootDir, "package.json");
+  const owner = readOwnerIdentity(existsSync(manifest) ? JSON.parse(readFileSync(manifest, "utf8")) : {});
   for (const file of listScannedFiles(rootDir)) {
-    for (const { line, org } of findAdoOrgs(readFileSync(file, "utf8"))) {
-      const path = relative(rootDir, file).replaceAll("\\", "/");
+    const text = readFileSync(file, "utf8");
+    const path = relative(rootDir, file).replaceAll("\\", "/");
+    for (const { line, org } of findAdoOrgs(text)) {
       problems.push(`${path}:${line}: Azure DevOps org "${org}" is not an example org. Use a made-up org in tests and docs.`);
+    }
+    for (const { line, word } of findOwnerNames(file, text, owner)) {
+      problems.push(`${path}:${line}: "${word}" is the owner's name (package.json author). Say "the user", or use a made-up name.`);
     }
   }
   return problems;

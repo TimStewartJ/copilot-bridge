@@ -63,7 +63,7 @@ describe("checklist by due date", () => {
   });
 });
 
-describe("set-aside tasks that still need Tim", () => {
+describe("set-aside tasks that still need the user", () => {
   it("names only set-aside tasks in Needs you, with their reason", () => {
     const rows = [
       row({ id: "asks", state: "needs_you", reasons: ["question"], inputCount: 1, deferred: true }),

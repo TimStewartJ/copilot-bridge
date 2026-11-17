@@ -81,7 +81,7 @@ describe("AdoProvider", () => {
       repository: { id: prRef.repoId, name: "example-repo" },
       title: "Remove eastus2euap from Arc region dropdown",
       status: "active",
-      createdBy: { displayName: "Tim Stewart" },
+      createdBy: { displayName: "Alex Example" },
       reviewers: [{}, {}],
     }));
     const { AdoProvider } = await loadAdoModule();
@@ -103,7 +103,7 @@ describe("AdoProvider", () => {
         provider: "ado",
         title: "Remove eastus2euap from Arc region dropdown",
         status: "active",
-        createdBy: "Tim Stewart",
+        createdBy: "Alex Example",
         reviewerCount: 2,
         url: "https://exampleorg.visualstudio.com/One/_git/example-repo/pullrequest/10000001",
       },
@@ -121,7 +121,7 @@ describe("AdoProvider", () => {
           "System.Title": "ADO work item",
           "System.State": "Active",
           "System.WorkItemType": "Task",
-          "System.AssignedTo": { displayName: "Tim Stewart" },
+          "System.AssignedTo": { displayName: "Alex Example" },
           "System.AreaPath": "One\\Bridge",
         },
       }],
@@ -164,7 +164,7 @@ describe("AdoProvider", () => {
       repository: { id: prRef.repoId, name: "example-repo" },
       title: "Remove eastus2euap from Arc region dropdown",
       status: "active",
-      createdBy: { displayName: "Tim Stewart" },
+      createdBy: { displayName: "Alex Example" },
       reviewers: [{}, {}],
     }));
     const { AdoProvider } = await loadAdoModule();
@@ -210,7 +210,7 @@ describe("AdoProvider", () => {
           "System.Title": "ADO work item",
           "System.State": "Active",
           "System.WorkItemType": "Task",
-          "System.AssignedTo": { displayName: "Tim Stewart" },
+          "System.AssignedTo": { displayName: "Alex Example" },
           "System.AreaPath": "One\\Bridge",
         },
       }],
@@ -254,7 +254,7 @@ describe("AdoProvider", () => {
       repository: { id: "a1a1a1a1-0000-4000-8000-000000000001", name: "example-repo" },
       title: "Cherry-pick PR",
       status: "completed",
-      createdBy: { displayName: "Tim Stewart" },
+      createdBy: { displayName: "Alex Example" },
       reviewers: [{}],
     }));
     const { AdoProvider } = await loadAdoModule();
@@ -287,7 +287,7 @@ describe("AdoProvider", () => {
             "System.Title": "Recovered work item",
             "System.State": "Active",
             "System.WorkItemType": "Task",
-            "System.AssignedTo": { displayName: "Tim Stewart" },
+            "System.AssignedTo": { displayName: "Alex Example" },
             "System.AreaPath": "One\\Bridge",
           },
         }],
@@ -347,7 +347,7 @@ describe("AdoProvider", () => {
         repository: { id: "a1a1a1a1-0000-4000-8000-000000000001", name: "example-repo" },
         title: "Recovered PR",
         status: "active",
-        createdBy: { displayName: "Tim Stewart" },
+        createdBy: { displayName: "Alex Example" },
         reviewers: [{}],
       });
     });
@@ -377,7 +377,7 @@ describe("AdoProvider", () => {
               "System.Title": "Bridge work map",
               "System.State": "Active",
               "System.WorkItemType": "Feature",
-              "System.AssignedTo": { displayName: "Tim Stewart" },
+              "System.AssignedTo": { displayName: "Alex Example" },
               "System.AreaPath": "One\\Bridge",
             },
             relations: [{
@@ -393,7 +393,7 @@ describe("AdoProvider", () => {
           repository: { id: "a1a1a1a1-0000-4000-8000-000000000002", name: "copilot-bridge" },
           title: "Add work map",
           status: "active",
-          createdBy: { displayName: "Tim Stewart" },
+          createdBy: { displayName: "Alex Example" },
           reviewers: [{}],
           workItemRefs: [{ id: "123" }, { id: "456" }],
         });
@@ -760,13 +760,13 @@ describe("AdoProvider", () => {
   it("loads and caches the authenticated ADO user's display name", async () => {
     const fetchMock = getFetchMock();
     fetchMock.mockResolvedValue(jsonResponse({
-      authenticatedUser: { providerDisplayName: "Tim Stewart" },
+      authenticatedUser: { providerDisplayName: "Alex Example" },
     }));
     const { AdoProvider } = await loadAdoModule();
     const provider = new AdoProvider({ org: "exampleorg", project: "One" });
 
-    await expect(provider.fetchCurrentUser()).resolves.toEqual({ displayName: "Tim Stewart" });
-    await expect(provider.fetchCurrentUser()).resolves.toEqual({ displayName: "Tim Stewart" });
+    await expect(provider.fetchCurrentUser()).resolves.toEqual({ displayName: "Alex Example" });
+    await expect(provider.fetchCurrentUser()).resolves.toEqual({ displayName: "Alex Example" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

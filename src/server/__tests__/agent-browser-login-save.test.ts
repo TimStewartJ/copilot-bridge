@@ -9,7 +9,7 @@ vi.mock("node:child_process", () => ({
   spawn: spawnMock,
 }));
 
-const LOGIN = { url: "https://accounts.example.com/", username: "tim@example.com", password: "correct horse 42!" };
+const LOGIN = { url: "https://accounts.example.com/", username: "alex@example.com", password: "correct horse 42!" };
 const TARGET = { sessionName: "test-browser", profileDir: "profile" };
 
 /** A child process whose output a test writes and whose input it reads. */

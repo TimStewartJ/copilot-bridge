@@ -105,7 +105,7 @@ describe("the thinker's packet", () => {
   });
 });
 
-describe("a task whose next step is Tim's", () => {
+describe("a task whose next step is the user's", () => {
   // The agent wrote the user's step as an instruction and Helm's thread line called it agent-run.
   const thread = "Deadline passed: 41 of 64 done, the tab balances. Agent processing the Friday digest and Sam's paintball question, then locks the sheet. Agent-run; stay out unless it asks.";
   const absences = [{ title: "Mission trip", start: "2026-11-22", end: "2026-12-01" }];
@@ -144,22 +144,22 @@ describe("a task whose next step is Tim's", () => {
       basis: taskBasis(morning), outOfDate: true,
       reason: "Fri, Nov 20 in its notes comes before Mission trip (from Sun, Nov 22)",
     },
-  ])("needs him $when, whatever Helm's thread line says", async ({ now, lastRunAt, row, notes, basis, outOfDate, reason }) => {
+  ])("needs the user $when, whatever Helm's thread line says", async ({ now, lastRunAt, row, notes, basis, outOfDate, reason }) => {
     const memory = line(lastRunAt, { basis });
     const packet = await build(now, lastRunAt, row, [memory], notes);
     const [task] = JSON.parse(renderThinkerPacket(packet)).bridges[0].tasks;
-    expect(task).toMatchObject({ taskId: "t-retreat", onTim: "fields", nextAction: row.nextAction, thread, threadOwner: "agent" });
-    expect(task.needsTim).toContain(reason);
+    expect(task).toMatchObject({ taskId: "t-retreat", onUser: "fields", nextAction: row.nextAction, thread, threadOwner: "agent" });
+    expect(task.needsUser).toContain(reason);
     expect(task.threadOutOfDate).toBe(outOfDate ? true : undefined);
     expect(task.basis).toBeUndefined();
 
-    // Helm can't call it an agent's again or watch it; calling it Tim's stamps the fields it read.
+    // Helm can't call it an agent's again or watch it; the user's owner stamps the fields it read.
     const asAgent = validatePublication({ summary: "x", items: [], memory: { threads: [{ bridge: "local", taskId: "t-retreat", text: thread, owner: "agent" }] } }, packet, [memory]);
-    expect(asAgent.ok ? [] : asAgent.errors).toEqual([expect.stringMatching(/"Retreat trip finances" is Tim's move: no agent is working on it .* Its owner must be tim\.$/)]);
+    expect(asAgent.ok ? [] : asAgent.errors).toEqual([expect.stringMatching(/"Retreat trip finances" is the user's move: no agent is working on it .* Its owner must be user\.$/)]);
     const watched = validatePublication({ summary: "x", items: [], watching: [{ bridge: "local", taskId: "t-retreat", text: "The agent is working through the digest before locking the sheet." }] }, packet, [memory]);
-    expect(watched.ok ? [] : watched.errors).toEqual([expect.stringMatching(/"Retreat trip finances" waits on no one but Tim/)]);
-    const asTim = validatePublication({ summary: "x", items: [], memory: { threads: [{ bridge: "local", taskId: "t-retreat", text: "Tim nudges the stragglers, then sends amounts.", owner: "tim" }] } }, packet, [memory]);
-    expect(asTim.ok && asTim.memory).toEqual([expect.objectContaining({ owner: "tim", holdUntil: null, basis: taskBasis(row) })]);
+    expect(watched.ok ? [] : watched.errors).toEqual([expect.stringMatching(/"Retreat trip finances" waits on no one but the user/)]);
+    const asUser = validatePublication({ summary: "x", items: [], memory: { threads: [{ bridge: "local", taskId: "t-retreat", text: "The user nudges the stragglers, then sends amounts.", owner: "user" }] } }, packet, [memory]);
+    expect(asUser.ok && asUser.memory).toEqual([expect.objectContaining({ owner: "user", holdUntil: null, basis: taskBasis(row) })]);
 
     // Left out of the items, Home still lists it under On you; an item about it replaces it.
     expect(onYouList(packet, { items: [] }).onYou).toEqual([{ bridge: "local", taskId: "t-retreat", title: "Retreat trip finances", nextAction: row.nextAction, reasons: expect.arrayContaining([reason]) }]);
@@ -167,16 +167,16 @@ describe("a task whose next step is Tim's", () => {
     expect(onYouList(packet, { items: [item] }).onYou).toEqual([]);
   });
 
-  it("brings back a pause on Tim's own work before he goes away, even with no fields to go on", async () => {
-    // Shaped like a donation question that needed only Tim's amount, paused "until December".
+  it("brings back a pause on the user's own work before they go away, even with no fields to go on", async () => {
+    // Shaped like a donation question that needed only the user's amount, paused "until December".
     const bare = { nextAction: undefined, waitingOn: undefined, state: "no_next_step", idleDays: 9 };
     const packet = await build("2026-11-13T18:00:00.000Z", "2026-11-13T02:00:00.000Z", bare, []);
-    const pause = (holdUntil: string) => validatePublication({ summary: "x", items: [], memory: { threads: [{ bridge: "local", taskId: "t-retreat", text: "Needs Tim's amount; shares by Dec 31.", owner: "tim", holdUntil }] } }, packet, []);
+    const pause = (holdUntil: string) => validatePublication({ summary: "x", items: [], memory: { threads: [{ bridge: "local", taskId: "t-retreat", text: "Needs the user's amount; shares by Dec 31.", owner: "user", holdUntil }] } }, packet, []);
     const december = pause("2026-12-01");
-    expect(december.ok ? [] : december.errors).toEqual(["memory.threads 1: Tim is away from Sun, Nov 22 (Mission trip); a pause on his own work must end by 2026-11-21."]);
+    expect(december.ok ? [] : december.errors).toEqual(["memory.threads 1: The user is away from Sun, Nov 22 (Mission trip); a pause on their own work must end by 2026-11-21."]);
     expect(pause("2026-11-20").ok).toBe(true);
 
-    const later = await build("2026-11-20T18:00:00.000Z", "2026-11-20T02:00:00.000Z", bare, [line("2026-11-13T18:00:00.000Z", { owner: "tim", holdUntil: "2026-11-20", basis: taskBasis({}) })]);
+    const later = await build("2026-11-20T18:00:00.000Z", "2026-11-20T02:00:00.000Z", bare, [line("2026-11-13T18:00:00.000Z", { owner: "user", holdUntil: "2026-11-20", basis: taskBasis({}) })]);
     expect(onYouList(later, { items: [] }).onYou).toEqual([expect.objectContaining({ taskId: "t-retreat", reasons: ["Helm's pause on it ends today"] })]);
   });
 });

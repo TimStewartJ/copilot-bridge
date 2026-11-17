@@ -8,6 +8,9 @@ import {
   parseCommitLog,
   parseDenylist,
 } from "../deploy-guards.js";
+import { readOwnerIdentity } from "../owner-identity.js";
+
+const owner = readOwnerIdentity({ author: "Ada Lovelace <ada@example.com>", repository: "github:AdaLovelaceX/engine" });
 
 describe("deploy guards", () => {
   it.each([
@@ -93,5 +96,36 @@ describe("deploy guards", () => {
     expect(text).toContain("src/a.ts:7 in bbbbbbbbbb adds the term on denylist line 2");
     expect(text).toContain("/home/user/denylist.txt");
     expect(text).toContain("git rebase -i main");
+  });
+
+  it("finds the owner's name in the message, commits, added lines and paths, but not package.json author", () => {
+    const [commit] = parseCommitLog("dddddddddd4\0user@example.com\0user@example.com\0Fix what Ada asked for\n\x1e");
+    expect(checkDeployMessage("Ship needsAda", [], owner)).toEqual([{ kind: "owner", where: "deploy message", word: "Ada" }]);
+    expect(checkCommits([commit!], [], [], owner)).toEqual([
+      { kind: "owner", where: "commit message", sha: "dddddddddd4", word: "Ada" },
+    ]);
+    const scanner = new PatchTermScanner([], owner);
+    const patch = [
+      "\x1edddddddddd4",
+      "diff --git src/packages/tool/package.json src/packages/tool/package.json",
+      "--- src/packages/tool/package.json",
+      "+++ src/packages/tool/package.json",
+      "@@ -1,0 +1,2 @@",
+      "+  \"author\": \"Ada Lovelace\",",
+      "+  \"description\": \"for Lovelace\",",
+      "diff --git docs/ada.md docs/ada.md",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ docs/ada.md",
+      "@@ -0,0 +1 @@",
+      "+see https://github.com/AdaLovelaceX/engine",
+    ];
+    for (const line of patch) scanner.push(line);
+    expect(scanner.findings).toEqual([
+      { kind: "owner", where: "added line", sha: "dddddddddd4", path: "src/packages/tool/package.json", line: 2, word: "Lovelace" },
+      { kind: "owner", where: "new file path", sha: "dddddddddd4", word: "ada" },
+    ]);
+    expect(formatDeployGuardFailure(scanner.findings, { prodBranch: "main", stagingDir: "/work/stage" }))
+      .toContain("src/packages/tool/package.json:2 in dddddddddd adds \"Lovelace\"");
   });
 });

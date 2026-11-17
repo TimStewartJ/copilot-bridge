@@ -29,13 +29,13 @@ describe("tunnel config", () => {
   });
 
   it("keeps a legacy single tunnel name working until the list is set", () => {
-    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAME: "Tim-Bridge" })).toEqual({
-      tunnels: [{ name: "tim-bridge", auth: "cli" }],
+    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAME: "My-Bridge" })).toEqual({
+      tunnels: [{ name: "my-bridge", auth: "cli" }],
       warnings: ["BRIDGE_TUNNEL_NAME is deprecated; rename it to BRIDGE_TUNNEL_NAMES"],
     });
-    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAME: "tim-bridge", BRIDGE_ENABLE_TUNNEL: "false" }))
+    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAME: "my-bridge", BRIDGE_ENABLE_TUNNEL: "false" }))
       .toEqual({ tunnels: [], warnings: [] });
-    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAMES: "", BRIDGE_TUNNEL_NAME: "tim-bridge" })).toEqual({
+    expect(resolveTunnelConfig({ BRIDGE_TUNNEL_NAMES: "", BRIDGE_TUNNEL_NAME: "my-bridge" })).toEqual({
       tunnels: [],
       warnings: ["BRIDGE_TUNNEL_NAMES is set, so BRIDGE_TUNNEL_NAME and BRIDGE_ENABLE_TUNNEL are ignored"],
     });

@@ -238,8 +238,8 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
     if (!bridge || !watchText) return;
     const task = typeof rawWatch.taskId === "string" ? bridge.tasks.find((candidate) => candidate.taskId === rawWatch.taskId) : undefined;
     // Watching is for what waits on others; live fields decide that, not Helm's thread line.
-    if (task?.onTim === "fields") {
-      errors.push(`${where}: "${task.title}" waits on no one but Tim: no agent is working on it and it is not waiting on anyone else${task.needsTim?.length ? ` (${task.needsTim.join("; ")})` : ""}. Don't watch it; raise it as an item, or leave it out and Home lists it under On you.`);
+    if (task?.onUser === "fields") {
+      errors.push(`${where}: "${task.title}" waits on no one but the user: no agent is working on it and it is not waiting on anyone else${task.needsUser?.length ? ` (${task.needsUser.join("; ")})` : ""}. Don't watch it; raise it as an item, or leave it out and Home lists it under On you.`);
       return;
     }
     watching.push({ text: watchText, bridge: bridge.id, ...(task ? { taskId: task.taskId } : {}) });
@@ -319,13 +319,13 @@ function validateMemory(raw: unknown, packet: ThinkerPacket, memory: readonly He
   for (const id of Array.isArray(input.drop) ? input.drop : []) {
     const entry = typeof id === "string" ? byId.get(id) : undefined;
     if (!entry) errors.push(`memory.drop: ${String(id)} is not a memory id`);
-    else if (entry.author === "user") errors.push(`memory.drop: "${entry.text.slice(0, 60)}" is Tim's; only he can change it`);
+    else if (entry.author === "user") errors.push(`memory.drop: "${entry.text.slice(0, 60)}" is the user's; only they can change it`);
     else { ops.push({ op: "drop", id: entry.id }); dropped.add(entry.id); counts.set(entry.kind, (counts.get(entry.kind) ?? 1) - 1); if (entry.key) existingKeys.delete(`${entry.kind}:${entry.key}`); }
   }
   for (const key of Array.isArray(input.removeThreads) ? input.removeThreads : []) {
     const entry = live.find((candidate) => candidate.kind === "thread" && candidate.key === key);
     if (!entry || dropped.has(entry.id)) continue;
-    if (entry.author === "user") { errors.push(`memory.removeThreads: ${key} is Tim's`); continue; }
+    if (entry.author === "user") { errors.push(`memory.removeThreads: ${key} is the user's`); continue; }
     ops.push({ op: "drop", id: entry.id }); dropped.add(entry.id); counts.set("thread", (counts.get("thread") ?? 1) - 1); existingKeys.delete(`thread:${key}`);
   }
   for (const id of Array.isArray(input.confirm) ? input.confirm : []) {
@@ -341,7 +341,7 @@ function validateMemory(raw: unknown, packet: ThinkerPacket, memory: readonly He
 
   const bridgeTasks = new Map(packet.bridges.filter((bridge) => bridge.ok).map((bridge) => [bridge.id, new Map(bridge.tasks.map((task) => [task.taskId, task]))]));
   const today = localDateKey(packet.now, packet.timezone);
-  // A pause on Tim's own work must end before he goes away, so it comes up while he can still act.
+  // A pause on the user's own work ends before they go away, so it comes up while they can act.
   const nextAway = (packet.away ?? []).filter((away) => away.start > today).sort((a, b) => a.start.localeCompare(b.start))[0];
   for (const [index, thread] of (Array.isArray(input.threads) ? input.threads : []).entries()) {
     const where = `memory.threads ${index + 1}`;
@@ -352,17 +352,17 @@ function validateMemory(raw: unknown, packet: ThinkerPacket, memory: readonly He
     if (!task) { errors.push(`${where}: needs bridge and taskId of a task listed in the packet`); continue; }
     if (!threadText) { errors.push(`${where}: text is required (at most ${HELM_ENTRY_MAX_CHARS} characters)`); continue; }
     if (!owner) { errors.push(`${where}: owner is required: ${HELM_THREAD_OWNERS.join(", ")}`); continue; }
-    if (task.onTim === "fields" && owner !== "tim") {
-      errors.push(`${where}: "${task.title}" is Tim's move: no agent is working on it and it waits on no one else${task.needsTim?.length ? ` (${task.needsTim.join("; ")})` : ""}. Its owner must be tim.`);
+    if (task.onUser === "fields" && owner !== "user") {
+      errors.push(`${where}: "${task.title}" is the user's move: no agent is working on it and it waits on no one else${task.needsUser?.length ? ` (${task.needsUser.join("; ")})` : ""}. Its owner must be user.`);
       continue;
     }
     if (holdUntil !== null && (!/^\d{4}-\d{2}-\d{2}$/.test(holdUntil) || Number.isNaN(Date.parse(`${holdUntil}T00:00:00Z`)))) {
       errors.push(`${where}: holdUntil must be a date like 2026-11-20, or left out`);
       continue;
     }
-    if (owner === "tim" && holdUntil && nextAway && holdUntil >= nextAway.start) {
+    if (owner === "user" && holdUntil && nextAway && holdUntil >= nextAway.start) {
       const latest = new Date(Date.parse(`${nextAway.start}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-      errors.push(`${where}: Tim is away from ${formatDay(nextAway.start)} (${nextAway.title}); a pause on his own work must end by ${latest}.`);
+      errors.push(`${where}: The user is away from ${formatDay(nextAway.start)} (${nextAway.title}); a pause on their own work must end by ${latest}.`);
       continue;
     }
     const key = `${thread.bridge}:${thread.taskId}`;

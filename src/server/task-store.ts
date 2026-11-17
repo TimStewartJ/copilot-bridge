@@ -39,7 +39,7 @@ export interface Task {
   muted: boolean;
   deferred: boolean;
   status: TaskStatus;
-  /** When Tim last opened the task in the UI. Not a task change: it never bumps updatedAt. */
+  /** When the user last opened the task in the UI. Not a task change: it never bumps updatedAt. */
   groupId?: string;
   cwd?: string;
   /** Current state of the work, delivered with user messages. */

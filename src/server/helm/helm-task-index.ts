@@ -65,10 +65,10 @@ function indexLine(task: IndexTask, thread: HelmTaskThread | undefined, attentio
   const title = clip(task.title, TITLE_MAX_CHARS).replace(/[[\]]/g, "");
   const parts = [`- [${title}](${formatBridgeLink({ kind: "task", taskId: task.id })})`];
   if (task.deferred) parts.push(" (set aside)");
-  if (attention?.onTim) {
+  if (attention?.onUser) {
     parts.push(attention.reasons.length ? ` NEEDS YOU (${clip(attention.reasons.join("; "), REASONS_MAX_CHARS)})` : " ON YOU");
   }
-  parts.push(momentumAgeTag(task, momentum, !!attention?.onTim, now));
+  parts.push(momentumAgeTag(task, momentum, !!attention?.onUser, now));
   if (thread?.outOfDate) {
     // The line was written about fields that have since changed: show what the task says now.
     const live = [task.nextAction?.trim() && `next step: ${task.nextAction}`, task.waitingOn?.trim() && `waiting for: ${task.waitingOn}`].filter(Boolean).join("; ");
@@ -81,10 +81,10 @@ function indexLine(task: IndexTask, thread: HelmTaskThread | undefined, attentio
   return parts.join("");
 }
 
-const OWNER_LABELS: Record<HelmThreadOwner, string> = { tim: "yours", agent: "an agent's", others: "others'", nobody: "no one's yet" };
+const OWNER_LABELS: Record<HelmThreadOwner, string> = { user: "yours", agent: "an agent's", others: "others'", nobody: "no one's yet" };
 
 function rank(attention: TaskAttention | undefined): number {
-  if (!attention?.onTim) return 0;
+  if (!attention?.onUser) return 0;
   return attention.reasons.length ? 2 : 1;
 }
 

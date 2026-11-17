@@ -9,7 +9,7 @@ import { BrowserLogins, loginHost, type BrowserLoginVault, type SignInForm } fro
 import { makeTestDir } from "./helpers.js";
 
 const TARGET: BrowserTarget = { sessionName: "test-browser", profileDir: "profile" };
-const FORM: SignInForm = { url: "https://accounts.example.com/login?state=one-time", username: "tim@example.com", password: "correct horse" };
+const FORM: SignInForm = { url: "https://accounts.example.com/login?state=one-time", username: "alex@example.com", password: "correct horse" };
 
 function fakeVault(overrides: Partial<BrowserLoginVault> = {}) {
   const kept = new Map<string, SignInForm>();
@@ -37,7 +37,7 @@ describe("BrowserLogins", () => {
 
     const login = await logins.save(FORM, TARGET);
 
-    expect(login).toMatchObject({ origin: "https://accounts.example.com", username: "tim@example.com" });
+    expect(login).toMatchObject({ origin: "https://accounts.example.com", username: "alex@example.com" });
     expect(loginHost(login!)).toBe("accounts.example.com");
     expect(login!.id).toMatch(/^bridge-[0-9a-f]{8}-[0-9a-f]{16}$/);
     // The vault gets the password and the site, not an address that held one-time values.
@@ -139,12 +139,12 @@ describe("LoginWatch", () => {
     await watch.submitting(read);
 
     expect(read).toHaveBeenCalledTimes(3);
-    expect(last()).toEqual({ type: "login", state: "save", host: "accounts.example.com", username: "tim@example.com" });
+    expect(last()).toEqual({ type: "login", state: "save", host: "accounts.example.com", username: "alex@example.com" });
     expect(JSON.stringify(last())).not.toContain("correct");
 
     await watch.save(TARGET);
 
-    expect(last()).toEqual({ type: "login", state: "saved", host: "accounts.example.com", username: "tim@example.com" });
+    expect(last()).toEqual({ type: "login", state: "saved", host: "accounts.example.com", username: "alex@example.com" });
     expect(await logins.list()).toHaveLength(1);
     watch.dismiss();
     expect(last()).toEqual({ type: "login", state: "none" });
@@ -181,7 +181,7 @@ describe("LoginWatch", () => {
     await logins.remove(login.id, { browserTarget: TARGET });
     watch.keyPressed();
     await watch.submitting(reads(FORM));
-    expect(last()).toEqual({ type: "login", state: "save", host: "accounts.example.com", username: "tim@example.com" });
+    expect(last()).toEqual({ type: "login", state: "save", host: "accounts.example.com", username: "alex@example.com" });
   });
 
   it("offers to update when another password is typed for a saved site", async () => {
@@ -216,7 +216,7 @@ describe("LoginWatch", () => {
     await watch.submitting(reads(FORM));
     const later: BrowserLiveLoginMessage[] = [];
     const stop = watch.watch((message) => later.push(message));
-    expect(later).toEqual([{ type: "login", state: "save", host: "accounts.example.com", username: "tim@example.com" }]);
+    expect(later).toEqual([{ type: "login", state: "save", host: "accounts.example.com", username: "alex@example.com" }]);
     stop();
     watch.dismiss();
     expect(last()).toEqual({ type: "login", state: "none" });
@@ -256,7 +256,7 @@ describe("LoginWatch", () => {
     const login = await logins.save(FORM, TARGET);
 
     await watch.pageRead("https://accounts.example.com/login", true);
-    expect(last()).toEqual({ type: "login", state: "fill", host: "accounts.example.com", username: "tim@example.com" });
+    expect(last()).toEqual({ type: "login", state: "fill", host: "accounts.example.com", username: "alex@example.com" });
 
     const before = told.length;
     await watch.fill({ browserTarget: TARGET });

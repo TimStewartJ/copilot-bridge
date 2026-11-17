@@ -1,6 +1,6 @@
 // Pure checks for what staging_deploy refuses to push to the public repo; staging-tools runs git.
 
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { isRecord } from "../shared/is-record.js";
 import {
   DEPLOY_GUARD_MAX_EMAIL_PATTERNS,
@@ -8,6 +8,7 @@ import {
   DEPLOY_GUARD_MAX_PATTERN_LENGTH,
   type DeployGuardSettings,
 } from "../shared/deploy-guards.js";
+import { findOwnerName, isAuthorLine, type OwnerIdentity } from "./owner-identity.js";
 
 export type { DeployGuardSettings } from "../shared/deploy-guards.js";
 
@@ -96,7 +97,12 @@ export type DeployGuardFinding =
   | { kind: "email"; sha: string; field: "author" | "committer"; email: string; pattern: string }
   | { kind: "term"; where: "deploy message"; termLine: number }
   | { kind: "term"; where: "commit message" | "new file path"; sha: string; termLine: number }
-  | { kind: "term"; where: "added line"; sha: string; path: string; line: number; termLine: number };
+  | { kind: "term"; where: "added line"; sha: string; path: string; line: number; termLine: number }
+  | { kind: "owner"; where: "deploy message"; word: string }
+  | { kind: "owner"; where: "commit message" | "new file path"; sha: string; word: string }
+  | { kind: "owner"; where: "added line"; sha: string; path: string; line: number; word: string };
+
+const NO_OWNER: OwnerIdentity = { names: [] };
 
 export interface DeployCommit {
   sha: string;
@@ -119,15 +125,24 @@ export function parseCommitLog(output: string): DeployCommit[] {
   return commits;
 }
 
-export function checkDeployMessage(message: string, terms: readonly DenylistTerm[]): DeployGuardFinding[] {
+export function checkDeployMessage(
+  message: string,
+  terms: readonly DenylistTerm[],
+  owner: OwnerIdentity = NO_OWNER,
+): DeployGuardFinding[] {
+  const findings: DeployGuardFinding[] = [];
   const match = findDenylistTerm(message, terms);
-  return match ? [{ kind: "term", where: "deploy message", termLine: match.line }] : [];
+  if (match) findings.push({ kind: "term", where: "deploy message", termLine: match.line });
+  const word = findOwnerName(message, owner);
+  if (word) findings.push({ kind: "owner", where: "deploy message", word });
+  return findings;
 }
 
 export function checkCommits(
   commits: readonly DeployCommit[],
   patterns: readonly string[],
   terms: readonly DenylistTerm[],
+  owner: OwnerIdentity = NO_OWNER,
 ): DeployGuardFinding[] {
   const findings: DeployGuardFinding[] = [];
   for (const commit of commits) {
@@ -138,6 +153,8 @@ export function checkCommits(
     }
     const match = findDenylistTerm(commit.message, terms);
     if (match) findings.push({ kind: "term", where: "commit message", sha: commit.sha, termLine: match.line });
+    const word = findOwnerName(commit.message, owner);
+    if (word) findings.push({ kind: "owner", where: "commit message", sha: commit.sha, word });
   }
   return findings;
 }
@@ -161,7 +178,7 @@ function unquotePath(path: string): string {
   return path.length >= 2 && path.startsWith("\"") && path.endsWith("\"") ? path.slice(1, -1) : path;
 }
 
-/** Finds denylist terms in git log -p added lines; hunk counts keep header-like lines scanned. */
+/** Finds denylist terms and the owner's name in git log -p added lines and new file paths. */
 export class PatchTermScanner {
   readonly findings: DeployGuardFinding[] = [];
   total = 0;
@@ -171,7 +188,10 @@ export class PatchTermScanner {
   private newRemaining = 0;
   private newLine = 0;
 
-  constructor(private readonly terms: readonly DenylistTerm[]) {}
+  constructor(
+    private readonly terms: readonly DenylistTerm[],
+    private readonly owner: OwnerIdentity = NO_OWNER,
+  ) {}
 
   private record(finding: DeployGuardFinding): void {
     this.total += 1;
@@ -183,10 +203,14 @@ export class PatchTermScanner {
     if (this.oldRemaining > 0 || this.newRemaining > 0) {
       const marker = line[0];
       if (marker === "+") {
-        const match = findDenylistTerm(line.slice(1), this.terms);
+        const added = line.slice(1);
+        const match = findDenylistTerm(added, this.terms);
         if (match) {
           this.record({ kind: "term", where: "added line", sha: this.sha, path: this.path, line: this.newLine, termLine: match.line });
         }
+        const authorField = basename(this.path) === "package.json" && isAuthorLine(added);
+        const word = authorField ? undefined : findOwnerName(added, this.owner);
+        if (word) this.record({ kind: "owner", where: "added line", sha: this.sha, path: this.path, line: this.newLine, word });
         this.newRemaining -= 1;
         this.newLine += 1;
       } else if (marker === "-") {
@@ -221,6 +245,8 @@ export class PatchTermScanner {
     if (line.startsWith("new file mode")) {
       const match = this.path ? findDenylistTerm(this.path, this.terms) : undefined;
       if (match) this.record({ kind: "term", where: "new file path", sha: this.sha, termLine: match.line });
+      const word = this.path ? findOwnerName(this.path, this.owner) : undefined;
+      if (word) this.record({ kind: "owner", where: "new file path", sha: this.sha, word });
       return;
     }
     const hunk = HUNK_HEADER.exec(line);
@@ -239,6 +265,19 @@ function shortSha(sha: string): string {
 function describeFinding(finding: DeployGuardFinding): string {
   if (finding.kind === "email") {
     return `${shortSha(finding.sha)} ${finding.field} email ${finding.email} matches blocked pattern ${finding.pattern}`;
+  }
+  if (finding.kind === "owner") {
+    const word = `"${finding.word}"`;
+    switch (finding.where) {
+      case "deploy message":
+        return `the staging_deploy message contains ${word}`;
+      case "commit message":
+        return `commit message ${shortSha(finding.sha)} contains ${word}`;
+      case "new file path":
+        return `a file added in ${shortSha(finding.sha)} has ${word} in its path`;
+      case "added line":
+        return `${finding.path}:${finding.line} in ${shortSha(finding.sha)} adds ${word}`;
+    }
   }
   const term = `denylist line ${finding.termLine}`;
   switch (finding.where) {
@@ -260,6 +299,7 @@ export function formatDeployGuardFailure(
 ): string {
   const emails = findings.filter((finding) => finding.kind === "email");
   const terms = findings.filter((finding) => finding.kind === "term");
+  const owners = findings.filter((finding) => finding.kind === "owner");
   const sections: string[] = [
     "Deploy guards refused this deploy. Nothing was merged or pushed; the staging worktree is intact.",
   ];
@@ -286,6 +326,19 @@ export function formatDeployGuardFailure(
       ...terms.map((finding) => `- ${describeFinding(finding)}`),
       ...omitted,
       fix,
+    ].join("\n"));
+  }
+  if (owners.length > 0) {
+    // agent-text-audit: bridge-text (its own finding label)
+    const inCommits = owners.some((finding) => finding.where !== "deploy message");
+    sections.push([
+      "The owner's name (package.json author), which this public repository must not contain:",
+      ...owners.map((finding) => `- ${describeFinding(finding)}`),
+      inCommits
+        ? "Fix: write \"the user\" or a made-up name, and rewrite the commit that added it " +
+          `(\`git rebase -i ${context.prodBranch ?? "<production branch>"}\`) rather than adding a commit that deletes it. ` +
+          "Then call staging_deploy again."
+        : "Fix: call staging_deploy again with a message that says \"the user\" instead. Nothing was committed.",
     ].join("\n"));
   }
   return sections.join("\n\n");

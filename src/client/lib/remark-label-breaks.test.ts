@@ -18,11 +18,11 @@ describe("applyLabelBreaks", () => {
   it("puts each bold label of a metadata block on its own line", () => {
     const node = paragraph(
       strong("Status:"), text(" shipped\r\n"), strong("Repo:"), { type: "inlineCode", value: "E:\\project" },
-      text("\n"), strong("Owner:"), text(" Tim"),
+      text("\n"), strong("Owner:"), text(" Alex"),
     );
     applyLabelBreaks(node);
     expect(shape(node).filter((word) => word !== "text:")).toEqual([
-      "strong:Status:", "text: shipped", "break", "strong:Repo:", "inlineCode:E:\\project", "break", "strong:Owner:", "text: Tim",
+      "strong:Status:", "text: shipped", "break", "strong:Repo:", "inlineCode:E:\\project", "break", "strong:Owner:", "text: Alex",
     ]);
   });
 

@@ -3,9 +3,9 @@
 export type HelmMemoryKind = "priority" | "rule" | "thread" | "person" | "date" | "picture";
 export type HelmMemoryAuthor = "user" | "helm";
 export type HelmMemoryStatus = "active" | "proposed" | "forgotten";
-/** Whose move a task is, in Helm's view: Tim, an agent, someone else, or no one yet. */
-export type HelmThreadOwner = "tim" | "agent" | "others" | "nobody";
-export const HELM_THREAD_OWNERS: readonly HelmThreadOwner[] = ["tim", "agent", "others", "nobody"];
+/** Whose move a task is, in Helm's view: the user, an agent, someone else, or no one yet. */
+export type HelmThreadOwner = "user" | "agent" | "others" | "nobody";
+export const HELM_THREAD_OWNERS: readonly HelmThreadOwner[] = ["user", "agent", "others", "nobody"];
 
 export interface HelmMemoryEntry {
   id: string;
@@ -69,7 +69,7 @@ export interface HelmRunView {
   fromSources: string[];
   /** False once retention deleted the run's conversation. */
   transcriptAvailable: boolean;
-  /** When Tim first had this run's brief on screen; null while it is new to him. */
+  /** When the user first had this run's brief on screen; null while it is new to them. */
   seenAt: string | null;
 }
 
@@ -175,7 +175,7 @@ export interface HelmBrief {
   watching: HelmWatching[];
   /** Briefs written before this list existed have none. */
   onYou?: HelmOnYou[];
-  /** Tasks that need Tim beyond those listed. */
+  /** Tasks that need the user beyond those listed. */
   onYouMore?: number;
 }
 
@@ -220,7 +220,7 @@ export interface HelmBriefResponse {
   itemStates: Record<string, HelmItemState>;
   handled: HelmHandledView[];
   changes: HelmMemoryChange[];
-  /** Rules and priorities Helm proposed that Tim has not kept or forgotten yet. */
+  /** Rules and priorities Helm proposed that the user has not kept or forgotten yet. */
   proposed: HelmMemoryEntry[];
   running: HelmRunView | null;
   lastFailure: HelmRunView | null;

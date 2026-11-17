@@ -29,7 +29,7 @@ export interface TaskOverviewRow {
   reasons: TaskNeedsYouReason[];
   staleWait: boolean;
   idleDays: number | null;
-  /** Tim's last touch: editing the task or writing in a linked conversation; else its creation. */
+  /** The user's last touch: a task edit or a message in a linked chat; else its creation. */
   lastEngagedAt?: string;
   lastTouchKind?: TaskTouchKind;
   busyCount: number;

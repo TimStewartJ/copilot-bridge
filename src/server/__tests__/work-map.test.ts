@@ -23,7 +23,7 @@ function fakeAdo(graph: {
   const ado = {
     org: "exampleorg",
     project: "One",
-    fetchCurrentUser: vi.fn(async () => ({ displayName: "Tim Stewart" })),
+    fetchCurrentUser: vi.fn(async () => ({ displayName: "Alex Example" })),
     fetchAssignedWorkItemIds: vi.fn(async () => ({ ids: graph.assigned ?? [], warnings: [] })),
     fetchWorkItemLinks: vi.fn(async (ids: string[], report?: (count: number) => void) => {
       tick(ids.length, report);
@@ -127,7 +127,7 @@ describe("buildWorkMapData", () => {
 
     const data = await buildWorkMapData({ tasks, assignedToMe: false, ado });
 
-    expect(data).toMatchObject({ enabled: true, org: "exampleorg", project: "One", currentUser: { displayName: "Tim Stewart" }, warnings: [] });
+    expect(data).toMatchObject({ enabled: true, org: "exampleorg", project: "One", currentUser: { displayName: "Alex Example" }, warnings: [] });
     expect(ids(data.tasks)).toEqual(["feature", "review", "also-feature"]);
     expect(data.workItems).toEqual([
       expect.objectContaining({ id: "10", taskIds: ["feature", "also-feature"], pullRequestKeys: ["repo:20", "repo:30"], assignedToCurrentUser: false }),
@@ -212,7 +212,7 @@ describe("createWorkMapBuilds", () => {
     const held = new Promise<void>((resolve) => { release = resolve; });
     ado.fetchCurrentUser.mockImplementation(async () => {
       await held;
-      return { displayName: "Tim Stewart" };
+      return { displayName: "Alex Example" };
     });
     return { ado, release };
   }

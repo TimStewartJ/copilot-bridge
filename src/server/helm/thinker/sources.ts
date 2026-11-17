@@ -1,4 +1,4 @@
-// Bridges Helm reads: this one, and peers only at Tim's configured URL, never via a redirect.
+// Bridges Helm reads: this one, and peers only at the user's configured URL, never via a redirect.
 import type { AppContext } from "../../app-context.js";
 import type { HomeInput, HomeSection, HomeSnapshot } from "../../../shared/home.js";
 import type { TaskOverview } from "../../../shared/task-overview.js";

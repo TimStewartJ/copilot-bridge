@@ -54,18 +54,18 @@ describe("taskAttention", () => {
     ["its wait records when it was asked", { nextAction: "Follow up", waitingOn: "Reply from the landlord (emailed 11/10)", waitingSince: "2026-11-10T18:00:00.000Z" }, false, []],
     ["its wait was due by a date that passed", { nextAction: "Lock the sheet", waitingOn: "Members by Thursday 11/12", waitingSince: "2026-11-11T05:46:00.000Z" }, true, ["what it was waiting for was due Thu, Nov 12, which has passed"]],
     ["its wait has a date but not when it was set", { nextAction: "Lock the sheet", waitingOn: "Members by Thursday 11/12" }, false, []],
-    // Helm's line can make a task Tim's, never take one away from him.
-    ["Helm says it is Tim's though its fields wait on someone", { nextAction: "Merge the PR", waitingOn: "Review of the PR", helm: { owner: "tim" } }, true, []],
-    ["Helm's pause on Tim's task ended", { helm: { owner: "tim", holdUntil: "2026-11-12" } }, true, ["Helm's pause on it ended Thu, Nov 12"]],
-    ["Helm's pause on Tim's task runs on", { helm: { owner: "tim", holdUntil: "2026-11-20" } }, true, []],
+    // Helm's line can make a task the user's, never take one away from them.
+    ["Helm says it is the user's though its fields wait on someone", { nextAction: "Merge the PR", waitingOn: "Review of the PR", helm: { owner: "user" } }, true, []],
+    ["Helm's pause on the user's task ended", { helm: { owner: "user", holdUntil: "2026-11-12" } }, true, ["Helm's pause on it ended Thu, Nov 12"]],
+    ["Helm's pause on the user's task runs on", { helm: { owner: "user", holdUntil: "2026-11-20" } }, true, []],
     ["Helm calls it an agent's, but nothing works on it", { nextAction: "Send amounts by 11/14", helm: { owner: "agent" } }, true, ["Sat, Nov 14 in the next step is tomorrow"]],
     ["its next step is due tomorrow", { nextAction: "Send amounts by 11/14" }, true, ["Sat, Nov 14 in the next step is tomorrow"]],
-    ["Bridge says it needs him", { state: "needs_you", reasons: ["revisit"], nextTouchAt: "2026-11-10T01:00:00.000Z" }, true, ["its revisit date (Mon, Nov 9) has passed"]],
+    ["Bridge says it needs the user", { state: "needs_you", reasons: ["revisit"], nextTouchAt: "2026-11-10T01:00:00.000Z" }, true, ["its revisit date (Mon, Nov 9) has passed"]],
     // Past dates in checklist text and notes are history; a checklist deadline is a due date.
     ["only history mentions dates", { nextAction: "Lock cards", checklist: [{ text: "Moved from column K on Nov 12" }], notes: "Status as of 2026-11-13" }, true, []],
     ["a checklist deadline passed", { nextAction: "Lock cards", checklist: [{ text: "Pay the fee", deadline: "2026-11-10" }] }, true, ["Tue, Nov 10 in checklist “Pay the fee” has passed"]],
     ["a checklist item must happen before a trip", { nextAction: "Move billing", checklist: [{ text: "Move billing before the Dec 12 charge (ideally before the trip, Nov 21)", deadline: "2026-12-11" }] }, true, ["Sat, Nov 21 in checklist “Move billing before the Dec 12 charge (ideally before the t…” comes before Mission trip (from Sun, Nov 22)"]],
-  ])("%s", (_name, task, onTim, reasons) => {
-    expect(attention(task)).toMatchObject({ onTim, reasons });
+  ])("%s", (_name, task, onUser, reasons) => {
+    expect(attention(task)).toMatchObject({ onUser, reasons });
   });
 });

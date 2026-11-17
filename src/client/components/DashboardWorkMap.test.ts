@@ -17,7 +17,7 @@ const TRACKED: WorkMapData["workItems"][number] = {
   title: "Review SDL bug",
   state: "Done",
   type: "Bug",
-  assignedTo: "Tim Stewart",
+  assignedTo: "Alex Example",
   areaPath: "One\\ExampleArea",
   url: "https://example.test/workitems/30000015",
   taskIds: ["task-1"],
@@ -29,7 +29,7 @@ const TRACKED: WorkMapData["workItems"][number] = {
 // Context-only feature; tracked closed bug with an active PR; a bug it blocks; a tracked root epic.
 const DATA: WorkMapData = {
   enabled: true,
-  currentUser: { displayName: "Tim Stewart" },
+  currentUser: { displayName: "Alex Example" },
   org: "exampleorg",
   project: "One",
   tasks: [
@@ -96,7 +96,7 @@ const DATA: WorkMapData = {
     provider: "ado",
     title: "Fix standalone pipeline PowerShell injection",
     status: "active",
-    createdBy: "Tim Stewart",
+    createdBy: "Alex Example",
     reviewerCount: 1,
     url: "https://example.test/pullrequests/10000003",
     taskIds: [],

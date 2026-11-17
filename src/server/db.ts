@@ -1255,6 +1255,9 @@ function initSchema(db: DatabaseSync): void {
       if (!/duplicate column name/i.test(error instanceof Error ? error.message : String(error))) throw error;
     }
   }
+  // Thread owners stored under the user's old owner value now read "user".
+  db.exec(`UPDATE helm_memory SET owner = 'user'
+    WHERE owner IS NOT NULL AND owner != '' AND owner NOT IN ('user', 'agent', 'others', 'nobody')`);
 
   const contextBackfillColumns = new Set(
     (db.prepare("PRAGMA table_info(session_context_backfills)").all() as Array<{ name: string }>)

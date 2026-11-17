@@ -254,7 +254,7 @@ describe("User input response route", () => {
       .send({ answer: "yes", wasFreeform: false });
 
     expect(res.status).toBe(200);
-    // Answering is Tim's own words, so it counts as touching the task.
+    // Answering is the user's own words, so it counts as touching the task.
     expect(ctx.taskStore.listMomentumSignals().get(task.id)?.lastMessageAt).toEqual(expect.any(String));
     expect(res.body).toEqual({
       requestId: "request-1",

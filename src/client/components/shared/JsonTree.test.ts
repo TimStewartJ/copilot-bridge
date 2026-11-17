@@ -26,7 +26,7 @@ describe("JsonTree", () => {
           "17166416": {
             status: "active",
             head: "57ebc412791974ad6d95a0759f51740d8e1e37e1",
-            votes: [{ displayName: "Tim", vote: 0 }],
+            votes: [{ displayName: "Alex", vote: 0 }],
           },
         },
       },
@@ -49,7 +49,7 @@ describe("JsonTree", () => {
     await harness.act(async () => {
       getReactProps(buttonStartingWith(container, "votes:"))?.onClick?.();
     });
-    expect(buttonStartingWith(container, "0:")?.textContent).toBe('0:{2}{ displayName: "Tim", vote: 0 }');
+    expect(buttonStartingWith(container, "0:")?.textContent).toBe('0:{2}{ displayName: "Alex", vote: 0 }');
 
     await harness.act(async () => {
       getReactProps(buttonStartingWith(container, "prs:"))?.onClick?.();

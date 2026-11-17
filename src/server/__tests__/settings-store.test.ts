@@ -204,7 +204,7 @@ describe("settings-store", () => {
   });
 
   it("stores Helm's names list trimmed, drops an empty one and rejects one that is too long", () => {
-    expect(store.updateSettings({ helm: { glossary: "  devbox = Timmy PC  " } }).helm).toEqual({ glossary: "devbox = Timmy PC" });
+    expect(store.updateSettings({ helm: { glossary: "  devbox = Desk PC  " } }).helm).toEqual({ glossary: "devbox = Desk PC" });
     expect(store.updateSettings({ helm: { glossary: "   " } }).helm).toBeUndefined();
     expect(() => store.updateSettings({ helm: { glossary: "x".repeat(2_001) } })).toThrow("helm.glossary must be text of at most 2000 characters");
   });

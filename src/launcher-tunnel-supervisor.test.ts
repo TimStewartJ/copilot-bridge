@@ -164,13 +164,13 @@ afterEach(() => {
 
 describe("TunnelSupervisor", () => {
   it("hosts a persistent tunnel without mutating its ports", () => {
-    expect(buildTunnelHostArgs("tim-bridge", 3333)).toEqual([
+    expect(buildTunnelHostArgs("my-bridge", 3333)).toEqual([
       "host",
-      "tim-bridge",
+      "my-bridge",
     ]);
-    expect(buildTunnelHostArgs("tim-bridge.usw3", 3333, true)).toEqual([
+    expect(buildTunnelHostArgs("my-bridge.usw3", 3333, true)).toEqual([
       "host",
-      "tim-bridge.usw3",
+      "my-bridge.usw3",
       "--access-token",
       "-",
     ]);

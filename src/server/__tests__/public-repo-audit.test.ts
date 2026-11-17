@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { auditPublicRepo, findLockfileHosts, normalizeLockfile } from "../public-repo-audit.js";
+import { findOwnerName, readOwnerIdentity } from "../owner-identity.js";
 
 const MIRROR = "https://mirror.example.com/feed/npm/registry";
 
@@ -68,5 +69,41 @@ describe("public repo audit", () => {
     "https://global.rel.tunnels.api.visualstudio.com/auth",
   ])("accepts %s", (url) => {
     expect(audit({ "src/a.ts": `const url = "${url}";` })).toEqual([]);
+  });
+
+  describe("the owner's name", () => {
+    const manifest = {
+      name: "engine",
+      author: "Ada Lovelace <adalovelacex@example.com>",
+      repository: { url: "git+https://github.com/AdaLovelaceX/engine.git" },
+    };
+    const owner = readOwnerIdentity(manifest);
+
+    it.each([
+      ["a first name in prose", "// Ada reads this first", "Ada"],
+      ["a lowercase name in test data", "username: \"ada\"", "ada"],
+      ["a name inside an identifier", "const needsAdaBy = 1;", "Ada"],
+      ["an upper-case name", "ADA_ONLY = true", "ADA"],
+      ["the surname", "assignedTo: \"Someone Lovelace\"", "Lovelace"],
+      ["the full name run together", "login: \"adalovelace_work\"", "adalovelace"],
+      ["the handle outside a URL", "mail adalovelacex@example.com", "adalovelacex"],
+      ["words that only contain the name", "const adapter = loadAdaptive(); // Lovelaces", undefined],
+      ["the handle in GitHub URLs, the repo slug and the npm scope", "https://github.com/AdaLovelaceX/engine and AdaLovelaceX/engine, @adalovelacex/tool", undefined],
+    ])("%s", (_name, text, expected) => {
+      expect(findOwnerName(text, owner)).toBe(expected);
+    });
+
+    it("checks every scanned file but leaves package.json author lines alone", () => {
+      expect(audit({
+        "package.json": JSON.stringify(manifest, null, 2),
+        "src/packages/tool/package.json": "{\n  \"author\": \"Ada Lovelace\",\n  \"description\": \"Ada's tool\"\n}",
+        "vite.config.ts": "// built for Ada",
+        "public/sw.js": "const owner = 'ada';",
+      })).toEqual([
+        "vite.config.ts:1: \"Ada\" is the owner's name (package.json author). Say \"the user\", or use a made-up name.",
+        "public/sw.js:1: \"ada\" is the owner's name (package.json author). Say \"the user\", or use a made-up name.",
+        "src/packages/tool/package.json:3: \"Ada\" is the owner's name (package.json author). Say \"the user\", or use a made-up name.",
+      ]);
+    });
   });
 });

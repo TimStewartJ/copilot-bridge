@@ -3,11 +3,11 @@ import { buildHelmChatGuidance } from "../helm-prompt.js";
 import { buildThinkerSystemPrompt } from "../thinker/prompt.js";
 
 describe("buildThinkerSystemPrompt", () => {
-  it("aims the brief at what Tim missed and what went stale, and skips what he is on now", () => {
+  it("aims the brief at what the user missed and what went stale, and skips what they are on now", () => {
     const prompt = buildThinkerSystemPrompt({ timeZone: "America/Los_Angeles", bridges: [{ id: "local", label: "PC" }], autonomy: "routine" });
-    expect(prompt).toContain("find what Tim might have missed and what has gone stale");
+    expect(prompt).toContain("find what the user might have missed and what has gone stale");
     expect(prompt).toContain("a reply or question that has sat unanswered for more than about a day");
-    expect(prompt).toContain("a task whose lastEngagedAt is less than 4 hours before now, and work an agent is actively doing for him");
+    expect(prompt).toContain("a task whose lastEngagedAt is less than 4 hours before now, and work an agent is actively doing for them");
     expect(prompt).toContain("a revisit date (nextTouchAt) has passed");
     expect(prompt).toContain("move it to watching or drop it");
   });

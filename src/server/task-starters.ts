@@ -44,14 +44,14 @@ type StartersContext = Pick<AppContext, "taskStore" | "settingsStore" | "session
 };
 
 const SYSTEM_PROMPT = [
-  "You suggest the next chats Tim could start on one of his tasks in Copilot Bridge, his agent workspace.",
-  "Each suggestion becomes a button on the task. Tapping it opens a new chat on the task with your prompt in the composer, so he can read and send it.",
+  "You suggest the next chats the user could start on one of their tasks in Copilot Bridge, their agent workspace.",
+  "Each suggestion becomes a button on the task. Tapping it opens a new chat on the task with your prompt in the composer, so the user can read and send it.",
   "Reply with JSON only, no prose and no code fence: {\"chats\": [{\"label\": string, \"prompt\": string, \"playbook\"?: string}]}.",
   `- At most ${TASK_STARTERS_MAX} chats, the most useful first. Fewer is fine, and an empty list is right when nothing useful is obvious.`,
   `- label: a short imperative an at-a-glance button can hold, at most ${TASK_STARTER_LABEL_MAX} characters, e.g. "Draft the PR description".`,
-  `- prompt: a complete, self-contained request written as Tim would type it, at most ${TASK_STARTER_PROMPT_MAX} characters. The chat sees the task's notes and instructions, so refer to them instead of copying them.`,
+  `- prompt: a complete, self-contained request written as the user would type it, at most ${TASK_STARTER_PROMPT_MAX} characters. The chat sees the task's notes and instructions, so refer to them instead of copying them.`,
   "- Base every chat on what the task shows: its next step, open checklist items, what it is waiting for, recent history and chats. Do not invent facts, people or deadlines.",
-  "- Do not suggest a chat that only repeats one already running or one that just finished, or one like those Tim dismissed.",
+  "- Do not suggest a chat that only repeats one already running or one that just finished, or one like those the user dismissed.",
   "- latestReply, when present, is the latest reply in a chat on this task (a long one keeps its start and end): suggest what comes after it, not what it already did.",
   "- playbook: optional; one of bug-fix, feature, investigate, research, decide, write, plan-project, refactor, pr-to-merge-ready, buy-or-book, schedule-it, watch, sweep, or \"none\" for a small direct request. Leave it out when unsure.",
 ].join("\n");
@@ -104,7 +104,7 @@ export function buildTaskStartersPacket(ctx: StartersContext, taskId: string, la
     recentChats: chats,
     ...(latestReply?.text.trim() ? { latestReply: headAndTail(latestReply.text), ...(latestReply.at ? { latestReplyAt: latestReply.at } : {}) } : {}),
     currentSuggestions: current,
-    dismissedByTim: dismissed,
+    dismissedByUser: dismissed,
   }, null, 1);
 }
 

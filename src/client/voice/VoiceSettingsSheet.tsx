@@ -25,7 +25,7 @@ function GlossaryField() {
         rows={3}
         maxLength={2000}
         className={cx(DS.field.input, DS.field.textarea, "mt-1 resize-y text-sm")}
-        placeholder="devbox = my PC (sounds like Timmy PC); Tether = my iPhone app"
+        placeholder="devbox = my PC (sounds like dev box); Tether = my iPhone app"
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={() => {

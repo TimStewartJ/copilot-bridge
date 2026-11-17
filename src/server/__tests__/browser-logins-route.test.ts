@@ -5,7 +5,7 @@ import type { BrowserLogin } from "../browser-logins.js";
 import { createTestApp } from "./test-app.js";
 import request from "./test-http.js";
 
-const LOGIN: BrowserLogin = { id: "bridge-12345678-0123456789abcdef", origin: "https://accounts.example.com", username: "tim@example.com", savedAt: "2026-10-07T00:00:00.000Z" };
+const LOGIN: BrowserLogin = { id: "bridge-12345678-0123456789abcdef", origin: "https://accounts.example.com", username: "alex@example.com", savedAt: "2026-10-07T00:00:00.000Z" };
 
 /** An app whose saved logins are `logins`, with the browser and the vault stood in for. */
 function appWithLogins(logins: BrowserLogin[]) {
@@ -24,8 +24,8 @@ describe("saved browser logins API", () => {
 
     expect(response.body).toEqual({
       logins: [
-        { id: LOGIN.id, host: "accounts.example.com", username: "tim@example.com", savedAt: LOGIN.savedAt },
-        { id: `${LOGIN.id}2`, host: "localhost:8080", username: "tim@example.com", savedAt: LOGIN.savedAt, failed: true },
+        { id: LOGIN.id, host: "accounts.example.com", username: "alex@example.com", savedAt: LOGIN.savedAt },
+        { id: `${LOGIN.id}2`, host: "localhost:8080", username: "alex@example.com", savedAt: LOGIN.savedAt, failed: true },
       ],
     });
   });

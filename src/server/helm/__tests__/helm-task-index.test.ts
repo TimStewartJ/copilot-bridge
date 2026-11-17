@@ -59,8 +59,8 @@ describe("buildHelmTaskIndex", () => {
       ],
       threads: new Map(),
       attention: new Map([
-        ["t-ask", { onTim: true, fromFields: true, reasons: [] }],
-        ["t-fresh", { onTim: true, fromFields: true, reasons: [] }],
+        ["t-ask", { onUser: true, fromFields: true, reasons: [] }],
+        ["t-fresh", { onUser: true, fromFields: true, reasons: [] }],
       ]),
       momentum: new Map([
         ["t-ask", { nextActionSet: set(5) }],

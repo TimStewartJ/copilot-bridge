@@ -674,7 +674,7 @@ describe("Copilot quota route", () => {
   const authPayload = {
     authInfo: {
       type: "user",
-      login: "timstewart_microsoft",
+      login: "octocat_example",
       copilotUser: {
         copilot_plan: "enterprise",
         access_type_sku: "copilot_enterprise_seat_quota",
@@ -713,7 +713,7 @@ describe("Copilot quota route", () => {
       overagePermitted: true,
       resetAt: "2026-09-01T00:00:00.000Z",
     });
-    expect(res.body.identity.login).toBe("timstewart_microsoft");
+    expect(res.body.identity.login).toBe("octocat_example");
     expect(res.body.snapshots).toHaveLength(2);
     expect(getAccountQuota).toHaveBeenCalledTimes(1);
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Renamed a local variable in the FFT; no behaviour change.
+
 ## 0.1.1
 
 No code changes. This is the first version built and published by this repository's GitHub

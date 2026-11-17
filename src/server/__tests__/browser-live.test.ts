@@ -865,7 +865,7 @@ describe("liveFileName", () => {
     const taken = new Set<string>();
 
     expect([
-      "Photo.JPG", "photo.jpg", "../../etc/passwd", "C:\\Users\\tim\\été 2026.png", "..", "", "notes", "notes", "a<b>:c?.txt",
+      "Photo.JPG", "photo.jpg", "../../etc/passwd", "C:\\Users\\alex\\été 2026.png", "..", "", "notes", "notes", "a<b>:c?.txt",
     ].map((name) => liveFileName(name, taken))).toEqual([
       "Photo.JPG", "photo (1).jpg", "passwd", "été 2026.png", "file", "file (1)", "notes", "notes (1)", "a_b__c_.txt",
     ]);
@@ -1266,7 +1266,7 @@ describe("BrowserLiveGateway relay to the browser", () => {
 });
 
 describe("BrowserLiveGateway saved logins", () => {
-  const FORM: SignInForm = { url: "https://accounts.example.com/login", username: "tim@example.com", password: "correct horse" };
+  const FORM: SignInForm = { url: "https://accounts.example.com/login", username: "alex@example.com", password: "correct horse" };
   const typed = (text: string) => ({ type: "input_keyboard", eventType: "char", text });
   const ENTER = { type: "input_keyboard", eventType: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };
   const formRead = (form: SignInForm): BrowserCommandResult => ({ ok: true, output: JSON.stringify([form.url, form.username, form.password]) });
@@ -1306,7 +1306,7 @@ describe("BrowserLiveGateway saved logins", () => {
     send(view.client, ENTER);
 
     const offer = await nextLogin(view);
-    expect(offer).toStrictEqual({ type: "login", state: "save", host: "accounts.example.com", username: "tim@example.com" });
+    expect(offer).toStrictEqual({ type: "login", state: "save", host: "accounts.example.com", username: "alex@example.com" });
     expect(await view.upstream.inbox.next()).toStrictEqual(ENTER);
     // The page is gone once the key arrives, so the key had not been sent when the form was read.
     expect(waitingAtRead).toBe(0);
@@ -1335,9 +1335,9 @@ describe("BrowserLiveGateway saved logins", () => {
 
     send(view.client, { type: "login", action: "save" });
 
-    expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "saved", host: "accounts.example.com", username: "tim@example.com" });
+    expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "saved", host: "accounts.example.com", username: "alex@example.com" });
     expect(vault.save).toHaveBeenCalledWith(expect.any(String), { ...FORM, url: "https://accounts.example.com/" }, session.browserTarget);
-    expect(await logins.forPage(FORM.url)).toMatchObject({ username: "tim@example.com" });
+    expect(await logins.forPage(FORM.url)).toMatchObject({ username: "alex@example.com" });
   });
 
   it("offers the saved login of a page that shows its form, and signs in with it when asked", async () => {
@@ -1348,7 +1348,7 @@ describe("BrowserLiveGateway saved logins", () => {
     const session = await h.createSession();
     const view = await h.openView(session.id);
 
-    expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "fill", host: "accounts.example.com", username: "tim@example.com" });
+    expect(await nextLogin(view)).toStrictEqual({ type: "login", state: "fill", host: "accounts.example.com", username: "alex@example.com" });
     send(view.client, { type: "login", action: "fill" });
 
     await vi.waitFor(() => expect(vault.signIn).toHaveBeenCalledTimes(1));

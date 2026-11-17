@@ -941,7 +941,7 @@ function liveAttentionSafe(ctx: AppContext): LiveTaskAttention[] {
 /** Local tasks waiting on the user now, from live fields: the floor for "what needs me". */
 function liveOnYou(entries: LiveTaskAttention[], now = Date.now()): Record<string, unknown> {
   if (entries.length === 0) return {};
-  const onYou = entries.filter((entry) => entry.attention.onTim);
+  const onYou = entries.filter((entry) => entry.attention.onUser);
   const noNextStep = entries.filter((entry) => entry.row.state === "no_next_step" && (entry.row.idleDays ?? 0) >= 7);
   const shown = onYou.slice(0, LIVE_ON_YOU_MAX).map(({ row, attention }) => ({
     task: row.title, link: formatBridgeLink({ kind: "task", taskId: row.id }),

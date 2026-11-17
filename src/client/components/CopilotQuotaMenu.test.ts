@@ -42,7 +42,7 @@ function createQuotaStatus(overrides: Partial<CopilotQuotaStatus> = {}): Copilot
     available: true,
     fetchedAt: NOW,
     identity: {
-      login: "timstewart_microsoft",
+      login: "octocat_example",
       plan: "enterprise",
       sku: "copilot_enterprise_seat_quota",
       organizations: ["ms-copilot"],
@@ -147,7 +147,7 @@ describe("CopilotQuotaMenu", () => {
       getReactProps(candidate)?.role === "dialog"
     ))).toBe(true);
     expect(harness.dom.container.textContent).toContain("of 10,000,000 this period");
-    expect(harness.dom.container.textContent).toContain("timstewart_microsoft · enterprise");
+    expect(harness.dom.container.textContent).toContain("octocat_example · enterprise");
 
     const closeButton = findButtonByLabel(harness.dom.container, "Close quota details");
     await harness.act(async () => {

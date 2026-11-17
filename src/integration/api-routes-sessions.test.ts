@@ -438,7 +438,7 @@ describe("Session routes (mocked)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("POST /api/chat records Tim's message for task states only once delivery is accepted", async () => {
+  it("POST /api/chat records the user's message for task states only once delivery is accepted", async () => {
     const { app, ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Linked");
     ctx.taskStore.linkSession(task.id, "test-session");

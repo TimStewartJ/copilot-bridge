@@ -469,7 +469,7 @@ describe("browser session tools", () => {
 
     function saveLogin(): void {
       readFileMock.mockResolvedValue(JSON.stringify([
-        { id: LOGIN_ID, origin: "https://accounts.example.com", username: "tim@example.com", savedAt: "2026-10-07T00:00:00.000Z" },
+        { id: LOGIN_ID, origin: "https://accounts.example.com", username: "alex@example.com", savedAt: "2026-10-07T00:00:00.000Z" },
       ]));
     }
 
@@ -515,7 +515,7 @@ describe("browser session tools", () => {
 
       const result = await tools.browser_sign_in.handler({ browserSessionId: await startSession(tools) }, invocation) as any;
 
-      expect(result).toMatchObject({ signIn: "submitted", username: "tim@example.com", state: { url: SIGN_IN_URL } });
+      expect(result).toMatchObject({ signIn: "submitted", username: "alex@example.com", state: { url: SIGN_IN_URL } });
       expect(authLogins(browser)).toEqual([["auth", "login", LOGIN_ID, "--no-navigate"]]);
       expect(JSON.stringify(result)).not.toContain(LOGIN_ID);
     });

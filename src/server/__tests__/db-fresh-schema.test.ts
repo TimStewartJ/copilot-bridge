@@ -227,4 +227,26 @@ describe("fresh database schema", () => {
     ).get()).toEqual({ id: "loop-1", checkpoint: null });
     migrated.close();
   });
+
+  it("rewrites a legacy Helm thread owner to user and keeps the known owners", () => {
+    const dataDir = makeTestDir("db-helm-thread-owner");
+    const legacy = openDatabase(dataDir);
+    const insert = legacy.prepare(`INSERT INTO helm_memory
+      (id, kind, key, text, author, status, createdAt, updatedAt, confirmedAt, owner)
+      VALUES (?, 'thread', ?, 'x', 'helm', 'active', '2026-01-01', '2026-01-01', '2026-01-01', ?)`);
+    insert.run("legacy", "local:t1", "someone");
+    insert.run("agent", "local:t2", "agent");
+    insert.run("unset", "local:t3", null);
+    legacy.close();
+
+    const owners = (db: DatabaseSync) => Object.fromEntries(
+      (db.prepare("SELECT id, owner FROM helm_memory ORDER BY id").all() as unknown as { id: string; owner: string | null }[])
+        .map((row) => [row.id, row.owner]),
+    );
+    for (let start = 0; start < 2; start += 1) {
+      const db = openDatabase(dataDir);
+      expect(owners(db)).toEqual({ legacy: "user", agent: "agent", unset: null });
+      db.close();
+    }
+  });
 });

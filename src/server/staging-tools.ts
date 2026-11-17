@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, lstatSync } from "node:fs";
 import { readFile, rmdir } from "node:fs/promises";
 import { join, dirname, basename, resolve, isAbsolute } from "node:path";
+import { readOwnerIdentity, type OwnerIdentity } from "./owner-identity.js";
 import { StringDecoder } from "node:string_decoder";
 import type express from "express";
 import { randomBytes } from "node:crypto";
@@ -1272,21 +1273,32 @@ interface LoadedDeployGuards {
   patterns: string[];
   terms: DenylistTerm[];
   denylistFile?: string;
+  owner: OwnerIdentity;
+}
+
+/** The owner in the worktree's package.json, checked on every deploy whatever the settings. */
+async function readDeployOwner(stagingDir: string): Promise<OwnerIdentity> {
+  try {
+    return readOwnerIdentity(JSON.parse(await readFile(join(stagingDir, "package.json"), "utf8")));
+  } catch {
+    return { names: [] };
+  }
 }
 
 /** Reads the denylist; a configured file that cannot be read blocks the deploy. */
 async function loadDeployGuards(
-  settings: DeployGuardSettings,
+  settings: DeployGuardSettings | undefined,
+  owner: OwnerIdentity,
 ): Promise<{ ok: true; guards: LoadedDeployGuards } | { ok: false; detail: string }> {
-  const patterns = settings.blockedEmailPatterns ?? [];
-  const denylistFile = settings.denylistFile;
-  if (!denylistFile) return { ok: true, guards: { patterns, terms: [] } };
+  const patterns = settings?.blockedEmailPatterns ?? [];
+  const denylistFile = settings?.denylistFile;
+  if (!denylistFile) return { ok: true, guards: { patterns, terms: [], owner } };
   if (!isAbsolute(denylistFile)) {
     return { ok: false, detail: `The deploy guard denylist path is not absolute: ${denylistFile}. Fix it in Settings › System, then call staging_deploy again.` };
   }
   try {
     const text = await readFile(denylistFile, "utf8");
-    return { ok: true, guards: { patterns, terms: parseDenylist(text), denylistFile } };
+    return { ok: true, guards: { patterns, terms: parseDenylist(text), denylistFile, owner } };
   } catch (error) {
     const reason = (error as NodeJS.ErrnoException | null)?.code ?? (error instanceof Error ? error.message : String(error));
     return {
@@ -1310,9 +1322,11 @@ async function checkDeployRange(
   });
   if (!logResult.ok) return logResult;
   const commits = parseCommitLog(logOutput);
-  const findings = checkCommits(commits, guards.patterns, guards.terms);
-  if (guards.terms.length === 0) return { ok: true, findings, omitted: 0, commits: commits.length };
-  const scanner = new PatchTermScanner(guards.terms);
+  const findings = checkCommits(commits, guards.patterns, guards.terms, guards.owner);
+  if (guards.terms.length === 0 && guards.owner.names.length === 0) {
+    return { ok: true, findings, omitted: 0, commits: commits.length };
+  }
+  const scanner = new PatchTermScanner(guards.terms, guards.owner);
   const patchResult = await streamGitLines([...PATCH_LOG_ARGS, range], cwd, (line) => scanner.push(line));
   if (!patchResult.ok) return patchResult;
   return {
@@ -1477,8 +1491,9 @@ async function runStagingDeployJobImpl(
   ensureNodeModulesIgnored(stagingDir);
 
   let deployGuards: LoadedDeployGuards | null = null;
-  if (hasDeployGuards(args.deployGuards)) {
-    const loaded = await loadDeployGuards(args.deployGuards);
+  const owner = await readDeployOwner(stagingDir);
+  if (hasDeployGuards(args.deployGuards) || owner.names.length > 0) {
+    const loaded = await loadDeployGuards(args.deployGuards, owner);
     if (!loaded.ok) {
       writeLog("Deploy guards could not load the denylist; deploy refused");
       return stagingFailure("Deploy guards could not read the denylist file.", loaded.detail, {
@@ -1487,7 +1502,7 @@ async function runStagingDeployJobImpl(
     }
     deployGuards = loaded.guards;
     // Checked before the commit is made, so a blocked message never lands even locally.
-    const messageFindings = checkDeployMessage(String(message ?? ""), deployGuards.terms);
+    const messageFindings = checkDeployMessage(String(message ?? ""), deployGuards.terms, deployGuards.owner);
     if (messageFindings.length > 0) {
       writeLog("Deploy guards refused the deploy message");
       return stagingFailure(

@@ -178,7 +178,7 @@ describe("MessageBubble Azure DevOps references", () => {
         title: "Review SDL bug",
         state: "Active",
         type: "Bug",
-        assignedTo: "Tim Stewart",
+        assignedTo: "Alex Example",
         areaPath: "One\\Bridge",
         url,
       },
@@ -210,7 +210,7 @@ describe("MessageBubble Azure DevOps references", () => {
       expect(card?.getAttribute("href")).toBe(url);
       expect(card?.getAttribute("target")).toBe("_blank");
       expect(harness.dom.container.textContent).toContain("Active");
-      expect(harness.dom.container.textContent).toContain("Tim Stewart");
+      expect(harness.dom.container.textContent).toContain("Alex Example");
     } finally {
       await harness.cleanup();
     }

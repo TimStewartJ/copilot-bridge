@@ -167,8 +167,8 @@ describe("BrowserLiveConnection", () => {
     connection.answerLogin("save");
     expect(socket.sentOfType("login")).toEqual([]);
 
-    socket.onmessage?.({ data: JSON.stringify({ type: "login", state: "save", host: "example.com", username: "tim", replaces: true, password: "x" }) });
-    expect(connection.getSnapshot().login).toEqual({ state: "save", host: "example.com", username: "tim", replaces: true });
+    socket.onmessage?.({ data: JSON.stringify({ type: "login", state: "save", host: "example.com", username: "alex", replaces: true, password: "x" }) });
+    expect(connection.getSnapshot().login).toEqual({ state: "save", host: "example.com", username: "alex", replaces: true });
     socket.onmessage?.({ data: JSON.stringify({ type: "login", state: "steal" }) });
     expect(connection.getSnapshot().login).toMatchObject({ state: "save" });
 
@@ -177,17 +177,17 @@ describe("BrowserLiveConnection", () => {
     expect(socket.sentOfType("login")).toEqual([{ type: "login", action: "save" }]);
     expect(connection.getSnapshot().login).toMatchObject({ state: "save", working: true });
 
-    socket.receive({ type: "login", state: "saved", host: "example.com", username: "tim" });
-    expect(connection.getSnapshot().login).toEqual({ state: "saved", host: "example.com", username: "tim" });
+    socket.receive({ type: "login", state: "saved", host: "example.com", username: "alex" });
+    expect(connection.getSnapshot().login).toEqual({ state: "saved", host: "example.com", username: "alex" });
     connection.answerLogin("dismiss");
     expect(connection.getSnapshot().login).toBeNull();
 
-    socket.receive({ type: "login", state: "fill", host: "example.com", username: "tim", failed: true });
-    expect(connection.getSnapshot().login).toEqual({ state: "fill", host: "example.com", username: "tim", failed: true });
+    socket.receive({ type: "login", state: "fill", host: "example.com", username: "alex", failed: true });
+    expect(connection.getSnapshot().login).toEqual({ state: "fill", host: "example.com", username: "alex", failed: true });
     socket.receive({ type: "login", state: "none" });
     expect(connection.getSnapshot().login).toBeNull();
 
-    socket.receive({ type: "login", state: "fill", host: "example.com", username: "tim" });
+    socket.receive({ type: "login", state: "fill", host: "example.com", username: "alex" });
     socket.drop();
     expect(connection.getSnapshot()).toMatchObject({ phase: "reconnecting", login: null });
     connection.stop();

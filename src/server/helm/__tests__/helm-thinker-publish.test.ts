@@ -51,13 +51,13 @@ describe("thinker publication", () => {
         { bridge: "local", text: "AWC's instructions hold old stories", actions: [{ label: "Tidy", type: "tidy_task", taskId: "t1" }] },
       ],
       handled: [{ bridge: "local", sessionId: "s-r", why: "FYI: fixed" }],
-      memory: { threads: [{ bridge: "local", taskId: "t1", text: "Return flight pending", owner: "others" }], picture: "Tim is planning AWC." },
+      memory: { threads: [{ bridge: "local", taskId: "t1", text: "Return flight pending", owner: "others" }], picture: "The user is planning AWC." },
     }, packet(), []);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // The answer is matched to the question's own choice, word for word.
     expect(result.brief.items[0]!.actions[0]!.do).toEqual({ type: "answer", bridge: "local", sessionId: "s-q", requestId: "r1", answer: "Yes", wasFreeform: false });
-    // A question without free text can't be answered in Tim's own words.
+    // A question without free text can't be answered in the user's own words.
     expect(result.brief.items[0]!.reply).toEqual({ bridge: "local", sessionId: "s-q" });
     expect(result.handled).toEqual([{ bridge: "local", sessionId: "s-r", title: "Flyer", why: "FYI: fixed", activityAt: "2026-10-25T10:00:00.000Z" }]);
     expect(result.brief.proposals[1]!.actions[0]!.do).toEqual({ type: "tidy_task", bridge: "local", taskId: "t1" });
@@ -142,7 +142,7 @@ describe("thinker publication", () => {
     expect(errors).toMatch(/starters 4 chats 1: label is required/);
   });
 
-  it("protects Tim's memory and enforces the size limits", () => {
+  it("protects the user's memory and enforces the size limits", () => {
     const mine = memory({ id: "u1", author: "user", text: "Ministry first on weekends", kind: "priority" });
     const theirs = memory({ id: "h1", kind: "person", key: "bryce", text: "Buyer" });
     const userThread = memory({ id: "u2", kind: "thread", key: "local:t1", author: "user", text: "Mine" });
@@ -156,7 +156,7 @@ describe("thinker publication", () => {
     }, packet(), [mine, theirs, userThread, memory({ id: "r0", text: "A rule" })]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.errors).toEqual([`memory.drop: "Ministry first on weekends" is Tim's; only he can change it`]);
+    expect(result.errors).toEqual([`memory.drop: "Ministry first on weekends" is the user's; only they can change it`]);
 
     const ok = validatePublication({
       summary: "x", items: [],
@@ -164,7 +164,7 @@ describe("thinker publication", () => {
     }, packet(), [mine, theirs, userThread, memory({ id: "r0", text: "A rule" })]);
     expect(ok.ok).toBe(true);
     if (!ok.ok) return;
-    // Tim's thread is left alone, and a rule that already exists is not proposed again.
+    // The user's thread is left alone, and a rule that already exists is not proposed again.
     expect(ok.memory).toEqual([{ op: "drop", id: "h1" }, { op: "propose", kind: "rule", text: "New rule", source: null }]);
 
     const many = Array.from({ length: 121 }, (_, index) => ({ bridge: "local", taskId: "t1", text: `x${index}`, owner: "others" }));

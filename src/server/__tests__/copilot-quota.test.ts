@@ -35,7 +35,7 @@ function authResult(overrides: Record<string, unknown> = {}) {
   return {
     authInfo: {
       type: "user",
-      login: "timstewart_microsoft",
+      login: "octocat_example",
       copilotUser: {
         copilot_plan: "enterprise",
         access_type_sku: "copilot_enterprise_seat_quota",
@@ -79,7 +79,7 @@ describe("buildCopilotQuotaStatus", () => {
       resetAt: "2026-09-01T00:00:00.000Z",
     });
     expect(status.identity).toEqual({
-      login: "timstewart_microsoft",
+      login: "octocat_example",
       plan: "enterprise",
       sku: "copilot_enterprise_seat_quota",
       organizations: ["ms-copilot"],
@@ -260,7 +260,7 @@ describe("createCopilotQuotaReader", () => {
     expect(status.primary?.remaining).toBe(9_000_000.5);
     expect(status.primary?.used).toBe(999_999.5);
     expect(status.primary?.remainingPercentage).toBe(90);
-    expect(status.identity?.login).toBe("timstewart_microsoft");
+    expect(status.identity?.login).toBe("octocat_example");
   });
 
   it("reports a repeated live-fetch failure once, and again after a success", async () => {

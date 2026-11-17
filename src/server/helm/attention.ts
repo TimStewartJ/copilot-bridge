@@ -1,4 +1,4 @@
-// Whose move a task is, from data only; Helm's line can add to needs-Tim, never take a task off.
+// Whose move a task is, from data only; Helm's line can add to needs-user, never take a task off.
 import { createHash } from "node:crypto";
 import type { CalendarEvent } from "../../shared/calendar.js";
 import type { HelmThreadOwner } from "../../shared/helm-thinker.js";
@@ -34,8 +34,8 @@ export interface AttentionTask {
 }
 
 export interface TaskAttention {
-  /** Nothing but Tim moves the task next: its fields say so, or Helm says it is his. */
-  onTim: boolean;
+  /** Nothing but the user moves the task next: its fields say so, or Helm says it is theirs. */
+  onUser: boolean;
   /** No agent works on it and it waits on no one else; Helm can't overrule this. */
   fromFields: boolean;
   /** Why it needs the user now (date passed, due soon, before a trip); empty if nothing presses. */
@@ -195,9 +195,9 @@ export function taskAttention(task: AttentionTask, context: AttentionContext): T
 
   const fromFields = task.state === "needs_you"
     || (!task.deferred && !task.muted && !!task.nextAction?.trim() && !task.agentWorking && (!waiting || waitOver));
-  const helmSaysTim = task.helm?.owner === "tim" && !task.deferred && !task.muted;
-  const onTim = fromFields || helmSaysTim;
-  if (!onTim) return { onTim: false, fromFields: false, reasons: [] };
+  const helmSaysUser = task.helm?.owner === "user" && !task.deferred && !task.muted;
+  const onUser = fromFields || helmSaysUser;
+  if (!onUser) return { onUser: false, fromFields: false, reasons: [] };
 
   const dated: DatedReason[] = [];
   const undated: string[] = [];
@@ -212,7 +212,7 @@ export function taskAttention(task: AttentionTask, context: AttentionContext): T
     dated.push({ day, text: `what it was waiting for was due ${formatDay(day)}, which has passed` });
   }
   const hold = task.helm?.holdUntil;
-  if (helmSaysTim && hold && /^\d{4}-\d{2}-\d{2}$/.test(hold) && hold <= today) {
+  if (helmSaysUser && hold && /^\d{4}-\d{2}-\d{2}$/.test(hold) && hold <= today) {
     dated.push({ day: hold, text: hold === today ? "Helm's pause on it ends today" : `Helm's pause on it ended ${formatDay(hold)}` });
   }
 
@@ -253,7 +253,7 @@ export function taskAttention(task: AttentionTask, context: AttentionContext): T
   // One reason per date: the first found is the most direct (revisit, wait, step, checklist).
   const byDay = dated.filter((reason, index) => dated.findIndex((other) => other.day === reason.day) === index);
   const reasons = [...new Set([...undated, ...byDay.map((reason) => reason.text)])].slice(0, MAX_REASONS);
-  return { onTim: true, fromFields, reasons, ...(dated[0] ? { soonest: dated[0].day } : {}) };
+  return { onUser: true, fromFields, reasons, ...(dated[0] ? { soonest: dated[0].day } : {}) };
 }
 
 function clip(text: string, max: number): string {
@@ -261,7 +261,7 @@ function clip(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-/** Tasks that need Tim first (earliest date first), then the rest that wait on him. */
+/** Tasks that need the user first (earliest date first), then the rest that wait on them. */
 export function byAttention<T extends { attention: TaskAttention }>(a: T, b: T): number {
   const pressing = Number(b.attention.reasons.length > 0) - Number(a.attention.reasons.length > 0);
   if (pressing) return pressing;

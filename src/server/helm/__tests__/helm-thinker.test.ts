@@ -208,7 +208,7 @@ describe("Helm thinker", () => {
     expect(store.getRun(run.id)).toMatchObject({ fromSources: ["calendar-id", "mail-id"], sources: [{ serverId: "mail-id", name: "mail", ok: true, used: true }] });
     expect(store.getSourceCoverage()).toEqual({ "mail-id": run.startedAt });
 
-    // Tim correcting an entry keeps what may have shaped it.
+    // The user correcting an entry keeps what may have shaped it.
     const date = written.find((entry) => entry.kind === "date")!;
     thinker.updateMemory(date.id, { text: "Rent due Thursday" });
     expect(store.getMemory(date.id)?.fromSources).toEqual(["mail-id"]);
@@ -220,7 +220,7 @@ describe("Helm thinker", () => {
     expect(view.sourceNames).toMatchObject({ "mail-id": "Mail", "calendar-id": "a removed source" });
   });
 
-  it("proposes only when Tim switched routine handling off", async () => {
+  it("proposes only when the user switched routine handling off", async () => {
     const { store, thinker, readStateStore } = setup();
     store.updateSettings({ autonomy: "propose" });
     const { publish } = activate(thinker, store);
@@ -228,7 +228,7 @@ describe("Helm thinker", () => {
     expect(readStateStore.getReadStateFor(["s-r"])["s-r"]).toBeUndefined();
   });
 
-  it("undoes a handled reply unless Tim read it further meanwhile", async () => {
+  it("undoes a handled reply unless the user read it further meanwhile", async () => {
     const { store, thinker, readStateStore } = setup();
     const { run, publish } = activate(thinker, store);
     await publish(BRIEF);
@@ -249,7 +249,7 @@ describe("Helm thinker", () => {
     expect(submitUserInputResponse).toHaveBeenCalledWith("s-q", "r1", { answer: "Yes", wasFreeform: false });
     expect(store.getItemStates(run.id).i1).toMatchObject({ status: "done", outcome: "Answered: Yes" });
 
-    // In Tim's own words, matched to a choice when it is one.
+    // In the user's own words, matched to a choice when it is one.
     thinker.feedback(run.id, "i1", { kind: "reopen" });
     await thinker.act(run.id, "i1", { text: "no" });
     expect(submitUserInputResponse).toHaveBeenLastCalledWith("s-q", "r1", { answer: "No", wasFreeform: false });
@@ -306,7 +306,7 @@ describe("Helm thinker", () => {
     expect(store.getItemStates(run.id).p2?.status).toBe("done");
   });
 
-  it("holds a new brief as unseen until Tim has seen it, and only the latest brief can be seen", async () => {
+  it("holds a new brief as unseen until the user has seen it, and only the latest brief can be seen", async () => {
     const { store, thinker } = setup();
     expect(thinker.getBriefStatus()).toEqual({ runId: null, seen: true, running: false });
     const first = activate(thinker, store);
@@ -348,18 +348,18 @@ describe("Helm thinker", () => {
     await expect((thinker as any).chooseModel()).resolves.toEqual({ model: "gpt-6-luna", effort: "high" });
   });
 
-  it("keeps Tim's own entries within the limits too", () => {
+  it("keeps the user's own entries within the limits too", () => {
     const { thinker } = setup();
     for (let index = 0; index < 15; index++) thinker.addMemory({ kind: "priority", text: `Priority ${index}` });
     expect(() => thinker.addMemory({ kind: "priority", text: "One too many" })).toThrow(/at most 15/);
   });
 
-  it("lets Tim keep, correct and forget memory, and keeps his entries his", () => {
+  it("lets the user keep, correct and forget memory, and keeps their entries theirs", () => {
     const { store, thinker } = setup();
     const proposed = store.addMemory({ kind: "rule", text: "Helm's idea", author: "helm", status: "proposed" });
     expect(thinker.updateMemory(proposed.id, { status: "active" })).toMatchObject({ status: "active", author: "user" });
     const mine = thinker.addMemory({ kind: "priority", text: "Ministry first on weekends" });
-    expect(mine).toMatchObject({ author: "user", status: "active", source: "Tim" });
+    expect(mine).toMatchObject({ author: "user", status: "active", source: "You" });
     thinker.updateMemory(mine.id, { status: "forgotten" });
     expect(thinker.listMemory().some((entry) => entry.id === mine.id)).toBe(false);
     expect(() => thinker.addMemory({ kind: "picture", text: "x" })).toThrow(/kind must be/);

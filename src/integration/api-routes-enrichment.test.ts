@@ -64,7 +64,7 @@ describe("Work-reference preview route", () => {
       title: "Review SDL bug",
       state: "Active",
       type: "Bug",
-      assignedTo: "Tim Stewart",
+      assignedTo: "Alex Example",
       areaPath: "One\\Bridge",
       url: "https://exampleorg.visualstudio.com/One/_workitems/edit/30000015",
     };
@@ -153,7 +153,7 @@ describe("Dashboard work map route", () => {
       project: "One",
       fetchCurrentUser: vi.fn(async () => {
         await options.hold;
-        return { displayName: "Tim Stewart" };
+        return { displayName: "Alex Example" };
       }),
       fetchAssignedWorkItemIds: vi.fn(async () => ({ ids: options.assigned ?? [], warnings: [] })),
       fetchWorkItemLinks: vi.fn(async () => ({ pullRequests: [], relations: [], warnings: [] })),
@@ -240,7 +240,7 @@ describe("Dashboard work map route", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       enabled: true,
-      currentUser: { displayName: "Tim Stewart" },
+      currentUser: { displayName: "Alex Example" },
       org: "exampleorg",
       project: "One",
       tasks: [expect.objectContaining({ id: active.id, title: "Track the feature", status: "active" })],

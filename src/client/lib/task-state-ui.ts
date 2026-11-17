@@ -14,7 +14,7 @@ export function formatSpan(days: number): string {
   return `${Math.round(days / 365)} years`;
 }
 
-/** How long ago Tim last engaged, worded honestly when it is only an estimate. */
+/** How long ago the user last engaged, worded honestly when it is only an estimate. */
 export function describeIdle(row: Pick<TaskOverviewRow, "idleDays">): string {
   if (row.idleDays === null) return "No recent activity from you";
   if (row.idleDays < 1) return "today";
@@ -26,7 +26,7 @@ const TOUCH_VERB: Record<NonNullable<TaskOverviewRow["lastTouchKind"]>, string> 
   edited: "You edited it", message: "You wrote in its conversation", created: "Created",
 };
 
-/** What Tim last did and when, e.g. "You wrote in its conversation 3 weeks ago". */
+/** What the user last did and when, e.g. "You wrote in its conversation 3 weeks ago". */
 export function describeTouch(row: Pick<TaskOverviewRow, "idleDays" | "lastTouchKind">): string {
   if (row.idleDays === null || !row.lastTouchKind) return "No recent activity from you";
   return `${TOUCH_VERB[row.lastTouchKind]} ${describeIdle(row)}`;

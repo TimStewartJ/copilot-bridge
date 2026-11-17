@@ -60,7 +60,7 @@ Every test is code someone has to keep passing through later refactors, so add o
 - `npm run test:any-audit` runs in `check:fast` and CI. It fails on any `any` type in production code; tests are not scanned. See "Types" in `AGENTS.md`.
 - `npm run test:agent-text-audit` runs in `check:fast` and CI. It fails on a word or phrase check in production code that does not say where its text comes from; see "Agent output" in `AGENTS.md`.
 - `npm run test:comment-audit` runs in `check:fast` and CI, on tests too. It fails on a comment over one line or 100 columns, or two comments with no code between; see "Comments" in `AGENTS.md`.
-- `npm run test:public-audit` runs in `check:fast` and CI. It fails on `package-lock.json` entries outside the public npm registry and on Azure DevOps orgs that are not on its list of made-up names. Installing through a mirror writes the mirror's address into the lockfile; `npm run lockfile:public` puts it back.
+- `npm run test:public-audit` runs in `check:fast` and CI. It fails on `package-lock.json` entries outside the public npm registry, on Azure DevOps orgs that are not on its list of made-up names, and on the owner's name (from `package.json` `author`); use made-up people such as "Alex Example". Installing through a mirror writes the mirror's address into the lockfile; `npm run lockfile:public` puts it back.
 
 ## Flakes in validation gates
 

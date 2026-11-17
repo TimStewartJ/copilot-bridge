@@ -19,7 +19,7 @@ const add = (db: DatabaseSync, sessionId: string, timestamp: string, content: st
 const lastSent = (db: DatabaseSync) => Object.fromEntries((db.prepare("SELECT sessionId, lastSentAt FROM session_user_messages").all() as any[]).map(row => [row.sessionId, row.lastSentAt]));
 
 describe("session user message history", () => {
-  it("backfills only Tim's own words from the search index, once", () => {
+  it("backfills only the user's own words from the search index, once", () => {
     const db = legacyDb();
     add(db, "chat", "2026-09-01T10:00:00Z", "Please plan the trip");
     add(db, "chat", "2026-09-05T10:00:00Z", "<deferred-work-result>\ndeferId: x");
@@ -28,7 +28,7 @@ describe("session user message history", () => {
     add(db, "chat", "2026-09-07T10:00:00Z", "Check the job status and report back");
     add(db, "chat", "2026-09-08T10:00:00Z", "Here is my answer", "assistant");
     db.prepare("INSERT INTO deferred_prompts VALUES (?, ?, ?, ?)").run("chat", "Check the job status and report back", "2026-09-07T09:00:00Z", "2026-09-07T10:00:00Z");
-    // The same words typed by Tim long after that defer had finished still count.
+    // The same words typed by the user long after that defer had finished still count.
     add(db, "typed", "2026-09-15T10:00:00Z", "Check the job status and report back");
     db.prepare("INSERT INTO deferred_prompts VALUES (?, ?, ?, ?)").run("typed", "Check the job status and report back", "2026-09-01T09:00:00Z", "2026-09-01T10:00:00Z");
     add(db, "scheduled", "2026-09-10T08:00:00Z", "Run the daily scan");
