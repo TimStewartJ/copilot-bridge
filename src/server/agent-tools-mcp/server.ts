@@ -22,7 +22,8 @@ export interface BridgeToolDefinition {
   scope?: BridgeToolScope;
   handler: (
     args: Record<string, unknown>,
-    extra: any,
+    // An MCP BridgeToolHandlerExtra, or the SDK's tool invocation; the adapter reads what it needs.
+    extra: unknown,
   ) => BridgeToolHandlerResult | Promise<BridgeToolHandlerResult>;
 }
 

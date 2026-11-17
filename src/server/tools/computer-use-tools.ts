@@ -58,7 +58,7 @@ export function createComputerUseToolDefinitions(ctx: AppContext, options: Compu
         },
         required: ["reason"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: { reason: string }, invocation) => {
         const reason = typeof args.reason === "string" ? args.reason.trim() : "";
         if (!reason) return toolFailure("reason is required: say what you will do in the foreground.");
         if (reason.length > MAX_REASON_LENGTH) return toolFailure(`reason must be at most ${MAX_REASON_LENGTH} characters.`);

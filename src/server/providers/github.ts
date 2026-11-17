@@ -3,6 +3,7 @@
 import { getProcessHost } from "../process-host.js";
 import type { PRRef, EnrichedWorkItem, EnrichedPR, WorkTrackingProvider, GitHubProviderConfig } from "./types.js";
 import { createProviderCache, type ProviderCache } from "./cache.js";
+import { isRecord } from "../../shared/is-record.js";
 
 const API_ROOT = "https://api.github.com";
 const WEB_ROOT = "https://github.com";
@@ -189,7 +190,7 @@ function isTransientError(err: unknown): boolean {
   return err instanceof GitHubRequestError && err.transient;
 }
 
-async function githubFetch(path: string, anonymous = false): Promise<any> {
+async function githubFetch(path: string, anonymous = false): Promise<unknown> {
   const now = Date.now();
   if (!anonymous && now < rateLimitCooldownUntil) {
     throw new GitHubRequestError("GitHub API rate limit cooldown in effect", true);
@@ -310,33 +311,47 @@ function prFallback(ref: RepoRef | null, prId: number | null, repoName?: string)
   };
 }
 
-function mapIssue(ref: IssueRef, data: any): IssueMetadata {
-  const isPullRequest = Boolean(data?.pull_request);
-  const state = typeof data?.state === "string" ? data.state.toLowerCase() : null;
+/** Reads `key` the way optional chaining did: undefined unless `value` is an object. */
+function field(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined;
+}
+
+function loginOf(user: unknown): string | null {
+  const login = field(user, "login");
+  return typeof login === "string" ? login : null;
+}
+
+function mapIssue(ref: IssueRef, raw: unknown): IssueMetadata {
+  const data = isRecord(raw) ? raw : {};
+  const isPullRequest = Boolean(data.pull_request);
+  const state = typeof data.state === "string" ? data.state.toLowerCase() : null;
+  const assignees = data.assignees;
+  const firstAssignee = Array.isArray(assignees) ? assignees[0] : field(assignees, "0");
   return {
-    title: typeof data?.title === "string" ? data.title : null,
+    title: typeof data.title === "string" ? data.title : null,
     state: state === "open" ? "Open" : state === "closed" ? "Closed" : null,
     type: isPullRequest ? "Pull Request" : "Issue",
-    assignedTo: data?.assignee?.login ?? data?.assignees?.[0]?.login ?? null,
+    assignedTo: loginOf(data.assignee) ?? loginOf(firstAssignee),
     areaPath: `${ref.owner}/${ref.repo}`,
     url: issueWebUrl(ref, isPullRequest),
   };
 }
 
-function mapPR(ref: RepoRef, prId: number, data: any): PRMetadata {
-  const state = typeof data?.state === "string" ? data.state.toLowerCase() : null;
-  const status: EnrichedPR["status"] = data?.merged_at
+function mapPR(ref: RepoRef, prId: number, raw: unknown): PRMetadata {
+  const data = isRecord(raw) ? raw : {};
+  const state = typeof data.state === "string" ? data.state.toLowerCase() : null;
+  const status: EnrichedPR["status"] = data.merged_at
     ? "completed"
     : state === "open" ? "active" : state === "closed" ? "abandoned" : null;
   // Counts pending review requests — GitHub drops reviewers once they submit a review.
-  const reviewerCount = (Array.isArray(data?.requested_reviewers) ? data.requested_reviewers.length : 0)
-    + (Array.isArray(data?.requested_teams) ? data.requested_teams.length : 0);
+  const reviewerCount = (Array.isArray(data.requested_reviewers) ? data.requested_reviewers.length : 0)
+    + (Array.isArray(data.requested_teams) ? data.requested_teams.length : 0);
 
   return {
     repoName: `${ref.owner}/${ref.repo}`,
-    title: typeof data?.title === "string" ? data.title : null,
+    title: typeof data.title === "string" ? data.title : null,
     status,
-    createdBy: data?.user?.login ?? null,
+    createdBy: loginOf(data.user),
     reviewerCount,
     url: prWebUrl(ref, prId),
   };

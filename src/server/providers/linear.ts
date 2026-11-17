@@ -1,6 +1,16 @@
 // Linear provider — enriches work items via Linear's GraphQL API
 
 import type { PRRef, EnrichedWorkItem, EnrichedPR, WorkTrackingProvider, LinearProviderConfig } from "./types.js";
+import { isRecord } from "../../shared/is-record.js";
+
+/** Reads `key` the way optional chaining did: undefined unless `value` is an object. */
+function field(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
 
 // ── Enrichment cache ──────────────────────────────────────────────
 
@@ -33,7 +43,7 @@ export class LinearProvider implements WorkTrackingProvider {
     return "#";
   }
 
-  private async graphql(query: string, variables?: Record<string, unknown>): Promise<any> {
+  private async graphql(query: string, variables?: Record<string, unknown>): Promise<unknown> {
     const res = await fetch("https://api.linear.app/graphql", {
       method: "POST",
       headers: {
@@ -45,9 +55,12 @@ export class LinearProvider implements WorkTrackingProvider {
     if (!res.ok) {
       throw new Error(`Linear API ${res.status}: ${res.statusText}`);
     }
-    const json = await res.json();
-    if (json.errors?.length) {
-      throw new Error(`Linear GraphQL: ${json.errors[0].message}`);
+    const json: unknown = await res.json();
+    // Any answer but an object ended in a TypeError once its fields were read.
+    if (!isRecord(json)) throw new TypeError("Linear API returned no JSON object");
+    const errors = json.errors;
+    if (Array.isArray(errors) && errors.length) {
+      throw new Error(`Linear GraphQL: ${String(field(errors[0], "message"))}`);
     }
     return json.data;
   }
@@ -83,16 +96,18 @@ export class LinearProvider implements WorkTrackingProvider {
           }
         `, { id });
 
-        const issue = data.issue;
+        if (data === null || data === undefined) throw new TypeError("Linear API returned no data");
+        const issue = field(data, "issue");
+        const identifier = field(issue, "identifier");
         const enriched: EnrichedWorkItem = {
           id,
           provider: "linear",
-          title: issue?.title ?? null,
-          state: issue?.state?.name ?? null,
+          title: stringOrNull(field(issue, "title")),
+          state: stringOrNull(field(field(issue, "state"), "name")),
           type: null,
-          assignedTo: issue?.assignee?.name ?? null,
-          areaPath: issue?.team?.name ?? null,
-          url: this.getWorkItemUrl(issue?.identifier ?? id),
+          assignedTo: stringOrNull(field(field(issue, "assignee"), "name")),
+          areaPath: stringOrNull(field(field(issue, "team"), "name")),
+          url: this.getWorkItemUrl(typeof identifier === "string" ? identifier : id),
         };
         issueCache.set(id, { data: enriched, expiresAt: now + CACHE_TTL });
         results.push(enriched);

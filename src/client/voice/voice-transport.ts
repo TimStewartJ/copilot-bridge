@@ -4,6 +4,7 @@ import {
   type VoiceConversationTicket,
   type VoiceTransportPreference,
 } from "./voice-api";
+import type { VoiceServerMessage } from "./voice-view-model";
 
 export interface VoiceAudioMessage {
   genId: number;
@@ -13,7 +14,7 @@ export interface VoiceAudioMessage {
 }
 
 export interface VoiceTransportHandlers {
-  onEvent(event: Record<string, any>): void;
+  onEvent(event: VoiceServerMessage): void;
   onAudio(audio: VoiceAudioMessage): void;
   onClose(reason: string): void;
 }
@@ -101,7 +102,7 @@ function connectWebSocket(ticket: VoiceConversationTicket, handlers: VoiceTransp
     socket.onmessage = (event) => {
       if (failed) return;
       if (typeof event.data === "string") {
-        let message: Record<string, any>;
+        let message: VoiceServerMessage;
         try {
           message = JSON.parse(event.data);
         } catch {
@@ -191,7 +192,7 @@ function connectHttp(ticket: VoiceConversationTicket, handlers: VoiceTransportHa
     }, HTTP_HELLO_TIMEOUT_MS);
 
     source.onmessage = (event) => {
-      let message: Record<string, any>;
+      let message: VoiceServerMessage;
       try {
         message = JSON.parse(event.data);
       } catch {

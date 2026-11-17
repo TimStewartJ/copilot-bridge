@@ -15,6 +15,8 @@ const AGENT_PARAMETER = {
   description: "The agent's ID, as used with read_agent and write_agent, or the name it was launched under.",
 } as const;
 
+type AgentIdArgs = { agent_id: string };
+
 export interface RegisterSessionAgentToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
@@ -71,7 +73,7 @@ export function createSessionAgentToolDefinitions(ctx: AppContext): BridgeToolDe
         properties: { agent_id: AGENT_PARAMETER },
         required: ["agent_id"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: AgentIdArgs, invocation) => {
         const sessionId = invocation.sessionId;
         const found = await findAgent(ctx, sessionId, args.agent_id);
         if ("failure" in found) return found.failure;
@@ -115,7 +117,7 @@ export function createSessionAgentToolDefinitions(ctx: AppContext): BridgeToolDe
         properties: { agent_id: AGENT_PARAMETER },
         required: ["agent_id"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: AgentIdArgs, invocation) => {
         const sessionId = invocation.sessionId;
         const found = await findAgent(ctx, sessionId, args.agent_id, ALREADY_GONE_HINT);
         if ("failure" in found) return found.failure;

@@ -10,6 +10,7 @@ import {
   EVIDENCE_RESULTS,
   deriveCompletionStatus,
   readCompletionInput,
+  type CompletionEvidence,
   type CompletionReport,
 } from "../../shared/completion-report.js";
 import {
@@ -18,6 +19,14 @@ import {
   NO_PLAYBOOK,
   isPlaybookName,
 } from "../../shared/workflow-vocabulary.js";
+
+type VerifyCompleteArgs = {
+  summary: string;
+  playbook?: string;
+  evidence: CompletionEvidence[];
+  unverified?: string[];
+  notes?: string[];
+};
 
 export interface RegisterCompletionToolsOptions {
   hiddenTools?: ReadonlySet<string>;
@@ -101,7 +110,7 @@ export function createCompletionToolDefinitions(ctx: AppContext): BridgeToolDefi
         },
         required: ["summary", "evidence"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: VerifyCompleteArgs, invocation) => {
         if (invocation.agentId) return toolFailure("No chat report was recorded. Return your findings and evidence to the parent agent instead.");
         const input = readCompletionInput(args);
         if (!input.ok) return toolFailure(input.error);

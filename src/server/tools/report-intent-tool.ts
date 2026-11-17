@@ -28,7 +28,7 @@ export function createReportIntentToolDefinitions(ctx: AppContext) {
     defineSessionBridgeTool("report_intent", {
       description: REPORT_INTENT_DESCRIPTION,
       parameters: REPORT_INTENT_PARAMETERS,
-      handler: async (args: any, invocation) => {
+      handler: async (args: { intent: string }, invocation) => {
         const intent = typeof args.intent === "string" ? args.intent.trim() : "";
         if (!intent) {
           return { isError: true, content: [{ type: "text" as const, text: "Intent must not be blank" }] };

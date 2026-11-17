@@ -331,7 +331,7 @@ export function normalizeOptionalTimestamp(value: unknown, opts: { strict?: bool
 type MomentumSnapshot = Record<TaskMomentumField, string | boolean | null>;
 
 function readMomentumSnapshot(db: DatabaseSync, id: string): MomentumSnapshot | undefined {
-  const row = db.prepare("SELECT nextAction, waitingOn, nextTouchAt, deferred, doneWhen FROM tasks WHERE id = ?").get(id) as any;
+  const row = db.prepare("SELECT nextAction, waitingOn, nextTouchAt, deferred, doneWhen FROM tasks WHERE id = ?").get(id) as Record<TaskMomentumField, unknown> | undefined;
   if (!row) return undefined;
   return {
     nextAction: normalizeOptionalText(row.nextAction) ?? null,
@@ -438,6 +438,29 @@ function parseMomentumChanges(raw: unknown, eventId: unknown): TaskMomentumChang
 
 // ── Factory ───────────────────────────────────────────────────────
 
+type TaskRow = {
+  id: string;
+  title: string;
+  kind: string;
+  muted: number;
+  deferred: number;
+  status: string;
+  groupId: string | null;
+  cwd: string | null;
+  notes: string;
+  instructions: string | null;
+  playbook: string | null;
+  doneWhen: string | null;
+  nextAction: string | null;
+  waitingOn: string | null;
+  nextTouchAt: string | null;
+  priority: number;
+  order: number;
+  createdAt: string;
+  completedAt: string | null;
+  updatedAt: string;
+};
+
 export function createTaskStore(
   db: DatabaseSync,
   bus: GlobalBus,
@@ -449,23 +472,25 @@ export function createTaskStore(
     return undefined;
   }
 
-  function hydrate(row: any): Task {
+  function hydrate(row: TaskRow): Task {
     const { workItems, pullRequests, ...task } = hydrateWithoutSessions(row);
     // Same key order as before the split, so task JSON (and its ETag) is unchanged.
     return { ...task, sessionIds: listSessionIdsForTask(row.id), workItems, pullRequests };
   }
 
-  function hydrateWithoutSessions(row: any): TaskWithoutSessions {
+  function hydrateWithoutSessions(row: TaskRow): TaskWithoutSessions {
     const id = row.id;
-    const workItems = db.prepare("SELECT itemId as id, provider FROM task_work_items WHERE taskId = ?").all(id) as any[];
-    const prs = db.prepare("SELECT repoId, repoName, prId, provider FROM task_pull_requests WHERE taskId = ?").all(id) as any[];
+    const workItems = db.prepare("SELECT itemId as id, provider FROM task_work_items WHERE taskId = ?").all(id) as Array<{ id: string; provider: string }>;
+    const prs = db.prepare("SELECT repoId, repoName, prId, provider FROM task_pull_requests WHERE taskId = ?").all(id) as Array<{
+      repoId: string; repoName: string | null; prId: number; provider: string;
+    }>;
 
     return {
       id,
       title: row.title,
       kind: normalizeTaskKind(row.kind),
-      muted: row.muted === 1 || row.muted === true,
-      deferred: row.deferred === 1 || row.deferred === true,
+      muted: row.muted === 1,
+      deferred: row.deferred === 1,
       status: normalizeStoredTaskStatus(row.status),
       groupId: row.groupId ?? undefined,
       cwd: row.cwd ?? undefined,
@@ -498,13 +523,13 @@ export function createTaskStore(
   // ── CRUD ──────────────────────────────────────────────────────────
 
   function listTasks(): Task[] {
-    const rows = db.prepare('SELECT * FROM tasks ORDER BY status, "order"').all() as any[];
+    const rows = db.prepare('SELECT * FROM tasks ORDER BY status, "order"').all() as TaskRow[];
     return rows.map(hydrate).sort(compareTaskListOrder);
   }
 
   /** The task list without each task's session links, for readers that send or use none of them. */
   function listTasksWithoutSessions(): TaskWithoutSessions[] {
-    const rows = db.prepare('SELECT * FROM tasks ORDER BY status, "order"').all() as any[];
+    const rows = db.prepare('SELECT * FROM tasks ORDER BY status, "order"').all() as TaskRow[];
     return rows.map(hydrateWithoutSessions).sort(compareTaskListOrder);
   }
 
@@ -516,7 +541,9 @@ export function createTaskStore(
       FROM task_sessions ts JOIN tasks t ON t.id = ts.taskId`;
     const rows = (sessionIds
       ? db.prepare(`${select} WHERE ts.sessionId IN (SELECT value FROM json_each(?))`).all(JSON.stringify(sessionIds))
-      : db.prepare(select).all()) as any[];
+      : db.prepare(select).all()) as Array<{
+      sessionId: string; id: string; cwd: string | null; status: string; kind: string; order: number;
+    }>;
     for (const row of rows) {
       const link = {
         id: row.id as string,
@@ -546,22 +573,22 @@ export function createTaskStore(
       const id = String(taskId);
       signals.set(id, { ...signals.get(id), ...patch });
     };
-    for (const row of db.prepare("SELECT taskId, MAX(at) AS at FROM task_momentum_events WHERE source = 'user' GROUP BY taskId").all() as any[]) {
+    for (const row of db.prepare("SELECT taskId, MAX(at) AS at FROM task_momentum_events WHERE source = 'user' GROUP BY taskId").all()) {
       add(row.taskId, { userEditedAt: String(row.at) });
     }
     for (const row of db.prepare(`SELECT ts.taskId, MAX(m.lastSentAt) AS at FROM task_sessions ts
-      JOIN session_user_messages m ON m.sessionId = ts.sessionId GROUP BY ts.taskId`).all() as any[]) {
+      JOIN session_user_messages m ON m.sessionId = ts.sessionId GROUP BY ts.taskId`).all()) {
       add(row.taskId, { lastMessageAt: String(row.at) });
     }
     for (const row of db.prepare(`SELECT taskId, MAX(at) AS at FROM task_momentum_events
-      WHERE changesJson LIKE '%"field":"waitingOn"%' GROUP BY taskId`).all() as any[]) {
+      WHERE changesJson LIKE '%"field":"waitingOn"%' GROUP BY taskId`).all()) {
       add(row.taskId, { waitingChangedAt: String(row.at) });
     }
     return signals;
   }
 
   function getTask(id: string): Task | undefined {
-    const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow | undefined;
     return row ? hydrate(row) : undefined;
   }
 
@@ -599,7 +626,7 @@ export function createTaskStore(
   }
 
   function updateTask(id: string, updates: TaskUpdate, actor: TaskChangeActor = { source: "system" }): Task {
-    const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow | undefined;
     if (!row) throw new Error(`Task ${id} not found`);
     for (const field of ["notes", "instructions"] as const) {
       if (updates[field] !== undefined && typeof updates[field] !== "string") {
@@ -664,7 +691,7 @@ export function createTaskStore(
       doneWhen: nextDoneWhen,
     });
     const fields: string[] = ["updatedAt = ?"];
-    const values: any[] = [now];
+    const values: Array<string | number | null> = [now];
 
     if (updates.title !== undefined) { fields.push("title = ?"); values.push(updates.title); }
     if (updates.kind !== undefined) { fields.push("kind = ?"); values.push(nextKind); }
@@ -700,10 +727,10 @@ export function createTaskStore(
       throw new InvalidTaskUpdateError(ACTIVE_TASK_MOMENTUM_ERROR);
     }
 
-    if (shouldPersistDoneWhen) { fields.push("doneWhen = ?"); values.push(hasDoneWhenUpdate ? doneWhen : null); }
-    if (hasNextActionUpdate) { fields.push("nextAction = ?"); values.push(nextAction); }
-    if (hasWaitingOnUpdate) { fields.push("waitingOn = ?"); values.push(waitingOn); }
-    if (hasNextTouchAtUpdate) { fields.push("nextTouchAt = ?"); values.push(nextTouchAt); }
+    if (shouldPersistDoneWhen) { fields.push("doneWhen = ?"); values.push(doneWhen ?? null); }
+    if (hasNextActionUpdate) { fields.push("nextAction = ?"); values.push(nextAction ?? null); }
+    if (hasWaitingOnUpdate) { fields.push("waitingOn = ?"); values.push(waitingOn ?? null); }
+    if (hasNextTouchAtUpdate) { fields.push("nextTouchAt = ?"); values.push(nextTouchAt ?? null); }
 
     if (targetStatus !== "active") {
       if (!hasNextActionUpdate) { fields.push("nextAction = ?"); values.push(null); }
@@ -963,7 +990,7 @@ export function createTaskStore(
 
   /** Every task-to-session link with the time it was made. */
   function listSessionLinks(): SessionLink[] {
-    return db.prepare("SELECT taskId, sessionId, linkedAt FROM task_sessions").all() as unknown as SessionLink[];
+    return db.prepare("SELECT taskId, sessionId, linkedAt FROM task_sessions").all() as SessionLink[];
   }
 
   /** Removes exactly these links (a relinked one has a new `linkedAt`); returns task ids. */
@@ -1052,7 +1079,7 @@ export function createTaskStore(
   }
 
   function findTaskBySessionId(sessionId: string): Task | undefined {
-    const row = db.prepare("SELECT taskId FROM task_sessions WHERE sessionId = ?").get(sessionId) as any;
+    const row = db.prepare("SELECT taskId FROM task_sessions WHERE sessionId = ?").get(sessionId) as { taskId: string } | undefined;
     return row ? getTask(row.taskId) : undefined;
   }
 
@@ -1088,7 +1115,7 @@ export function createTaskStore(
     const rows = db.prepare(`
       SELECT id, taskId, at, source, sessionId, scheduleId, scheduleName, changesJson
       FROM task_momentum_events WHERE taskId = ? ORDER BY id DESC LIMIT ?
-    `).all(taskId, bounded) as any[];
+    `).all(taskId, bounded);
     return rows.map((row) => ({
       id: Number(row.id),
       taskId: String(row.taskId),
@@ -1121,6 +1148,7 @@ export function createTaskStore(
 
 export type TaskStore = ReturnType<typeof createTaskStore>;
 
-export interface SessionLink { taskId: string; sessionId: string; linkedAt: string }
+// A type alias, not an interface, so a node:sqlite row array casts to it.
+export type SessionLink = { taskId: string; sessionId: string; linkedAt: string };
 
 export interface MomentumSignals { userEditedAt?: string; lastMessageAt?: string; waitingChangedAt?: string }

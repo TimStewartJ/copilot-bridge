@@ -14,6 +14,30 @@ export interface SearchResult {
   tags: string[];
 }
 
+interface DocsRowIdRow { rowid: number }
+interface DocsCountRow { total: number }
+interface DocsPathTitleRow { path: string; title: string }
+// Row shapes are type aliases, not interfaces, so a node:sqlite row array casts to them.
+type DocsSearchRow = {
+  path: string; title: string | null; folder: string | null; tags: string | null; snippet: string | null; score: number;
+};
+type DocsFolderRow = {
+  path: string; title: string | null; tags: string | null; frontmatter_json: string | null; folder: string | null;
+  created: string | null; modified: string | null; body?: string | null;
+};
+
+/** One entry of a database collection, as queryByFolder returns it. */
+export interface DocsFolderEntry {
+  path: string;
+  slug: string;
+  title: string;
+  fields: Record<string, unknown>;
+  tags: string[];
+  created: string;
+  modified: string;
+  body?: string;
+}
+
 export interface ResolvedLink {
   path: string;
   title: string;
@@ -263,7 +287,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
 
     withFtsRepair("index docs page", () => {
       runInTransaction(() => {
-        const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
+        const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as DocsRowIdRow | undefined;
         if (existing) {
           // External-content FTS: delete the old row before editing docs_pages, or SQLite can fail.
           db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.rowid);
@@ -283,7 +307,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
   }
 
   function upsertDocsPageRow(page: DocPage, tagsStr: string, fmJson: string): number | null {
-    const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
+    const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as DocsRowIdRow | undefined;
     if (existing) {
       db.prepare(`
         UPDATE docs_pages SET title=?, tags=?, body=?, frontmatter_json=?, folder=?, created=?, modified=?
@@ -296,7 +320,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
       INSERT OR REPLACE INTO docs_pages (path, title, tags, body, frontmatter_json, folder, created, modified)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(page.path, page.title, tagsStr, page.body, fmJson, page.folder, page.created, page.modified);
-    const row = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as any;
+    const row = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(page.path) as DocsRowIdRow | undefined;
     return row?.rowid ?? null;
   }
 
@@ -325,7 +349,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
 
     withFtsRepair("remove docs page from search index", () => {
       runInTransaction(() => {
-        const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(pagePath) as any;
+        const existing = db.prepare("SELECT rowid FROM docs_pages WHERE path = ?").get(pagePath) as DocsRowIdRow | undefined;
         if (existing) {
           db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.rowid);
           db.prepare("DELETE FROM docs_pages WHERE path = ?").run(pagePath);
@@ -362,13 +386,13 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
         `).get(sanitized, ...modified.params)
         : db.prepare(`
           SELECT count(*) as total FROM docs_fts WHERE docs_fts MATCH ?
-        `).get(sanitized)) as any;
+        `).get(sanitized)) as DocsCountRow | undefined;
       const total = countRow?.total || 0;
 
       const rows = db.prepare(`${DOCS_SNIPPET_SQL}${modified.sql}
         ORDER BY rank
         LIMIT ? OFFSET ?
-      `).all(sanitized, ...modified.params, limit, offset) as any[];
+      `).all(sanitized, ...modified.params, limit, offset) as DocsSearchRow[];
 
       return {
         total,
@@ -388,15 +412,15 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
 
   function queryByFolder(
     folder: string,
-    filters?: Record<string, any>,
+    filters?: Record<string, unknown>,
     sort?: { field: string; order: "asc" | "desc" },
     limit = 50,
     offset = 0,
     includeBody = false,
-  ): { entries: any[]; total: number } {
+  ): { entries: DocsFolderEntry[]; total: number } {
     const normalizedFolder = validateDocsPathSegments(folder, "folder").join("/");
     let where = "folder = ?";
-    const params: any[] = [normalizedFolder];
+    const params: string[] = [normalizedFolder];
 
     if (filters) {
       for (const [key, value] of Object.entries(filters)) {
@@ -421,7 +445,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
       ? `${sortField} ${sortOrder}`
       : `json_extract(frontmatter_json, '$.${sortField}') ${sortOrder}`;
 
-    const countRow = db.prepare(`SELECT count(*) as total FROM docs_pages WHERE ${where}`).get(...params) as any;
+    const countRow = db.prepare(`SELECT count(*) as total FROM docs_pages WHERE ${where}`).get(...params) as DocsCountRow | undefined;
     const total = countRow?.total || 0;
 
     const rows = db.prepare(`
@@ -430,7 +454,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
       WHERE ${where}
       ORDER BY ${orderBy}
       LIMIT ? OFFSET ?
-    `).all(...params, limit, offset) as any[];
+    `).all(...params, limit, offset) as DocsFolderRow[];
 
     return {
       total,
@@ -461,26 +485,26 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
 
     // 1. Exact path match
     for (const candidate of candidates) {
-      const exact = db.prepare("SELECT path, title FROM docs_pages WHERE path = ?").get(candidate) as any;
+      const exact = db.prepare("SELECT path, title FROM docs_pages WHERE path = ?").get(candidate) as DocsPathTitleRow | undefined;
       if (exact) return { path: exact.path, title: exact.title || exact.path };
     }
 
     // 2. Case-insensitive path match
     for (const candidate of candidates) {
-      const ciPath = db.prepare("SELECT path, title FROM docs_pages WHERE path = ? COLLATE NOCASE").get(candidate) as any;
+      const ciPath = db.prepare("SELECT path, title FROM docs_pages WHERE path = ? COLLATE NOCASE").get(candidate) as DocsPathTitleRow | undefined;
       if (ciPath) return { path: ciPath.path, title: ciPath.title || ciPath.path };
     }
 
     // 3. Title match (exact then case-insensitive)
-    const byTitle = db.prepare("SELECT path, title FROM docs_pages WHERE title = ?").get(target) as any;
+    const byTitle = db.prepare("SELECT path, title FROM docs_pages WHERE title = ?").get(target) as DocsPathTitleRow | undefined;
     if (byTitle) return { path: byTitle.path, title: byTitle.title };
-    const ciTitle = db.prepare("SELECT path, title FROM docs_pages WHERE title = ? COLLATE NOCASE").get(target) as any;
+    const ciTitle = db.prepare("SELECT path, title FROM docs_pages WHERE title = ? COLLATE NOCASE").get(target) as DocsPathTitleRow | undefined;
     if (ciTitle) return { path: ciTitle.path, title: ciTitle.title };
 
     // 4. Slug match — target as the last path segment
     const slugMatch = db.prepare(
       "SELECT path, title FROM docs_pages WHERE path LIKE '%/' || ? OR path = ?",
-    ).get(target, target) as any;
+    ).get(target, target) as DocsPathTitleRow | undefined;
     if (slugMatch) return { path: slugMatch.path, title: slugMatch.title || slugMatch.path };
 
     return null;
@@ -510,7 +534,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
     const rows = db.prepare(`
       SELECT path, title, tags, folder, created, modified, frontmatter_json
       FROM docs_pages
-    `).all() as any[];
+    `).all();
 
     return rows.map((r) => {
       let frontmatter: Record<string, unknown> = {};
@@ -563,7 +587,7 @@ export function createDocsIndex(db: DatabaseSync, docsStore: DocsStore, options:
       FROM docs_pages
       WHERE tags IS NOT NULL AND tags != ''
       ORDER BY modified DESC
-    `).all() as any[];
+    `).all();
 
     return rows
       .map((r) => {

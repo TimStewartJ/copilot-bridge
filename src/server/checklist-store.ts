@@ -117,8 +117,20 @@ export function normalizeChecklistItemUpdate(body: unknown): ChecklistItemUpdate
 
 // ── Factory ───────────────────────────────────────────────────────
 
+type ChecklistItemRow = {
+  id: string;
+  taskId: string | null;
+  text: string;
+  done: number;
+  order: number;
+  createdAt: string;
+  completedAt: string | null;
+  deadline: string | null;
+};
+type ChecklistItemWithTaskRow = ChecklistItemRow & { taskTitle: string | null };
+
 export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
-  function hydrate(row: any): ChecklistItem {
+  function hydrate(row: ChecklistItemRow): ChecklistItem {
     const details = db.prepare("SELECT * FROM checklist_item_details WHERE itemId = ?").get(row.id);
     return {
       id: row.id,
@@ -143,13 +155,13 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
 
   function listChecklistItems(taskId: string | null): ChecklistItem[] {
     const rows = taskId === null
-      ? db.prepare('SELECT * FROM checklist_items WHERE taskId IS NULL ORDER BY "order"').all()
-      : db.prepare('SELECT * FROM checklist_items WHERE taskId = ? ORDER BY "order"').all(taskId);
-    return (rows as any[]).map(hydrate);
+      ? db.prepare('SELECT * FROM checklist_items WHERE taskId IS NULL ORDER BY "order"').all() as ChecklistItemRow[]
+      : db.prepare('SELECT * FROM checklist_items WHERE taskId = ? ORDER BY "order"').all(taskId) as ChecklistItemRow[];
+    return rows.map(hydrate);
   }
 
   function getChecklistItem(id: string): ChecklistItem | undefined {
-    const row = db.prepare("SELECT * FROM checklist_items WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM checklist_items WHERE id = ?").get(id) as ChecklistItemRow | undefined;
     return row ? hydrate(row) : undefined;
   }
 
@@ -271,7 +283,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
         (checklist_items.taskId IS NULL AND details.orphanedAt IS NULL)
         OR (tasks.status = 'active' AND tasks.muted = 0))
       ORDER BY checklist_items.createdAt DESC, checklist_items.ROWID DESC
-    `).all() as any[]).map(hydrate);
+    `).all() as ChecklistItemRow[]).map(hydrate);
   }
 
   /** Items completed in the last 7 days across active tasks and the global list. */
@@ -282,7 +294,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
       LEFT JOIN tasks ON checklist_items.taskId = tasks.id
       WHERE checklist_items.done = 1 AND (checklist_items.taskId IS NULL OR tasks.status = 'active') AND checklist_items.completedAt >= ?
       ORDER BY checklist_items.completedAt DESC, checklist_items.ROWID DESC
-    `).all(weekAgo) as any[]).map(hydrate);
+    `).all(weekAgo) as ChecklistItemRow[]).map(hydrate);
   }
 
   /** Items, open or done, due from..to inclusive on active tasks or global, with task title. */
@@ -295,7 +307,7 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
         AND (? IS NULL OR checklist_items.taskId = ?)
         AND ((checklist_items.taskId IS NULL AND details.orphanedAt IS NULL) OR tasks.status = 'active')
       ORDER BY checklist_items.deadline, checklist_items."order"
-    `).all(from, to, taskId ?? null, taskId ?? null) as any[];
+    `).all(from, to, taskId ?? null, taskId ?? null) as ChecklistItemWithTaskRow[];
     return rows.map((row) => ({ ...hydrate(row), ...(row.taskTitle ? { taskTitle: String(row.taskTitle) } : {}) }));
   }
 
@@ -310,11 +322,11 @@ export function createChecklistStore(db: DatabaseSync, bus: GlobalBus) {
     const t = taskId ?? null;
     const overdue = (db.prepare(`SELECT checklist_items.*, tasks.title AS taskTitle FROM checklist_items ${scope}
       AND checklist_items.deadline IS NOT NULL AND checklist_items.deadline < ? ORDER BY checklist_items.deadline LIMIT ?`)
-      .all(t, t, before, limit) as any[]).map((row) => ({ ...hydrate(row), ...(row.taskTitle ? { taskTitle: String(row.taskTitle) } : {}) }));
+      .all(t, t, before, limit) as ChecklistItemWithTaskRow[]).map((row) => ({ ...hydrate(row), ...(row.taskTitle ? { taskTitle: String(row.taskTitle) } : {}) }));
     const overdueTotal = Number((db.prepare(`SELECT COUNT(*) AS n FROM checklist_items ${scope}
-      AND checklist_items.deadline IS NOT NULL AND checklist_items.deadline < ?`).get(t, t, before) as any)?.n ?? 0);
+      AND checklist_items.deadline IS NOT NULL AND checklist_items.deadline < ?`).get(t, t, before) as { n: number } | undefined)?.n ?? 0);
     const undated = Number((db.prepare(`SELECT COUNT(*) AS n FROM checklist_items ${scope}
-      AND checklist_items.deadline IS NULL`).get(t, t) as any)?.n ?? 0);
+      AND checklist_items.deadline IS NULL`).get(t, t) as { n: number } | undefined)?.n ?? 0);
     return { overdue, overdueTotal, undated };
   }
 

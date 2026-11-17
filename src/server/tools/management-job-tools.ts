@@ -71,7 +71,7 @@ function getManagementJobContract(job: ManagementJob, dataDir?: string, sessionI
   }
   if (isDeployReleaseActive(job, dataDir)) {
     return {
-      summary: `Management job ${job.id} (${job.type}) activated release ${String((job.result as any).commitSha ?? "")}. The restart is complete.`,
+      summary: `Management job ${job.id} (${job.type}) activated release ${String((isRecord(job.result) ? job.result.commitSha : undefined) ?? "")}. The restart is complete.`,
       terminal: true,
       toolNextAction: "respond",
       retryable: false,
@@ -213,7 +213,7 @@ function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefiniti
         },
         required: ["jobId"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: { jobId: string | number; logTailBytes?: number }, invocation) => {
         const jobId = String(args.jobId ?? "").trim();
         if (!jobId) {
           return toolFailure("Missing management job id.");
@@ -229,7 +229,7 @@ function createManagementJobToolDefinitions(ctx: AppContext): BridgeToolDefiniti
             toolTelemetry: { jobId },
           });
         }
-        const maxBytes = Number.isInteger(args.logTailBytes) && args.logTailBytes > 0
+        const maxBytes = typeof args.logTailBytes === "number" && Number.isInteger(args.logTailBytes) && args.logTailBytes > 0
           ? Math.min(Number(args.logTailBytes), 64 * 1024)
           : undefined;
         return managementJobResult(ctx, job, invocation.sessionId, maxBytes);

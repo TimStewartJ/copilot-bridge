@@ -29,6 +29,7 @@ import { DEPLOY_RESTART_SOURCE, requestRestart, RESTART_WHEN_IDLE_NOTE } from ".
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
+  type BridgeToolArgs,
   type BridgeToolInvocation,
   type DefineBridgeToolOptions,
 } from "./agent-tools-mcp/adapter.js";
@@ -2102,6 +2103,10 @@ function getActiveManagementJob(error: unknown) {
   return undefined;
 }
 
+type StagingPreviewArgs = { stagingDir: string; validate?: boolean };
+type StagingDeployArgs = { stagingDir: string; message: string };
+type StagingCleanupArgs = { stagingDir: string };
+
 export const STAGING_TOOLS: BridgeToolDefinition[] = [
   defineBridgeTool("staging_init", {
     description:
@@ -2202,7 +2207,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       },
       required: ["stagingDir"],
     },
-    handler: async (args: any) => {
+    handler: async (args: StagingPreviewArgs) => {
       const { stagingDir } = args;
       if (!existsSync(stagingDir)) {
         return stagingFailure(
@@ -2242,7 +2247,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       },
       required: ["stagingDir", "message"],
     },
-    handler: async (args: any) => {
+    handler: async (args: StagingDeployArgs) => {
       const { stagingDir, message } = args;
       if (!existsSync(stagingDir)) {
         return stagingFailure(
@@ -2268,7 +2273,7 @@ export const STAGING_TOOLS: BridgeToolDefinition[] = [
       },
       required: ["stagingDir"],
     },
-    handler: async (args: any) => {
+    handler: async (args: StagingCleanupArgs) => {
       const { stagingDir } = args;
 
       if (!existsSync(stagingDir)) {
@@ -2294,7 +2299,7 @@ export interface RegisterStagingToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
-function enqueueStagingPreview(ctx: AppContext, args: any, invocation?: BridgeToolInvocation) {
+function enqueueStagingPreview(ctx: AppContext, args: StagingPreviewArgs, invocation?: BridgeToolInvocation) {
   const { stagingDir } = args;
   if (!existsSync(stagingDir)) {
     return stagingFailure(
@@ -2324,7 +2329,7 @@ function enqueueStagingPreview(ctx: AppContext, args: any, invocation?: BridgeTo
   }
 }
 
-function enqueueStagingDeploy(ctx: AppContext, args: any, invocation?: BridgeToolInvocation) {
+function enqueueStagingDeploy(ctx: AppContext, args: StagingDeployArgs, invocation?: BridgeToolInvocation) {
   const { stagingDir, message } = args;
   if (!existsSync(stagingDir)) {
     return stagingFailure(
@@ -2360,20 +2365,22 @@ function enqueueStagingDeploy(ctx: AppContext, args: any, invocation?: BridgeToo
 export function createStagingToolDefinitions(ctx?: AppContext): BridgeToolDefinition[] {
   if (!ctx) return [...STAGING_TOOLS];
   // Rebuild via the adapter, not by patching `handler`, to keep argument validation.
-  const boundHandlers: Record<string, DefineBridgeToolOptions["handler"]> = {
-    staging_preview: (args: any, invocation) => enqueueStagingPreview(ctx, args, invocation),
-    staging_deploy: (args: any, invocation) => enqueueStagingDeploy(ctx, args, invocation),
+  const rebind = <Args extends BridgeToolArgs>(
+    tool: BridgeToolDefinition,
+    handler: DefineBridgeToolOptions<Args>["handler"],
+  ): BridgeToolDefinition => defineBridgeTool<Args>(tool.name, {
+    description: tool.description,
+    parameters: tool.inputSchema,
+    scope: tool.scope,
+    handler,
+  });
+  const boundTools: Record<string, (tool: BridgeToolDefinition) => BridgeToolDefinition> = {
+    staging_preview: (tool) => rebind<StagingPreviewArgs>(tool, (args, invocation) => enqueueStagingPreview(ctx, args, invocation)),
+    staging_deploy: (tool) => rebind<StagingDeployArgs>(tool, (args, invocation) => enqueueStagingDeploy(ctx, args, invocation)),
   };
   return STAGING_TOOLS.map((tool) => {
-    const bound = boundHandlers[tool.name];
-    return bound
-      ? defineBridgeTool(tool.name, {
-        description: tool.description,
-        parameters: tool.inputSchema,
-        scope: tool.scope,
-        handler: bound,
-      })
-      : tool;
+    const bind = boundTools[tool.name];
+    return bind ? bind(tool) : tool;
   });
 }
 

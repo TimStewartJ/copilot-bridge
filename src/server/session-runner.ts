@@ -1,9 +1,12 @@
 // Run loop, live SDK events, stale-cache retry and run watchdog; SessionManager delegates here.
 
+import type { SessionEvent } from "@github/copilot-sdk";
 import type {
   AgentBackend,
   AgentBackgroundTask,
   AgentSession,
+  AgentSessionConfig,
+  AgentSessionEvent,
   AgentSlashCommandResult,
 } from "./agent-backend/index.js";
 import { stat } from "node:fs/promises";
@@ -48,6 +51,7 @@ import type {
   StartWorkAttachment,
 } from "./session-attachment-routing.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
+import type { McpServerConfig } from "./mcp-config.js";
 import { DEFAULT_SEND_MODE, toSendMode, type SendMode } from "../shared/send-mode.js";
 import type { AutomaticAnswerReason } from "../shared/automatic-answer.js";
 import { isRecord } from "../shared/is-record.js";
@@ -71,7 +75,11 @@ import {
 import { readPersistedRunEnding, type PersistedRunEnding } from "./session-run-ending-reader.js";
 import type { SessionAutoNameOptions } from "./session-name-autogen.js";
 import type { ImageBudgetController } from "./image-budget.js";
-import { normalizePromptCacheBreak, promptProcessMetadata } from "./session-prompt-fingerprint.js";
+import {
+  normalizePromptCacheBreak,
+  promptProcessMetadata,
+  type PromptFingerprintConfig,
+} from "./session-prompt-fingerprint.js";
 import { getParentToolCallId, isStampedAgentTurnEvent, showsAgentTurnsAreStamped } from "./agent-event-ownership.js";
 import { TranscriptAgentFold } from "./transcript-agent-fold.js";
 import {
@@ -132,17 +140,37 @@ interface SessionFeed {
   session: AgentSession;
   unsubscribe: () => void;
   /** The open run's event handler, registered by `runSessionOperation`. */
-  run?: { controller: SessionRunController; handleEvent: (event: any) => void };
+  run?: { controller: SessionRunController; handleEvent: (event: SessionEvent) => void };
   /** When the main agent last heard of each background agent: its notice or its read_agent. */
   agentReportedAt: Map<string, number>;
   readAgentCalls: Map<string, string>;
   attentionMode: SessionAttentionMode;
   /** A runtime-started turn's events, held for its run (`claimed`) or the next one if busy. */
-  heldTurn?: { startedAt: number; events: unknown[]; claimed?: boolean };
+  heldTurn?: { startedAt: number; events: SessionEvent[]; claimed?: boolean };
 }
 
-function getEventTimestampMs(event: any): number | undefined {
-  const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
+type SessionErrorEvent = Extract<SessionEvent, { type: "session.error" }>;
+
+/** The resume config a run reads; the rest of it goes back to the session manager unchanged. */
+export type RunResumeConfig = AgentSessionConfig & { mcpServers?: Record<string, McpServerConfig>; model?: string };
+
+/** The runtime's live events: the Copilot backend hands on the SDK's session events unchanged. */
+function asSdkSessionEvent(event: AgentSessionEvent): SessionEvent {
+  return event as SessionEvent;
+}
+
+/** An event's payload, for the fields the Bridge reads from any event type. */
+function getEventRecordData(event: unknown): Record<string, unknown> | undefined {
+  return isRecord(event) && isRecord(event.data) ? event.data : undefined;
+}
+
+/** An event's type as a string, to compare with types the SDK's event list does not name. */
+function eventTypeOf(event: SessionEvent): string {
+  return event.type;
+}
+
+function getEventTimestampMs(event: unknown): number | undefined {
+  const rawTimestamp = getEventRecordData(event)?.timestamp ?? (isRecord(event) ? event.timestamp : undefined);
   if (typeof rawTimestamp !== "string") return undefined;
   const eventTime = Date.parse(rawTimestamp);
   return Number.isFinite(eventTime) ? eventTime : undefined;
@@ -330,8 +358,8 @@ async function invokeSlashCommand(session: AgentSession, command: ParsedSlashCom
   return session.invokeSlashCommand({ name: command.name, input: command.input });
 }
 
-function getSessionShutdownType(data: any): string | undefined {
-  return typeof data?.shutdownType === "string" ? data.shutdownType.toLowerCase() : undefined;
+function getSessionShutdownType(data: unknown): string | undefined {
+  return isRecord(data) && typeof data.shutdownType === "string" ? data.shutdownType.toLowerCase() : undefined;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -396,20 +424,20 @@ export interface SessionRunnerDeps {
   isSessionBusy(sessionId: string): boolean;
   hasPlan(sessionId: string): boolean;
   getSessionStateDir(sessionId: string): string;
-  buildSessionConfig(opts?: SessionConfigOptions): any;
-  awaitPendingSessionCreation(sessionId: string): Promise<any | undefined>;
+  buildSessionConfig(opts?: SessionConfigOptions): RunResumeConfig;
+  awaitPendingSessionCreation(sessionId: string): Promise<AgentSession | undefined>;
   beginSessionResume(
     sessionId: string,
-    sessionConfig: any,
+    sessionConfig: RunResumeConfig,
     isCancelled?: () => boolean,
   ): Promise<SessionResumeLease | null>;
   endSessionResume(lease: SessionResumeLease): void;
   resumeSessionWithTimeout(
     backend: AgentBackend,
     sessionId: string,
-    resume: Promise<any>,
+    resume: Promise<AgentSession>,
     timeoutMessage: string,
-  ): Promise<any>;
+  ): Promise<AgentSession>;
   notifySessionCapacityChanged(): void;
   findLinkedTask(sessionId: string): Task | undefined;
   lookupGroupNotes(groupId?: string): { groupName: string; notes: string } | null;
@@ -430,10 +458,10 @@ export interface SessionRunnerDeps {
   /** A run let go of the session, so a message waiting for it can start. */
   notifySessionReleased?(sessionId: string): void;
   /** Resumes a runtime session, making it again when the runtime never saved the chat. */
-  resumeRuntimeSession(backend: AgentBackend, sessionId: string, resumeConfig: any): Promise<any>;
-  cacheResumedSession(sessionId: string, session: any, sessionConfig?: any): Promise<any>;
-  waitForSessionToolInitialization(sessionId: string, session: any): boolean | Promise<boolean>;
-  abandonCachedSession(sessionId: string, expectedSession: any): Promise<void>;
+  resumeRuntimeSession(backend: AgentBackend, sessionId: string, resumeConfig: RunResumeConfig): Promise<AgentSession>;
+  cacheResumedSession(sessionId: string, session: AgentSession, sessionConfig?: PromptFingerprintConfig): Promise<AgentSession>;
+  waitForSessionToolInitialization(sessionId: string, session: AgentSession): boolean | Promise<boolean>;
+  abandonCachedSession(sessionId: string, expectedSession: AgentSession): Promise<void>;
   abortSession(sessionId: string): Promise<boolean>;
   markCachedSessionForEviction(sessionId: string, reason: string): void;
   /** Evicts after the run goes idle, not now, so it can't race SDK persistence of this turn. */
@@ -470,7 +498,7 @@ export interface SessionRunnerDeps {
   applyTurnReasoningEffort?(sessionId: string, session: AgentSession, reasoningEffort: string): Promise<void>;
   maybeAutoNameSession(
     sessionId: string,
-    options: SessionAutoNameOptions,
+    options: SessionAutoNameOptions<AgentSession>,
   ): void;
 }
 
@@ -524,7 +552,7 @@ export class SessionRunner {
       attentionMode: "normal",
     };
     this.sessionFeeds.set(sessionId, feed);
-    feed.unsubscribe = session.on((event) => this.routeSessionEvent(sessionId, feed, event));
+    feed.unsubscribe = session.on((event) => this.routeSessionEvent(sessionId, feed, asSdkSessionEvent(event)));
     this.readAgentModeOnAttach(sessionId, session);
     return feed;
   }
@@ -571,7 +599,7 @@ export class SessionRunner {
     this.deps.imageBudget?.detach(sessionId, session);
   }
 
-  private routeSessionEvent(sessionId: string, feed: SessionFeed, event: any): void {
+  private routeSessionEvent(sessionId: string, feed: SessionFeed, event: SessionEvent): void {
     this.lastRuntimeEvent = { receivedAtMs: Date.now(), sessionId, type: String(event?.type) };
     const mainAgent = !getSdkAgentId(event);
     const at = getEventTimestampMs(event) ?? Date.now();
@@ -605,16 +633,18 @@ export class SessionRunner {
     this.followRuntimeTurn(sessionId);
   }
 
-  private noteWhatMainAgentHeard(feed: SessionFeed, event: any, at: number): void {
-    const data = event?.data;
-    switch (event?.type) {
+  private noteWhatMainAgentHeard(feed: SessionFeed, event: SessionEvent, at: number): void {
+    const { type, data } = event;
+    switch (type) {
       case "system.notification": {
-        const agentId = data?.kind?.agentId;
+        const kind = data?.kind;
+        const agentId = isRecord(kind) ? kind.agentId : undefined;
         if (typeof agentId === "string") feed.agentReportedAt.set(agentId, at);
         break;
       }
       case "tool.execution_start": {
-        const agentId = data?.arguments?.agent_id;
+        const args = data?.arguments;
+        const agentId = isRecord(args) ? args.agent_id : undefined;
         if (data?.toolName === "read_agent" && typeof agentId === "string" && typeof data?.toolCallId === "string") {
           feed.readAgentCalls.set(data.toolCallId, agentId);
         }
@@ -1138,8 +1168,8 @@ export class SessionRunner {
       resumeContext: string;
       idleSpanName: string;
       startLog: string;
-      execute?: (session: any) => Promise<void>;
-      retryExecute?: (session: any, claimSend: () => boolean) => Promise<void>;
+      execute?: (session: AgentSession) => Promise<void>;
+      retryExecute?: (session: AgentSession, claimSend: () => boolean) => Promise<void>;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
       /** The run follows a turn the runtime started: no prompt to prepare or send. */
@@ -1175,7 +1205,7 @@ export class SessionRunner {
     }
 
     let usedCache = false;
-    const resumeSession = async (): Promise<any> => {
+    const resumeSession = async (): Promise<AgentSession | null> => {
       const resumeStart = Date.now();
       let s = this.deps.sessionObjects.get(sessionId);
       if (!s) {
@@ -1217,7 +1247,7 @@ export class SessionRunner {
       return s;
     };
 
-    const abandonSession = (activeSession: any) =>
+    const abandonSession = (activeSession: AgentSession) =>
       this.deps.abandonCachedSession(sessionId, activeSession);
 
     let session = await resumeSession();
@@ -1288,7 +1318,7 @@ export class SessionRunner {
     let pendingTerminalCompletion: TerminalCompletion | undefined;
     /** This run's latest completion that an event has put in the transcript. */
     let recordedTerminalCompletion: TerminalCompletion | undefined;
-    const recordTranscriptCompletion = (event: any): void => {
+    const recordTranscriptCompletion = (event: SessionEvent): void => {
       const recorded = getTranscriptCompletion(event, pendingTerminalCompletion);
       if (!recorded) return;
       recordedTerminalCompletion = recorded.completion;
@@ -1313,12 +1343,13 @@ export class SessionRunner {
       }
       return fallbackName ?? "unknown";
     };
-    const rememberExternalToolRequest = (data: any, eventAt: number) => {
-      const requestId = typeof data?.requestId === "string" && data.requestId ? data.requestId : undefined;
+    const rememberExternalToolRequest = (data: unknown, eventAt: number) => {
+      const fields = isRecord(data) ? data : undefined;
+      const requestId = typeof fields?.requestId === "string" && fields.requestId ? fields.requestId : undefined;
       if (!requestId) return;
-      const toolName = rememberToolName(data?.toolCallId, data?.toolName ?? data?.name);
-      const toolCallId = typeof data?.toolCallId === "string" && data.toolCallId
-        ? data.toolCallId
+      const toolName = rememberToolName(fields?.toolCallId, fields?.toolName ?? fields?.name);
+      const toolCallId = typeof fields?.toolCallId === "string" && fields.toolCallId
+        ? fields.toolCallId
         : undefined;
       activeExternalTools.set(requestId, {
         requestId,
@@ -1369,7 +1400,7 @@ export class SessionRunner {
     let originalPromptRecorded = false;
     let providerRetryCount = 0;
     let sendSettled = Promise.resolve();
-    let pendingProviderRetry: { event: any; context: SessionEventHandlingContext } | undefined;
+    let pendingProviderRetry: { event: SessionErrorEvent; context: SessionEventHandlingContext } | undefined;
     let providerRetryPromise: Promise<void> | undefined;
     let cancelProviderRetryWait: (() => void) | undefined;
     const resetRunTelemetryState = () => {
@@ -1414,15 +1445,15 @@ export class SessionRunner {
       acceptingSessionEvents = true;
     };
 
-    const getEventTimestampIso = (event: any): string | undefined => {
+    const getEventTimestampIso = (event: unknown): string | undefined => {
       const eventTime = getEventTimestampMs(event);
       return eventTime === undefined ? undefined : new Date(eventTime).toISOString();
     };
     const publishContextSummary = (summary: ReturnType<SessionContextStore["getSummary"]>): void => {
       if (summary) bus.emit({ type: "context_update", summary });
     };
-    const getSubagentContextTurnId = (event: any): string | undefined => {
-      const data = event?.data;
+    const getSubagentContextTurnId = (event: SessionEvent): string | undefined => {
+      const data = getEventRecordData(event);
       const agentId = getSdkAgentId(event);
       const toolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
       const parentToolCallId = typeof data?.parentToolCallId === "string" ? data.parentToolCallId : undefined;
@@ -1430,14 +1461,14 @@ export class SessionRunner {
         ?? (toolCallId ? subAgentTurnIdMap.get(toolCallId) : undefined)
         ?? (parentToolCallId ? subAgentTurnIdMap.get(parentToolCallId) : undefined);
     };
-    const recordLiveContextTelemetry = (event: any, live: boolean): void => {
+    const recordLiveContextTelemetry = (event: SessionEvent, live: boolean): void => {
       const store = this.deps.sessionContextStore;
-      const data = event?.data;
+      const data = getEventRecordData(event);
       const subagentTurnId = getSubagentContextTurnId(event);
       const isSubagent = Boolean(subagentTurnId || getSdkAgentId(event) || data?.parentToolCallId
         || data?.isSubAgent === true || data?.subagent === true || data?.initiator === "sub-agent"
         || data?.interactionType === "conversation-subagent"
-        || (event?.type === "prompt_cache_break" && typeof data?.agentName === "string"));
+        || (eventTypeOf(event) === "prompt_cache_break" && typeof data?.agentName === "string"));
       const bridgeTurnId = isSubagent ? subagentTurnId : currentBridgeTurnId;
       const attribution = isSubagent
         ? "subagent_turn"
@@ -1465,13 +1496,14 @@ export class SessionRunner {
       if (!normalized) return;
       publishContextSummary(store.recordContextEvent(normalized));
     };
-    const endCurrentContextTurn = (event: any): void => {
+    const endCurrentContextTurn = (event: SessionEvent | undefined): void => {
       if (!currentBridgeTurnId) return;
+      const model = getEventRecordData(event)?.model;
       this.deps.sessionContextStore?.recordTurnEnd({
         sessionId,
         bridgeTurnId: currentBridgeTurnId,
         endedAt: getEventTimestampIso(event),
-        model: typeof event?.data?.model === "string" ? event.data.model : undefined,
+        model: typeof model === "string" ? model : undefined,
       });
       currentBridgeTurnId = undefined;
     };
@@ -1481,7 +1513,7 @@ export class SessionRunner {
       if (!attention || typeof attention !== "object") return false;
       return reason === "done" ? attention.done === true : attention.error === true;
     };
-    const recordCompletionAttention = (reason: "done" | "error", event: any) => {
+    const recordCompletionAttention = (reason: "done" | "error", event: SessionEvent | undefined) => {
       if (!shouldRecordCompletionAttention(reason)) return;
       this.recordSessionAttention(sessionId, getEventTimestampIso(event));
     };
@@ -1559,7 +1591,7 @@ export class SessionRunner {
       return `live_${normalizedEventType}`;
     };
     const recordRunCompletion = (
-      event: any,
+      event: SessionEvent | undefined,
       context: SessionEventHandlingContext,
       status: "done" | "error" | "aborted" | "shutdown",
       metadata: Record<string, unknown> = {},
@@ -1575,9 +1607,9 @@ export class SessionRunner {
         ...metadata,
       }, now);
     };
-    const completeSessionError = (event: any, context: SessionEventHandlingContext) => {
+    const completeSessionError = (event: SessionErrorEvent, context: SessionEventHandlingContext) => {
       if (runController.isCompleted()) return;
-      const data = event?.data;
+      const data = event.data;
       console.error(`[sdk] [${sid}] ❌ Error: ${data?.message ?? "unknown"}`);
       endCurrentContextTurn(event);
       recordRunCompletion(event, context, "error", {
@@ -1590,9 +1622,9 @@ export class SessionRunner {
         sourceEventId: getSdkEventId(event),
       });
     };
-    const isLiveRunTerminalEvent = (event: any): boolean =>
+    const isLiveRunTerminalEvent = (event: SessionEvent): boolean =>
       LIVE_RUN_TERMINAL_EVENT_TYPES.has(event?.type) && !isSdkSubagentSessionError(event);
-    const noteLiveEvent = (event: any, eventAt: number, origin: SessionEventOrigin) => {
+    const noteLiveEvent = (event: SessionEvent, eventAt: number, origin: SessionEventOrigin) => {
       const eventType = typeof event?.type === "string" ? event.type : undefined;
       if (!eventType) return;
       lastLiveEventType = eventType;
@@ -1630,7 +1662,7 @@ export class SessionRunner {
       });
       if (ending.conclusive) {
         // An error, abort or shutdown is handled exactly as it would have been live.
-        handleEvent(ending.event, context);
+        handleEvent(ending.event!, context);
         return;
       }
       const completion = pendingTerminalCompletion ?? recordedTerminalCompletion;
@@ -1698,7 +1730,7 @@ export class SessionRunner {
     };
 
     const fusionProgress = createFusionProgress((modelId) => this.deps.modelDisplayName?.(modelId) ?? modelId);
-    const handleEvent = (event: any, context: SessionEventHandlingContext) => {
+    const handleEvent = (event: SessionEvent, context: SessionEventHandlingContext) => {
       if (!acceptingSessionEvents || runController.isCompleted()) return;
       const eventAt = Date.now();
       if (context.origin === "live") {
@@ -1709,7 +1741,10 @@ export class SessionRunner {
         lastEventTime = eventAt;
         this.touchSessionRun(sessionId, eventAt);
       }
-      const data = (event as any).data;
+      // Destructured together so each case below narrows `data` to its event type's payload.
+      const { type: eventType, data } = event;
+      // The same payload as a record, for the fields the Bridge reads that the SDK types omit.
+      const fields = getEventRecordData(event);
       recordLiveContextTelemetry(event, context.origin === "live");
       if (opts.attentionMode !== "quiet") {
         this.persistLastVisibleActivityAt(sessionId, getVisibleEventTimestamp(event, sessionId));
@@ -1717,7 +1752,7 @@ export class SessionRunner {
       if (agentLifecycle.observe(event)) bus.announceAgentChange();
       if (!this.runtimeStampsAgentTurns && showsAgentTurnsAreStamped(event)) this.runtimeStampsAgentTurns = true;
       recordTranscriptCompletion(event);
-      switch (event.type) {
+      switch (eventType) {
         case "user_input.requested": {
           turnHadSideEffects = true;
           try {
@@ -1740,7 +1775,7 @@ export class SessionRunner {
           }
           if (unshownQuestions.delete(requestId)) break;
           if (
-            data.dismissed !== true
+            fields?.dismissed !== true
             && typeof data.answer === "string"
             && typeof data.wasFreeform === "boolean"
           ) {
@@ -1810,8 +1845,8 @@ export class SessionRunner {
             const agentId = getSdkAgentId(event);
             const content = typeof data?.content === "string"
               ? data.content
-              : typeof data?.prompt === "string"
-                ? data.prompt
+              : typeof fields?.prompt === "string"
+                ? fields.prompt
                 : undefined;
             if (content) {
               const toolCallId = agentId
@@ -1852,8 +1887,8 @@ export class SessionRunner {
             bus.commitPendingPrompt(
               typeof data?.content === "string"
                 ? data.content
-                : typeof data?.prompt === "string"
-                  ? data.prompt
+                : typeof fields?.prompt === "string"
+                  ? fields.prompt
                   : undefined,
               getSdkEventId(event),
               getEventTimestampIso(event),
@@ -1862,7 +1897,7 @@ export class SessionRunner {
           if (getSdkEventId(event)) originalPromptRecorded = true;
           runController.markPromptAccepted();
           if (typeof data?.content === "string" && !("source" in (data ?? {}))) {
-            this.deps.maybeAutoNameSession(sessionId, { session, userMessages: [data.content] });
+            this.deps.maybeAutoNameSession(sessionId, { session: session!, userMessages: [data.content] });
           }
           break;
         }
@@ -1931,7 +1966,7 @@ export class SessionRunner {
           break;
         case "assistant.reasoning_delta":
           // Sub-agent thinking belongs to the sub-agent, not to the main transcript.
-          if (getSdkAgentId(event) || data?.parentToolCallId) break;
+          if (getSdkAgentId(event) || fields?.parentToolCallId) break;
           if (typeof data?.deltaContent === "string" && data.deltaContent) {
             bus.emit({
               type: "reasoning_delta",
@@ -1943,7 +1978,7 @@ export class SessionRunner {
           break;
         case "assistant.reasoning":
           // Full block after its deltas: repairs missed ones (reconnect, non-streaming model).
-          if (getSdkAgentId(event) || data?.parentToolCallId) break;
+          if (getSdkAgentId(event) || fields?.parentToolCallId) break;
           if (typeof data?.content === "string" && data.content.trim()) {
             bus.emit({
               type: "reasoning",
@@ -2020,7 +2055,7 @@ export class SessionRunner {
           rememberExternalToolRequest(data, eventAt);
           const toolName = getTrackedToolDisplayName(
             data?.toolCallId,
-            rememberToolName(data?.toolCallId, data?.toolName ?? data?.name),
+            rememberToolName(data?.toolCallId, data?.toolName ?? fields?.name),
           );
           console.log(`[sdk] [${sid}] 🧰 External tool requested: ${toolName}`);
           break;
@@ -2030,7 +2065,7 @@ export class SessionRunner {
           break;
         case "tool.execution_start": {
           turnHadSideEffects = true;
-          const toolName = data?.toolName ?? data?.name ?? "unknown";
+          const toolName = data?.toolName ?? (typeof fields?.name === "string" ? fields.name : undefined) ?? "unknown";
           const loopCandidate = toolLoopGuard.detectCandidate(toolName, data?.arguments);
           if (loopCandidate) {
             console.warn(
@@ -2045,7 +2080,8 @@ export class SessionRunner {
             });
           }
           if (toolName === "skill" && !data?.parentToolCallId) {
-            const skillName = typeof data?.arguments?.skill === "string" ? data.arguments.skill : undefined;
+            const skillArgs = data?.arguments;
+            const skillName = isRecord(skillArgs) && typeof skillArgs.skill === "string" ? skillArgs.skill : undefined;
             if (skillName) {
               try {
                 this.deps.onSkillUsed?.(sessionId, skillName);
@@ -2084,7 +2120,7 @@ export class SessionRunner {
             toolCallId: data?.toolCallId,
             name: getTrackedToolDisplayName(
               data?.toolCallId,
-              rememberToolName(data?.toolCallId, data?.toolName ?? data?.name),
+              rememberToolName(data?.toolCallId, fields?.toolName ?? fields?.name),
             ),
             message: data?.progressMessage ?? "",
             ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
@@ -2096,7 +2132,7 @@ export class SessionRunner {
             toolCallId: data?.toolCallId,
             name: getTrackedToolDisplayName(
               data?.toolCallId,
-              rememberToolName(data?.toolCallId, data?.toolName ?? data?.name),
+              rememberToolName(data?.toolCallId, fields?.toolName ?? fields?.name),
             ),
             content: data?.partialOutput ?? "",
             ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
@@ -2250,7 +2286,7 @@ export class SessionRunner {
         case "subagent.failed": {
           const subagentToolCallId = typeof data?.toolCallId === "string" ? data.toolCallId : undefined;
           // The correlator ignores this for a background launch, already sealed as successful.
-          if (event.type === "subagent.failed" && subagentToolCallId) {
+          if (eventType === "subagent.failed" && subagentToolCallId) {
             correlator.recordSubagentFailure(subagentToolCallId, data?.error);
           }
           const subagentBridgeTurnId = subagentToolCallId
@@ -2396,14 +2432,14 @@ export class SessionRunner {
           endCurrentContextTurn(event);
           const shutdownType = getSessionShutdownType(data);
           if (shutdownType === "error") {
-            const message = data?.message ?? data?.reason ?? "session shutdown";
+            const message = fields?.message ?? fields?.reason ?? "session shutdown";
             console.error(`[sdk] [${sid}] ❌ Shutdown(error): ${message}`);
             recordRunCompletion(event, context, "error", {
               shutdownType,
-              errorMessagePresent: typeof data?.message === "string" || typeof data?.reason === "string",
+              errorMessagePresent: typeof fields?.message === "string" || typeof fields?.reason === "string",
               errorMessageLength: typeof message === "string" ? message.length : undefined,
             });
-            runController.completeError(message, {
+            runController.completeError(String(message), {
               sourceEventId: getSdkEventId(event),
             });
           } else {
@@ -2528,9 +2564,9 @@ export class SessionRunner {
 
     let unsub: (() => void) | undefined;
     /** Joins the feed, held turn first, in one tick so each event is handled once and in order. */
-    const listenToSession = (activeSession: typeof session) => {
+    const listenToSession = (activeSession: AgentSession) => {
       const feed = this.attachSession(sessionId, activeSession);
-      const registration = { controller: runController, handleEvent: (event: any) => handleEvent(event, { origin: "live" }) };
+      const registration = { controller: runController, handleEvent: (event: SessionEvent) => handleEvent(event, { origin: "live" }) };
       feed.run = registration;
       unsub = () => {
         if (feed.run === registration) feed.run = undefined;
@@ -2546,7 +2582,7 @@ export class SessionRunner {
       }
       // A later turn held behind this one's end is followed next, when this run lets go.
       const rest = heldTurn.events.slice(next);
-      const nextTurn = rest.findIndex((event: any) => event?.type === "assistant.turn_start" && !getSdkAgentId(event));
+      const nextTurn = rest.findIndex((event) => event?.type === "assistant.turn_start" && !getSdkAgentId(event));
       if (nextTurn >= 0) {
         feed.heldTurn = { startedAt: getEventTimestampMs(rest[nextTurn]) ?? Date.now(), events: rest.slice(nextTurn) };
       }
@@ -2554,7 +2590,7 @@ export class SessionRunner {
 
     const eventsJsonlPath = join(this.deps.getSessionStateDir(sessionId), "events.jsonl");
 
-    const prepareSessionForSend = async (activeSession: typeof session) => {
+    const prepareSessionForSend = async (activeSession: AgentSession) => {
       const initialization = this.deps.waitForSessionToolInitialization(sessionId, activeSession);
       if (!(initialization === true || await initialization)) {
         throw new Error(SESSION_TOOL_INITIALIZATION_INCOMPLETE_MESSAGE);
@@ -2573,7 +2609,7 @@ export class SessionRunner {
         acceptingSessionEvents = false;
         unsub?.();
         unsub = undefined;
-        await abandonSession(session);
+        await abandonSession(session!);
         session = await resumeSession();
         rememberAttentionMode(session);
         staleCacheRetryCount += 1;
@@ -2590,12 +2626,12 @@ export class SessionRunner {
           await abandonSession(session);
           return;
         }
-        if ((await runStepOrCompletion("prepare session for retry", () => prepareSessionForSend(session))).completed) return;
+        if ((await runStepOrCompletion("prepare session for retry", () => prepareSessionForSend(session!))).completed) return;
         if (runController.isCompleted()) return;
         listenToSession(session);
         if (runController.isCompleted()) return;
         if (!opts.execute) throw new Error("Session run is missing an execute step");
-        if ((await runSendStep("retry send prompt", () => opts.execute!(session))).completed) return;
+        if ((await runSendStep("retry send prompt", () => opts.execute!(session!))).completed) return;
         runController.markPromptAccepted();
       })();
 
@@ -2648,7 +2684,7 @@ export class SessionRunner {
         const activity = await session?.getActivity();
         if (!activity) return "unknown";
         if (activity.processing) return "working";
-        const tasks = (await session.listTasks())?.tasks;
+        const tasks = (await session!.listTasks())?.tasks;
         if (!tasks) return "unknown";
         const now = Date.now();
         const reportedAt = this.sessionFeeds.get(sessionId)?.agentReportedAt;
@@ -2668,7 +2704,7 @@ export class SessionRunner {
       });
     });
 
-    const scheduleProviderRetry = (event: any, context: SessionEventHandlingContext) => {
+    const scheduleProviderRetry = (event: SessionErrorEvent, context: SessionEventHandlingContext) => {
       const pending = { event, context };
       pendingProviderRetry = pending;
       providerRetryCount += 1;
@@ -2694,7 +2730,7 @@ export class SessionRunner {
         if ((await runStepOrCompletion("settle failed provider send", () => failedSendSettled)).completed) return;
         if (runController.isCompleted() || pendingProviderRetry !== pending) return;
         const readiness = await runStepOrCompletion<Awaited<ReturnType<AgentSession["getActivity"]>>>(
-          "check runtime before provider retry", () => session.getActivity(),
+          "check runtime before provider retry", () => session!.getActivity(),
         );
         if (runController.isCompleted() || pendingProviderRetry !== pending || readiness.completed) return;
         if (readiness.value?.processing !== false || this.deps.sessionObjects.get(sessionId) !== session) {
@@ -2713,7 +2749,7 @@ export class SessionRunner {
           recordRunSpan("session.provider.retry", 0, { outcome: "started" });
           return true;
         };
-        if ((await runSendStep("send provider retry", () => opts.retryExecute!(session, claimSend))).completed) return;
+        if ((await runSendStep("send provider retry", () => opts.retryExecute!(session!, claimSend))).completed) return;
         runController.markPromptAccepted();
         startWatchdogTick();
       })().catch((error) => {
@@ -2859,11 +2895,11 @@ export class SessionRunner {
       try {
         if (runController.isCompleted()) return;
         if (!opts.execute) throw new Error("Session run is missing an execute step");
-        if (!opts.followsRuntimeTurn && (await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session))).completed) return;
+        if (!opts.followsRuntimeTurn && (await runStepOrCompletion("prepare session for send", () => prepareSessionForSend(session!))).completed) return;
         if (runController.isCompleted()) return;
         listenToSession(session);
         if (runController.isCompleted()) return;
-        if ((await runSendStep("send prompt", () => opts.execute!(session))).completed) return;
+        if ((await runSendStep("send prompt", () => opts.execute!(session!))).completed) return;
         const staleError = pendingStaleSessionError;
         pendingStaleSessionError = undefined;
         if (staleError !== undefined) {

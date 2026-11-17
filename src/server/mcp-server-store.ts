@@ -42,7 +42,16 @@ function serializeConfig(config: McpServerConfig): string {
   }
 }
 
-function hydrate(row: any): McpServer {
+type McpServerRow = {
+  id: string;
+  name: string;
+  config: string;
+  enabledByDefault: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function hydrate(row: McpServerRow): McpServer {
   const config = JSON.parse(row.config) as unknown;
   assertMcpServerConfig(config);
   return {
@@ -56,31 +65,31 @@ function hydrate(row: any): McpServer {
 }
 
 /** Reads skip a bad row (else the user can't even delete it); writes stay strictly validated. */
-const MCP_SERVER_HYDRATION: RowHydrationContext<any> = {
+const MCP_SERVER_HYDRATION: RowHydrationContext<McpServerRow> = {
   store: "mcp-servers",
   describeRow: (row) => `${String(row?.id ?? "<no id>")} ("${String(row?.name ?? "")}")`,
 };
 
 export function createMcpServerStore(db: DatabaseSync) {
   function listMcpServers(): McpServer[] {
-    const rows = db.prepare("SELECT * FROM mcp_servers ORDER BY name COLLATE NOCASE").all() as any[];
+    const rows = db.prepare("SELECT * FROM mcp_servers ORDER BY name COLLATE NOCASE").all() as McpServerRow[];
     return hydrateRowsSafely(rows, hydrate, MCP_SERVER_HYDRATION);
   }
 
   function getMcpServer(id: string): McpServer | undefined {
-    const row = db.prepare("SELECT * FROM mcp_servers WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM mcp_servers WHERE id = ?").get(id) as McpServerRow | undefined;
     return row ? hydrateRowSafely(row, hydrate, MCP_SERVER_HYDRATION) : undefined;
   }
 
   function getMcpServerByName(name: string): McpServer | undefined {
-    const row = db.prepare("SELECT * FROM mcp_servers WHERE name = ? COLLATE NOCASE").get(name) as any;
+    const row = db.prepare("SELECT * FROM mcp_servers WHERE name = ? COLLATE NOCASE").get(name) as McpServerRow | undefined;
     return row ? hydrateRowSafely(row, hydrate, MCP_SERVER_HYDRATION) : undefined;
   }
 
   function assertUniqueName(name: string, excludingId?: string): void {
     const row = excludingId
-      ? db.prepare("SELECT id FROM mcp_servers WHERE name = ? COLLATE NOCASE AND id != ?").get(name, excludingId) as any
-      : db.prepare("SELECT id FROM mcp_servers WHERE name = ? COLLATE NOCASE").get(name) as any;
+      ? db.prepare("SELECT id FROM mcp_servers WHERE name = ? COLLATE NOCASE AND id != ?").get(name, excludingId)
+      : db.prepare("SELECT id FROM mcp_servers WHERE name = ? COLLATE NOCASE").get(name);
     if (row) throw new Error(`MCP server name "${name}" already exists`);
   }
 
@@ -105,7 +114,7 @@ export function createMcpServerStore(db: DatabaseSync) {
     if (exists?.found !== 1) throw new Error(`MCP server ${id} not found`);
 
     const fields: string[] = ["updatedAt = ?"];
-    const values: any[] = [new Date().toISOString()];
+    const values: Array<string | number> = [new Date().toISOString()];
 
     if (updates.name !== undefined) {
       const name = normalizeServerName(updates.name);
@@ -146,7 +155,7 @@ export function createMcpServerStore(db: DatabaseSync) {
     const servers = serverIds === undefined
       // Defaults skip bad rows (every session start); explicit ids stay strict.
       ? hydrateRowsSafely(
-        db.prepare("SELECT * FROM mcp_servers WHERE enabledByDefault = 1 ORDER BY name COLLATE NOCASE").all() as any[],
+        db.prepare("SELECT * FROM mcp_servers WHERE enabledByDefault = 1 ORDER BY name COLLATE NOCASE").all() as McpServerRow[],
         hydrate,
         MCP_SERVER_HYDRATION,
       )

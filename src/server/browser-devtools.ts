@@ -2,11 +2,17 @@
 
 import { WebSocket } from "ws";
 
+/** A DevTools reply; `node` is named because DOM.describeNode callers read into it. */
+export interface CdpResult {
+  [key: string]: unknown;
+  node?: { attributes?: unknown };
+}
+
 export interface CdpMessage {
   id?: number;
   method?: string;
-  params?: Record<string, any>;
-  result?: Record<string, any>;
+  params?: Record<string, unknown>;
+  result?: CdpResult;
   error?: { message?: string };
   sessionId?: string;
 }
@@ -48,7 +54,7 @@ export class CdpConnection {
     });
   }
 
-  send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<Record<string, any>> {
+  send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<CdpResult> {
     return new Promise((resolve, reject) => {
       if (this.closed) return reject(new Error("the browser's DevTools connection closed"));
       const id = ++this.nextId;

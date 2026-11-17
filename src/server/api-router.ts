@@ -95,6 +95,7 @@ import {
   parseAdoWorkReferenceUrl,
 } from "../shared/ado-work-reference.js";
 import { isRecord } from "../shared/is-record.js";
+import type { BusSnapshot, StreamEvent } from "./event-bus.js";
 import { serializeCopilotUsageSummary } from "./copilot-usage-serializer.js";
 import { DEFAULT_CONTEXT_EVENT_LIMIT, MAX_CONTEXT_EVENT_LIMIT } from "./session-context-store.js";
 import {
@@ -308,6 +309,11 @@ function parseSearchRequest(query: express.Request["query"]): Required<BridgeSea
     limit: parseStrictBoundedInteger(query.limit, "limit", DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT),
     offset: parseStrictBoundedInteger(query.offset, "offset", 0, 0, 10_000),
   };
+}
+
+/** The `message` of whatever was thrown, read as `err?.message` was: undefined for a non-object. */
+function thrownMessage(err: unknown): unknown {
+  return isRecord(err) ? err.message : undefined;
 }
 
 function docsFtsHttpError(error: unknown): { status: 503; body: ReturnType<typeof docsFtsUnavailablePayload> } | null {
@@ -800,6 +806,7 @@ export function createApiRouter(
   router.use(createRequestTelemetryMiddleware(ctx.telemetryStore));
 
   // ── File upload (multipart) — must be before JSON body parser ──
+  const uploadDirs = new WeakMap<object, string>();
   const uploadStorage = multer.diskStorage({
     destination: (req, _file, cb) => {
       const sessionId = req.body?.sessionId;
@@ -808,11 +815,11 @@ export function createApiRouter(
       }
       const filesDir = join(getCopilotHome(ctx), "session-state", sessionId, "files");
       mkdirSync(filesDir, { recursive: true });
-      (req as any)._uploadDir = filesDir;
+      uploadDirs.set(req, filesDir);
       cb(null, filesDir);
     },
     filename: (req, file, cb) => {
-      const dir = (req as any)._uploadDir as string;
+      const dir = uploadDirs.get(req) as string;
       const safe = basename(file.originalname).replace(/\.\./g, "_") || "attachment";
       if (!existsSync(join(dir, safe))) return cb(null, safe);
       const dot = safe.lastIndexOf(".");
@@ -1765,7 +1772,7 @@ export function createApiRouter(
     }
     const onErr = (err: NodeJS.ErrnoException | null) => {
       if (!err || res.headersSent) return;
-      res.status((err as any).statusCode ?? 500).json({ error: err.message });
+      res.status("statusCode" in err && typeof err.statusCode === "number" ? err.statusCode : 500).json({ error: err.message });
     };
     if (mode === "download") {
       res.download(resolved.value.filePath, resolved.value.displayName, { dotfiles: "allow" }, onErr);
@@ -2718,7 +2725,7 @@ export function createApiRouter(
       unsub = null;
     });
 
-    const sendEvent = (event: any) => {
+    const sendEvent = (event: StreamEvent | BusSnapshot) => {
       if (connection.closed) return;
       if (!firstEventSent) {
         firstEventSent = true;
@@ -2734,7 +2741,7 @@ export function createApiRouter(
         || event.type === "error"
         || event.type === "aborted"
         || event.type === "shutdown"
-        || (event.type === "snapshot" && event.complete)
+        || (event.type === "snapshot" && Boolean(event.complete))
         || event.type === "resync_required";
       connection.send(
         event,
@@ -2819,7 +2826,7 @@ export function createApiRouter(
         return;
       }
 
-      const bufferedEvents: any[] = [];
+      const bufferedEvents: StreamEvent[] = [];
       let hydrated = false;
       const subscription = bus.subscribeWithSnapshot((event) => {
         if (hydrated) {
@@ -3968,7 +3975,7 @@ export function createApiRouter(
       // Only the page's sessions are read, from their own folders and by id.
       const pageSessionIds = pageRuns.map((run) => run.sessionId);
       const sessions = await ctx.sessionManager.readSessionsFromDisk(pageSessionIds);
-      const sessionMap = new Map(sessions.map((s: any) => [s.sessionId, s]));
+      const sessionMap = new Map(sessions.map((s) => [s.sessionId, s]));
       const taskLinks = ctx.taskStore.listTaskLinksBySession(pageSessionIds);
       const meta = ctx.sessionMetaStore.listMetaFor(pageSessionIds);
       const sessionStateDir = join(getCopilotHome(ctx), "session-state");
@@ -4794,20 +4801,20 @@ export function createApiRouter(
     // Page CRUD — explicit sub-path to avoid wildcard conflicts
     router.get("/docs/pages/*path", (req, res) => {
       try {
-        const raw = (req.params as any).path;
+        const raw = req.params.path;
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
         const page = docs.readPage(pagePath);
         if (!page) return res.status(404).json({ error: "Page not found" });
         res.json(page);
-      } catch (err: any) {
-        const message = err?.message || String(err);
+      } catch (err) {
+        const message = thrownMessage(err) || String(err);
         res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
     });
 
     router.put("/docs/pages/*path", (req, res) => {
       try {
-        const raw = (req.params as any).path;
+        const raw = req.params.path;
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
         const { content, frontmatter, body, baseModified } = req.body ?? {};
         // The editor sends { frontmatter, body } to serialize here; agents send raw { content }.
@@ -4820,16 +4827,16 @@ export function createApiRouter(
         const page = docs.writePage(pagePath, rawContent);
         const indexResult = docsIdx.indexPage(page);
         res.json({ path: page.path, success: true, ...docsIndexMutationWarning(indexResult) });
-      } catch (err: any) {
+      } catch (err) {
         const ftsError = docsFtsHttpError(err);
         if (ftsError) return res.status(ftsError.status).json(ftsError.body);
-        res.status(400).json({ error: err.message || String(err) });
+        res.status(400).json({ error: thrownMessage(err) || String(err) });
       }
     });
 
     router.delete("/docs/pages/*path", (req, res) => {
       try {
-        const raw = (req.params as any).path;
+        const raw = req.params.path;
         const pagePath = Array.isArray(raw) ? raw.join("/") : String(raw);
         const result = docs.deleteUserPage(pagePath, createPreDeleteDocsSnapshot);
         let indexResult: DocsFtsMutationResult | undefined;
@@ -4837,46 +4844,46 @@ export function createApiRouter(
           indexResult = docsIdx.removePage(result.path);
         }
         res.json({ ...result, ...docsIndexMutationWarning(indexResult) });
-      } catch (err: any) {
+      } catch (err) {
         const ftsError = docsFtsHttpError(err);
         if (ftsError) return res.status(ftsError.status).json(ftsError.body);
-        const message = err?.message || String(err);
+        const message = thrownMessage(err) || String(err);
         res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
     });
 
     // DB collection routes use a wildcard (*) for nested folders, e.g. areas/cooking/recipes
-    const paramPath = (raw: any): string => Array.isArray(raw) ? raw.join("/") : String(raw);
+    const paramPath = (raw: string | string[] | undefined): string => Array.isArray(raw) ? raw.join("/") : String(raw);
 
     router.get("/docs/schema/*folder", (req, res) => {
       try {
-        const folder = paramPath((req.params as any).folder);
+        const folder = paramPath(req.params.folder);
         const schema = docs.readSchema(folder);
         if (!schema) return res.status(404).json({ error: "Schema not found" });
         const entries = docs.listDbEntries(folder);
         res.json({ ...schema, entryCount: entries.length });
-      } catch (err: any) {
-        const message = err?.message || String(err);
+      } catch (err) {
+        const message = thrownMessage(err) || String(err);
         res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
     });
 
     router.put("/docs/schema/*folder", (req, res) => {
       try {
-        const folder = paramPath((req.params as any).folder);
+        const folder = paramPath(req.params.folder);
         const { name, fields } = req.body;
         if (!name || !Array.isArray(fields)) return res.status(400).json({ error: "name and fields are required" });
         const schema = docs.writeSchema(folder, { name, fields });
         docsIdx.notifyChanged({ kind: "schema", path: folder });
         res.json({ ...schema, success: true });
-      } catch (err: any) {
-        res.status(400).json({ error: err.message || String(err) });
+      } catch (err) {
+        res.status(400).json({ error: thrownMessage(err) || String(err) });
       }
     });
 
     router.get("/docs/db/*folder", (req, res) => {
       try {
-        const folder = paramPath((req.params as any).folder);
+        const folder = paramPath(req.params.folder);
         const limit = parsePositiveIntegerQuery(req.query.limit, "limit", 10000, 10000);
         const offset = parseNonNegativeIntegerQuery(req.query.offset, "offset", Number.MAX_SAFE_INTEGER, 0);
         const sortField = req.query._sort as string | undefined;
@@ -4884,7 +4891,7 @@ export function createApiRouter(
         const includeBody = ["1", "true", "yes", "on"].includes(String(req.query._includeBody ?? "").toLowerCase());
 
         // Extract field filters from query (skip meta params)
-        const filters: Record<string, any> = {};
+        const filters: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(req.query)) {
           if (key.startsWith("_") || key === "limit" || key === "offset") continue;
           filters[key] = value;
@@ -4899,31 +4906,31 @@ export function createApiRouter(
           includeBody,
         );
         res.json(result);
-      } catch (err: any) {
-        const message = err?.message || String(err);
+      } catch (err) {
+        const message = thrownMessage(err) || String(err);
         res.status(err instanceof DocsStoreValidationError || err instanceof ManagementJobApiError ? 400 : 500).json({ error: message });
       }
     });
 
     router.post("/docs/db/*folder", (req, res) => {
       try {
-        const folder = paramPath((req.params as any).folder);
+        const folder = paramPath(req.params.folder);
         const { fields, body } = docs.normalizeDbEntryInput(req.body ?? {}, "add", folder);
         const entry = docs.addDbEntry(folder, fields, body);
         // Index the new page
         const page = docs.readPage(entry.path);
         const indexResult = page ? docsIdx.indexPage(page) : undefined;
         res.json({ path: entry.path, slug: entry.slug, success: true, ...docsIndexMutationWarning(indexResult) });
-      } catch (err: any) {
+      } catch (err) {
         const ftsError = docsFtsHttpError(err);
         if (ftsError) return res.status(ftsError.status).json(ftsError.body);
-        res.status(400).json({ error: err.message || String(err) });
+        res.status(400).json({ error: thrownMessage(err) || String(err) });
       }
     });
 
     router.patch("/docs/db/*path", (req, res) => {
       try {
-        const fullPath = paramPath((req.params as any).path);
+        const fullPath = paramPath(req.params.path);
         const lastSlash = fullPath.lastIndexOf("/");
         const folder = lastSlash === -1 ? "" : fullPath.slice(0, lastSlash);
         const slug = lastSlash === -1 ? "" : fullPath.slice(lastSlash + 1);
@@ -4937,16 +4944,16 @@ export function createApiRouter(
         const page = docs.readPage(entry.path);
         const indexResult = page ? docsIdx.indexPage(page) : undefined;
         res.json({ path: entry.path, success: true, ...docsIndexMutationWarning(indexResult) });
-      } catch (err: any) {
+      } catch (err) {
         const ftsError = docsFtsHttpError(err);
         if (ftsError) return res.status(ftsError.status).json(ftsError.body);
-        res.status(400).json({ error: err?.message || String(err) });
+        res.status(400).json({ error: thrownMessage(err) || String(err) });
       }
     });
 
     router.delete("/docs/db/*path", (req, res) => {
       try {
-        const fullPath = paramPath((req.params as any).path);
+        const fullPath = paramPath(req.params.path);
         const lastSlash = fullPath.lastIndexOf("/");
         const folder = lastSlash === -1 ? "" : fullPath.slice(0, lastSlash);
         const slug = lastSlash === -1 ? "" : fullPath.slice(lastSlash + 1);
@@ -4957,10 +4964,10 @@ export function createApiRouter(
           indexResult = docsIdx.removePage(result.path);
         }
         res.json({ ...result, ...docsIndexMutationWarning(indexResult) });
-      } catch (err: any) {
+      } catch (err) {
         const ftsError = docsFtsHttpError(err);
         if (ftsError) return res.status(ftsError.status).json(ftsError.body);
-        const message = err?.message || String(err);
+        const message = thrownMessage(err) || String(err);
         res.status(err instanceof DocsStoreValidationError ? 400 : 500).json({ error: message });
       }
     });
@@ -4969,19 +4976,21 @@ export function createApiRouter(
   // ── Telemetry routes ────────────────────────────────────────────
 
   const parseTelemetrySpan = (
-    span: any,
+    span: unknown,
   ): { id?: string; name: string; sessionId?: string; duration: number; metadata?: Record<string, unknown> } | null => {
-    if (!span || typeof span !== "object") return null;
-    if (!span.name || typeof span.name !== "string" || typeof span.duration !== "number") return null;
-    if (span.id != null && typeof span.id !== "string") return null;
-    if (span.sessionId != null && typeof span.sessionId !== "string") return null;
-    if (span.metadata != null && (typeof span.metadata !== "object" || Array.isArray(span.metadata))) return null;
+    // An array has no name, so it was rejected by the name check before.
+    if (!isRecord(span)) return null;
+    const { id, name, duration, sessionId, metadata } = span;
+    if (!name || typeof name !== "string" || typeof duration !== "number") return null;
+    if (id != null && typeof id !== "string") return null;
+    if (sessionId != null && typeof sessionId !== "string") return null;
+    if (metadata != null && !isRecord(metadata)) return null;
     return {
-      ...(span.id != null ? { id: span.id } : {}),
-      name: span.name,
-      duration: span.duration,
-      ...(span.sessionId != null ? { sessionId: span.sessionId } : {}),
-      ...(span.metadata != null ? { metadata: span.metadata } : {}),
+      ...(id != null ? { id } : {}),
+      name,
+      duration,
+      ...(sessionId != null ? { sessionId } : {}),
+      ...(metadata != null ? { metadata } : {}),
     };
   };
 

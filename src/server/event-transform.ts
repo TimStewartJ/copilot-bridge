@@ -25,6 +25,7 @@ import { AgentEventOwners, showsAgentTurnsAreStamped } from "./agent-event-owner
 import { transcriptTurnDetails } from "./transcript-turn-details.js";
 import type { ChatTurnDetails } from "../shared/chat-turn-details.js";
 import { isToolAccompanyingProgress } from "../shared/progress-update.js";
+import { isRecord } from "../shared/is-record.js";
 
 // Turns session events into a flat chronological list of messages, tools and visuals.
 
@@ -63,7 +64,10 @@ export interface TransformedEntry {
   messageId?: string;
   /** User messages: the browser's id for the message it sent, when Bridge recorded one. */
   clientMessageId?: string;
-  attachments?: Array<{ type: "blob"; data: string; mimeType: string; displayName?: string }>;
+  attachments?: Array<
+    | { type: "blob"; data?: string; mimeType: string; displayName?: string }
+    | { type: "file"; path: string; displayName: string }
+  >;
   /** Set on a user message sent in autopilot; absent for interactive sends. */
   agentMode?: "autopilot";
   // Skill fields (when type === "skill") — agent-injected skill context, shown as a collapsed card
@@ -90,8 +94,52 @@ export interface TransformedEntry {
   reasoning?: { messageEventId?: string; startedAt?: string };
 }
 
-function isTurnTerminalEvent(event: any): boolean {
-  return isTerminalTurnEventType(event?.type)
+// Logs span runtime versions and are read as plain JSON, so event fields are narrowed where read.
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function eventType(event: unknown): unknown {
+  return asRecord(event)?.type;
+}
+
+function eventData(event: unknown): Record<string, unknown> | undefined {
+  return asRecord(asRecord(event)?.data);
+}
+
+function stringField(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+/** The event's own time, from its envelope. */
+function eventTimestamp(event: unknown): string | undefined {
+  return stringField(asRecord(event), "timestamp");
+}
+
+/** The time a message carries in its payload, else the event's own time. */
+function messageTimestamp(event: unknown): string | undefined {
+  const timestamp = eventData(event)?.timestamp ?? asRecord(event)?.timestamp;
+  return typeof timestamp === "string" ? timestamp : undefined;
+}
+
+function messageText(data: Record<string, unknown> | undefined): string {
+  const text = data?.content ?? data?.prompt ?? "";
+  return typeof text === "string" ? text : "";
+}
+
+function toolNameOf(data: Record<string, unknown> | undefined): string {
+  const name = data?.toolName ?? data?.name ?? "unknown";
+  return typeof name === "string" ? name : "unknown";
+}
+
+function hasAttachments(data: Record<string, unknown> | undefined): boolean {
+  const attachments = data?.attachments;
+  return Array.isArray(attachments) && attachments.length > 0;
+}
+
+function isTurnTerminalEvent(event: unknown): boolean {
+  return isTerminalTurnEventType(eventType(event))
     && !isSdkSubagentSessionError(event);
 }
 
@@ -104,14 +152,14 @@ export interface TranscriptCompletion {
 
 /** Shared by disk and live, so a live card has the id of the disk entry that replaces it. */
 export function getTranscriptCompletion(
-  event: any,
+  event: unknown,
   pending: TerminalCompletion | undefined,
 ): TranscriptCompletion | undefined {
   const own = extractTerminalCompletion(event);
   const completion = own ?? (pending && isTurnTerminalEvent(event) ? pending : undefined);
   if (!completion) return undefined;
   const sourceEventId = getSdkEventId(event);
-  const timestamp = own ? event?.timestamp : event?.data?.timestamp ?? event?.timestamp;
+  const timestamp = own ? eventTimestamp(event) : messageTimestamp(event);
   return {
     completion,
     ...(sourceEventId ? { sourceEventId } : {}),
@@ -154,39 +202,41 @@ export function projectTranscriptEvent(event: unknown): unknown {
   return envelope;
 }
 
-function getRawEventId(event: any): string | undefined {
+function getRawEventId(event: unknown): string | undefined {
   return getSdkEventId(event);
 }
 
-function getNextForkBoundaryEventId(events: any[], startIndex: number): string | undefined {
+function getNextForkBoundaryEventId(events: readonly unknown[], startIndex: number): string | undefined {
   for (let index = startIndex; index < events.length; index += 1) {
     const event = events[index];
-    if (FORK_BOUNDARY_SKIP_EVENT_TYPES.has(event?.type)) continue;
+    const type = eventType(event);
+    if (typeof type === "string" && FORK_BOUNDARY_SKIP_EVENT_TYPES.has(type)) continue;
     const id = getRawEventId(event);
     if (id) return id;
   }
   return undefined;
 }
 
-function getAssistantForkBoundaries(events: any[]): Map<string, string> {
+function getAssistantForkBoundaries(events: readonly unknown[]): Map<string, string> {
   const boundaries = new Map<string, string>();
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
-    if (event?.type !== "assistant.message" || event?.data?.parentToolCallId) continue;
+    if (eventType(event) !== "assistant.message" || eventData(event)?.parentToolCallId) continue;
     const assistantEventId = getRawEventId(event);
     if (!assistantEventId) continue;
 
     for (let nextIndex = index + 1; nextIndex < events.length; nextIndex += 1) {
       const nextEvent = events[nextIndex];
-      if (nextEvent?.type === "assistant.turn_end") {
+      const nextType = eventType(nextEvent);
+      if (nextType === "assistant.turn_end") {
         const boundaryEventId = getNextForkBoundaryEventId(events, nextIndex + 1);
         if (boundaryEventId) boundaries.set(assistantEventId, boundaryEventId);
         break;
       }
       if (
-        nextEvent?.type === "assistant.turn_start"
-        || (nextEvent?.type === "user.message" && !isSdkAgentUserMessage(nextEvent))
-        || (nextEvent?.type === "assistant.message" && !nextEvent?.data?.parentToolCallId)
+        nextType === "assistant.turn_start"
+        || (nextType === "user.message" && !isSdkAgentUserMessage(nextEvent))
+        || (nextType === "assistant.message" && !eventData(nextEvent)?.parentToolCallId)
         || isTurnTerminalEvent(nextEvent)
       ) {
         break;
@@ -196,46 +246,45 @@ function getAssistantForkBoundaries(events: any[]): Map<string, string> {
   return boundaries;
 }
 
-function getUserMessageContent(event: any): string {
-  if (event?.type !== "user.message") return "";
-  const content = event?.data?.content ?? event?.data?.prompt;
-  return typeof content === "string" ? content : "";
+function getUserMessageContent(event: unknown): string {
+  if (eventType(event) !== "user.message") return "";
+  return messageText(eventData(event));
 }
 
 // SDK tags injected skill context as source 'skill-<id>'; keep it out of the timeline.
 const SKILL_SOURCE_PATTERN = /^skill(?:[-:]|$)/i;
 
-function getSkillSource(event: any): string | undefined {
-  if (event?.type !== "user.message") return undefined;
-  const source = event?.data?.source;
+function getSkillSource(event: unknown): string | undefined {
+  if (eventType(event) !== "user.message") return undefined;
+  const source = eventData(event)?.source;
   if (typeof source !== "string") return undefined;
   const trimmed = source.trim();
   return SKILL_SOURCE_PATTERN.test(trimmed) ? trimmed : undefined;
 }
 
 /** Runtime-injected source 'system' messages (system_reminder) are not user speech; hide them. */
-function isAgentInjectedSystemMessage(event: any): boolean {
-  if (event?.type !== "user.message") return false;
-  const source = event?.data?.source;
+function isAgentInjectedSystemMessage(event: unknown): boolean {
+  if (eventType(event) !== "user.message") return false;
+  const source = eventData(event)?.source;
   return typeof source === "string" && source.trim().toLowerCase() === "system";
 }
 
 /** An autopilot turn the CLI started: an empty `user.message`, the CLI's own rewind-list test. */
-export function isAutopilotContinuationEvent(event: any): boolean {
-  if (event?.type !== "user.message" || isSdkAgentUserMessage(event) || isAgentInjectedSystemMessage(event)) {
+export function isAutopilotContinuationEvent(event: unknown): boolean {
+  if (eventType(event) !== "user.message" || isSdkAgentUserMessage(event) || isAgentInjectedSystemMessage(event)) {
     return false;
   }
-  const data = event?.data;
+  const data = eventData(event);
   if (data?.isAutopilotContinuation === true) return true;
   const content = data?.content ?? data?.prompt ?? "";
   return data?.agentMode === "autopilot"
     && typeof content === "string"
     && !content.trim()
-    && !data?.attachments?.length;
+    && !hasAttachments(data);
 }
 
-export function getUndoBoundaryEventId(event: any): string | undefined {
-  if (event?.type !== "user.message" || getSkillSource(event) || isSdkAgentUserMessage(event)) {
+export function getUndoBoundaryEventId(event: unknown): string | undefined {
+  if (eventType(event) !== "user.message" || getSkillSource(event) || isSdkAgentUserMessage(event)) {
     return undefined;
   }
   if (!isVisibleMessageEvent(event)) return undefined;
@@ -267,27 +316,28 @@ export function parseDeferMetadata(content: string): Record<string, string> | un
   return metadata;
 }
 
-export function isQuietIntervalDeferEvent(event: any, expectedDeferId?: string): boolean {
+export function isQuietIntervalDeferEvent(event: unknown, expectedDeferId?: string): boolean {
   const metadata = parseDeferMetadata(getUserMessageContent(event));
   return metadata?.kind === "interval"
     && metadata.attentionMode === "quiet"
     && (expectedDeferId === undefined || metadata.deferId === expectedDeferId);
 }
 
-export function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
-  const data = event?.data;
+export function isVisibleMessageEvent(event: unknown, sessionId?: string): boolean {
+  const data = eventData(event);
+  const type = eventType(event);
 
-  if (event.type === "user.message") {
+  if (type === "user.message") {
     if (isAgentInjectedSystemMessage(event) || isSdkAgentUserMessage(event)) return false;
-    return Boolean((data?.content ?? data?.prompt ?? "").trim() || data?.attachments?.length);
+    return Boolean(messageText(data).trim() || hasAttachments(data));
   }
 
-  if (event.type === "assistant.message") {
-    return !data?.parentToolCallId && Boolean((data?.content ?? "").trim());
+  if (type === "assistant.message") {
+    return !data?.parentToolCallId && Boolean((stringField(data, "content") ?? "").trim());
   }
 
-  if (event.type === "tool.execution_start") {
-    const toolName = data?.toolName ?? data?.name ?? "unknown";
+  if (type === "tool.execution_start") {
+    const toolName = toolNameOf(data);
     return Boolean(data?.toolCallId) && !isHiddenTool(toolName, data?.arguments, sessionId);
   }
 
@@ -299,10 +349,11 @@ export function isVisibleMessageEvent(event: any, sessionId?: string): boolean {
 }
 
 /** Main-agent thinking: a transcript entry both counters must count, but it never marks unread. */
-export function getVisibleReasoningText(event: any): string | undefined {
-  if (event?.type !== "assistant.message") return undefined;
-  if (event?.data?.parentToolCallId || getSdkAgentId(event)) return undefined;
-  const text = event?.data?.reasoningText;
+export function getVisibleReasoningText(event: unknown): string | undefined {
+  if (eventType(event) !== "assistant.message") return undefined;
+  const data = eventData(event);
+  if (data?.parentToolCallId || getSdkAgentId(event)) return undefined;
+  const text = data?.reasoningText;
   return typeof text === "string" && text.trim() ? text : undefined;
 }
 
@@ -346,11 +397,11 @@ function isExpectedVisualArtifactUrl(value: unknown, sessionId: string | undefin
 }
 
 export function getVisualArtifactFromToolCompletion(
-  event: any,
+  event: unknown,
   toolName: string | undefined,
   sessionId?: string,
 ): TransformedVisual | undefined {
-  const data = event?.data;
+  const data = eventData(event);
   if (toolName !== "publish_visual" || !sessionId || data?.success === false) return undefined;
   const rawResult = parsePublishedVisualResult(data?.result);
   if (!rawResult || rawResult.__kind !== "visual.published") return undefined;
@@ -407,6 +458,10 @@ export const IMAGE_GENERATION_TOOL_NAME = "image_generation";
 const GENERATED_IMAGE_FILE_RE = /^[\w.-]+\.(?:png|jpe?g|webp)$/i;
 const MAX_GENERATED_IMAGE_ALT_CHARS = 1_000;
 
+function listItem(list: unknown, index: number): Record<string, unknown> | undefined {
+  return Array.isArray(list) ? asRecord(list[index]) : undefined;
+}
+
 /** Decoded size of base64 data, which is what the card shows as the file size. */
 function base64DecodedBytes(data: unknown): number | undefined {
   if (typeof data !== "string" || !data) return undefined;
@@ -416,22 +471,23 @@ function base64DecodedBytes(data: unknown): number | undefined {
 
 /** Image tool results as cards; only images in the session's images/ folder can be served. */
 export function getGeneratedImageVisuals(
-  event: any,
+  event: unknown,
   toolName: string | undefined,
   sessionId?: string,
   args?: unknown,
 ): TransformedVisual[] {
-  const data = event?.data;
+  const data = eventData(event);
   if (toolName !== IMAGE_GENERATION_TOOL_NAME || !sessionId || data?.success !== true) return [];
-  const result = data?.result;
-  const images = result?.structuredContent?.imageGeneration?.images;
+  const result = asRecord(data?.result);
+  const images = asRecord(asRecord(result?.structuredContent)?.imageGeneration)?.images;
   if (!Array.isArray(images)) return [];
   const toolArgs = args && typeof args === "object" ? args as Record<string, unknown> : {};
   const edited = Array.isArray(toolArgs.input_images) && toolArgs.input_images.length > 0;
   const prompt = typeof toolArgs.prompt === "string" ? toolArgs.prompt.trim() : "";
   const visuals: TransformedVisual[] = [];
-  for (const image of images) {
-    const savedPath = typeof image?.savedPath === "string" ? image.savedPath : "";
+  for (const item of images) {
+    const image = asRecord(item);
+    const savedPath = stringField(image, "savedPath") ?? "";
     // win32 path functions split on both separators, so this reads paths saved on any host.
     const fileName = winPath.basename(savedPath);
     const folder = winPath.dirname(savedPath);
@@ -442,9 +498,9 @@ export function getGeneratedImageVisuals(
     ) {
       continue;
     }
-    const contentIndex = typeof image.contentIndex === "number" ? image.contentIndex : undefined;
-    const content = contentIndex === undefined ? undefined : result?.contents?.[contentIndex];
-    const binary = contentIndex === undefined ? undefined : result?.binaryResultsForLlm?.[contentIndex];
+    const contentIndex = typeof image?.contentIndex === "number" ? image.contentIndex : undefined;
+    const content = contentIndex === undefined ? undefined : listItem(result?.contents, contentIndex);
+    const binary = contentIndex === undefined ? undefined : listItem(result?.binaryResultsForLlm, contentIndex);
     const size = base64DecodedBytes(content?.data)
       ?? (typeof binary?.byteLength === "number" ? binary.byteLength : undefined)
       ?? base64DecodedBytes(binary?.data)
@@ -455,7 +511,7 @@ export function getGeneratedImageVisuals(
       kind: "image",
       title: edited ? "Edited image" : "Generated image",
       displayName: fileName,
-      mimeType: typeof image.mimeType === "string" ? image.mimeType : "image/png",
+      mimeType: stringField(image, "mimeType") ?? "image/png",
       size,
       url,
       downloadUrl: `${url}?download`,
@@ -467,7 +523,7 @@ export function getGeneratedImageVisuals(
 
 /** The visual cards a completed tool call adds to the chat, in the order they are shown. */
 export function getToolCompletionVisuals(
-  event: any,
+  event: unknown,
   toolName: string | undefined,
   sessionId?: string,
   args?: unknown,
@@ -479,9 +535,9 @@ export function getToolCompletionVisuals(
   return getGeneratedImageVisuals(event, toolName, sessionId, args);
 }
 
-export function getVisibleEventTimestamp(event: any, sessionId?: string): string | undefined {
+export function getVisibleEventTimestamp(event: unknown, sessionId?: string): string | undefined {
   if (!isVisibleMessageEvent(event, sessionId)) return undefined;
-  return event?.data?.timestamp ?? event?.timestamp;
+  return messageTimestamp(event);
 }
 
 /** Fold state of {@link createVisibleActivityTracker}, so incremental scans can resume. */
@@ -501,8 +557,11 @@ export function createVisibleActivityTracker(
   let quietTurn = initialState?.quietTurn ?? false;
   let pendingTerminalCompletionActivity = initialState?.pendingTerminalCompletionActivity ?? false;
 
-  function observe(event: any): string | undefined {
-    if (event.type === "user.message") {
+  function observe(event: unknown): string | undefined {
+    const type = eventType(event);
+    const data = eventData(event);
+    const toolCallId = stringField(data, "toolCallId");
+    if (type === "user.message") {
       if (isSdkAgentUserMessage(event)) return lastVisibleActivityAt;
       if (quietTurn && !isSdkUserAuthoredMessage(event)) return lastVisibleActivityAt;
       quietTurn = isQuietIntervalDeferEvent(event);
@@ -519,8 +578,8 @@ export function createVisibleActivityTracker(
     }
 
     if (
-      event.type === "tool.execution_start"
-      && extractTerminalCompletionFromToolCall(event?.data?.toolName ?? event?.data?.name, event?.data?.arguments)
+      type === "tool.execution_start"
+      && extractTerminalCompletionFromToolCall(data?.toolName ?? data?.name, data?.arguments)
     ) {
       pendingTerminalCompletionActivity = true;
       return lastVisibleActivityAt;
@@ -530,26 +589,26 @@ export function createVisibleActivityTracker(
     if (timestamp) {
       lastVisibleActivityAt = timestamp;
       if (extractTerminalCompletion(event)) pendingTerminalCompletionActivity = false;
-      if (event.type === "tool.execution_start" && event?.data?.toolCallId) {
-        openVisibleToolCallIds.add(event.data.toolCallId);
+      if (type === "tool.execution_start" && toolCallId) {
+        openVisibleToolCallIds.add(toolCallId);
       }
       return lastVisibleActivityAt;
     }
 
-    if (event.type === "tool.execution_complete" && event?.data?.toolCallId && openVisibleToolCallIds.has(event.data.toolCallId)) {
-      const completedAt = event?.timestamp;
+    if (type === "tool.execution_complete" && toolCallId && openVisibleToolCallIds.has(toolCallId)) {
+      const completedAt = eventTimestamp(event);
       if (completedAt) lastVisibleActivityAt = completedAt;
-      openVisibleToolCallIds.delete(event.data.toolCallId);
+      openVisibleToolCallIds.delete(toolCallId);
       return lastVisibleActivityAt;
     }
 
     if (isTurnTerminalEvent(event) && openVisibleToolCallIds.size > 0) {
-      const terminalAt = event?.timestamp;
+      const terminalAt = eventTimestamp(event);
       if (terminalAt) lastVisibleActivityAt = terminalAt;
       openVisibleToolCallIds.clear();
     }
     if (isTurnTerminalEvent(event) && pendingTerminalCompletionActivity) {
-      const terminalAt = event?.data?.timestamp ?? event?.timestamp;
+      const terminalAt = messageTimestamp(event);
       if (terminalAt) lastVisibleActivityAt = terminalAt;
       pendingTerminalCompletionActivity = false;
     }
@@ -568,7 +627,7 @@ export function createVisibleActivityTracker(
   };
 }
 
-export function getLastVisibleActivityAt(events: any[], sessionId?: string): string | undefined {
+export function getLastVisibleActivityAt(events: readonly unknown[], sessionId?: string): string | undefined {
   const tracker = createVisibleActivityTracker(sessionId);
   for (const event of events) {
     tracker.observe(event);
@@ -615,19 +674,21 @@ export function cloneTranscriptCursor(cursor: TranscriptCursor): TranscriptCurso
 }
 
 /** `agentOwners` must have seen the event already; false for events that never move the cursor. */
-export function advanceTranscriptCursor(cursor: TranscriptCursor, event: any, agentOwners: AgentEventOwners): boolean {
-  const data = event?.data;
+export function advanceTranscriptCursor(cursor: TranscriptCursor, event: unknown, agentOwners: AgentEventOwners): boolean {
+  const data = eventData(event);
+  const type = eventType(event);
+  const toolCallId = stringField(data, "toolCallId");
   const firstStamp = !cursor.agentTurnsStamped && showsAgentTurnsAreStamped(event);
   if (firstStamp) cursor.agentTurnsStamped = true;
-  if (event?.type === "subagent.started" && data?.toolCallId) {
-    if (!cursor.activeSubAgentToolCallIds.includes(data.toolCallId)) cursor.activeSubAgentToolCallIds.push(data.toolCallId);
+  if (type === "subagent.started" && toolCallId) {
+    if (!cursor.activeSubAgentToolCallIds.includes(toolCallId)) cursor.activeSubAgentToolCallIds.push(toolCallId);
     return true;
   }
-  if ((event?.type === "subagent.completed" || event?.type === "subagent.failed") && data?.toolCallId) {
-    cursor.activeSubAgentToolCallIds = cursor.activeSubAgentToolCallIds.filter((id) => id !== data.toolCallId);
+  if ((type === "subagent.completed" || type === "subagent.failed") && toolCallId) {
+    cursor.activeSubAgentToolCallIds = cursor.activeSubAgentToolCallIds.filter((id) => id !== toolCallId);
     return true;
   }
-  if (event?.type === "assistant.turn_start") {
+  if (type === "assistant.turn_start") {
     // Stamped turns are tracked per agent, so the main agent's turn is never taken for theirs.
     const agentOwner = cursor.agentTurnsStamped ? agentOwners.ownerOf(event) : undefined;
     if (agentOwner !== undefined) {
@@ -646,13 +707,13 @@ export function advanceTranscriptCursor(cursor: TranscriptCursor, event: any, ag
       cursor.turnIndex += 1;
       cursor.activeTurnId = getSdkTurnId(event) ?? `turn-${cursor.turnIndex}`;
       cursor.activeTurnInstanceId = getAssistantTurnInstanceId(event, `turn-instance-${cursor.turnIndex}`);
-      cursor.activeTurnStartedAt = typeof event.timestamp === "string" ? event.timestamp : undefined;
+      cursor.activeTurnStartedAt = eventTimestamp(event);
     }
     return true;
   }
   if (extractTerminalCompletion(event) || isTurnTerminalEvent(event)) {
     cursor.pendingTerminalCompletion = undefined;
-    const endedAgent = cursor.agentTurnsStamped && event.type === "assistant.turn_end"
+    const endedAgent = cursor.agentTurnsStamped && type === "assistant.turn_end"
       ? agentOwners.ownerOf(event)
       : undefined;
     if (endedAgent !== undefined) {
@@ -665,12 +726,12 @@ export function advanceTranscriptCursor(cursor: TranscriptCursor, event: any, ag
     }
     return true;
   }
-  if (event?.type === "user.message") {
+  if (type === "user.message") {
     if (!isVisibleMessageEvent(event) || getSkillSource(event) || isAutopilotContinuationEvent(event)) return false;
     cursor.activeUndoEventId = getUndoBoundaryEventId(event);
     return true;
   }
-  if (event?.type === "tool.execution_start" && data?.toolCallId) {
+  if (type === "tool.execution_start" && data?.toolCallId) {
     const completion = extractTerminalCompletionFromToolCall(data.toolName ?? data.name ?? "unknown", data.arguments);
     if (!completion) return false;
     cursor.pendingTerminalCompletion = completion;
@@ -686,7 +747,7 @@ export interface TransformEventsToMessagesOptions {
 
 /** Pass 1 indexes tool completion results; pass 2 emits entries in event order. */
 export function transformEventsToMessages(
-  events: any[],
+  events: readonly unknown[],
   sessionId?: string,
   options: TransformEventsToMessagesOptions = {},
 ): TransformedEntry[] {
@@ -712,51 +773,54 @@ export function transformEventsToMessages(
   const imageToolArgs = new Map<string, unknown>();
 
   for (const event of events) {
-    const data = (event as any).data;
+    const data = eventData(event);
+    const type = eventType(event);
+    const toolCallId = stringField(data, "toolCallId");
+    const parentToolCallId = stringField(data, "parentToolCallId");
     agentOwners.learn(event);
     // A log that stamps its agents' turns anywhere is read that way from its first event.
     if (showsAgentTurnsAreStamped(event)) cursor.agentTurnsStamped = true;
-    if (event.type === "tool.execution_start" && data?.toolCallId) {
-      openToolCallOwners.set(data.toolCallId, getSdkAgentId(event));
-      toolNames.set(data.toolCallId, data.toolName ?? data.name ?? "unknown");
-      if (toolNames.get(data.toolCallId) === IMAGE_GENERATION_TOOL_NAME) imageToolArgs.set(data.toolCallId, data.arguments);
-    } else if (event.type === "tool.execution_complete" && data?.toolCallId) {
+    if (type === "tool.execution_start" && toolCallId) {
+      openToolCallOwners.set(toolCallId, getSdkAgentId(event));
+      toolNames.set(toolCallId, toolNameOf(data));
+      if (toolNames.get(toolCallId) === IMAGE_GENERATION_TOOL_NAME) imageToolArgs.set(toolCallId, data?.arguments);
+    } else if (type === "tool.execution_complete" && toolCallId) {
       // Raw data kept so pass 2 derives display text through the same resolver as the live fold.
-      toolCompletes.set(data.toolCallId, {
-        success: data.success,
+      toolCompletes.set(toolCallId, {
+        success: typeof data?.success === "boolean" ? data.success : undefined,
         data,
-        timestamp: (event as any).timestamp,
+        timestamp: eventTimestamp(event),
         eventId: getSdkEventId(event),
       });
-      correlator.completeTool(data.toolCallId);
-      openToolCallOwners.delete(data.toolCallId);
+      correlator.completeTool(toolCallId);
+      openToolCallOwners.delete(toolCallId);
       const visuals = getToolCompletionVisuals(
         event,
-        toolNames.get(data.toolCallId),
+        toolNames.get(toolCallId),
         sessionId,
-        imageToolArgs.get(data.toolCallId),
+        imageToolArgs.get(toolCallId),
       );
-      if (visuals.length > 0) visualResults.set(data.toolCallId, visuals);
-    } else if ((event.type === "tool.execution_progress" || event.type === "tool.execution_partial_result") && data?.toolCallId) {
-      const nextText = event.type === "tool.execution_progress"
-        ? data.progressMessage
-        : data.partialOutput;
+      if (visuals.length > 0) visualResults.set(toolCallId, visuals);
+    } else if ((type === "tool.execution_progress" || type === "tool.execution_partial_result") && toolCallId) {
+      const nextText = type === "tool.execution_progress"
+        ? data?.progressMessage
+        : data?.partialOutput;
       if (typeof nextText === "string" && nextText.trim()) {
-        toolProgress.set(data.toolCallId, nextText);
+        toolProgress.set(toolCallId, nextText);
       }
-    } else if (event.type === "subagent.started" && data?.toolCallId) {
-      correlator.startSubagent(data.toolCallId, getSdkAgentId(event), data);
-      correlatingSubAgentToolCallIds.add(data.toolCallId);
-    } else if (event.type === "subagent.failed" && data?.toolCallId) {
-      correlator.recordSubagentFailure(data.toolCallId, data.error);
-      correlatingSubAgentToolCallIds.delete(data.toolCallId);
-    } else if (event.type === "subagent.completed" && data?.toolCallId) {
-      correlatingSubAgentToolCallIds.delete(data.toolCallId);
-    } else if (event.type === "assistant.message" && data?.parentToolCallId && data?.content) {
-      correlator.recordResponse(data.parentToolCallId, data.content);
-    } else if (event.type === "session.error" && getSdkAgentId(event)) {
+    } else if (type === "subagent.started" && toolCallId) {
+      correlator.startSubagent(toolCallId, getSdkAgentId(event), data);
+      correlatingSubAgentToolCallIds.add(toolCallId);
+    } else if (type === "subagent.failed" && toolCallId) {
+      correlator.recordSubagentFailure(toolCallId, data?.error);
+      correlatingSubAgentToolCallIds.delete(toolCallId);
+    } else if (type === "subagent.completed" && toolCallId) {
+      correlatingSubAgentToolCallIds.delete(toolCallId);
+    } else if (type === "assistant.message" && parentToolCallId && data?.content) {
+      correlator.recordResponse(parentToolCallId, data.content);
+    } else if (type === "session.error" && getSdkAgentId(event)) {
       correlator.recordAgentError(getSdkAgentId(event)!, data?.message);
-    } else if (event.type === "user.message" && isSdkAgentUserMessage(event)) {
+    } else if (type === "user.message" && isSdkAgentUserMessage(event)) {
       const agentId = getSdkAgentId(event);
       if (agentId) {
         correlator.recordInstruction(agentId, data?.content ?? data?.prompt);
@@ -769,13 +833,13 @@ export function transformEventsToMessages(
     } else if (isTurnTerminalEvent(event)) {
       // Provisional; a turn end fails only its own agent's open calls, abort/shutdown fails all.
       const endedBy = getSdkAgentId(event);
-      const stopsEverything = event.type === "abort" || event.type === "session.shutdown";
+      const stopsEverything = type === "abort" || type === "session.shutdown";
       for (const [toolCallId, owner] of openToolCallOwners) {
         if (!stopsEverything && owner !== endedBy) continue;
         toolCompletes.set(toolCallId, {
           success: false,
           fallbackText: correlator.resolve(toolCallId).response ?? toolProgress.get(toolCallId),
-          timestamp: (event as any).timestamp,
+          timestamp: eventTimestamp(event),
         });
         openToolCallOwners.delete(toolCallId);
       }
@@ -784,7 +848,8 @@ export function transformEventsToMessages(
 
   // The cursor owns every state change; a closing event belongs to the turn it closes.
   for (const event of events) {
-    const data = (event as any).data;
+    const data = eventData(event);
+    const type = eventType(event);
     const { activeTurnId: closingTurnId, activeTurnInstanceId: closingTurnInstanceId } = cursor;
     const pendingTerminalCompletion = cursor.pendingTerminalCompletion;
     advanceTranscriptCursor(cursor, event, agentOwners);
@@ -804,7 +869,7 @@ export function transformEventsToMessages(
           ...(closingTurnInstanceId ? { turnInstanceId: closingTurnInstanceId } : {}),
         });
       }
-    } else if (event.type === "user.message") {
+    } else if (type === "user.message") {
       if (isAgentInjectedSystemMessage(event)) continue;
       if (isSdkAgentUserMessage(event)) continue;
       if (isAutopilotContinuationEvent(event)) {
@@ -812,12 +877,12 @@ export function transformEventsToMessages(
           id: `entry-${idx++}`,
           type: "continuation",
           ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
-          timestamp: data?.timestamp ?? (event as any).timestamp,
+          timestamp: messageTimestamp(event),
         });
         continue;
       }
-      const content = data?.content ?? data?.prompt ?? "";
-      if (!content.trim() && !data?.attachments?.length) continue;
+      const content = messageText(data);
+      if (!content.trim() && !hasAttachments(data)) continue;
       const skillSource = getSkillSource(event);
       if (skillSource) {
         entries.push({
@@ -826,31 +891,38 @@ export function transformEventsToMessages(
           ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
           skill: { id: skillSource, label: getSkillLabel(skillSource, content) },
           content,
-          timestamp: data.timestamp ?? (event as any).timestamp,
+          timestamp: messageTimestamp(event),
         });
         continue;
       }
-      const blobAttachments = data.attachments
-        ?.filter((a: any) => a.type === "blob" && a.mimeType)
-        ?.map((a: any) => ({ type: "blob" as const, data: a.data, mimeType: a.mimeType, displayName: a.displayName }));
-      const fileAttachments = data.attachments
-        ?.filter((a: any) => a.type === "file" && a.path)
+      const attachments = Array.isArray(data?.attachments) ? data.attachments.filter(isRecord) : [];
+      const blobAttachments = attachments.flatMap((a) => {
+        const mimeType = stringField(a, "mimeType");
+        return a.type === "blob" && mimeType
+          ? [{ type: "blob" as const, data: stringField(a, "data"), mimeType, displayName: stringField(a, "displayName") }]
+          : [];
+      });
+      const fileAttachments = attachments.flatMap((a) => {
+        const path = stringField(a, "path");
         // win32.basename handles both "\\" and "/" paths on any host.
-        ?.map((a: any) => ({ type: "file" as const, path: a.path, displayName: a.displayName ?? winPath.basename(a.path) }));
-      const allAttachments = [...(blobAttachments ?? []), ...(fileAttachments ?? [])];
+        return a.type === "file" && path
+          ? [{ type: "file" as const, path, displayName: stringField(a, "displayName") ?? winPath.basename(path) }]
+          : [];
+      });
+      const allAttachments = [...blobAttachments, ...fileAttachments];
       entries.push({
         id: `entry-${idx++}`,
         type: "message",
         ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
         role: "user",
         content,
-        timestamp: data.timestamp ?? (event as any).timestamp,
+        timestamp: messageTimestamp(event),
         ...(typeof data?.messageId === "string" && data.messageId ? { messageId: data.messageId } : {}),
         ...(activeUndoEventId ? { undoEventId: activeUndoEventId } : {}),
         ...(allAttachments.length ? { attachments: allAttachments } : {}),
         ...(data?.agentMode === "autopilot" ? { agentMode: "autopilot" as const } : {}),
       });
-    } else if (event.type === "assistant.message") {
+    } else if (type === "assistant.message") {
       if (data?.parentToolCallId) continue; // sub-agent response text, not a top-level message
       const reasoningText = getVisibleReasoningText(event);
       if (reasoningText) {
@@ -859,7 +931,7 @@ export function transformEventsToMessages(
           id: `entry-${idx++}`,
           type: "reasoning",
           content: reasoningText,
-          timestamp: data.timestamp ?? (event as any).timestamp,
+          timestamp: messageTimestamp(event),
           ...(activeTurnId ? { turnId: activeTurnId } : {}),
           ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
           reasoning: {
@@ -868,7 +940,7 @@ export function transformEventsToMessages(
           },
         });
       }
-      const content = data?.content ?? "";
+      const content = stringField(data, "content") ?? "";
       if (content.trim()) {
         const rawEventId = getRawEventId(event);
         const forkBoundaryEventId = rawEventId ? assistantForkBoundaries.get(rawEventId) : undefined;
@@ -884,21 +956,22 @@ export function transformEventsToMessages(
           ...(rawEventId && turnDetailsByMessageId.has(rawEventId)
             ? { turnDetails: turnDetailsByMessageId.get(rawEventId) }
             : {}),
-          timestamp: data.timestamp ?? (event as any).timestamp,
+          timestamp: messageTimestamp(event),
           ...(activeTurnId ? { turnId: activeTurnId } : {}),
           ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
           ...(forkBoundaryEventId ? { forkBoundaryEventId } : {}),
           ...(activeUndoEventId ? { undoEventId: activeUndoEventId } : {}),
         });
       }
-    } else if (event.type === "tool.execution_start") {
-      if (!data?.toolCallId) continue;
-      const toolName = data.toolName ?? data.name ?? "unknown";
+    } else if (type === "tool.execution_start") {
+      const toolCallId = stringField(data, "toolCallId");
+      if (!data || !toolCallId) continue;
+      const toolName = toolNameOf(data);
       const terminalCompletion = extractTerminalCompletionFromToolCall(toolName, data.arguments);
       if (terminalCompletion) continue;
       if (isHiddenTool(toolName, data.arguments, sessionId)) continue;
-      const complete = toolCompletes.get(data.toolCallId);
-      const resolution = correlator.resolve(data.toolCallId);
+      const complete = toolCompletes.get(toolCallId);
+      const resolution = correlator.resolve(toolCallId);
       const outcome = resolveToolOutcome(resolution, complete, toolName);
       // An agent's step belongs to that agent's turn, not to whichever turn began most recently.
       const agentOwner = cursor.agentTurnsStamped ? agentOwners.ownerOf(event) : undefined;
@@ -913,23 +986,23 @@ export function transformEventsToMessages(
         ...(stepTurn?.turnId ? { turnId: stepTurn.turnId } : {}),
         ...(stepTurn?.turnInstanceId ? { turnInstanceId: stepTurn.turnInstanceId } : {}),
         toolCall: {
-          toolCallId: data.toolCallId,
+          toolCallId,
           name: outcome.displayName,
           args: data.arguments,
           result: outcome.result,
-          progressText: toolProgress.get(data.toolCallId),
+          progressText: toolProgress.get(toolCallId),
           success: outcome.success,
           parentToolCallId,
           isSubAgent: outcome.isSubAgent || undefined,
           agentInstructions: outcome.isSubAgent
             ? buildSubagentInstructions(data.arguments, resolution.instructions)
             : undefined,
-          startedAt: (event as any).timestamp,
+          startedAt: eventTimestamp(event),
           completedAt: complete?.timestamp,
         },
       });
       // Visual cards the call produced follow its tool entry.
-      for (const visual of visualResults.get(data.toolCallId) ?? []) {
+      for (const visual of visualResults.get(toolCallId) ?? []) {
         entries.push({
           id: `entry-${idx++}`,
           type: "visual",
@@ -937,7 +1010,7 @@ export function transformEventsToMessages(
           ...(activeTurnId ? { turnId: activeTurnId } : {}),
           ...(activeTurnInstanceId ? { turnInstanceId: activeTurnInstanceId } : {}),
           visual,
-          timestamp: complete?.timestamp ?? (event as any).timestamp,
+          timestamp: complete?.timestamp ?? eventTimestamp(event),
         });
       }
     }

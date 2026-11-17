@@ -64,6 +64,48 @@ export interface SettleOptions {
   keepPending?: boolean;
 }
 
+type TriggerRow = {
+  id: string;
+  name: string | null;
+  prompt: string;
+  sessionId: string | null;
+  taskId: string | null;
+  lane: string;
+  whenJson: string;
+  checkJson: string | null;
+  actionJson: string;
+  status: string;
+  nextRunAt: string | null;
+  runNow: number;
+  runCount: number;
+  fireCount: number;
+  maxRuns: number | null;
+  expiresAt: string | null;
+  attempts: number;
+  claimToken: string | null;
+  leaseExpiresAt: string | null;
+  lastError: string | null;
+  lastRunAt: string | null;
+  lastFiredAt: string | null;
+  lastSessionId: string | null;
+  lastTaskId: string | null;
+  checkpoint: string | null;
+  lastCheckJson: string | null;
+  checkPendingJson: string | null;
+  createdBySessionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type TriggerRunRow = {
+  id: number;
+  triggerId: string;
+  sessionId: string;
+  taskId: string | null;
+  occurrence: string | null;
+  recordedAt: string;
+};
+
 function parseJson<T>(json: unknown): T | undefined {
   if (typeof json !== "string" || !json) return undefined;
   try {
@@ -165,7 +207,7 @@ export function createTriggerStore(db: DatabaseSync) {
   `);
   const selectRunByOccurrence = db.prepare("SELECT * FROM trigger_runs WHERE triggerId = ? AND occurrence = ?");
 
-  function toTrigger(raw: any): Trigger {
+  function toTrigger(raw: TriggerRow): Trigger {
     const when = parseJson<TriggerWhen>(raw.whenJson) ?? { kind: "at", at: raw.createdAt };
     const action = parseJson<TriggerAction>(raw.actionJson) ?? { kind: "chat", via: "worker" };
     const check = raw.checkJson ? parseTriggerCheckSpecJson(raw.checkJson) : undefined;
@@ -212,7 +254,7 @@ export function createTriggerStore(db: DatabaseSync) {
     };
   }
 
-  function toRun(raw: any): TriggerRun {
+  function toRun(raw: TriggerRunRow): TriggerRun {
     return {
       id: raw.id,
       triggerId: raw.triggerId,
@@ -246,7 +288,7 @@ export function createTriggerStore(db: DatabaseSync) {
   // ── Reading ──────────────────────────────────────────────────────
 
   function get(id: string): Trigger | undefined {
-    const row = selectById.get(id);
+    const row = selectById.get(id) as TriggerRow | undefined;
     return row ? toTrigger(row) : undefined;
   }
 
@@ -259,11 +301,11 @@ export function createTriggerStore(db: DatabaseSync) {
     const sql = `SELECT * FROM triggers${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
       ORDER BY CASE WHEN status IN ('active', 'running', 'paused') THEN 0 ELSE 1 END,
                COALESCE(nextRunAt, updatedAt) ASC, createdAt ASC`;
-    return (db.prepare(sql).all(...values) as any[]).map(toTrigger);
+    return (db.prepare(sql).all(...values) as TriggerRow[]).map(toTrigger);
   }
 
   function listDue(lane: TriggerLane, now = new Date().toISOString()): Trigger[] {
-    return (selectDue.all(lane, now, now) as any[]).map(toTrigger);
+    return (selectDue.all(lane, now, now) as TriggerRow[]).map(toTrigger);
   }
 
   function getNextWakeAt(lane: TriggerLane, now = new Date().toISOString()): string | undefined {
@@ -272,7 +314,7 @@ export function createTriggerStore(db: DatabaseSync) {
 
   /** Triggers whose claim outlived its lease: the server stopped while they ran. */
   function listExpiredRunning(lane: TriggerLane, now = new Date().toISOString()): Trigger[] {
-    return (selectExpiredRunning.all(lane, now) as any[]).map(toTrigger);
+    return (selectExpiredRunning.all(lane, now) as TriggerRow[]).map(toTrigger);
   }
 
   function getSummaryForSession(sessionId: string): TriggerSummary {
@@ -483,7 +525,7 @@ export function createTriggerStore(db: DatabaseSync) {
   /** Records a finished occurrence and schedules the next, with an optional chat message. */
   function settleOccurrence(id: string, claimToken: string, options: SettleOptions, now = new Date().toISOString()): Trigger | undefined {
     return transaction(() => {
-      const row = selectById.get(id) as any;
+      const row = selectById.get(id) as TriggerRow | undefined;
       if (!row || row.status !== "running" || row.claimToken !== claimToken) return undefined;
       const current = toTrigger(row);
       const runCount = current.runCount + 1;
@@ -540,7 +582,7 @@ export function createTriggerStore(db: DatabaseSync) {
   }
 
   function findRunByOccurrence(triggerId: string, occurrence: string): TriggerRun | undefined {
-    const row = selectRunByOccurrence.get(triggerId, occurrence);
+    const row = selectRunByOccurrence.get(triggerId, occurrence) as TriggerRunRow | undefined;
     return row ? toRun(row) : undefined;
   }
 
@@ -559,7 +601,7 @@ export function createTriggerStore(db: DatabaseSync) {
     const limit = options.limit ?? -1;
     const rows = db.prepare(`
       SELECT * FROM trigger_runs WHERE triggerId = ? ORDER BY recordedAt DESC, id DESC LIMIT ? OFFSET ?
-    `).all(triggerId, limit, options.offset ?? 0) as any[];
+    `).all(triggerId, limit, options.offset ?? 0) as TriggerRunRow[];
     return { runs: rows.map(toRun), total };
   }
 

@@ -50,7 +50,7 @@ export function createTaskPageToolDefinitions(ctx: AppContext): BridgeToolDefini
         },
         required: ["taskId", "path"],
       },
-      handler: async (args: any, invocation: any) => {
+      handler: async (args: { taskId: string; path: string }, invocation) => {
         const store = ctx.taskPageStore;
         if (!store) return toolFailure("Task pages are not available");
         const task = ensureTask(ctx, args.taskId);

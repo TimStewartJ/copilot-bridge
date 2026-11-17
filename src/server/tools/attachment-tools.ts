@@ -16,6 +16,8 @@ export interface RegisterAttachmentToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
+type SendAttachmentArgs = { path?: string; content?: string; displayName?: string };
+
 export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
   defineSessionBridgeTool("send_attachment", {
@@ -34,7 +36,7 @@ export function createAttachmentToolDefinitions(ctx: AppContext): BridgeToolDefi
         displayName: { type: "string", description: "Optional filename to show the user. Required when using content." },
       },
     },
-    handler: async (args: any, invocation: any) => {
+    handler: async (args: SendAttachmentArgs, invocation) => {
 
       const rawPath = typeof args.path === "string" ? args.path.trim() : "";
       const content = typeof args.content === "string" ? args.content : undefined;

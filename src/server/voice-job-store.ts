@@ -47,8 +47,26 @@ interface VoiceJobCreate {
 const RELEVANT_STATUSES: readonly VoiceJobStatus[] = ["accepted", "transcribing", "sending", "error", "held"];
 const TERMINAL_STATUSES: readonly VoiceJobStatus[] = ["done", "error", "held", "recovered"];
 
+// status and reviewReason hold only the values this store writes.
+type VoiceJobRow = {
+  id: string;
+  composerKey: string;
+  taskId: string | null;
+  targetSessionId: string | null;
+  status: VoiceJobStatus;
+  audioPath: string;
+  transcript: string | null;
+  error: string | null;
+  mode: string | null;
+  speechGapSeconds: number | null;
+  speechGapStart: number | null;
+  reviewReason: VoiceReviewReason | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export function createVoiceJobStore(db: DatabaseSync) {
-  function hydrate(row: any): StoredVoiceJob {
+  function hydrate(row: VoiceJobRow): StoredVoiceJob {
     return {
       id: row.id,
       composerKey: row.composerKey,
@@ -87,7 +105,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
   }
 
   function getVoiceJob(id: string): StoredVoiceJob | undefined {
-    const row = db.prepare("SELECT * FROM voice_jobs WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM voice_jobs WHERE id = ?").get(id) as VoiceJobRow | undefined;
     return row ? hydrate(row) : undefined;
   }
 
@@ -150,7 +168,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
       SELECT * FROM voice_jobs
       WHERE status IN ('accepted', 'transcribing', 'sending')
       ORDER BY createdAt ASC
-    `).all() as any[];
+    `).all() as VoiceJobRow[];
     return rows.map(hydrate);
   }
 
@@ -159,7 +177,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
       SELECT * FROM voice_jobs
       WHERE status = 'held'
       ORDER BY createdAt ASC
-    `).all() as any[];
+    `).all() as VoiceJobRow[];
     return rows.map(hydrate);
   }
 
@@ -169,7 +187,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
       SELECT * FROM voice_jobs
       WHERE status IN (${placeholders})
       ORDER BY updatedAt ASC
-    `).all(...TERMINAL_STATUSES) as any[];
+    `).all(...TERMINAL_STATUSES) as VoiceJobRow[];
     return rows.map(hydrate);
   }
 
@@ -207,7 +225,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
         )
       ORDER BY job.updatedAt DESC, job.createdAt DESC
       LIMIT 1
-    `).get(composerKey, composerKey, ...RELEVANT_STATUSES, composerKey, composerKey) as any;
+    `).get(composerKey, composerKey, ...RELEVANT_STATUSES, composerKey, composerKey) as VoiceJobRow | undefined;
     return row ? hydrate(row) : undefined;
   }
 

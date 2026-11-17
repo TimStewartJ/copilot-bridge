@@ -20,6 +20,7 @@ import {
 import { validateTaskStarters, type TaskStarterDraft } from "../../../shared/task-starters.js";
 import type { PacketBridge, ThinkerPacket } from "./context.js";
 import { formatDay, localDateKey } from "../attention.js";
+import { isRecord } from "../../../shared/is-record.js";
 
 // helm_publish states these limits in its tool descriptions, so a run sees them before it writes.
 export const MAX_ITEMS = 6;
@@ -84,13 +85,18 @@ export function normalizeChoice(value: string): string {
   return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
+/** The fields of a published object; anything else reads as having none. */
+function fieldsOf(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
 function words(value: string): number {
   return value.split(/\s+/).filter(Boolean).length;
 }
 
 export function validatePublication(raw: unknown, packet: ThinkerPacket, memory: readonly HelmMemoryEntry[]): PublicationResult {
   const errors: string[] = [];
-  const input = raw && typeof raw === "object" ? raw as Record<string, any> : {};
+  const input = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const bridges = new Map(packet.bridges.filter((bridge) => bridge.ok).map((bridge) => [bridge.id, bridge]));
   const bridgeOf = (id: unknown, where: string): PacketBridge | undefined => {
     const bridge = typeof id === "string" ? bridges.get(id) : undefined;
@@ -101,10 +107,11 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
   const summary = text(input.summary, MAX_CHARS.summary);
   if (!summary) errors.push(`summary is required (at most ${MAX_CHARS.summary} characters)`);
 
-  const parseAction = (rawAction: any, bridge: PacketBridge, where: string, index: number): HelmAction | undefined => {
-    const label = text(rawAction?.label, MAX_CHARS.actionLabel);
+  const parseAction = (value: unknown, bridge: PacketBridge, where: string, index: number): HelmAction | undefined => {
+    const rawAction = fieldsOf(value);
+    const label = text(rawAction.label, MAX_CHARS.actionLabel);
     if (!label) { errors.push(`${where}: label is required (at most ${MAX_CHARS.actionLabel} characters)`); return undefined; }
-    const type = rawAction?.type;
+    const type = rawAction.type;
     let action: HelmActionDo | undefined;
     if (type === "answer") {
       const question = bridge.questions.find((candidate) => candidate.sessionId === rawAction.sessionId && candidate.requestId === rawAction.requestId);
@@ -123,10 +130,11 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
       else if (!message) errors.push(`${where}: message is required (at most ${MAX_CHARS.message} characters)`);
       else action = { type: "send", bridge: bridge.id, sessionId: rawAction.sessionId, message };
     } else if (type === "tick") {
-      if (!bridge.due.some((due) => due.actionId === rawAction.actionId)) errors.push(`${where}: tick needs the actionId of a checklist item listed for ${bridge.id}`);
-      else action = { type: "tick", bridge: bridge.id, actionId: rawAction.actionId };
+      const due = bridge.due.find((candidate) => candidate.actionId === rawAction.actionId);
+      if (!due) errors.push(`${where}: tick needs the actionId of a checklist item listed for ${bridge.id}`);
+      else action = { type: "tick", bridge: bridge.id, actionId: due.actionId };
     } else if (type === "close_tasks") {
-      const ids = Array.isArray(rawAction.taskIds) ? rawAction.taskIds.filter((id: unknown) => typeof id === "string") as string[] : [];
+      const ids = Array.isArray(rawAction.taskIds) ? rawAction.taskIds.filter((id: unknown): id is string => typeof id === "string") : [];
       if (bridge.id !== "local") errors.push(`${where}: close_tasks only works for tasks on bridge "local"; propose opening the task instead`);
       else if (ids.length === 0 || ids.length > 10 || ids.some((id) => !bridge.tasks.some((task) => task.taskId === id))) errors.push(`${where}: close_tasks needs 1–10 taskIds listed for local`);
       else action = { type: "close_tasks", bridge: bridge.id, taskIds: [...new Set(ids)] };
@@ -136,10 +144,10 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
       else if (!task?.tidy?.length) errors.push(`${where}: tidy_task needs the taskId of a local task listed with tidy signs`);
       else action = { type: "tidy_task", bridge: bridge.id, taskId: task.taskId };
     } else if (type === "open") {
-      const sessionOk = typeof rawAction.sessionId === "string" && bridge.sessionIds.has(rawAction.sessionId);
-      const taskOk = typeof rawAction.taskId === "string" && bridge.tasks.some((task) => task.taskId === rawAction.taskId);
-      if (!sessionOk && !taskOk) errors.push(`${where}: open needs a sessionId or taskId listed for ${bridge.id}`);
-      else action = { type: "open", bridge: bridge.id, ...(sessionOk ? { sessionId: rawAction.sessionId } : { taskId: rawAction.taskId }) };
+      const sessionId = typeof rawAction.sessionId === "string" && bridge.sessionIds.has(rawAction.sessionId) ? rawAction.sessionId : undefined;
+      const taskId = typeof rawAction.taskId === "string" && bridge.tasks.some((task) => task.taskId === rawAction.taskId) ? rawAction.taskId : undefined;
+      if (sessionId === undefined && taskId === undefined) errors.push(`${where}: open needs a sessionId or taskId listed for ${bridge.id}`);
+      else action = { type: "open", bridge: bridge.id, ...(sessionId !== undefined ? { sessionId } : { taskId }) };
     } else {
       errors.push(`${where}: type must be answer, send, tick, close_tasks, tidy_task or open`);
     }
@@ -157,26 +165,28 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
   const parseEvidence = (rawEvidence: unknown, bridge: PacketBridge, where: string): HelmEvidence[] => {
     if (rawEvidence === undefined) return [];
     if (!Array.isArray(rawEvidence) || rawEvidence.length > MAX_EVIDENCE) { errors.push(`${where}: evidence must be a list of at most ${MAX_EVIDENCE}`); return []; }
-    return rawEvidence.flatMap((entry: any, index) => {
-      const label = text(entry?.label, MAX_CHARS.evidenceLabel);
-      const sessionOk = typeof entry?.sessionId === "string" && bridge.sessionIds.has(entry.sessionId);
-      const taskOk = typeof entry?.taskId === "string" && bridge.tasks.some((task) => task.taskId === entry.taskId);
-      if (!label || (!sessionOk && !taskOk)) {
+    return rawEvidence.flatMap((value: unknown, index) => {
+      const entry = fieldsOf(value);
+      const label = text(entry.label, MAX_CHARS.evidenceLabel);
+      const sessionId = typeof entry.sessionId === "string" && bridge.sessionIds.has(entry.sessionId) ? entry.sessionId : undefined;
+      const taskId = typeof entry.taskId === "string" && bridge.tasks.some((task) => task.taskId === entry.taskId) ? entry.taskId : undefined;
+      if (!label || (sessionId === undefined && taskId === undefined)) {
         errors.push(`${where} evidence ${index + 1}: needs a label and a sessionId or taskId listed for ${bridge.id}`);
         return [];
       }
-      return [{ label, target: { bridge: bridge.id, ...(sessionOk ? { sessionId: entry.sessionId } : { taskId: entry.taskId }) } }];
+      return [{ label, target: { bridge: bridge.id, ...(sessionId !== undefined ? { sessionId } : { taskId }) } }];
     });
   };
 
   const items: HelmBriefItem[] = [];
   if (!Array.isArray(input.items) || input.items.length > MAX_ITEMS) errors.push(`items must be a list of at most ${MAX_ITEMS}`);
-  else input.items.forEach((rawItem: any, index: number) => {
+  else input.items.forEach((value: unknown, index: number) => {
+    const rawItem = fieldsOf(value);
     const where = `item ${index + 1}`;
-    const bridge = bridgeOf(rawItem?.bridge, where);
-    const title = text(rawItem?.title, MAX_CHARS.title);
-    const recommendation = text(rawItem?.recommendation, MAX_CHARS.recommendation);
-    const kind = ITEM_KINDS.includes(rawItem?.kind) ? rawItem.kind as HelmItemKind : undefined;
+    const bridge = bridgeOf(rawItem.bridge, where);
+    const title = text(rawItem.title, MAX_CHARS.title);
+    const recommendation = text(rawItem.recommendation, MAX_CHARS.recommendation);
+    const kind = ITEM_KINDS.find((candidate) => candidate === rawItem.kind);
     if (!title) errors.push(`${where}: title is required (at most ${MAX_CHARS.title} characters)`);
     if (!recommendation) errors.push(`${where}: recommendation is required (at most ${MAX_CHARS.recommendation} characters)`);
     if (!kind) errors.push(`${where}: kind must be one of ${ITEM_KINDS.join(", ")}`);
@@ -185,7 +195,7 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
     if (rawItem.why !== undefined && !why) errors.push(`${where}: why must be at most ${MAX_CHARS.why} characters`);
     let reply: HelmBriefItem["reply"];
     if (rawItem.replyTo !== undefined) {
-      const sessionId = rawItem.replyTo?.sessionId;
+      const sessionId = isRecord(rawItem.replyTo) ? rawItem.replyTo.sessionId : undefined;
       if (typeof sessionId !== "string" || !bridge.sessionIds.has(sessionId)) errors.push(`${where}: replyTo needs a sessionId listed for ${bridge.id}`);
       else {
         const question = bridge.questions.find((candidate) => candidate.sessionId === sessionId && candidate.answerable && candidate.kind === "user_input" && candidate.allowFreeform !== false);
@@ -207,10 +217,11 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
 
   const proposals: HelmProposal[] = [];
   if (input.proposals !== undefined && (!Array.isArray(input.proposals) || input.proposals.length > MAX_PROPOSALS)) errors.push(`proposals must be a list of at most ${MAX_PROPOSALS}`);
-  else (input.proposals ?? []).forEach((rawProposal: any, index: number) => {
+  else (input.proposals ?? []).forEach((value: unknown, index: number) => {
+    const rawProposal = fieldsOf(value);
     const where = `proposal ${index + 1}`;
-    const bridge = bridgeOf(rawProposal?.bridge, where);
-    const proposalText = text(rawProposal?.text, MAX_CHARS.proposal);
+    const bridge = bridgeOf(rawProposal.bridge, where);
+    const proposalText = text(rawProposal.text, MAX_CHARS.proposal);
     if (!proposalText) errors.push(`${where}: text is required (at most ${MAX_CHARS.proposal} characters)`);
     if (!bridge || !proposalText) return;
     proposals.push({ id: `p${index + 1}`, text: proposalText, actions: parseActions(rawProposal.actions, bridge, where) });
@@ -218,27 +229,28 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
 
   const watching: HelmWatching[] = [];
   if (input.watching !== undefined && (!Array.isArray(input.watching) || input.watching.length > MAX_WATCHING)) errors.push(`watching must be a list of at most ${MAX_WATCHING}`);
-  else (input.watching ?? []).forEach((rawWatch: any, index: number) => {
+  else (input.watching ?? []).forEach((value: unknown, index: number) => {
+    const rawWatch = fieldsOf(value);
     const where = `watching ${index + 1}`;
-    const bridge = bridgeOf(rawWatch?.bridge, where);
-    const watchText = text(rawWatch?.text, MAX_CHARS.watching);
+    const bridge = bridgeOf(rawWatch.bridge, where);
+    const watchText = text(rawWatch.text, MAX_CHARS.watching);
     if (!watchText) errors.push(`${where}: text is required (at most ${MAX_CHARS.watching} characters)`);
     if (!bridge || !watchText) return;
     const task = typeof rawWatch.taskId === "string" ? bridge.tasks.find((candidate) => candidate.taskId === rawWatch.taskId) : undefined;
-    const taskOk = !!task;
     // Watching is for what waits on others; live fields decide that, not Helm's thread line.
     if (task?.onTim === "fields") {
       errors.push(`${where}: "${task.title}" waits on no one but Tim: no agent is working on it and it is not waiting on anyone else${task.needsTim?.length ? ` (${task.needsTim.join("; ")})` : ""}. Don't watch it; raise it as an item, or leave it out and Home lists it under On you.`);
       return;
     }
-    watching.push({ text: watchText, bridge: bridge.id, ...(taskOk ? { taskId: rawWatch.taskId } : {}) });
+    watching.push({ text: watchText, bridge: bridge.id, ...(task ? { taskId: task.taskId } : {}) });
   });
 
   const handled: HandledPlan[] = [];
   if (input.handled !== undefined && (!Array.isArray(input.handled) || input.handled.length > MAX_HANDLED)) errors.push(`handled must be a list of at most ${MAX_HANDLED}`);
-  else (input.handled ?? []).forEach((rawHandled: any, index: number) => {
+  else (input.handled ?? []).forEach((value: unknown, index: number) => {
+    const rawHandled = fieldsOf(value);
     const where = `handled ${index + 1}`;
-    const bridge = bridgeOf(rawHandled?.bridge, where);
+    const bridge = bridgeOf(rawHandled.bridge, where);
     if (!bridge) return;
     const reply = bridge.replies.find((candidate) => candidate.sessionId === rawHandled.sessionId);
     const why = text(rawHandled.why, MAX_CHARS.handledWhy);
@@ -250,11 +262,12 @@ export function validatePublication(raw: unknown, packet: ThinkerPacket, memory:
 
   const starters: StarterPlan[] = [];
   if (input.starters !== undefined && (!Array.isArray(input.starters) || input.starters.length > MAX_STARTER_TASKS)) errors.push(`starters must be a list of at most ${MAX_STARTER_TASKS} tasks`);
-  else (input.starters ?? []).forEach((rawStarter: any, index: number) => {
+  else (input.starters ?? []).forEach((value: unknown, index: number) => {
+    const rawStarter = fieldsOf(value);
     const where = `starters ${index + 1}`;
     const local = bridges.get("local");
-    if (rawStarter?.bridge !== undefined && rawStarter.bridge !== "local") { errors.push(`${where}: starters only work for tasks on bridge "local"`); return; }
-    if (!local || typeof rawStarter?.taskId !== "string" || !local.tasks.some((task) => task.taskId === rawStarter.taskId)) { errors.push(`${where}: needs the taskId of a task listed for local`); return; }
+    if (rawStarter.bridge !== undefined && rawStarter.bridge !== "local") { errors.push(`${where}: starters only work for tasks on bridge "local"`); return; }
+    if (!local || typeof rawStarter.taskId !== "string" || !local.tasks.some((task) => task.taskId === rawStarter.taskId)) { errors.push(`${where}: needs the taskId of a task listed for local`); return; }
     if (starters.some((plan) => plan.taskId === rawStarter.taskId)) { errors.push(`${where}: that task is listed twice`); return; }
     const checked = validateTaskStarters(rawStarter.chats, `${where} chats`);
     if (!checked.ok) errors.push(...checked.errors);
@@ -288,7 +301,7 @@ function citedSources(rawFrom: unknown, sourceNote: string | null, packet: Think
 function validateMemory(raw: unknown, packet: ThinkerPacket, memory: readonly HelmMemoryEntry[], errors: string[]): MemoryOp[] {
   if (raw === undefined) return [];
   if (!raw || typeof raw !== "object") { errors.push("memory must be an object"); return []; }
-  const input = raw as Record<string, any>;
+  const input = raw as Record<string, unknown>;
   const ops: MemoryOp[] = [];
   const live = memory.filter((entry) => entry.status !== "forgotten");
   const byId = new Map(live.map((entry) => [entry.id, entry]));

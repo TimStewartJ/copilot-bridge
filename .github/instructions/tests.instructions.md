@@ -19,7 +19,7 @@ Every test is code someone has to keep passing through later refactors, so add o
   - pass-through wrappers, constants, default labels, or shapes TypeScript already checks
   - a negative check for text or a feature the code no longer has
 - Never assert on words a model chose. Mock model replies as structured values and check structured results; no test runs a real model and looks for words in its reply ("Agent output" in `AGENTS.md`).
-- Do not read source files and match their text. Run the code and check what it does. The deliberate structural guards (main-thread boundary, in-tree packages, the xplat, design, public repo and agent text audits) are the exceptions.
+- Do not read source files and match their text. Run the code and check what it does. The deliberate structural guards (main-thread boundary, in-tree packages, the xplat, design, public repo, agent text and any audits) are the exceptions.
 - HTTP route tests in `src/integration/` cover validation, status codes, serialization and wiring, with one representative case per behavior. Business rules belong in the owning store or service unit test and are checked once there.
 - Client API wrappers in `src/client/api*.ts` only need tests for client-side logic such as ID encoding, query building or response projection. The route integration tests cover the request itself.
 - Put logic that needs many cases (geometry, keyboard handling, formatting, classification) in a pure function and test it with a table. Keep a few component tests that prove the wiring.
@@ -56,6 +56,7 @@ Every test is code someone has to keep passing through later refactors, so add o
 ## Audits
 
 - `npm run test:xplat-audit` runs in `check:fast` and blocks known non-portable test patterns. Avoid `xplat-audit-ignore-*` comments; if one is truly necessary, keep it narrow and say why the test is still safe.
+- `npm run test:any-audit` runs in `check:fast` and CI. It fails on any `any` type in production code; tests are not scanned. See "Types" in `AGENTS.md`.
 - `npm run test:agent-text-audit` runs in `check:fast` and CI. It fails on a word or phrase check in production code that does not say where its text comes from; see "Agent output" in `AGENTS.md`.
 - `npm run test:comment-audit` runs in `check:fast` and CI, on tests too. It fails on a comment over one line or 100 columns, or two comments with no code between; see "Comments" in `AGENTS.md`.
 - `npm run test:public-audit` runs in `check:fast` and CI. It fails on `package-lock.json` entries outside the public npm registry and on Azure DevOps orgs that are not on its list of made-up names. Installing through a mirror writes the mirror's address into the lockfile; `npm run lockfile:public` puts it back.

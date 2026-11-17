@@ -2,7 +2,8 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { computeNextRunAt } from "../cron-next-run.js";
-import { parseTriggerCheckSpecJson } from "./check.js";
+import type { ModelPresetSlot } from "../../shared/model-presets.js";
+import { parseTriggerCheckSpecJson, type TriggerCheckOutcome } from "./check.js";
 import type { TriggerAction, TriggerLastCheck, TriggerStatus, TriggerWhen } from "./types.js";
 
 const MARKER = "migration:triggers";
@@ -20,6 +21,63 @@ function parseJson(json: unknown): unknown {
 function tableExists(db: DatabaseSync, name: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 }
+
+// Row shapes are type aliases, not interfaces, so a node:sqlite row array casts to them.
+type DeferLoopRow = {
+  id: string;
+  sessionId: string;
+  name: string | null;
+  prompt: string;
+  checkpoint: string | null;
+  intervalSeconds: number;
+  nextRunAt: string;
+  status: string;
+  runCount: number;
+  maxRuns: number | null;
+  expiresAt: string | null;
+  attempts: number;
+  createdAt: string;
+  lastError: string | null;
+  checkSpec: string | null;
+  checkFingerprint: string | null;
+  checkOutput: string | null;
+  lastCheckAt: string | null;
+  lastCheckOutcome: TriggerCheckOutcome | null;
+  checkPending: string | null;
+};
+
+type DeferredPromptRow = {
+  id: string;
+  sessionId: string;
+  prompt: string;
+  runAt: string;
+  status: string;
+  attempts: number;
+  createdAt: string;
+  lastError: string | null;
+};
+
+type ScheduleRow = {
+  id: string;
+  taskId: string;
+  name: string;
+  prompt: string;
+  type: string;
+  cron: string | null;
+  runAt: string | null;
+  timezone: string | null;
+  enabled: number;
+  lastSessionId: string | null;
+  createdAt: string;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  runCount: number;
+  maxRuns: number | null;
+  expiresAt: string | null;
+  autoArchiveKeep: number | null;
+  modelTier: ModelPresetSlot | null;
+  playbook: string | null;
+};
 
 export interface TriggerMigrationReport {
   loops: number;
@@ -64,7 +122,7 @@ export function migrateToTriggersOnce(db: DatabaseSync, now = new Date()): Trigg
     ).changes) > 0;
 
     if (tableExists(db, "defer_loops")) {
-      const loops = db.prepare("SELECT * FROM defer_loops WHERE status IN ('active', 'running')").all() as any[];
+      const loops = db.prepare("SELECT * FROM defer_loops WHERE status IN ('active', 'running')").all() as DeferLoopRow[];
       for (const loop of loops) {
         const check = loop.checkSpec ? parseTriggerCheckSpecJson(loop.checkSpec) : undefined;
         const output = parseJson(loop.checkOutput) as TriggerLastCheck["output"] | undefined;
@@ -102,7 +160,7 @@ export function migrateToTriggersOnce(db: DatabaseSync, now = new Date()): Trigg
       const oneShots = db.prepare(`
         SELECT * FROM deferred_prompts
         WHERE purpose = 'defer' AND status IN ('pending', 'running') AND prompt NOT LIKE '<bridge_notice>%'
-      `).all() as any[];
+      `).all() as DeferredPromptRow[];
       for (const row of oneShots) {
         const moved = insertTrigger({
           id: row.id, prompt: row.prompt, sessionId: row.sessionId,
@@ -123,7 +181,7 @@ export function migrateToTriggersOnce(db: DatabaseSync, now = new Date()): Trigg
     }
 
     if (tableExists(db, "schedules")) {
-      const schedules = db.prepare("SELECT * FROM schedules").all() as any[];
+      const schedules = db.prepare("SELECT * FROM schedules").all() as ScheduleRow[];
       for (const schedule of schedules) {
         const timezone = schedule.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
         const when: TriggerWhen = schedule.type === "cron" && schedule.cron

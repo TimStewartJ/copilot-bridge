@@ -42,6 +42,26 @@ const EVENT_FIELDS = {
   },
 } as const;
 
+type CalendarEventFields = {
+  title?: string;
+  allDay?: boolean;
+  start?: string;
+  end?: string;
+  timezone?: string;
+  repeat?: { every: "day" | "week" | "month" | "year"; interval?: number; until?: string } | null;
+  location?: string | null;
+  notes?: string | null;
+  taskId?: string | null;
+  externalId?: string | null;
+  source?: string | null;
+};
+type CalendarListArgs = { from: string; to: string; timezone?: string; includeRuns?: boolean };
+type CalendarEventCreateArgs = CalendarEventFields & {
+  events?: Array<CalendarEventFields & { title: string; start: string }>;
+};
+type CalendarEventUpdateArgs = CalendarEventFields & { eventId: string };
+type CalendarEventDeleteArgs = { eventId?: string; eventIds?: string[] };
+
 function calendarToolFailure(error: unknown) {
   if (error instanceof CalendarValidationError || error instanceof CalendarNotFoundError || error instanceof CalendarRangeError) {
     return toolFailure(error.message);
@@ -68,7 +88,7 @@ export function createCalendarToolDefinitions(ctx: AppContext): BridgeToolDefini
         },
         required: ["from", "to"],
       },
-      handler: async (args: any) => {
+      handler: async (args: CalendarListArgs) => {
         try {
           const calendar = buildCalendar(createCalendarSources(calendarCtx), {
             from: args.from, to: args.to, timezone: args.timezone ?? getServerTimezone(),
@@ -93,7 +113,7 @@ export function createCalendarToolDefinitions(ctx: AppContext): BridgeToolDefini
           },
         },
       },
-      handler: async (args: any) => {
+      handler: async (args: CalendarEventCreateArgs) => {
         const { events, ...single } = args ?? {};
         try {
           if (events === undefined) {
@@ -122,7 +142,7 @@ export function createCalendarToolDefinitions(ctx: AppContext): BridgeToolDefini
         properties: { eventId: { type: "string", description: "Event ID from calendar_list (eventId)." }, ...EVENT_FIELDS },
         required: ["eventId"],
       },
-      handler: async (args: any) => {
+      handler: async (args: CalendarEventUpdateArgs) => {
         const { eventId, ...updates } = args ?? {};
         try {
           return { success: true, event: store.updateEvent(eventId, updates) };
@@ -140,7 +160,7 @@ export function createCalendarToolDefinitions(ctx: AppContext): BridgeToolDefini
           eventIds: { type: "array", maxItems: CALENDAR_MAX_BATCH, items: { type: "string" }, description: "Several event IDs. Use instead of eventId." },
         },
       },
-      handler: async (args: any) => {
+      handler: async (args: CalendarEventDeleteArgs) => {
         try {
           if (args?.eventIds !== undefined) {
             if (args.eventId !== undefined) return toolFailure("Pass eventId or eventIds, not both");

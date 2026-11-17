@@ -7,7 +7,7 @@ export type StartWorkAttachment =
   | { type: "blob"; data: string; mimeType: string; displayName?: string }
   | { type: "uploaded"; displayName: string; mimeType: string };
 
-export type RoutedSdkAttachment = { type: string; [k: string]: any };
+export type RoutedSdkAttachment = { type: string; [k: string]: unknown };
 
 export interface AttachmentRoutingDeps {
   copilotHome?: string;

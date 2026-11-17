@@ -173,7 +173,7 @@ function isTrackedParseError(err: unknown): err is Error & { status?: number; st
     || candidate.statusCode === 400;
 }
 
-function getResponseContentLength(res: Parameters<NonNullable<TelemetryStore>["recordSpan"]>[0] extends never ? never : any): string | undefined {
+function getResponseContentLength(res: Pick<Response, "getHeader">): string | undefined {
   return headerToString(res.getHeader("content-length") as string | number | string[] | undefined);
 }
 

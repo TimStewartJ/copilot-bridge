@@ -17,6 +17,31 @@ export interface VoiceNotice {
   text: string;
 }
 
+// Mirrors the server's VoiceServerEvent and VoiceGatewayEvent, plus the HTTP stream's audio frames.
+export type VoiceServerMessage =
+  | { type: "hello"; transport: "websocket" | "http"; state: VoiceState }
+  | { type: "state"; state: VoiceState }
+  | { type: "vad"; speech: boolean }
+  | { type: "duck"; on: boolean }
+  | { type: "earcon"; kind: "commit" | "wake" | "sleep" | "error" }
+  | { type: "engine"; state: VoiceViewState["engine"]["state"]; detail?: string }
+  | { type: "smart_turn"; probability: number }
+  | { type: "user"; turnId: number; text: string; handled?: string }
+  | { type: "assistant_delta"; genId: number; text: string }
+  | { type: "assistant_chunk"; genId: number; chunkId: number; text: string }
+  | { type: "assistant_done"; genId: number; text: string; interrupted: boolean }
+  | { type: "assistant_discarded"; genId: number }
+  | { type: "stop_audio"; genId: number; reason: string }
+  | { type: "tool"; genId: number; toolCallId: string; name: string; status: "running" | "done" | "failed" }
+  | { type: "metrics"; metrics: VoiceTurnMetrics }
+  | { type: "notice"; level: VoiceNotice["level"]; message: string }
+  | { type: "end_voice_mode" }
+  | { type: "run"; working: boolean; startedAt?: number }
+  | { type: "bridge_counts"; unread: number; running: number; waiting: number }
+  | { type: "pong"; t: number }
+  | { type: "ended"; reason: string }
+  | { type: "audio"; genId: number; chunkId: number; sampleRate: number; data: string };
+
 export interface VoiceViewState {
   voiceState: VoiceState | "idle";
   engine: { state: "stopped" | "starting" | "ready" | "failed"; detail?: string };
@@ -85,7 +110,7 @@ export function describeVoiceTool(name: string): string {
   return TOOL_LABELS[name] ?? name.replace(/_/g, " ");
 }
 
-export function reduceVoiceEvent(state: VoiceViewState, event: Record<string, any>): VoiceViewState {
+export function reduceVoiceEvent(state: VoiceViewState, event: VoiceServerMessage): VoiceViewState {
   switch (event.type) {
     case "hello":
       return { ...state, transport: event.transport, voiceState: event.state === "starting" ? state.voiceState : event.state, ended: undefined };

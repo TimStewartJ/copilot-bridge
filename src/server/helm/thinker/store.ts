@@ -64,10 +64,33 @@ function sourceIdsJson(ids: readonly string[]): string | null {
   return ids.length ? JSON.stringify(mergeSourceIds(ids)) : null;
 }
 
+// A mapped copy of an interface converts from node:sqlite's row records; the interface does not.
+type SqlRow<T> = Pick<T, keyof T>;
+
 /** A thread line's structured part; undefined leaves a stored value as it is. */
 type ThreadFields = { owner?: HelmThreadOwner | null; holdUntil?: string | null; basis?: string | null };
 
-function hydrateMemory(row: any): HelmMemoryEntry {
+// Enum-typed columns hold only the values this store writes.
+type HelmMemoryRow = {
+  id: string; kind: HelmMemoryKind; key: string | null; text: string; source: string | null;
+  author: HelmMemoryAuthor; status: HelmMemoryStatus; createdAt: string; updatedAt: string; confirmedAt: string;
+  uses: number; fromSources: string | null; owner: HelmThreadOwner | null; holdUntil: string | null; basis: string | null;
+};
+
+type HelmRunRow = {
+  id: string; sessionId: string; trigger: HelmRunTrigger; rebuild: number; status: HelmRunStatus; startedAt: string;
+  finishedAt: string | null; error: string | null; model: string | null; effort: string | null; credits: number | null;
+  changeCount: number | null; bridgesJson: string | null; contextJson: string | null; briefJson: string | null;
+  changesJson: string | null; sessionDeleted: number; sourcesJson: string | null; fromSourcesJson: string | null;
+  seenAt: string | null;
+};
+
+type HelmHandledRow = {
+  id: string; runId: string; kind: HelmHandledView["kind"]; bridge: string; sessionId: string; title: string; why: string;
+  previousReadAt: string | null; readThrough: string | null; at: string; undoneAt: string | null;
+};
+
+function hydrateMemory(row: HelmMemoryRow): HelmMemoryEntry {
   return {
     id: row.id, kind: row.kind, key: row.key ?? null, text: row.text, source: row.source ?? null,
     author: row.author, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
@@ -76,7 +99,7 @@ function hydrateMemory(row: any): HelmMemoryEntry {
   };
 }
 
-function hydrateRun(row: any): HelmRunRecord {
+function hydrateRun(row: HelmRunRow): HelmRunRecord {
   return {
     id: row.id, sessionId: row.sessionId, trigger: row.trigger,
     rebuild: Number(row.rebuild) === 1, status: row.status, startedAt: row.startedAt, finishedAt: row.finishedAt ?? null,
@@ -97,7 +120,7 @@ export function toRunView(run: HelmRunRecord): HelmRunView {
   return { ...view, transcriptAvailable: !sessionDeleted };
 }
 
-function hydrateHandled(row: any): HelmHandledRecord {
+function hydrateHandled(row: HelmHandledRow): HelmHandledRecord {
   return {
     id: row.id, runId: row.runId, kind: row.kind, bridge: row.bridge, sessionId: row.sessionId, title: row.title,
     why: row.why, at: row.at, undoneAt: row.undoneAt ?? null, previousReadAt: row.previousReadAt ?? null,
@@ -133,17 +156,17 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   function listMemory(options: { includeForgotten?: boolean } = {}): HelmMemoryEntry[] {
     const rows = db.prepare(
       `SELECT * FROM helm_memory ${options.includeForgotten ? "" : "WHERE status != 'forgotten'"} ORDER BY kind, createdAt`,
-    ).all();
+    ).all() as HelmMemoryRow[];
     return rows.map(hydrateMemory);
   }
 
   function getMemory(id: string): HelmMemoryEntry | undefined {
-    const row = db.prepare("SELECT * FROM helm_memory WHERE id = ?").get(id);
+    const row = db.prepare("SELECT * FROM helm_memory WHERE id = ?").get(id) as HelmMemoryRow | undefined;
     return row ? hydrateMemory(row) : undefined;
   }
 
   function findByKey(kind: HelmMemoryKind, key: string): HelmMemoryEntry | undefined {
-    const row = db.prepare("SELECT * FROM helm_memory WHERE kind = ? AND key = ? AND status != 'forgotten'").get(kind, key);
+    const row = db.prepare("SELECT * FROM helm_memory WHERE kind = ? AND key = ? AND status != 'forgotten'").get(kind, key) as HelmMemoryRow | undefined;
     return row ? hydrateMemory(row) : undefined;
   }
 
@@ -204,7 +227,7 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   }
 
   function getRun(id: string): HelmRunRecord | undefined {
-    const row = db.prepare("SELECT * FROM helm_runs WHERE id = ?").get(id);
+    const row = db.prepare("SELECT * FROM helm_runs WHERE id = ?").get(id) as HelmRunRow | undefined;
     return row ? hydrateRun(row) : undefined;
   }
 
@@ -216,7 +239,7 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   }
 
   function getRunBySession(sessionId: string): HelmRunRecord | undefined {
-    const row = db.prepare("SELECT * FROM helm_runs WHERE sessionId = ?").get(sessionId);
+    const row = db.prepare("SELECT * FROM helm_runs WHERE sessionId = ?").get(sessionId) as HelmRunRow | undefined;
     return row ? hydrateRun(row) : undefined;
   }
 
@@ -225,13 +248,14 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   }
 
   function listRuns(limit = 20): HelmRunRecord[] {
-    return db.prepare("SELECT * FROM helm_runs ORDER BY startedAt DESC, rowid DESC LIMIT ?").all(limit).map(hydrateRun);
+    return (db.prepare("SELECT * FROM helm_runs ORDER BY startedAt DESC, rowid DESC LIMIT ?").all(limit) as HelmRunRow[])
+      .map(hydrateRun);
   }
 
   function latestRun(status?: HelmRunStatus): HelmRunRecord | undefined {
-    const row = status
+    const row = (status
       ? db.prepare("SELECT * FROM helm_runs WHERE status = ? ORDER BY startedAt DESC, rowid DESC LIMIT 1").get(status)
-      : db.prepare("SELECT * FROM helm_runs ORDER BY startedAt DESC, rowid DESC LIMIT 1").get();
+      : db.prepare("SELECT * FROM helm_runs ORDER BY startedAt DESC, rowid DESC LIMIT 1").get()) as HelmRunRow | undefined;
     return row ? hydrateRun(row) : undefined;
   }
 
@@ -328,7 +352,7 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   }
 
   function getItemStates(runId: string): Record<string, HelmItemState> {
-    const rows = db.prepare("SELECT * FROM helm_item_state WHERE runId = ?").all(runId) as any[];
+    const rows = db.prepare("SELECT * FROM helm_item_state WHERE runId = ?").all(runId) as SqlRow<HelmItemState>[];
     return Object.fromEntries(rows.map((row) => [row.itemId, { itemId: row.itemId, status: row.status, outcome: row.outcome ?? null, updatedAt: row.updatedAt }]));
   }
 
@@ -339,7 +363,7 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   }
 
   function pendingFeedback(): HelmFeedbackRecord[] {
-    return (db.prepare("SELECT * FROM helm_feedback WHERE consumedByRun IS NULL ORDER BY at LIMIT 100").all() as any[])
+    return (db.prepare("SELECT * FROM helm_feedback WHERE consumedByRun IS NULL ORDER BY at LIMIT 100").all() as SqlRow<HelmFeedbackRecord>[])
       .map((row) => ({ id: row.id, runId: row.runId, itemId: row.itemId, kind: row.kind, note: row.note ?? null, itemTitle: row.itemTitle ?? null, at: row.at }));
   }
 
@@ -358,12 +382,13 @@ export function createHelmThinkerStore(db: DatabaseSync, now: () => Date = () =>
   }
 
   function getHandled(id: string): HelmHandledRecord | undefined {
-    const row = db.prepare("SELECT * FROM helm_handled WHERE id = ?").get(id);
+    const row = db.prepare("SELECT * FROM helm_handled WHERE id = ?").get(id) as HelmHandledRow | undefined;
     return row ? hydrateHandled(row) : undefined;
   }
 
   function listHandled(runId: string): HelmHandledRecord[] {
-    return (db.prepare("SELECT * FROM helm_handled WHERE runId = ? ORDER BY at").all(runId) as any[]).map(hydrateHandled);
+    return (db.prepare("SELECT * FROM helm_handled WHERE runId = ? ORDER BY at").all(runId) as HelmHandledRow[])
+      .map(hydrateHandled);
   }
 
   function markHandledUndone(id: string): void {

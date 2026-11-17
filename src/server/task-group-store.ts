@@ -63,8 +63,19 @@ export interface TaskGroup {
 
 // ── Factory ───────────────────────────────────────────────────────
 
+type TaskGroupRow = {
+  id: string;
+  name: string;
+  color: string;
+  notes: string | null;
+  order: number;
+  collapsed: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export function createTaskGroupStore(db: DatabaseSync, bus: GlobalBus) {
-  function hydrate(row: any): TaskGroup {
+  function hydrate(row: TaskGroupRow): TaskGroup {
     return {
       id: row.id,
       name: row.name,
@@ -79,24 +90,24 @@ export function createTaskGroupStore(db: DatabaseSync, bus: GlobalBus) {
 
   function nextColor(): GroupColor {
     const used = new Set(
-      (db.prepare("SELECT color FROM task_groups").all() as any[]).map((r) => r.color),
+      (db.prepare("SELECT color FROM task_groups").all() as Array<{ color: string }>).map((r) => r.color),
     );
     return GROUP_COLORS.find((c) => !used.has(c)) ?? GROUP_COLORS[0];
   }
 
   function listGroups(): TaskGroup[] {
-    return (db.prepare('SELECT * FROM task_groups ORDER BY "order"').all() as any[]).map(hydrate);
+    return (db.prepare('SELECT * FROM task_groups ORDER BY "order"').all() as TaskGroupRow[]).map(hydrate);
   }
 
   function getGroup(id: string): TaskGroup | undefined {
-    const row = db.prepare("SELECT * FROM task_groups WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM task_groups WHERE id = ?").get(id) as TaskGroupRow | undefined;
     return row ? hydrate(row) : undefined;
   }
 
   function createGroup(name: string, color?: GroupColor): TaskGroup {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const count = (db.prepare("SELECT COUNT(*) as cnt FROM task_groups").get() as any).cnt;
+    const count = (db.prepare("SELECT COUNT(*) as cnt FROM task_groups").get() as { cnt: number }).cnt;
     const resolvedColor = color && GROUP_COLORS.includes(color) ? color : nextColor();
 
     db.prepare(`
@@ -110,11 +121,11 @@ export function createTaskGroupStore(db: DatabaseSync, bus: GlobalBus) {
   function updateGroup(id: string, updates: unknown): TaskGroup {
     const normalized = normalizeGroupUpdate(updates);
 
-    const row = db.prepare("SELECT * FROM task_groups WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM task_groups WHERE id = ?").get(id);
     if (!row) throw new Error(`Group ${id} not found`);
 
     const fields: string[] = ["updatedAt = ?"];
-    const values: any[] = [new Date().toISOString()];
+    const values: Array<string | number> = [new Date().toISOString()];
 
     if (normalized.name !== undefined) { fields.push("name = ?"); values.push(normalized.name); }
     if (normalized.color !== undefined) { fields.push("color = ?"); values.push(normalized.color); }
@@ -136,7 +147,7 @@ export function createTaskGroupStore(db: DatabaseSync, bus: GlobalBus) {
       db.prepare("DELETE FROM entity_tags WHERE entityType = 'task_group' AND entityId = ?").run(id);
       const deletion = db.prepare("DELETE FROM task_groups WHERE id = ?").run(id) as { changes?: number };
       // Re-order remaining groups
-      const remaining = db.prepare('SELECT id FROM task_groups ORDER BY "order"').all() as any[];
+      const remaining = db.prepare('SELECT id FROM task_groups ORDER BY "order"').all() as Array<{ id: string }>;
       const stmt = db.prepare('UPDATE task_groups SET "order" = ? WHERE id = ?');
       remaining.forEach((r, i) => stmt.run(i, r.id));
       return {

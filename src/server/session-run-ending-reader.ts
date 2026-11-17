@@ -1,4 +1,6 @@
 import { open, stat } from "node:fs/promises";
+import type { SessionEvent } from "@github/copilot-sdk";
+import { isRecord } from "../shared/is-record.js";
 import { getSdkAgentId, getSdkEventId } from "./sdk-event-identity.js";
 
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
@@ -9,7 +11,7 @@ const CONCLUSIVE_ENDING_TYPES = new Set(["session.error", "abort", "session.shut
 /** How events.jsonl says a run ended; whether it ended is `AgentSession.getActivity`'s call. */
 export interface PersistedRunEnding {
   /** The main agent's ending event since the run started, when the log has one. */
-  event?: any;
+  event?: SessionEvent;
   /** Error, abort or shutdown; not a turn end, as the runtime may start the next turn itself. */
   conclusive: boolean;
   /** The main agent's last reply since the run started. */
@@ -17,8 +19,8 @@ export interface PersistedRunEnding {
   assistantSourceEventId?: string;
 }
 
-function getEventTimestampMs(event: any): number | undefined {
-  const rawTimestamp = event?.data?.timestamp ?? event?.timestamp;
+function getEventTimestampMs(event: Record<string, unknown>): number | undefined {
+  const rawTimestamp = (isRecord(event.data) ? event.data.timestamp : undefined) ?? event.timestamp;
   if (typeof rawTimestamp !== "string") return undefined;
   const eventTime = Date.parse(rawTimestamp);
   return Number.isFinite(eventTime) ? eventTime : undefined;
@@ -60,15 +62,17 @@ export async function readPersistedRunEnding(
 
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    let event: any;
+    let parsed: unknown;
     try {
-      event = JSON.parse(line);
+      parsed = JSON.parse(line);
     } catch {
       continue;
     }
-    if (typeof event?.type !== "string" || getSdkAgentId(event)) continue;
-    const eventTime = getEventTimestampMs(event);
+    if (!isRecord(parsed) || typeof parsed.type !== "string" || getSdkAgentId(parsed)) continue;
+    const eventTime = getEventTimestampMs(parsed);
     if (eventTime === undefined || eventTime < runStartedAt) continue;
+    // events.jsonl is the runtime's own record of the session events it sent.
+    const event = parsed as SessionEvent;
 
     if (event.type === "assistant.message") {
       // Runtimes that predate `agentId` mark a sub-agent's reply with its parent tool call.

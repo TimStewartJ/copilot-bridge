@@ -7,6 +7,7 @@ import type {
 import { readJsonlLines } from "./jsonl-lines.js";
 import { getSdkAgentId } from "./sdk-event-identity.js";
 import { imageCompactAtBytes, type ImageBudgetSettings } from "../shared/image-budget.js";
+import { isRecord } from "../shared/is-record.js";
 
 /** Vertex 400s Claude requests over ~30 MB; compact early. Remove once Copilot returns 413. */
 
@@ -70,9 +71,17 @@ function base64Bytes(items: unknown, onlyBlobs = false): number {
   return bytes;
 }
 
+type BudgetEventData = {
+  result?: { binaryResultsForLlm?: unknown };
+  attachments?: unknown;
+  success?: unknown;
+  selectedModel?: unknown;
+  newModel?: unknown;
+};
+
 function toRecord(event: unknown): ImageBudgetRecord | undefined {
   if (!isMainAgentEvent(event)) return undefined;
-  const { type, id: rawId, data } = event as { type?: unknown; id?: unknown; data?: any };
+  const { type, id: rawId, data } = event as { type?: unknown; id?: unknown; data?: BudgetEventData };
   const id = typeof rawId === "string" ? rawId : undefined;
   const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
   let bytes = 0;
@@ -160,7 +169,7 @@ export interface ImageBudgetSession {
   compactHistory?(opts?: { customInstructions?: string }): Promise<AgentCompactionResult | undefined>;
   getActivity?(): Promise<AgentSessionActivity | undefined>;
   listTasks?(): Promise<{ tasks?: AgentBackgroundTask[] } | undefined>;
-  on?(handler: (event: any) => void): () => void;
+  on?(handler: (event: unknown) => void): () => void;
 }
 
 /** What SessionManager provides so a pause cannot race other work on the session. */
@@ -350,7 +359,9 @@ export class ImageBudgetController {
       if (stopped) {
         // The stopped turn's idle may follow the compaction; the continuation must wait for it.
         stoppedTurnIdle = new Promise<void>((resolve) => {
-          unsubscribe = session.on?.((event) => { if (event?.type === "session.idle" && isMainAgentEvent(event)) resolve(); });
+          unsubscribe = session.on?.((event) => {
+            if (isRecord(event) && event.type === "session.idle" && isMainAgentEvent(event)) resolve();
+          });
         });
         await this.host.stopTurn(sessionId);
         await waitUntilNotProcessing(session);

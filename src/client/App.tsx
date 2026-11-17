@@ -1451,7 +1451,7 @@ function AppShell() {
     updateTaskInQueryCaches(queryClient, taskId, (task) => ({ ...task, groupId }));
     taskChangeInvalidator.beginTaskMutation();
     try {
-      await patchTask(taskId, { groupId: groupId ?? ("" as any) });
+      await patchTask(taskId, { groupId: groupId ?? "" });
     } catch (err) {
       console.error("Failed to move task to group:", err);
       await queryClient.refetchQueries({ queryKey: queryKeys.tasks });
@@ -1510,7 +1510,7 @@ function AppShell() {
     });
     taskChangeInvalidator.beginTaskMutation();
     try {
-      await patchTask(taskId, { groupId: groupId ?? ("" as any) });
+      await patchTask(taskId, { groupId: groupId ?? "" });
       await reorderTasks(taskIds);
     } catch (err) {
       console.error("Failed to move and reorder:", err);

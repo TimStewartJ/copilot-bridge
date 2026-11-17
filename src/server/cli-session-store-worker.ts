@@ -53,7 +53,7 @@ interface SessionReference {
 
 const storePath = (copilotHome: string): string => join(copilotHome, "session-store.db");
 
-function mapSessionRow(row: any): CopilotCliCatalogSession {
+function mapSessionRow(row: Record<string, unknown>): CopilotCliCatalogSession {
   return {
     sessionId: String(row.id),
     summary: typeof row.summary === "string" && row.summary.trim() ? row.summary.trim() : undefined,
@@ -70,7 +70,7 @@ function readCatalog(request: CliCatalogReadRequest): CliCatalogRead {
   if (!existsSync(storePath(request.copilotHome))) return { result: "missing" };
   const db = new DatabaseSync(storePath(request.copilotHome), { readOnly: true });
   try {
-    const columns = new Set((db.prepare("PRAGMA table_info(sessions)").all() as any[]).map((column) => column.name));
+    const columns = new Set((db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>).map((column) => column.name));
     if (REQUIRED_SESSION_COLUMNS.some((required) => !columns.has(required))) return { result: "unsupported_schema" };
     if (request.op === "has") {
       return { result: db.prepare("SELECT 1 AS found FROM sessions WHERE id = ?").get(request.sessionId) ? "hit" : "miss" };

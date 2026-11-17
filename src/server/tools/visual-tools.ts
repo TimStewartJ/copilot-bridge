@@ -13,6 +13,17 @@ export interface RegisterVisualToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
+type PublishVisualArgs = {
+  kind: "image" | "mermaid" | "vega-lite";
+  title: string;
+  path?: string;
+  content?: string | Record<string, unknown>;
+  mimeType?: string;
+  displayName?: string;
+  caption?: string;
+  altText?: string;
+};
+
 export function createVisualToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
   defineSessionBridgeTool("publish_visual", {
@@ -42,7 +53,7 @@ export function createVisualToolDefinitions(ctx: AppContext): BridgeToolDefiniti
       },
       required: ["kind", "title"],
     },
-    handler: async (args: any, invocation: any) => {
+    handler: async (args: PublishVisualArgs, invocation) => {
       const published = await publishVisualFromToolArgs(ctx, args, sessionVisualOwner(invocation.sessionId));
       if (!published.ok) return toolFailure(published.error);
 

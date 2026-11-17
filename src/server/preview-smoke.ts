@@ -392,7 +392,7 @@ async function main(): Promise<void> {
         favicon: settingsRes.body.favicon,
         reasoningEffort: settingsRes.body.reasoningEffort,
       },
-      triggerStatuses: triggersRes.body.triggers.map((trigger: any) => trigger.status),
+      triggerStatuses: triggersRes.body.triggers.map((trigger: { status: unknown }) => trigger.status),
       docsNodeCount: docsTreeRes.body.tree.length,
       inheritedAutomaticWorkCancelled: true,
       nativeHomeTaskId: source.taskId,

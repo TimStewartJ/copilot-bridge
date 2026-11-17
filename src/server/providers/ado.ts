@@ -20,6 +20,7 @@ import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { buildAdoPullRequestUrl } from "../../shared/ado-work-reference.js";
 import { CLOSED_WORK_ITEM_STATES } from "../../shared/work-map.js";
 import { sh } from "../shell-command.js";
+import { isRecord } from "../../shared/is-record.js";
 
 // ── Token cache ───────────────────────────────────────────────────
 
@@ -116,8 +117,25 @@ function isHtmlResponse(contentType: string, body: string): boolean {
     || normalizedBody.startsWith("<html");
 }
 
+type AdoJson = Record<string, unknown>;
+
+/** Reads `key` the way optional chaining did: undefined unless `value` is an object. */
+function field(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+// Reading a field of a null answer threw a TypeError, which no caller treats as transient.
+function adoJsonObject(value: unknown): AdoJson {
+  if (value === null) throw new TypeError("ADO API returned null");
+  return isRecord(value) ? value : {};
+}
+
 /** GETs `url`, or POSTs `payload` to it, and returns the parsed JSON answer. */
-async function adoFetch(url: string, payload?: unknown, isRetry = false): Promise<any> {
+async function adoFetch(url: string, payload?: unknown, isRetry = false): Promise<AdoJson> {
   const token = await getAccessToken();
   let res: Response;
   let body: string;
@@ -162,14 +180,16 @@ async function adoFetch(url: string, payload?: unknown, isRetry = false): Promis
       true,
     );
   }
+  let parsed: unknown;
   try {
-    return JSON.parse(body);
+    parsed = JSON.parse(body);
   } catch {
     throw new AdoRequestError(
       `ADO API returned invalid JSON (${describeResponse(contentType, body)})`,
       true,
     );
   }
+  return adoJsonObject(parsed);
 }
 
 // ── Enrichment cache ──────────────────────────────────────────────
@@ -273,39 +293,40 @@ export class AdoProvider implements WorkTrackingProvider {
     return `${this.org}:${pr.repoId}:${pr.prId}`;
   }
 
-  private mapWorkItem(item: any): EnrichedWorkItem {
-    const f = item.fields ?? {};
+  private mapWorkItem(item: AdoJson): EnrichedWorkItem {
+    const f = item.fields;
     return {
       id: String(item.id),
       provider: "ado",
-      title: f["System.Title"] ?? null,
-      state: f["System.State"] ?? null,
-      type: f["System.WorkItemType"] ?? null,
-      assignedTo: f["System.AssignedTo"]?.displayName ?? null,
-      areaPath: f["System.AreaPath"] ?? null,
+      title: stringOrNull(field(f, "System.Title")),
+      state: stringOrNull(field(f, "System.State")),
+      type: stringOrNull(field(f, "System.WorkItemType")),
+      assignedTo: stringOrNull(field(field(f, "System.AssignedTo"), "displayName")),
+      areaPath: stringOrNull(field(f, "System.AreaPath")),
       url: this.getWorkItemUrl(String(item.id)),
     };
   }
 
-  private mapPullRequest(data: any, pr: PRRef): EnrichedPR {
+  private mapPullRequest(data: AdoJson, pr: PRRef): EnrichedPR {
     const statusMap: Record<string, EnrichedPR["status"]> = {
       active: "active",
       completed: "completed",
       abandoned: "abandoned",
     };
-    const repoName = data.repository?.name ?? pr.repoName ?? null;
+    const status = data.status;
+    const repoName = stringOrNull(field(data.repository, "name")) ?? pr.repoName ?? null;
     return {
       repoId: pr.repoId,
       repoName,
       prId: pr.prId,
       provider: "ado",
-      title: data.title ?? null,
-      status: statusMap[data.status?.toLowerCase()] ?? null,
-      createdBy: data.createdBy?.displayName ?? null,
-      reviewerCount: data.reviewers?.length ?? 0,
+      title: stringOrNull(data.title),
+      status: (typeof status === "string" ? statusMap[status.toLowerCase()] : undefined) ?? null,
+      createdBy: stringOrNull(field(data.createdBy, "displayName")),
+      reviewerCount: Array.isArray(data.reviewers) ? data.reviewers.length : 0,
       url: buildAdoPullRequestUrl({
         org: this.org,
-        project: data.repository?.project?.name || this.project,
+        project: stringOrNull(field(field(data.repository, "project"), "name")) || this.project,
         repository: repoName ?? pr.repoId,
         prId: pr.prId,
       }),
@@ -340,7 +361,7 @@ export class AdoProvider implements WorkTrackingProvider {
   }
 
   /** Remembers a work item, or the stub for one ADO did not return, and hands it back. */
-  private cacheWorkItem(id: string, payload: any, now: number): EnrichedWorkItem {
+  private cacheWorkItem(id: string, payload: AdoJson | null, now: number): EnrichedWorkItem {
     const item = payload ? this.mapWorkItem(payload) : this.buildWorkItemFallback(id);
     workItemCache.write(this.workItemCacheKey(id), item, now);
     return item;
@@ -350,7 +371,7 @@ export class AdoProvider implements WorkTrackingProvider {
   private async readWorkItems(
     ids: string[],
     query: string,
-    onItem: (id: string, payload: any) => void,
+    onItem: (id: string, payload: AdoJson | null) => void,
     tick?: Tick,
   ): Promise<Map<string, unknown>> {
     const errors = new Map<string, unknown>();
@@ -371,9 +392,10 @@ export class AdoProvider implements WorkTrackingProvider {
         const data = await adoFetch(
           `${this.projectUrl}/_apis/wit/workitems?ids=${batch.join(",")}&${query}&errorPolicy=omit&api-version=7.1`,
         );
-        const payloads = new Map<string, any>();
+        const payloads = new Map<string, AdoJson>();
         for (const item of Array.isArray(data.value) ? data.value : []) {
-          if (item) payloads.set(String(item.id), item);
+          // Only an object has an id that can match one of the numeric ids asked for.
+          if (isRecord(item)) payloads.set(String(item.id), item);
         }
         for (const id of batch) onItem(id, payloads.get(id) ?? null);
       } catch (error) {
@@ -407,10 +429,10 @@ export class AdoProvider implements WorkTrackingProvider {
 
   private parsePullRequestArtifactLink(
     workItemId: string,
-    relation: any,
+    relation: unknown,
   ): WorkItemPullRequestLink | null {
     // agent-text-audit: tool-output (Azure DevOps link types)
-    if (relation?.rel !== "ArtifactLink" || relation?.attributes?.name !== "Pull Request") {
+    if (!isRecord(relation) || relation.rel !== "ArtifactLink" || field(relation.attributes, "name") !== "Pull Request") {
       return null;
     }
     const url = typeof relation.url === "string" ? relation.url : "";
@@ -432,8 +454,9 @@ export class AdoProvider implements WorkTrackingProvider {
     return { workItemId, repoId, prId };
   }
 
-  private parseWorkItemRelation(workItemId: string, relation: any): WorkItemRelation | null {
-    const type = typeof relation?.rel === "string"
+  private parseWorkItemRelation(workItemId: string, relation: unknown): WorkItemRelation | null {
+    if (!isRecord(relation)) return null;
+    const type = typeof relation.rel === "string"
       ? WORK_ITEM_RELATION_TYPES[relation.rel.toLowerCase()]
       : undefined;
     if (!type || typeof relation.url !== "string") return null;
@@ -442,7 +465,7 @@ export class AdoProvider implements WorkTrackingProvider {
     return { workItemId, type, targetId: match[1] };
   }
 
-  private linksFromWorkItemPayload(item: any): WorkItemLinks {
+  private linksFromWorkItemPayload(item: AdoJson): WorkItemLinks {
     const workItemId = String(item.id);
     if (!Array.isArray(item.relations)) return NO_WORK_ITEM_LINKS;
     const pullRequests: WorkItemPullRequestLink[] = [];
@@ -461,11 +484,12 @@ export class AdoProvider implements WorkTrackingProvider {
     return { pullRequests, relations: [...relations.values()] };
   }
 
-  private linksFromPullRequestPayload(data: any, pr: PRRef): WorkItemPullRequestLink[] {
+  private linksFromPullRequestPayload(data: AdoJson, pr: PRRef): WorkItemPullRequestLink[] {
     if (!Array.isArray(data.workItemRefs)) return [];
-    return data.workItemRefs.flatMap((ref: any) => {
-      const workItemId = typeof ref?.id === "string" || typeof ref?.id === "number"
-        ? String(ref.id)
+    return data.workItemRefs.flatMap((ref: unknown) => {
+      const id = field(ref, "id");
+      const workItemId = typeof id === "string" || typeof id === "number"
+        ? String(id)
         : "";
       return workItemId
         ? [{ workItemId, repoId: pr.repoId, prId: pr.prId }]
@@ -523,7 +547,7 @@ export class AdoProvider implements WorkTrackingProvider {
         // PR ids are unique per organization, so this resolves links that carry only a repo name.
         : `${this.baseUrl}/_apis/git/pullrequests/${pr.prId}?api-version=7.1`);
       // A link saved from another organization must not show this one's PR with the same number.
-      if (hasGuid && String(data.repository?.id).toLowerCase() !== pr.repoId.toLowerCase()) {
+      if (hasGuid && String(field(data.repository, "id")).toLowerCase() !== pr.repoId.toLowerCase()) {
         throw new AdoRequestError(`Pull request ${pr.prId} is not in repository ${pr.repoId}`, false, 404);
       }
       const details = this.mapPullRequest(data, pr);
@@ -580,8 +604,9 @@ export class AdoProvider implements WorkTrackingProvider {
       const data = await adoFetch(
         `${this.baseUrl}/_apis/connectionData?connectOptions=1&lastChangeId=-1&lastChangeId64=-1`,
       );
-      const displayName = typeof data.authenticatedUser?.providerDisplayName === "string"
-        ? data.authenticatedUser.providerDisplayName.trim()
+      const providerDisplayName = field(data.authenticatedUser, "providerDisplayName");
+      const displayName = typeof providerDisplayName === "string"
+        ? providerDisplayName.trim()
         : "";
       if (!displayName) {
         console.error("[ado] Authenticated user response did not include a display name");
@@ -610,7 +635,10 @@ export class AdoProvider implements WorkTrackingProvider {
       if (!Array.isArray(data.workItems)) {
         throw new Error("ADO assigned work query returned no work item list");
       }
-      const ids = [...new Set<string>(data.workItems.flatMap((item: any) => (item?.id == null ? [] : [String(item.id)])))];
+      const ids = [...new Set<string>(data.workItems.flatMap((item: unknown) => {
+        const id = field(item, "id");
+        return id == null ? [] : [String(id)];
+      }))];
       assignedWorkItemIdsCache.write(cacheKey, ids, now);
       return { ids, warnings: [] };
     } catch (err) {

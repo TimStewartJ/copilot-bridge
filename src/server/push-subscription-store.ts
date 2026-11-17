@@ -22,7 +22,19 @@ export interface PushSubscriptionInput {
   };
 }
 
-function hydrate(row: any): StoredPushSubscription {
+type PushSubscriptionRow = {
+  id: string;
+  endpoint: string;
+  expirationTime: number | null;
+  p256dh: string;
+  auth: string;
+  userAgent: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+};
+
+function hydrate(row: PushSubscriptionRow): StoredPushSubscription {
   return {
     id: String(row.id),
     endpoint: String(row.endpoint),
@@ -73,11 +85,11 @@ export function createPushSubscriptionStore(db: DatabaseSync) {
     return (db.prepare(`
       SELECT * FROM push_subscriptions
       ORDER BY datetime(lastSeenAt) DESC, datetime(createdAt) DESC
-    `).all() as any[]).map(hydrate);
+    `).all() as PushSubscriptionRow[]).map(hydrate);
   }
 
   function getSubscriptionByEndpoint(endpoint: string): StoredPushSubscription | undefined {
-    const row = db.prepare("SELECT * FROM push_subscriptions WHERE endpoint = ?").get(endpoint) as any;
+    const row = db.prepare("SELECT * FROM push_subscriptions WHERE endpoint = ?").get(endpoint) as PushSubscriptionRow | undefined;
     return row ? hydrate(row) : undefined;
   }
 

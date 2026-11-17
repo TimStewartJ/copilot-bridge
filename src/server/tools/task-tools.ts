@@ -7,7 +7,7 @@ import {
   resolveWorkItemUnlink,
 } from "../task-link-identity.js";
 import type { AppContext } from "../app-context.js";
-import type { Task, TaskChangeActor } from "../task-store.js";
+import type { Task, TaskChangeActor, TaskStore } from "../task-store.js";
 import type { ProvidersConfig } from "../providers/types.js";
 import type { TagStore } from "../tag-store.js";
 import { applyNotesEdit, notesContinuationRefusal, notesLengthRefusal, notesWriteRefusal, notesWriteTokenField, readTaskNotesPage, TASK_NOTES_MAX_LENGTH } from "../task-note-pages.js";
@@ -46,6 +46,8 @@ function isTaskMomentumAlreadyCurrent(
     && task.deferred === target.deferred;
 }
 
+type TaskUpdate = Parameters<TaskStore["updateTask"]>[1];
+
 const TASK_INFO_SESSION_ID_PREVIEW_LIMIT = 10;
 
 function agentTaskChangeActor(ctx: AppContext, sessionId: string | undefined): TaskChangeActor {
@@ -75,12 +77,46 @@ export interface RegisterTaskToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
+type LinkProviderName = "ado" | "github" | "linear";
+type TaskWorkItemArgs = { taskId: string; workItemId: string | number; provider?: LinkProviderName };
+type TaskPullRequestArgs = { taskId: string; repoName?: string; repoId?: string; prId: number; provider?: LinkProviderName };
+type TaskUpdateArgs = {
+  taskId: string;
+  title?: string;
+  kind?: "task" | "ongoing";
+  muted?: boolean;
+  priority?: number;
+  instructions?: string;
+  notes?: string;
+  notesEdit?: { old_str: string; new_str: string };
+  notesWriteToken?: string;
+  cwd?: string;
+  groupId?: string | null;
+  doneWhen?: string | null;
+  playbook?: string | null;
+  tags?: string[];
+  // Not in the schema, which still lets them through; the handler refuses them.
+  status?: unknown;
+  completionAction?: unknown;
+};
+type TaskUpdateMomentumArgs = {
+  taskId: string;
+  nextAction?: string | null;
+  waitingOn?: string | null;
+  deferred?: boolean;
+  followUp: { mode: "set" | "keep" | "clear"; nextTouchAt?: string };
+};
+type TaskGetInfoArgs = { taskId: string; notesSource?: "task" | "group"; offset?: number; revision?: string };
+type TaskHistoryAddArgs = { taskId: string; text: string };
+type TaskHistoryListArgs = { taskId: string; limit?: number; before?: number; query?: string };
+type TaskCreateArgs = { title: string; kind?: "task" | "ongoing"; tags?: string[]; groupId?: string | null };
+
 export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition[] {
   return [
   defineBridgeTool("task_link_work_item", {
     description: "Link a work item to a task by its ID",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: ["string", "number"], description: "The work item ID. GitHub accepts \"owner/repo#123\" or an issue/PR URL." }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Inferred from the reference or the configured provider when omitted." } }, required: ["taskId", "workItemId"] },
-    handler: async (args: any) => {
+    handler: async (args: TaskWorkItemArgs) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       const link = resolveWorkItemLink({ ...args, providers: providersConfig(ctx) });
@@ -92,7 +128,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   defineBridgeTool("task_unlink_work_item", {
     description: "Remove a work item from a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, workItemId: { type: ["string", "number"], description: "The work item ID. GitHub accepts \"owner/repo#123\" or an issue/PR URL." }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Omit to unlink the work item from every provider." } }, required: ["taskId", "workItemId"] },
-    handler: async (args: any) => {
+    handler: async (args: TaskWorkItemArgs) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       const unlink = resolveWorkItemUnlink(args);
@@ -107,7 +143,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   defineBridgeTool("task_link_pr", {
     description: "Link a pull request to a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository display name. GitHub accepts \"owner/repo\", a repo URL, or \"repo\"." }, repoId: { type: "string", description: "Durable repository id. Required for Azure DevOps: the repository GUID (the pull request's repository.id). GitHub derives it from repoName when omitted." }, prId: { type: "integer", minimum: 1, description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Inferred from the repository reference or the configured provider when omitted." } }, required: ["taskId", "prId"] },
-    handler: async (args: any) => {
+    handler: async (args: TaskPullRequestArgs) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       const link = resolvePullRequestLink({ ...args, providers: providersConfig(ctx) });
@@ -119,7 +155,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   defineBridgeTool("task_unlink_pr", {
     description: "Remove a pull request from a task",
     parameters: { type: "object", properties: { taskId: { type: "string", description: "The task ID" }, repoName: { type: "string", description: "Repository display name. GitHub accepts \"owner/repo\", a repo URL, or \"repo\"." }, repoId: { type: "string", description: "Durable repository id. Required for Azure DevOps: the repository GUID (the pull request's repository.id). GitHub derives it from repoName when omitted." }, prId: { type: "integer", minimum: 1, description: "PR number" }, provider: { type: "string", enum: ["ado", "github", "linear"], description: "The provider (ado, github, or linear for Linear). Omit to unlink the pull request from every provider." } }, required: ["taskId", "prId"] },
-    handler: async (args: any) => {
+    handler: async (args: TaskPullRequestArgs) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       const unlink = resolvePullRequestUnlink({ ...args, providers: providersConfig(ctx) });
@@ -158,11 +194,11 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       },
       required: ["taskId"],
     },
-    handler: async (args: any, invocation) => {
+    handler: async (args: TaskUpdateArgs, invocation) => {
       if (args.status !== undefined || args.completionAction !== undefined) {
         return toolFailure("Task completion and archival are controlled by the UI.");
       }
-      const updates: Record<string, unknown> = {};
+      const updates: TaskUpdate = {};
       if (args.title !== undefined) updates.title = args.title;
       if (args.kind !== undefined) updates.kind = args.kind;
       if (args.muted !== undefined) {
@@ -206,7 +242,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       let updatedTask = task.value;
       if (Object.keys(updates).length > 0) {
         try {
-          updatedTask = ctx.taskStore.updateTask(args.taskId, updates as any, agentTaskChangeActor(ctx, invocation?.sessionId));
+          updatedTask = ctx.taskStore.updateTask(args.taskId, updates, agentTaskChangeActor(ctx, invocation?.sessionId));
         } catch (error) {
           if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
           throw error;
@@ -216,7 +252,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if ((updatedTask.instructions ?? "") !== (task.value.instructions ?? "")) {
         ctx.sessionManager.invalidateTaskSessionConfig(args.taskId, "task instructions changed");
       }
-      if (hasTags && tagStore) {
+      if (Array.isArray(args.tags) && tagStore) {
         const tagIds = args.tags.map((name: string) => {
           const existing = tagStore.getTagByName(name);
           if (existing) return existing.id;
@@ -281,7 +317,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         },
       ],
     },
-    handler: async (args: any, invocation) => {
+    handler: async (args: TaskUpdateMomentumArgs, invocation) => {
       const followUp = args.followUp;
       if (!followUp || typeof followUp !== "object" || Array.isArray(followUp)) {
         return toolFailure("followUp is required and must include mode: set, keep, or clear");
@@ -328,7 +364,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         nextAction: targetNextAction,
         waitingOn: targetWaitingOn,
         nextTouchAt: targetNextTouchAt,
-        deferred: hasDeferredUpdate ? args.deferred : task.value.deferred,
+        deferred: hasDeferredUpdate && typeof args.deferred === "boolean" ? args.deferred : task.value.deferred,
       })) {
         return bridgeToolResult({
           success: true,
@@ -346,7 +382,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         });
       }
 
-      const updates: Record<string, unknown> = {};
+      const updates: TaskUpdate = {};
       if (hasNextActionUpdate) updates.nextAction = args.nextAction;
       if (hasWaitingOnUpdate) updates.waitingOn = args.waitingOn;
       if (hasDeferredUpdate) updates.deferred = args.deferred;
@@ -355,7 +391,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
 
       let updatedTask = task.value;
       try {
-        updatedTask = ctx.taskStore.updateTask(args.taskId, updates as any, agentTaskChangeActor(ctx, invocation?.sessionId));
+        updatedTask = ctx.taskStore.updateTask(args.taskId, updates, agentTaskChangeActor(ctx, invocation?.sessionId));
       } catch (error) {
         if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
         throw error;
@@ -393,7 +429,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if: { required: ["offset"] },
       then: { required: ["notesSource", "revision"] },
     },
-    handler: async (args: any) => {
+    handler: async (args: TaskGetInfoArgs) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       if (args.notesSource) {
@@ -430,7 +466,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       },
       required: ["taskId", "text"],
     },
-    handler: async (args: any, invocation) => {
+    handler: async (args: TaskHistoryAddArgs, invocation) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       if (!ctx.taskHistoryStore) return toolFailure("Task history is not available");
@@ -456,7 +492,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       },
       required: ["taskId"],
     },
-    handler: async (args: any) => {
+    handler: async (args: TaskHistoryListArgs) => {
       const task = ensureTask(ctx, args.taskId);
       if (!task.ok) return toolFailure(task.error);
       if (!ctx.taskHistoryStore) return toolFailure("Task history is not available");
@@ -488,7 +524,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
   defineBridgeTool("task_create", {
     description: "Create a new task",
     parameters: { type: "object", properties: { title: { type: "string", description: "The task title" }, kind: { type: "string", enum: ["task", "ongoing"], description: "Task kind. Defaults to task." }, tags: { type: "array", items: { type: "string" }, description: "Tag names to set on this task. Creates tags if they don't exist." }, groupId: { anyOf: [{ type: "string" }, { type: "null" }], description: "Optional task group ID to create the task in" } }, required: ["title"] },
-    handler: async (args: any) => {
+    handler: async (args: TaskCreateArgs) => {
       let tagStore: TagStore | undefined;
       if (Array.isArray(args.tags) && args.tags.length > 0) {
         const tagStoreResult = ensureTagStore(ctx);

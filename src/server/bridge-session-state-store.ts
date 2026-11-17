@@ -3,7 +3,32 @@ import type { SyntheticTerminalOverlay } from "../shared/session-stream.js";
 import { isPlaybookName, isPlaybookSource, type PlaybookSource } from "../shared/workflow-vocabulary.js";
 import { hydrateRowSafely, type RowHydrationContext } from "./store-row-hydration.js";
 
-const BRIDGE_SESSION_STATE_HYDRATION: RowHydrationContext<any> = {
+type BridgeSessionStateRow = {
+  sessionId: string;
+  archived: number;
+  archivedAt: string | null;
+  titleOverride: string | null;
+  titleOverrideUpdatedAt: string | null;
+  pinnedCwd: string | null;
+  pinnedCwdUpdatedAt: string | null;
+  // Only "user" and "schedule" are ever written.
+  triggeredBy: "user" | "schedule" | null;
+  scheduleId: string | null;
+  scheduleName: string | null;
+  lastVisibleActivityAt: string | null;
+  lastAttentionAt: string | null;
+  hiddenReason: string | null;
+  hiddenAt: string | null;
+  terminalOverlayJson: string | null;
+  pendingAutoName: number;
+  pendingAutoNameReplaceTitle: string | null;
+  playbook: string | null;
+  playbookSource: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const BRIDGE_SESSION_STATE_HYDRATION: RowHydrationContext<BridgeSessionStateRow> = {
   store: "bridge-session-state",
   describeRow: (row) => String(row?.sessionId ?? "<no sessionId>"),
 };
@@ -41,7 +66,7 @@ function nowIso(): string {
 
 export function createBridgeSessionStateStore(db: DatabaseSync) {
   /** Optional display data: a bad overlay must not break listStates() and every session list. */
-  function parseTerminalOverlay(row: any): SyntheticTerminalOverlay | undefined {
+  function parseTerminalOverlay(row: BridgeSessionStateRow): SyntheticTerminalOverlay | undefined {
     if (!row.terminalOverlayJson) return undefined;
     try {
       return JSON.parse(row.terminalOverlayJson) as SyntheticTerminalOverlay;
@@ -54,7 +79,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     }
   }
 
-  function hydrate(row: any): BridgeSessionState {
+  function hydrate(row: BridgeSessionStateRow): BridgeSessionState {
     return {
       sessionId: row.sessionId,
       archived: row.archived === 1,
@@ -81,18 +106,19 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
   }
 
   function getState(sessionId: string): BridgeSessionState | undefined {
-    const row = db.prepare("SELECT * FROM bridge_session_state WHERE sessionId = ?").get(sessionId) as any;
+    const row = db.prepare("SELECT * FROM bridge_session_state WHERE sessionId = ?").get(sessionId) as
+      BridgeSessionStateRow | undefined;
     return row ? hydrate(row) : undefined;
   }
 
   function listStates(): BridgeSessionStateMap {
-    const rows = db.prepare("SELECT * FROM bridge_session_state").all() as any[];
+    const rows = db.prepare("SELECT * FROM bridge_session_state").all() as BridgeSessionStateRow[];
     return hydrateStateRows(rows);
   }
 
   /** Only rows with a pinned cwd. */
   function listPinnedCwdStates(): BridgeSessionStateMap {
-    const rows = db.prepare("SELECT * FROM bridge_session_state WHERE pinnedCwd IS NOT NULL").all() as any[];
+    const rows = db.prepare("SELECT * FROM bridge_session_state WHERE pinnedCwd IS NOT NULL").all() as BridgeSessionStateRow[];
     return hydrateStateRows(rows);
   }
 
@@ -101,7 +127,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     if (sessionIds.length === 0) return {};
     const rows = db.prepare(
       "SELECT * FROM bridge_session_state WHERE sessionId IN (SELECT value FROM json_each(?))",
-    ).all(JSON.stringify(sessionIds)) as any[];
+    ).all(JSON.stringify(sessionIds)) as BridgeSessionStateRow[];
     return hydrateStateRows(rows);
   }
 
@@ -112,7 +138,7 @@ export function createBridgeSessionStateStore(db: DatabaseSync) {
     return JSON.parse(row.ids) as string[];
   }
 
-  function hydrateStateRows(rows: any[]): BridgeSessionStateMap {
+  function hydrateStateRows(rows: BridgeSessionStateRow[]): BridgeSessionStateMap {
     const states: BridgeSessionStateMap = {};
     for (const row of rows) {
       const state = hydrateRowSafely(row, hydrate, BRIDGE_SESSION_STATE_HYDRATION);

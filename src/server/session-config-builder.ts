@@ -1,4 +1,4 @@
-import type { AgentPermissionPolicy, AgentSectionOverride } from "./agent-backend/index.js";
+import type { AgentPermissionPolicy } from "./agent-backend/index.js";
 import type { ShellAuthHandler } from "./shell-auth-requests.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +6,7 @@ import { resolveBridgeControlRoot } from "./control-root.js";
 import type { Task } from "./task-store.js";
 import type { ChecklistStore } from "./checklist-store.js";
 import { isImageGenerationEnabled, type SettingsStore } from "./settings-store.js";
-import { buildSubagentPlan } from "../shared/subagent-settings.js";
+import { buildSubagentPlan, type SubagentPlan } from "../shared/subagent-settings.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { isModelUsable, resolveModelRole, resolveModelTier } from "./model-roles.js";
 import type { ModelPresetSlot } from "../shared/model-presets.js";
@@ -211,7 +211,68 @@ export function orderSkillDirectories(dirs: { bundled: string; packs: readonly s
   return [...new Set([dirs.home, ...dirs.packs, dirs.bundled])];
 }
 
-export function buildSessionConfig(params: BuildSessionConfigParams) {
+type CuaForegroundGuard = ReturnType<typeof createCuaForegroundGuard>;
+
+/** The create or resume config a chat's session gets, as the backend takes it. */
+type BuiltSessionConfigBase = {
+  pendingInteractionEvents: boolean;
+  enableExperimentalMode: boolean;
+  enableConfigDiscovery: boolean;
+  enableFileHooks: boolean;
+  streaming: boolean;
+  includeSubAgentStreamingEvents: boolean;
+  excludedTools: string[];
+  mcpServers: Record<string, McpServerConfig>;
+  tools?: readonly unknown[];
+  skillDirectories: string[];
+  memory?: { enabled: boolean };
+  onPermissionRequest?: AgentPermissionPolicy;
+  onShellAuthenticationRequest?: ShellAuthHandler;
+  githubMcpToolConfig?: ReturnType<typeof buildGitHubCopilotMcpToolConfig>;
+  subagents?: SubagentPlan;
+  fusionContextTokens?: number;
+  hooks?: {
+    onPreToolUse: CuaForegroundGuard["beforeToolUse"];
+    onPostToolUse: CuaForegroundGuard["afterToolUse"];
+    onPostToolUseFailure: CuaForegroundGuard["afterToolUse"];
+  };
+  pluginDirectories?: string[];
+  imageGeneration?: { enabled: boolean };
+  sessionId?: string;
+  model?: string;
+  reasoningEffort?: string;
+  contextTier?: CopilotContextTier;
+  workingDirectory?: string;
+  coauthorEnabled?: boolean;
+  /** Set by callers (resume options) and profiles on top of what is built here. */
+  [key: string]: unknown;
+};
+
+type TransformSection = { action: (content: string) => string };
+type TextSection<A extends "replace" | "append"> = { action: A; content: string };
+
+/** The system prompt sections every chat overrides, in the order they are set. */
+export type BuiltSystemMessageSections = {
+  code_change_rules?: TextSection<"replace" | "append"> | { action: "remove"; content?: undefined };
+  identity: TransformSection;
+  preamble: TextSection<"replace">;
+  tone: TextSection<"replace">;
+  guidelines: TextSection<"append">;
+  tool_efficiency: TransformSection;
+  last_instructions: TransformSection;
+  tool_instructions: TextSection<"append">;
+  environment_context: TextSection<"append">;
+};
+
+export type BuiltSessionConfig = BuiltSessionConfigBase & {
+  systemMessage: {
+    mode: "customize";
+    sections: BuiltSystemMessageSections;
+    content: string;
+  };
+};
+
+export function buildSessionConfig(params: BuildSessionConfigParams): BuiltSessionConfig {
   const { deps, callbacks } = params;
   const {
     sessionId,
@@ -236,7 +297,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
   const packSkillDirs = activePacks.map((pack) => catalogSkills.find((skill) => skill.packId === pack.id)?.skillsDir ?? pack.root);
 
   const resolvedMcpServers = resolveSessionMcpServers(deps);
-  const cfg: any = {
+  const cfg: BuiltSessionConfigBase = {
     pendingInteractionEvents: true,
     enableExperimentalMode: true,
     enableConfigDiscovery: Boolean(workingDirectory),
@@ -428,42 +489,41 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   // Staging rules apply only in the Bridge repo; a session without a cwd is not Bridge work.
   const isSelfRepo = !!workingDirectory && pathsEqual(workingDirectory, REPO_ROOT);
-  const sections: Partial<Record<string, AgentSectionOverride>> = {};
   // Staging applies to every chat in this repo; the CLI coding rules only with a project folder.
   const stagingApplies = isSelfRepo
     && isBridgeSourceManagementAvailable(deps.runtimePaths?.env ?? process.env, REPO_ROOT);
-  if (hasProjectFolder) {
-    if (stagingApplies) sections.code_change_rules = { action: "append", content: STAGING_INSTRUCTIONS };
-  } else {
-    sections.code_change_rules = stagingApplies
+  const codeChangeRules: BuiltSystemMessageSections["code_change_rules"] = hasProjectFolder
+    ? stagingApplies ? { action: "append", content: STAGING_INSTRUCTIONS } : undefined
+    : stagingApplies
       ? { action: "replace", content: STAGING_INSTRUCTIONS }
       : { action: "remove" };
-  }
 
   // `identity` also carries tone, tool and search guidance, so only its preamble is replaced.
   const identityText = settings?.identity?.trim() || DEFAULT_IDENTITY;
   const preambleText = `${identityText}\n\n${params.options?.promptRole ?? BASE_METHOD_ROLE}`;
-  sections.identity = { action: createCodingModeStatementRemover(preambleText) };
-  sections.preamble = { action: "replace", content: preambleText };
-  // The CLI's tone differs by model family and conflicts with the Bridge style setting.
   const resolvedStyle = resolveResponseStyle(settings?.responseStyle);
-  sections.tone = {
-    action: "replace",
-    content: `${renderResponseStyle(resolvedStyle)}\n\n${WRITING_GUIDANCE}\n\n${BASE_METHOD_REPORTING}`,
-  };
-  sections.guidelines = { action: "append", content: params.options?.playbooks === false ? BASE_METHOD_WITHOUT_PLAYBOOKS : BASE_METHOD };
-  sections.tool_efficiency = { action: removeCliOutputSurfaceNote };
-  sections.last_instructions = {
-    action: resolvedStyle.detail === "concise"
-      ? applyConciseReplyDirective
-      : resolvedStyle.detail === "adaptive"
-        ? applyAdaptiveReplyDirective
-        : removeConciseReplyDirective,
-  };
-
-  sections.tool_instructions = {
-    action: "append",
-    content: `${AGENT_LIFECYCLE_GUIDANCE}\n\n${LONG_RUNNING_WORK_GUIDANCE}\n\n${ASK_USER_CONTEXT_GUIDANCE}\n\n${BROWSER_GUIDANCE}`,
+  const sections: Omit<BuiltSystemMessageSections, "environment_context"> = {
+    ...(codeChangeRules ? { code_change_rules: codeChangeRules } : {}),
+    identity: { action: createCodingModeStatementRemover(preambleText) },
+    preamble: { action: "replace", content: preambleText },
+    // The CLI's tone differs by model family and conflicts with the Bridge style setting.
+    tone: {
+      action: "replace",
+      content: `${renderResponseStyle(resolvedStyle)}\n\n${WRITING_GUIDANCE}\n\n${BASE_METHOD_REPORTING}`,
+    },
+    guidelines: { action: "append", content: params.options?.playbooks === false ? BASE_METHOD_WITHOUT_PLAYBOOKS : BASE_METHOD },
+    tool_efficiency: { action: removeCliOutputSurfaceNote },
+    last_instructions: {
+      action: resolvedStyle.detail === "concise"
+        ? applyConciseReplyDirective
+        : resolvedStyle.detail === "adaptive"
+          ? applyAdaptiveReplyDirective
+          : removeConciseReplyDirective,
+    },
+    tool_instructions: {
+      action: "append",
+      content: `${AGENT_LIFECYCLE_GUIDANCE}\n\n${LONG_RUNNING_WORK_GUIDANCE}\n\n${ASK_USER_CONTEXT_GUIDANCE}\n\n${BROWSER_GUIDANCE}`,
+    },
   };
 
   // Tag-based configuration — merge tag instructions and tag-selected MCP servers
@@ -487,17 +547,20 @@ export function buildSessionConfig(params: BuildSessionConfigParams) {
 
   // current_datetime has only an offset; scheduling needs the IANA zone name.
   const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  sections.environment_context = { action: "append", content: `\n* Server timezone: ${serverTz}` };
+  const environmentContext: BuiltSystemMessageSections["environment_context"] = {
+    action: "append",
+    content: `\n* Server timezone: ${serverTz}`,
+  };
 
   if (params.options?.extraGuidance?.trim()) contextParts.push(params.options.extraGuidance.trim());
 
-  const hasContent = contextParts.length > 0;
-
-  cfg.systemMessage = {
-    mode: "customize" as const,
-    sections,
-    content: hasContent ? contextParts.join("\n") : undefined,
+  return {
+    ...cfg,
+    systemMessage: {
+      mode: "customize" as const,
+      sections: { ...sections, environment_context: environmentContext },
+      // Never empty: the response-quality guidance always leads it.
+      content: contextParts.join("\n"),
+    },
   };
-
-  return cfg;
 }

@@ -45,7 +45,7 @@ export function prepareTriggerDeliveryInsert(db: DatabaseSync) {
     VALUES (?, ?, ?, 'delivery', ?, ?, 'pending', 0, ?, ?)
   `);
   return (message: TriggerDelivery, now = new Date().toISOString()): boolean =>
-    (insert.run(
+    insert.run(
       message.id,
       message.sessionId,
       message.prompt,
@@ -53,7 +53,7 @@ export function prepareTriggerDeliveryInsert(db: DatabaseSync) {
       now,
       now,
       now,
-    ) as any).changes > 0;
+    ).changes > 0;
 }
 
 export interface SettleOptions {
@@ -63,6 +63,22 @@ export interface SettleOptions {
 }
 
 // ── Factory ───────────────────────────────────────────────────────
+
+type DeferredPromptRow = {
+  id: string;
+  sessionId: string;
+  prompt: string;
+  purpose: string;
+  sourceId: string | null;
+  runAt: string;
+  status: string;
+  attempts: number;
+  claimToken: string | null;
+  leaseExpiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastError: string | null;
+};
 
 export function createDeferredPromptStore(db: DatabaseSync) {
   // ── Prepared statements ──────────────────────────────────────────
@@ -232,7 +248,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
 
   // ── Helpers ──────────────────────────────────────────────────────
 
-  function toRow(raw: any): DeferredPrompt {
+  function toRow(raw: DeferredPromptRow): DeferredPrompt {
     return {
       id: raw.id,
       sessionId: raw.sessionId,
@@ -260,20 +276,20 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     const id = randomUUID();
     const now = new Date().toISOString();
     insertRow.run(id, sessionId, prompt, runAt, now, now);
-    return toRow(selectById.get(id));
+    return toRow(selectById.get(id) as DeferredPromptRow);
   }
 
   function get(id: string): DeferredPrompt | undefined {
-    const row = selectById.get(id);
+    const row = selectById.get(id) as DeferredPromptRow | undefined;
     return row ? toRow(row) : undefined;
   }
 
   function listForSession(sessionId: string): DeferredPrompt[] {
-    return (selectForSession.all(sessionId) as any[]).map(toRow);
+    return (selectForSession.all(sessionId) as DeferredPromptRow[]).map(toRow);
   }
 
   function listDeliveriesForSession(sessionId: string): DeferredPrompt[] {
-    return (selectDeliveriesForSession.all(sessionId) as any[]).map(toRow);
+    return (selectDeliveriesForSession.all(sessionId) as DeferredPromptRow[]).map(toRow);
   }
 
   function enqueueDelivery(
@@ -287,7 +303,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   }
 
   function listDue(now = new Date().toISOString()): DeferredPrompt[] {
-    return (selectDue.all(now) as any[]).map(toRow);
+    return (selectDue.all(now) as DeferredPromptRow[]).map(toRow);
   }
 
   function getNextWakeAt(now = new Date().toISOString()): string | undefined {
@@ -318,8 +334,8 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     const leaseExpiresAt = new Date(now.getTime() + leaseMs).toISOString();
     const nowIso = now.toISOString();
     const result = claimPending.run(claimToken, leaseExpiresAt, nowIso, id);
-    if ((result as any).changes === 0) return undefined;
-    const row = selectById.get(id);
+    if (result.changes === 0) return undefined;
+    const row = selectById.get(id) as DeferredPromptRow | undefined;
     return row ? { prompt: toRow(row), claimToken } : undefined;
   }
 
@@ -349,7 +365,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
   /** Requeues a failed or cancelled deferral with a fresh attempt budget, due at `runAt`. */
   function reactivate(id: string, runAt = new Date().toISOString()): boolean {
     const result = reactivateStmt.run(runAt, new Date().toISOString(), id);
-    return (result as any).changes > 0;
+    return result.changes > 0;
   }
 
   /** On restart: undelivered 'trigger stopped' results are no longer true, so retire them. */
@@ -360,7 +376,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
       // Only results saying the trigger stopped; a message trigger's own prompt is the fire itself.
       const result = parseTriggerResultPrompt(row.prompt);
       if (!result || result.continues) continue;
-      retired += (retireDeliveryStmt.run(now, row.id) as any).changes as number;
+      retired += retireDeliveryStmt.run(now, row.id).changes as number;
     }
     return retired;
   }
@@ -375,7 +391,7 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     const result = options.retryAt
       ? retryStmt.run(options.retryAt, options.error ?? null, now, id, claimToken)
       : waitStmt.run(options.error ?? null, now, id, claimToken);
-    return (result as any).changes > 0;
+    return result.changes > 0;
   }
 
   /** Record why a due prompt is not being started; cleared when it completes. */
@@ -388,49 +404,49 @@ export function createDeferredPromptStore(db: DatabaseSync) {
     sourceDeferId: string,
   ): number {
     const now = new Date().toISOString();
-    return (reactivateFailedDeliveryStmt.run(
+    return reactivateFailedDeliveryStmt.run(
       now,
       now,
       sessionId,
       sourceDeferId,
-    ) as any).changes as number;
+    ).changes as number;
   }
 
   function renewClaim(id: string, claimToken: string, leaseMs: number): boolean {
     const now = new Date();
     const leaseExpiresAt = new Date(now.getTime() + leaseMs).toISOString();
     const result = renewClaimStmt.run(leaseExpiresAt, now.toISOString(), id, claimToken);
-    return (result as any).changes > 0;
+    return result.changes > 0;
   }
 
   function cancelById(id: string): boolean {
     const result = markCancelledById.run(new Date().toISOString(), id);
-    return (result as any).changes > 0;
+    return result.changes > 0;
   }
 
   /** Cancel all pending deferrals for a session. Returns number of rows affected. */
   function cancelForSession(sessionId: string): number {
     const result = cancelForSessionStmt.run(new Date().toISOString(), sessionId);
-    return (result as any).changes as number;
+    return result.changes as number;
   }
 
   /** Withdraws job results waiting for an archived or gone session; defer results are untouched. */
   function cancelManagementJobDeliveriesForSession(sessionId: string): number {
     const result = cancelManagementJobDeliveriesStmt.run(new Date().toISOString(), sessionId);
-    return (result as any).changes as number;
+    return result.changes as number;
   }
 
   /** Hard-deletes every row a session owns, when the session is deleted. */
   function deleteForSession(sessionId: string): number {
     const result = deleteForSessionStmt.run(sessionId);
-    return (result as any).changes as number;
+    return result.changes as number;
   }
 
   /** Bounded delete of terminal rows older than olderThanIso, which would otherwise pile up. */
   function pruneTerminalRows(olderThanIso: string, limit = DEFAULT_TERMINAL_PRUNE_LIMIT): number {
     const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_TERMINAL_PRUNE_LIMIT;
     const result = pruneTerminalStmt.run(olderThanIso, boundedLimit);
-    return (result as any).changes as number;
+    return result.changes as number;
   }
 
   /** Moves rows whose lease ran out back to pending, try still counted; returns affected chats. */

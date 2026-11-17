@@ -14,6 +14,7 @@ const SOURCE_CHECKOUT_ONLY: Record<string, string> = {
   "server/xplat-test-audit.ts": "npm run test:xplat-audit audits the tests of a source checkout",
   "server/agent-text-audit.ts": "npm run test:agent-text-audit audits the source of a checkout",
   "server/comment-audit.ts": "npm run test:comment-audit audits the source of a checkout",
+  "server/any-audit.ts": "npm run test:any-audit audits the source of a checkout",
 };
 
 const readJson = (path: string): unknown => JSON.parse(readFileSync(join(REPO_ROOT, path), "utf-8"));

@@ -201,7 +201,7 @@ export function createSessionMetaStore(db: DatabaseSync) {
        FROM schedule_runs
        WHERE scheduleId = ?
        ORDER BY datetime(recordedAt) DESC, id DESC`,
-    ).all(scheduleId) as any[];
+    ).all(scheduleId);
     return rows.map((row) => ({
       id: Number(row.id),
       sessionId: String(row.sessionId),

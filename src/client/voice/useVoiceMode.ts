@@ -11,13 +11,13 @@ import {
 import { describeVoiceCaptureError } from "../hooks/useVoiceInput";
 import { VoiceAudio, type VoiceAudioStartResult } from "./voice-audio";
 import { connectVoiceTransport, type VoiceTransport, type VoiceTransportHandlers } from "./voice-transport";
-import { initialVoiceViewState, reduceVoiceEvent, type VoiceViewState } from "./voice-view-model";
+import { initialVoiceViewState, reduceVoiceEvent, type VoiceServerMessage, type VoiceViewState } from "./voice-view-model";
 import { patchHelmSettings, refreshHelmSettings, useHelmPreferences } from "../helm/helm-settings";
 import { HELM_SETTINGS_DEFAULTS, type HelmSettingsResponse, type UnifiedHelmSettings } from "../../shared/helm-settings";
 
 export type VoiceSessionPhase = "loading" | "setup" | "ready" | "connecting" | "active" | "reconnecting" | "ended" | "error";
 
-type ViewAction = { type: "event"; event: Record<string, any> } | { type: "reset" } | { type: "dismiss_not_sent"; turnId: number };
+type ViewAction = { type: "event"; event: VoiceServerMessage } | { type: "reset" } | { type: "dismiss_not_sent"; turnId: number };
 
 function viewReducer(state: VoiceViewState, action: ViewAction): VoiceViewState {
   if (action.type === "reset") return initialVoiceViewState;

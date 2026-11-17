@@ -4,6 +4,7 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppContext } from "./app-context.js";
+import type { CopilotCliCatalogSession } from "./copilot-cli-session-catalog.js";
 import { EMPTY_TRIGGER_SUMMARY } from "./triggers/types.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
 import { parseWorkspaceCwd } from "./session-formatting.js";
@@ -15,7 +16,23 @@ import { isUnlistedSessionId } from "./unlisted-sessions.js";
 import type { SessionRunState } from "./session-run-state-controller.js";
 import { maxIsoTime } from "../shared/session-activity.js";
 
-export type SessionListRow = Record<string, any> & { sessionId: string };
+/** A session as the list shows it: the fields read here and by callers, plus what sources add. */
+export type SessionListRow = {
+  sessionId: string;
+  summary?: string;
+  startTime?: string;
+  modifiedTime?: string;
+  lastVisibleActivityAt?: string;
+  lastAttentionAt?: string;
+  lastActivityAt?: string;
+  archived?: boolean;
+  eventLogSizeBytes?: number;
+  context?: Record<string, unknown>;
+  runState?: SessionRunState;
+  needsUserInput?: boolean;
+  intentText?: string | null;
+  [key: string]: unknown;
+};
 
 export interface SessionListStatus {
   runState: SessionRunState;
@@ -272,7 +289,7 @@ export function createSessionList(ctx: AppContext, deps: SessionListDeps): Sessi
     && !ctx.helmStore?.isHelmSession(sessionId)
     && !ctx.helmThinkerStore?.isRunSession(sessionId);
 
-  const fromCatalogRow = (session: SessionListRow): SessionListRow =>
+  const fromCatalogRow = (session: CopilotCliCatalogSession): SessionListRow =>
     ({ ...session, modifiedTime: session.modifiedTime ?? session.startTime });
 
   async function buildRows(includeArchived: boolean): Promise<SessionListRow[]> {

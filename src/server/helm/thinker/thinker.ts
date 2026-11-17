@@ -73,7 +73,7 @@ export interface HelmThinkerOptions {
   store: HelmThinkerStore;
   facade: HelmBridgeFacade;
   runtime: HelmToolRuntime;
-  readSessions(): Promise<any[]>;
+  readSessions(): Promise<unknown[]>;
   deleteSession(sessionId: string): Promise<void>;
   emitReadStateChanged(): void;
   now?: () => Date;
@@ -81,6 +81,9 @@ export interface HelmThinkerOptions {
   /** Test seam: how a run connects to an outside source. */
   connectSource?: SourceConnector;
 }
+
+type ReadConversationArgs = { bridge: string; sessionId: string; messages?: number };
+type ReadSourceArgs = { source: string; tool: string; arguments?: Record<string, unknown> };
 
 interface ActiveRun {
   runId: string;
@@ -100,7 +103,7 @@ export class HelmThinker {
   private readonly store: HelmThinkerStore;
   private readonly facade: HelmBridgeFacade;
   private readonly runtime: HelmToolRuntime;
-  private readonly readSessions: () => Promise<any[]>;
+  private readonly readSessions: () => Promise<unknown[]>;
   private readonly deleteSession: (sessionId: string) => Promise<void>;
   private readonly emitReadStateChanged: () => void;
   private readonly now: () => Date;
@@ -346,7 +349,7 @@ export class HelmThinker {
         },
         required: ["bridge", "sessionId"],
       },
-      handler: async (args: any) => {
+      handler: async (args: ReadConversationArgs) => {
         try {
           return await this.readConversation(args.bridge, args.sessionId, args.messages);
         } catch (error) {
@@ -368,7 +371,7 @@ export class HelmThinker {
         },
         required: ["source", "tool"],
       },
-      handler: async (args: any, invocation: BridgeToolInvocation) => {
+      handler: async (args: ReadSourceArgs, invocation: BridgeToolInvocation) => {
         const active = this.active;
         if (!active || active.fenced || !active.sources || !invocation.sessionId || active.sessionId !== invocation.sessionId) {
           return toolFailure("read_source only works inside the look that is in progress, and only when it has outside sources.");
@@ -505,7 +508,8 @@ export class HelmThinker {
         },
         required: ["summary", "items"],
       },
-      handler: (args: any, invocation: BridgeToolInvocation) => this.publish(args, invocation),
+      // validatePublication checks every field itself and names each problem.
+      handler: (args: Record<string, unknown>, invocation: BridgeToolInvocation) => this.publish(args, invocation),
     });
   }
 

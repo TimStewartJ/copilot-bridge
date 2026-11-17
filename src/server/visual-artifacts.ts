@@ -431,7 +431,7 @@ function jsonDepth(value: unknown, current = 0): number {
   if (value !== null && typeof value === "object") {
     const keys = Object.keys(value as object);
     if (keys.length === 0) return current + 1;
-    return Math.max(...keys.map((k) => jsonDepth((value as any)[k], current + 1)));
+    return Math.max(...keys.map((k) => jsonDepth((value as Record<string, unknown>)[k], current + 1)));
   }
   return current + 1;
 }
@@ -459,7 +459,7 @@ function checkVegaLiteNetworkData(spec: object): string | null {
       const datasets = obj.datasets as Record<string, unknown>;
       for (const name of Object.keys(datasets)) {
         const ds = datasets[name];
-        if (ds && typeof ds === "object" && !Array.isArray(ds) && typeof (ds as any).url === "string") {
+        if (ds && typeof ds === "object" && !Array.isArray(ds) && "url" in ds && typeof ds.url === "string") {
           return `Network data loading via datasets["${name}"].url is not allowed. Use inline data.values instead.`;
         }
       }

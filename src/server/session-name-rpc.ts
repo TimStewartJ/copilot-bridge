@@ -53,7 +53,14 @@ export function buildSessionNameHelperBaseConfig(): {
   };
 }
 
-export function buildSessionNameResumeConfig(permissionPolicy?: AgentPermissionPolicy): any {
+export type SessionNameResumeConfig = ReturnType<typeof buildSessionNameHelperBaseConfig> & {
+  onPermissionRequest?: AgentPermissionPolicy;
+  suppressResumeEvent: true;
+  continuePendingWork: false;
+  [key: string]: unknown;
+};
+
+export function buildSessionNameResumeConfig(permissionPolicy?: AgentPermissionPolicy): SessionNameResumeConfig {
   return {
     ...buildSessionNameHelperBaseConfig(),
     ...(permissionPolicy ? { onPermissionRequest: permissionPolicy } : {}),

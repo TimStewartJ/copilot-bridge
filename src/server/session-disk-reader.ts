@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { open, readdir, readFile, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { readJsonlLines, scanJsonlRecords, withoutCarriageReturn } from "./jsonl-lines.js";
 import {
   advanceTranscriptCursor,
@@ -47,6 +48,7 @@ import {
 } from "./transcript-agent-fold.js";
 import type { TranscriptAgent } from "../shared/transcript-agents.js";
 import { advanceTranscriptTurnBoundary, type TranscriptTurnBoundary } from "./transcript-turn-details.js";
+import { isRecord } from "../shared/is-record.js";
 
 const RECENT_MESSAGES_INITIAL_TAIL_BYTES = 256 * 1024;
 const RECENT_MESSAGES_SINGLE_READ_MAX_BYTES = 1024 * 1024;
@@ -65,8 +67,18 @@ const SESSION_LIST_READ_CONCURRENCY = 32;
 const MESSAGE_RELEVANT_EVENT_MARKERS = [...TRANSCRIPT_EVENT_TYPES];
 
 const TURN_TERMINAL_EVENT_TYPES = TERMINAL_TURN_EVENT_TYPES;
-const isTurnTerminalEvent = (event: any): boolean =>
-  TURN_TERMINAL_EVENT_TYPES.has(event?.type) && !isSdkSubagentSessionError(event);
+const isTurnTerminalEvent = (event: unknown): boolean => {
+  const type = eventType(event);
+  return typeof type === "string" && TURN_TERMINAL_EVENT_TYPES.has(type) && !isSdkSubagentSessionError(event);
+};
+
+function eventType(event: unknown): unknown {
+  return isRecord(event) ? event.type : undefined;
+}
+
+function eventData(event: unknown): Record<string, unknown> | undefined {
+  return isRecord(event) && isRecord(event.data) ? event.data : undefined;
+}
 
 export interface SessionDiskReaderDeps {
   copilotHome?: string;
@@ -126,7 +138,7 @@ interface EventLogStats {
 }
 
 interface TailCandidateEvents {
-  events: any[];
+  events: unknown[];
   bytesRead: number;
   fileSize: number;
   mtimeMs: number;
@@ -305,22 +317,23 @@ function isFileNotFoundError(error: unknown): boolean {
     && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
-function getToolCallId(event: any): string | undefined {
-  const toolCallId = event?.data?.toolCallId;
+function getToolCallId(event: unknown): string | undefined {
+  const toolCallId = eventData(event)?.toolCallId;
   return typeof toolCallId === "string" ? toolCallId : undefined;
 }
 
-function getToolName(event: any): string {
-  const name = event?.data?.toolName ?? event?.data?.name;
+function getToolName(event: unknown): string {
+  const data = eventData(event);
+  const name = data?.toolName ?? data?.name;
   return typeof name === "string" ? name : "unknown";
 }
 
 /** Parses a tail window; events the transcript skips keep their envelope, as any can be a fork. */
 function parseTailEvents(content: string): {
-  events: any[];
+  events: unknown[];
   malformedCandidateCount: number;
 } {
-  const events: any[] = [];
+  const events: unknown[] = [];
   let malformedCandidateCount = 0;
 
   for (const rawLine of content.split(/\r?\n/)) {
@@ -471,7 +484,7 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
     if (!lineMayAffectMessageTransform(line)) return;
 
     state.candidateEventCount += 1;
-    let event: any;
+    let event: unknown;
     try {
       // Projected as a whole-history read projects it, so both fold exactly the same events.
       event = projectTranscriptEvent(JSON.parse(line));
@@ -483,19 +496,20 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
     visibleActivityTracker.observe(event);
     agentFold.observe(event);
     agentOwners.learn(event);
+    const type = eventType(event);
     const eventId = getSdkEventId(event);
     if (eventId) state.latestEventId = eventId;
-    if (event.type === "assistant.turn_start") {
+    if (type === "assistant.turn_start") {
       state.turnIndex += 1;
       state.latestTurnId = getSdkTurnId(event) ?? `turn-${state.turnIndex}`;
     }
     if (isTurnTerminalEvent(event) && eventId) state.latestTerminalEventId = eventId;
     const turnBoundary = advanceTranscriptTurnBoundary(state.turnBoundary, event);
-    if (event.type === "user.message" && turnBoundary !== state.turnBoundary) {
+    if (type === "user.message" && turnBoundary !== state.turnBoundary) {
       state.turnStartOffset = turnBoundary ? lineStartOffset : undefined;
     }
     state.turnBoundary = turnBoundary;
-    if (event.type === "session.usage_record") state.hasUsageRecords = true;
+    if (type === "session.usage_record") state.hasUsageRecords = true;
     if (advanceTranscriptCursor(state.cursor, event, agentOwners)) {
       state.checkpoints.push({
         offset: lineStartOffset,
@@ -504,8 +518,8 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
       });
     }
     if (
-      event.type === "tool.execution_start"
-      && extractTerminalCompletionFromToolCall(getToolName(event), event?.data?.arguments)
+      type === "tool.execution_start"
+      && extractTerminalCompletionFromToolCall(getToolName(event), eventData(event)?.arguments)
     ) {
       state.pendingTerminalCompletionEntry = true;
     }
@@ -521,7 +535,7 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
     if (isVisibleMessageEvent(event, sessionId)) {
       state.totalEntries += 1;
       if (extractTerminalCompletion(event)) state.pendingTerminalCompletionEntry = false;
-      if (event.type === "tool.execution_start") {
+      if (type === "tool.execution_start") {
         const toolCallId = getToolCallId(event);
         if (toolCallId) {
           openVisibleToolCallIds.add(toolCallId);
@@ -534,7 +548,7 @@ function createEventLogStatsScanner(sessionId: string, initialState?: EventLogSt
       return;
     }
 
-    if (event.type === "tool.execution_complete") {
+    if (type === "tool.execution_complete") {
       const toolCallId = getToolCallId(event);
       if (!toolCallId) return;
 
@@ -771,7 +785,7 @@ async function readMessagesFromDiskFull(
   metadata: Record<string, unknown> = {},
 ): Promise<ReadMessagesFromDiskResult> {
   const tRead = Date.now();
-  const events: any[] = [];
+  const events: unknown[] = [];
   let malformedEventCount = 0;
   let parseMs = 0;
   // Streamed (histories reach hundreds of MB); events the transcript skips keep only an envelope.
@@ -881,15 +895,27 @@ export function getSessionHistoryCoverage(events: readonly unknown[]): SessionHi
   };
 }
 
+/** A session as its folder describes it. */
+export type DiskSession = {
+  sessionId: string;
+  startTime?: string;
+  summary?: string;
+  context?: Record<string, unknown>;
+  eventLogSizeBytes?: number;
+  lastVisibleActivityAt?: string;
+  modifiedTime?: string;
+  intentText?: string | null;
+};
+
 /** With failOnReadError, undefined means missing; other read errors throw. */
 async function readSessionFromDisk(
   deps: SessionDiskReaderDeps,
   sessionStateDir: string,
   sessionId: string,
   failOnReadError = false,
-): Promise<any | undefined> {
+): Promise<DiskSession | undefined> {
   const yamlPath = join(sessionStateDir, sessionId, "workspace.yaml");
-  const session: any = { sessionId };
+  const session: DiskSession = { sessionId };
   let content: string | undefined;
   try {
     content = await readFile(yamlPath, "utf-8");
@@ -934,7 +960,7 @@ export async function readSessionsFromDisk(
   deps: SessionDiskReaderDeps,
   sessionIds: readonly string[],
   options: SessionsFromDiskOptions = {},
-): Promise<any[]> {
+): Promise<DiskSession[]> {
   const sessionStateDir = join(deps.copilotHome ?? join(homedir(), ".copilot"), "session-state");
   const wanted = options.includeArchived ?? true
     ? sessionIds
@@ -948,13 +974,13 @@ export async function readSessionsFromDisk(
 export async function listSessionsFromDisk(
   deps: SessionDiskReaderDeps,
   options: { includeArchived?: boolean; skip?: ReadonlySet<string> } = {},
-): Promise<any[]> {
+): Promise<DiskSession[]> {
   const t0 = Date.now();
   const copilotHome = deps.copilotHome ?? join(homedir(), ".copilot");
   const sessionStateDir = join(copilotHome, "session-state");
   const includeArchived = options.includeArchived ?? true;
 
-  let entries: any[];
+  let entries: Dirent[];
   try {
     entries = await readdir(sessionStateDir, { withFileTypes: true });
   } catch (error) {
@@ -1449,11 +1475,11 @@ export async function findSessionEventIndex(
   };
 }
 
-function isPlainUserMessageEvent(event: any): boolean {
-  if (event?.type !== "user.message") return false;
+function isPlainUserMessageEvent(event: unknown): event is { data: { content: string } } {
+  if (!isRecord(event) || event.type !== "user.message") return false;
   if (isSdkAgentUserMessage(event)) return false;
-  const data = event.data;
-  if (data && typeof data === "object" && "source" in data) return false;
+  const data = eventData(event);
+  if (data && "source" in data) return false;
   const content = data?.content;
   return typeof content === "string" && content.trim().length > 0;
 }
@@ -1484,7 +1510,7 @@ export async function readRecentUserMessages(
   }
   const messages: string[] = [];
   for (const event of tail.events) {
-    if (isPlainUserMessageEvent(event)) messages.push(String((event as any).data.content).trim());
+    if (isPlainUserMessageEvent(event)) messages.push(String(event.data.content).trim());
   }
   return messages.slice(-boundedLimit);
 }

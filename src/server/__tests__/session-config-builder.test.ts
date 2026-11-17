@@ -363,7 +363,7 @@ describe("session-config-builder", () => {
 
     it("plans Helpers and Reviewers from their roles and rubber-duck's candidates from the tiers, on create and resume", () => {
       for (const forResume of [false, true]) {
-        const plan = build({ modelPresets, modelRoles: { reviewers: { tier: "preset2" } } }, { forResume, models: catalog }).subagents;
+        const plan = build({ modelPresets, modelRoles: { reviewers: { tier: "preset2" } } }, { forResume, models: catalog }).subagents!;
         expect(plan.agents.task).toEqual({ model: "gpt-6-luna", effortLevel: "max" });
         expect(plan.agents["code-review"]).toEqual({ model: "gpt-6.1-sol", effortLevel: "max" });
         // Strongest first: Deep, Standard, Fast.
@@ -372,11 +372,11 @@ describe("session-config-builder", () => {
     });
 
     it("omits unavailable models and sends no effort the model list does not confirm", () => {
-      const missing = build({ modelPresets }, { models: [{ id: "gpt-6.1-sol", supportedReasoningEfforts: allEfforts }, { id: "gpt-6-luna", policy: { state: "disabled" } }] }).subagents;
+      const missing = build({ modelPresets }, { models: [{ id: "gpt-6.1-sol", supportedReasoningEfforts: allEfforts }, { id: "gpt-6-luna", policy: { state: "disabled" } }] }).subagents!;
       expect(missing.agents).not.toHaveProperty("task");
       expect(missing.secondOpinion).toEqual([{ model: "gpt-6.1-sol", effortLevel: "max" }]);
       for (const models of [undefined, []]) {
-        const unknown = build({ modelPresets }, { models }).subagents;
+        const unknown = build({ modelPresets }, { models }).subagents!;
         expect(unknown.agents.task).toEqual({ model: "gpt-6-luna" });
         expect(unknown.secondOpinion[0]).toEqual({ model: "claude-opus-5.5" });
       }
@@ -442,7 +442,7 @@ describe("session-config-builder", () => {
         expect(cfg.pluginDirectories).toBeUndefined();
         expect(cfg.mcpServers.cua).toMatchObject({ command: cuaExecutable, args: ["mcp", "--direct"], deferTools: "auto" });
         expect(cfg.mcpServers.cua).not.toHaveProperty("executionScope");
-        expect(cfg.hooks.onPreToolUse).toBeTypeOf("function");
+        expect(cfg.hooks?.onPreToolUse).toBeTypeOf("function");
         expect(cfg.systemMessage.content).toContain("at least 3 minutes");
       }
       expect(resolvePlugin).not.toHaveBeenCalled();

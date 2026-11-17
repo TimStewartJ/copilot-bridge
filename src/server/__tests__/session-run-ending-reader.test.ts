@@ -34,7 +34,7 @@ describe("readPersistedRunEnding", () => {
       assistantContent: "final",
       assistantSourceEventId: "reply-2",
     });
-    expect(ending.event.id).toBe("end-2");
+    expect(ending.event?.id).toBe("end-2");
   });
 
   it("skips everything a sub-agent wrote to the shared log", async () => {
@@ -49,7 +49,7 @@ describe("readPersistedRunEnding", () => {
 
     const ending = await readPersistedRunEnding(path, RUN_STARTED_AT);
 
-    expect(ending.event.id).toBe("main-end");
+    expect(ending.event?.id).toBe("main-end");
     expect(ending.conclusive).toBe(false);
     expect(ending.assistantContent).toBeUndefined();
   });
@@ -76,7 +76,7 @@ describe("readPersistedRunEnding", () => {
     const ending = await readPersistedRunEnding(path, RUN_STARTED_AT);
 
     expect(ending.conclusive).toBe(true);
-    expect(ending.event.id).toBe("conclusive");
+    expect(ending.event?.id).toBe("conclusive");
   });
 
   it("ignores events from before the run started and lines that do not parse", async () => {

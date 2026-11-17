@@ -268,6 +268,34 @@ export function buildBridgeSnapshotLine(sessions: HelmSessionSummary[], now = Da
   ].join("; ");
 }
 
+type FindKind = "all" | "task" | "chat" | "doc";
+const FIND_KINDS: readonly FindKind[] = ["all", "task", "chat", "doc"];
+type FindArgs = { query: string; kind?: FindKind };
+type ListSessionsArgs = {
+  filter?: "unread" | "running" | "waiting" | "recent" | "archived" | "all";
+  query?: string;
+  taskId?: string;
+  limit?: number;
+};
+type ReadSessionArgs = { session?: string; task?: string; markRead?: boolean; history?: number };
+type SendToSessionArgs = { session: string; message: string };
+type StartSessionArgs = {
+  prompt: string;
+  taskId?: string;
+  noTask?: boolean;
+  reason?: string;
+  model?: string;
+  reasoningEffort?: string;
+};
+type StopSessionArgs = { session: string; confirmed: boolean };
+type AnswerSessionQuestionArgs = { session: string; answer: string };
+type MarkSessionsReadArgs = { sessions?: string[]; allUnread?: boolean };
+type ArchiveSessionsArgs = { sessions: string[]; archived?: boolean };
+type RememberArgs = { kind: "priority" | "rule" | "person" | "date"; text: string };
+type ReadBridgeArgs = { bridge: string };
+type ReadConversationArgs = { bridge: string; sessionId: string; messages?: number };
+type RefreshBriefArgs = { rebuild?: boolean };
+
 export function createHelmToolDefinitions(
   ctx: AppContext,
   facade: HelmBridgeFacade,
@@ -353,11 +381,11 @@ export function createHelmToolDefinitions(
         },
         required: ["query"],
       },
-      handler: async (args: any) => {
+      handler: async (args: FindArgs) => {
         const query = String(args.query ?? "").trim().slice(0, 500);
         if (!query) return toolFailure("query is required");
         if (!ctx.searchIndex) return toolFailure("Search is not available on this Bridge right now. Use task_list or list_sessions.");
-        const kind = ["all", "task", "chat", "doc"].includes(args.kind) ? args.kind : "all";
+        const kind = args.kind !== undefined && FIND_KINDS.includes(args.kind) ? args.kind : "all";
         const request = { q: query, scope: "global" as const, kind, limit: 5, offset: 0, refreshOnly: true };
         let result = await ctx.searchIndex.search(request);
         let matchedAnyWord = false;
@@ -420,7 +448,7 @@ export function createHelmToolDefinitions(
           limit: { type: "number", description: "Maximum sessions to return (default 10, max 25)." },
         },
       },
-      handler: async (args: any) => {
+      handler: async (args: ListSessionsArgs) => {
         const now = Date.now();
         const filter = args.filter ?? "recent";
         const archivedOnly = filter === "archived";
@@ -440,7 +468,8 @@ export function createHelmToolDefinitions(
             break;
         }
         if (typeof args.taskId === "string" && args.taskId.trim()) {
-          sessions = sessions.filter((session) => session.linkedTaskIds.includes(args.taskId.trim()));
+          const taskId = args.taskId.trim();
+          sessions = sessions.filter((session) => session.linkedTaskIds.includes(taskId));
         }
         if (typeof args.query === "string" && args.query.trim()) {
           const tokens = referenceTokens(args.query);
@@ -464,7 +493,7 @@ export function createHelmToolDefinitions(
           history: { type: "number", description: `Also return up to this many recent messages (max ${MAX_HISTORY_MESSAGES}).` },
         },
       },
-      handler: async (args: any) => {
+      handler: async (args: ReadSessionArgs) => {
         let taskInfo: Record<string, unknown> | undefined;
         let resolution: SessionResolution;
         if (args.markRead === true && !args.session) return toolFailure("To mark a reply read, pass its session link or ref. Look it up with read_session first.");
@@ -488,7 +517,7 @@ export function createHelmToolDefinitions(
         const { session } = resolution;
         // Thinking entries roughly double the non-message entries of an agentic run.
         const { messages } = await ctx.sessionManager.readMessagesFromDisk(session.sessionId, { limit: 80 });
-        const textMessages = messages.filter((entry: any) => entry?.type === "message" && typeof entry.content === "string" && entry.content.trim()) as Array<{ role: string; content: string; timestamp?: string }>;
+        const textMessages = messages.filter((entry) => entry?.type === "message" && typeof entry.content === "string" && entry.content.trim()) as Array<{ role: string; content: string; timestamp?: string }>;
         const latestReply = [...textMessages].reverse().find((entry) => entry.role === "assistant");
         const latestPrompt = [...textMessages].reverse().find((entry) => entry.role === "user");
         const bus = ctx.eventBusRegistry.getBus(session.sessionId);
@@ -525,7 +554,7 @@ export function createHelmToolDefinitions(
         },
         required: ["session", "message"],
       },
-      handler: async (args: any, invocation: BridgeToolInvocation) => {
+      handler: async (args: SendToSessionArgs, invocation: BridgeToolInvocation) => {
         const resolution = await findDestination(args.session, true);
         if (!resolution.ok) return resolutionFailure(resolution);
         const message = String(args.message ?? "").trim();
@@ -553,7 +582,7 @@ export function createHelmToolDefinitions(
         },
         required: ["prompt"],
       },
-      handler: async (args: any, invocation: BridgeToolInvocation) => {
+      handler: async (args: StartSessionArgs, invocation: BridgeToolInvocation) => {
         const prompt = String(args.prompt ?? "").trim();
         if (!prompt) return toolFailure("prompt is required");
         const taskId = typeof args.taskId === "string" && args.taskId.trim() ? args.taskId.trim() : undefined;
@@ -609,7 +638,7 @@ export function createHelmToolDefinitions(
         },
         required: ["session", "confirmed"],
       },
-      handler: async (args: any) => {
+      handler: async (args: StopSessionArgs) => {
         if (args.confirmed !== true) return toolFailure("Ask the user to confirm before stopping a session.");
         const resolution = await findDestination(args.session);
         if (!resolution.ok) return resolutionFailure(resolution);
@@ -629,7 +658,7 @@ export function createHelmToolDefinitions(
         },
         required: ["session", "answer"],
       },
-      handler: async (args: any, invocation: BridgeToolInvocation) => {
+      handler: async (args: AnswerSessionQuestionArgs, invocation: BridgeToolInvocation) => {
         const resolution = await findDestination(args.session);
         if (!resolution.ok) return resolutionFailure(resolution);
         const request = pendingQuestions(ctx, resolution.session.sessionId).userInputs[0];
@@ -662,7 +691,7 @@ export function createHelmToolDefinitions(
           allUnread: { type: "boolean", description: "Mark every unread session read." },
         },
       },
-      handler: async (args: any) => {
+      handler: async (args: MarkSessionsReadArgs) => {
         const references: unknown[] = Array.isArray(args.sessions) ? args.sessions : [];
         const sessions = await facade.listSessions({ includeArchived: references.some(shortRef) });
         const ids = new Set<string>();
@@ -689,7 +718,7 @@ export function createHelmToolDefinitions(
         },
         required: ["sessions"],
       },
-      handler: async (args: any) => {
+      handler: async (args: ArchiveSessionsArgs) => {
         const archived = args.archived !== false;
         const sessions = await facade.listSessions({ includeArchived: true });
         const targets: HelmSessionSummary[] = [];
@@ -790,7 +819,7 @@ export function createHelmToolDefinitions(
         },
         required: ["kind", "text"],
       },
-      handler: async (args: any) => {
+      handler: async (args: RememberArgs) => {
         const thinker = ctx.helmThinker;
         if (!thinker) return toolFailure("Helm's memory isn't available on this Bridge.");
         try {
@@ -808,7 +837,7 @@ export function createHelmToolDefinitions(
         properties: { bridge: { type: "string", description: "Bridge id, such as \"local\" or a peer's id." } },
         required: ["bridge"],
       },
-      handler: async (args: any) => {
+      handler: async (args: ReadBridgeArgs) => {
         const thinker = ctx.helmThinker;
         if (!thinker) return toolFailure("Other Bridges aren't available here.");
         try {
@@ -829,7 +858,7 @@ export function createHelmToolDefinitions(
         },
         required: ["bridge", "sessionId"],
       },
-      handler: async (args: any) => {
+      handler: async (args: ReadConversationArgs) => {
         const thinker = ctx.helmThinker;
         if (!thinker) return toolFailure("Other Bridges aren't available here.");
         try {
@@ -845,7 +874,7 @@ export function createHelmToolDefinitions(
         type: "object",
         properties: { rebuild: { type: "boolean", description: "Re-read every task in detail, not just what changed. Only when the user asks for a full re-read." } },
       },
-      handler: async (args: any) => {
+      handler: async (args: RefreshBriefArgs) => {
         const thinker = ctx.helmThinker;
         if (!thinker) return toolFailure("Helm's brief isn't available on this Bridge.");
         try {

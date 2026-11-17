@@ -23,7 +23,18 @@ export class InvalidTaskHistoryEntryError extends Error {
   }
 }
 
-function hydrate(row: any): TaskHistoryEntry {
+type TaskHistoryRow = {
+  id: number;
+  taskId: string;
+  at: string;
+  source: string;
+  sessionId: string | null;
+  scheduleId: string | null;
+  scheduleName: string | null;
+  text: string;
+};
+
+function hydrate(row: TaskHistoryRow): TaskHistoryEntry {
   return {
     id: Number(row.id),
     taskId: String(row.taskId),
@@ -57,7 +68,7 @@ export function createTaskHistoryStore(db: DatabaseSync) {
       actor.sessionId ?? null, actor.scheduleId ?? null, actor.scheduleName ?? null,
       normalized,
     ) as { lastInsertRowid: number | bigint };
-    return hydrate(db.prepare("SELECT * FROM task_history_entries WHERE id = ?").get(Number(result.lastInsertRowid)));
+    return hydrate(db.prepare("SELECT * FROM task_history_entries WHERE id = ?").get(Number(result.lastInsertRowid)) as TaskHistoryRow);
   }
 
   /** Newest first. `before` pages by entry id; `query` matches text case-insensitively. */
@@ -73,7 +84,7 @@ export function createTaskHistoryStore(db: DatabaseSync) {
     }
     return (db.prepare(`
       SELECT * FROM task_history_entries WHERE ${clauses.join(" AND ")} ORDER BY id DESC LIMIT ?
-    `).all(...values, limit) as any[]).map(hydrate);
+    `).all(...values, limit) as TaskHistoryRow[]).map(hydrate);
   }
 
   function countEntries(taskId: string): number {

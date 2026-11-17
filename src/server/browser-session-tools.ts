@@ -41,6 +41,18 @@ export interface RegisterBrowserSessionToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
 
+type BrowserSessionStartArgs = { context: "public" | "authenticated"; purpose?: string };
+type BrowserSessionExecArgs = { browserSessionId: string; commands: unknown; capture?: unknown };
+type BrowserSessionGetStateArgs = {
+  browserSessionId: string;
+  url?: boolean;
+  title?: boolean;
+  snapshot?: boolean;
+  selector?: string;
+};
+type BrowserSessionIdArgs = { browserSessionId: string };
+type BrowserSessionHandoffArgs = { browserSessionId: string; reason: string };
+
 interface SessionOperation {
   lease: BrowserBrokerLease;
   /** For the broker, which runs the operation on the session's browser. */
@@ -133,7 +145,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         },
         required: ["context"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: BrowserSessionStartArgs, invocation) => {
         const context = args.context;
         if (context !== "public" && context !== "authenticated") {
           return toolFailure("Browser session context must be public or authenticated.");
@@ -147,7 +159,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         let record;
         try {
           record = await browserSessionStore.createSession(invocation.sessionId, context, purpose || undefined);
-        } catch (err: any) {
+        } catch (err) {
           return toolFailure("Failed to start browser session.", {
             detail: `Failed to start browser session: ${String(err).slice(0, 400)}`,
           });
@@ -184,7 +196,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         },
         required: ["browserSessionId", "commands"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: BrowserSessionExecArgs, invocation) => {
         const commands = normalizeBrowserAutomationCommands(args.commands);
         if (!commands.ok) return toolFailure(commands.error);
         const capture = normalizeBrowserAutomationCapture(args.capture);
@@ -239,7 +251,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         },
         required: ["browserSessionId"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: BrowserSessionGetStateArgs, invocation) => {
         const capture = normalizeBrowserAutomationCapture({
           url: args.url ?? true,
           title: args.title ?? true,
@@ -280,7 +292,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         },
         required: ["browserSessionId"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: BrowserSessionIdArgs, invocation) => {
         const startedAt = Date.now();
         let outcome = "failed";
         try {
@@ -368,7 +380,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         },
         required: ["browserSessionId", "reason"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: BrowserSessionHandoffArgs, invocation) => {
         const reason = typeof args.reason === "string" ? args.reason.trim() : "";
         if (!reason) return toolFailure("reason is required: say what the user has to do in the browser.");
         if (reason.length > MAX_HANDOFF_REASON_LENGTH) {
@@ -451,7 +463,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
             });
           });
           return result.ok ? result.value : toolFailure(result.error);
-        } catch (err: any) {
+        } catch (err) {
           if (err instanceof BrowserLiveUnavailableError) return toolFailure(err.message);
           return toolFailure("Browser handoff failed.", {
             detail: `Browser handoff failed: ${String(err).slice(0, 400)}`,
@@ -478,7 +490,7 @@ export function createBrowserSessionToolDefinitions(ctx: AppContext): BridgeTool
         },
         required: ["browserSessionId"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: BrowserSessionIdArgs, invocation) => {
         const result = await browserSessionStore.closeSession(args.browserSessionId, invocation.sessionId);
         if (!result.ok) return toolFailure(result.error);
         return { success: true, browserSessionId: args.browserSessionId };

@@ -1,4 +1,5 @@
-import type { AgentModelInfo } from "./agent-backend/index.js";
+import type { AgentModelInfo, AgentSession, AgentSessionConfig } from "./agent-backend/index.js";
+import { isRecord } from "../shared/is-record.js";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { deleteCliSessionStoreRows } from "./cli-session-store.js";
@@ -24,22 +25,26 @@ const SESSION_NAME_GENERATION_RETRY_MS = 60 * 60 * 1000;
 const TITLE_HELPER_TIMEOUT_MS = 30_000;
 const RECENT_USER_MESSAGE_LIMIT = 20;
 
-export interface SessionNameAutogeneratorDeps {
+type TitleHelperSession = Pick<AgentSession, "sendAndWait" | "disconnect">;
+/** What auto-naming reads from a chat's session; the session is handed on to `setSessionName`. */
+type NamedSession = Pick<AgentSession, "getName">;
+
+export interface SessionNameAutogeneratorDeps<S extends NamedSession = NamedSession> {
   listModels(): Promise<AgentModelInfo[]>;
   /** The "Small jobs" role from Settings › Models, when it names a model. */
   resolveHelperRole?(models: AgentModelInfo[]): { model?: string; reasoningEffort?: string };
-  createSession(config: any): Promise<any>;
+  createSession(config: AgentSessionConfig): Promise<TitleHelperSession>;
   deleteSession(sessionId: string): Promise<void>;
   getCopilotHome(): string;
   getSessionName(sessionId: string): Promise<string | undefined>;
   getSessionNameMetadata(sessionId: string): WorkspaceSessionNameMetadata | undefined;
-  setSessionName(sessionId: string, name: string, opts?: SetSessionNameOptions): Promise<void>;
+  setSessionName(sessionId: string, name: string, opts?: Omit<SetSessionNameOptions, "session"> & { session?: S }): Promise<void>;
   recordSpan?: (name: string, duration: number, sessionId?: string, metadata?: Record<string, unknown>) => void;
   logger?: Pick<typeof console, "warn">;
 }
 
-export interface SessionAutoNameOptions {
-  session?: any;
+export interface SessionAutoNameOptions<S extends NamedSession = NamedSession> {
+  session?: S;
   userMessages?: string[];
   includeHistory?: boolean;
   replaceExistingName?: string | true;
@@ -77,11 +82,11 @@ function hasExplicitSessionName(
     && effectiveName !== replaceExistingName;
 }
 
-export class SessionNameAutogenerator {
+export class SessionNameAutogenerator<S extends NamedSession = NamedSession> {
   private readonly generationPromises = new Map<string, Promise<void>>();
   private readonly generationLastAttempt = new Map<string, number>();
 
-  constructor(private readonly deps: SessionNameAutogeneratorDeps) {}
+  constructor(private readonly deps: SessionNameAutogeneratorDeps<S>) {}
 
   private recordSpan(name: string, start: number, sessionId?: string, metadata?: Record<string, unknown>): void {
     this.deps.recordSpan?.(name, Date.now() - start, sessionId, metadata);
@@ -102,7 +107,7 @@ export class SessionNameAutogenerator {
 
   maybeAutoNameSession(
     sessionId: string,
-    options: SessionAutoNameOptions = {},
+    options: SessionAutoNameOptions<S> = {},
   ): void {
     if (isDisposableTitleSessionId(sessionId)) return;
     const replacesExistingName = options.replaceExistingName !== undefined;
@@ -127,7 +132,7 @@ export class SessionNameAutogenerator {
 
   private async generateAndSetMissingSessionName(
     sessionId: string,
-    options: SessionAutoNameOptions,
+    options: SessionAutoNameOptions<S>,
   ): Promise<void> {
     const start = Date.now();
     const existingMetadata = this.deps.getSessionNameMetadata(sessionId);
@@ -232,7 +237,7 @@ export class SessionNameAutogenerator {
     if (!selection) return undefined;
 
     const helperSessionId = createDisposableTitleSessionId();
-    let helperSession: any | undefined;
+    let helperSession: TitleHelperSession | undefined;
     try {
       helperSession = await this.deps.createSession({
         ...buildSessionNameHelperBaseConfig(),
@@ -249,7 +254,7 @@ export class SessionNameAutogenerator {
         { prompt: buildSessionTitleUserPrompt(userMessages), attachments: [] },
         TITLE_HELPER_TIMEOUT_MS,
       );
-      const content: unknown = response?.data?.content;
+      const content: unknown = isRecord(response) && isRecord(response.data) ? response.data.content : undefined;
       return { title: extractGeneratedSessionTitle(content), model: selection.model, reply: describeTitleReply(content) };
     } finally {
       try { await helperSession?.disconnect?.(); } catch { /* best-effort */ }
@@ -283,6 +288,8 @@ export class SessionNameAutogenerator {
   }
 }
 
-export function createSessionNameAutogenerator(deps: SessionNameAutogeneratorDeps): SessionNameAutogenerator {
+export function createSessionNameAutogenerator<S extends NamedSession = NamedSession>(
+  deps: SessionNameAutogeneratorDeps<S>,
+): SessionNameAutogenerator<S> {
   return new SessionNameAutogenerator(deps);
 }

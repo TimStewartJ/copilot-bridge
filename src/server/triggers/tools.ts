@@ -7,7 +7,7 @@ import { toolFailure } from "../tool-results.js";
 import type { ModelPresetSlot } from "../../shared/model-presets.js";
 import { TRIGGER_CHECK_EXIT_FIRE, TRIGGER_CHECK_EXIT_FIRE_AND_STOP, TRIGGER_CHECK_MAX_TIMEOUT_SECONDS } from "./check.js";
 import { triggerDeliverySourceIds } from "./messages.js";
-import { TRIGGER_MAX_NEW_TASK_RUNS, type TriggerResult, type TriggerService } from "./service.js";
+import { TRIGGER_MAX_NEW_TASK_RUNS, type TriggerResult, type TriggerCreateInput, type TriggerService, type TriggerThen } from "./service.js";
 import { describeTriggerWhen, TRIGGER_MIN_CHECKED_INTERVAL_SECONDS, TRIGGER_MIN_UNCHECKED_INTERVAL_SECONDS } from "./timing.js";
 import type { Trigger } from "./types.js";
 
@@ -92,6 +92,36 @@ const ACTION_PROPERTIES = {
   keepChats: { type: "integer", minimum: 0, description: "new_chat only: archive older started chats beyond this many." },
 } as const;
 
+type TriggerCheckArgs = {
+  command: string[];
+  cwd?: string;
+  timeoutSeconds?: number;
+  fireOn?: "change" | "exit_code";
+  fireOnFirstRun?: boolean;
+};
+type TriggerTimingArgs = { delaySeconds?: number; runAt?: string; intervalSeconds?: number; cron?: string; timezone?: string };
+type TriggerActionArgs = { title?: string; modelTier?: "fast" | "standard" | "deep"; playbook?: string; keepChats?: number };
+type TriggerCreateArgs = TriggerTimingArgs & TriggerActionArgs & {
+  prompt: string;
+  name?: string;
+  then?: TriggerThen;
+  taskId?: string;
+  check?: TriggerCheckArgs;
+  maxRuns?: number;
+  expiresAt?: string;
+};
+type TriggerListArgs = { taskId?: string; includeInactive?: boolean };
+type TriggerUpdateArgs = TriggerTimingArgs & TriggerActionArgs & {
+  triggerId: string;
+  prompt?: string;
+  name?: string;
+  check?: TriggerCheckArgs | null;
+  maxRuns?: number | null;
+  expiresAt?: string | null;
+  active?: boolean;
+};
+type TriggerIdArgs = { triggerId: string };
+
 export interface RegisterTriggerToolsOptions {
   hiddenTools?: ReadonlySet<string>;
 }
@@ -138,14 +168,15 @@ export function createTriggerToolDefinitions(ctx: AppContext): BridgeToolDefinit
         required: ["prompt"],
         additionalProperties: false,
       },
-      handler: async (rawArgs: any, invocation: any) => {
-        const args = { ...rawArgs };
+      handler: async (rawArgs: TriggerCreateArgs, invocation) => {
+        // mapTier rewrites modelTier from a tier name to a preset slot.
+        const args: Record<string, unknown> = { ...rawArgs };
         const tierError = mapTier(args);
         if (tierError) return toolFailure(tierError);
         const sessionId: string | undefined = invocation?.sessionId;
         const ownTaskId = callerTaskId(sessionId);
         const then = args.then ?? "worker";
-        const input = then === "worker" || then === "message"
+        const input: TriggerCreateInput = then === "worker" || then === "message"
           ? { ...args, then, sessionId }
           : { ...args, then, taskId: args.taskId ?? ownTaskId };
         if (input.taskId === undefined && (then === "new_chat" || then === "new_task")) {
@@ -166,7 +197,7 @@ export function createTriggerToolDefinitions(ctx: AppContext): BridgeToolDefinit
         },
         additionalProperties: false,
       },
-      handler: async (args: any, invocation: any) => {
+      handler: async (args: TriggerListArgs, invocation) => {
         const store = ctx.triggerStore;
         if (!store) return toolFailure("Triggers are unavailable.");
         const includeInactive = args?.includeInactive === true;
@@ -204,8 +235,10 @@ export function createTriggerToolDefinitions(ctx: AppContext): BridgeToolDefinit
         required: ["triggerId"],
         additionalProperties: false,
       },
-      handler: async (rawArgs: any, invocation: any) => {
-        const { triggerId, ...args } = rawArgs;
+      handler: async (rawArgs: TriggerUpdateArgs, invocation) => {
+        const { triggerId, ...rest } = rawArgs;
+        // mapTier rewrites modelTier from a tier name to a preset slot.
+        const args: Record<string, unknown> = rest;
         const denied = notOwned(triggerId, invocation?.sessionId);
         if (denied) return denied;
         const tierError = mapTier(args);
@@ -228,7 +261,7 @@ export function createTriggerToolDefinitions(ctx: AppContext): BridgeToolDefinit
         required: ["triggerId"],
         additionalProperties: false,
       },
-      handler: async (args: any, invocation: any) => notOwned(args.triggerId, invocation?.sessionId)
+      handler: async (args: TriggerIdArgs, invocation) => notOwned(args.triggerId, invocation?.sessionId)
         ?? toToolResult(service().runNow(String(args.triggerId)), (trigger) => `Trigger ${trigger.id} will run now.`),
     }),
 
@@ -240,7 +273,7 @@ export function createTriggerToolDefinitions(ctx: AppContext): BridgeToolDefinit
         required: ["triggerId"],
         additionalProperties: false,
       },
-      handler: async (args: any, invocation: any) => notOwned(args.triggerId, invocation?.sessionId)
+      handler: async (args: TriggerIdArgs, invocation) => notOwned(args.triggerId, invocation?.sessionId)
         ?? toToolResult(service().cancel(String(args.triggerId)), (trigger) => `Trigger ${trigger.id} cancelled.`),
     }),
 
@@ -252,7 +285,7 @@ export function createTriggerToolDefinitions(ctx: AppContext): BridgeToolDefinit
         required: ["triggerId"],
         additionalProperties: false,
       },
-      handler: async (args: any, invocation: any) => notOwned(args.triggerId, invocation?.sessionId)
+      handler: async (args: TriggerIdArgs, invocation) => notOwned(args.triggerId, invocation?.sessionId)
         ?? toToolResult(service().remove(String(args.triggerId)), (trigger) => `Trigger ${trigger.id} deleted.`),
     }),
   ];

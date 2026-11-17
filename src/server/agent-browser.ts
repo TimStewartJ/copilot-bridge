@@ -6,6 +6,7 @@ import { lstatSync, readFileSync, readlinkSync, unlinkSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir, platform } from "node:os";
+import { isRecord } from "../shared/is-record.js";
 import { getAgentBrowserCommand } from "./agent-browser-command.js";
 import { buildBrowserEnv, getBrowserLaunchConfig, type BrowserLaunchConfig, type BrowserTarget } from "./browser-launch.js";
 import { windowsShellInvocation } from "./platform.js";
@@ -451,8 +452,8 @@ function readLockOwner(
     try {
       process.kill(pid, 0);
       return { raw, pid, alive: true, signalable: true };
-    } catch (err: any) {
-      if (err?.code === "ESRCH") {
+    } catch (err) {
+      if (isRecord(err) && err.code === "ESRCH") {
         return { raw, pid, alive: false, signalable: false };
       }
       return { raw, pid, alive: true, signalable: false };
@@ -729,8 +730,10 @@ export async function run(
     });
     const output = stdout || stderr;
     return { ok: true, output: output.trim() };
-  } catch (err: any) {
-    return { ok: false, output: err.stderr || err.stdout || String(err) };
+  } catch (err) {
+    const stderr = isRecord(err) && typeof err.stderr === "string" ? err.stderr : "";
+    const stdout = isRecord(err) && typeof err.stdout === "string" ? err.stdout : "";
+    return { ok: false, output: stderr || stdout || String(err) };
   }
 }
 

@@ -1,6 +1,7 @@
 import { toolFailure } from "../tool-results.js";
 import { validateToolArguments } from "./validate-args.js";
-import type { BridgeToolDefinition, BridgeToolHandlerExtra, BridgeToolHandlerResult } from "./server.js";
+import { isRecord } from "../../shared/is-record.js";
+import type { BridgeToolDefinition, BridgeToolHandlerResult } from "./server.js";
 
 export interface BridgeToolInvocation {
   /** Session that issued the call; `undefined`, never an empty string, when there is none. */
@@ -18,21 +19,24 @@ export interface SessionBridgeToolInvocation extends BridgeToolInvocation {
   sessionId: string;
 }
 
-export interface DefineBridgeToolOptions {
+/** A handler's arguments, checked against `parameters` first: the type must match that schema. */
+export type BridgeToolArgs = object;
+
+export interface DefineBridgeToolOptions<Args extends BridgeToolArgs = Record<string, unknown>> {
   description?: string;
   parameters?: BridgeToolDefinition["inputSchema"];
   scope?: BridgeToolDefinition["scope"];
   handler: (
-    args: any,
+    args: Args,
     invocation: BridgeToolInvocation,
   ) => BridgeToolHandlerResult | Promise<BridgeToolHandlerResult>;
 }
 
-export interface DefineSessionBridgeToolOptions {
+export interface DefineSessionBridgeToolOptions<Args extends BridgeToolArgs = Record<string, unknown>> {
   description?: string;
   parameters?: BridgeToolDefinition["inputSchema"];
   handler: (
-    args: any,
+    args: Args,
     invocation: SessionBridgeToolInvocation,
   ) => BridgeToolHandlerResult | Promise<BridgeToolHandlerResult>;
 }
@@ -45,15 +49,17 @@ function normalizeInvocationSessionId(value: unknown): string | undefined {
 function bridgeInvocationFromMcp(
   name: string,
   args: Record<string, unknown>,
-  extra: BridgeToolHandlerExtra,
+  extra: unknown,
 ): BridgeToolInvocation {
+  const fields = isRecord(extra) ? extra : {};
+  const { requestId, agentId, signal } = fields;
   return {
-    sessionId: normalizeInvocationSessionId(extra?.sessionId),
-    agentId: extra?.agentId,
-    toolCallId: extra?.requestId === undefined || extra?.requestId === null ? "" : String(extra.requestId),
+    sessionId: normalizeInvocationSessionId(fields.sessionId),
+    agentId: typeof agentId === "string" ? agentId : undefined,
+    toolCallId: requestId === undefined || requestId === null ? "" : String(requestId),
     toolName: name,
     arguments: args,
-    signal: extra?.signal,
+    signal: signal instanceof AbortSignal ? signal : undefined,
   };
 }
 
@@ -70,9 +76,9 @@ export function isAdaptedToolHandler(handler: unknown): boolean {
     && (handler as unknown as Record<symbol, unknown>)[ADAPTED_HANDLER] === true;
 }
 
-export function defineBridgeTool(
+export function defineBridgeTool<Args extends BridgeToolArgs = Record<string, unknown>>(
   name: string,
-  options: DefineBridgeToolOptions,
+  options: DefineBridgeToolOptions<Args>,
 ): BridgeToolDefinition {
   const inputSchema = options.parameters ?? { type: "object", properties: {} };
   const handler: BridgeToolDefinition["handler"] = async (args, extra) => {
@@ -91,7 +97,8 @@ export function defineBridgeTool(
       });
     }
 
-    return options.handler(args, invocation);
+    // validateToolArguments has checked args against the schema that Args describes.
+    return options.handler(args as Args, invocation);
   };
   Object.defineProperty(handler, ADAPTED_HANDLER, { value: true });
 
@@ -105,11 +112,11 @@ export function defineBridgeTool(
 }
 
 /** A session-scoped tool: calls without a session id are rejected, so handlers get one. */
-export function defineSessionBridgeTool(
+export function defineSessionBridgeTool<Args extends BridgeToolArgs = Record<string, unknown>>(
   name: string,
-  options: DefineSessionBridgeToolOptions,
+  options: DefineSessionBridgeToolOptions<Args>,
 ): BridgeToolDefinition {
-  return defineBridgeTool(name, {
+  return defineBridgeTool<Args>(name, {
     ...options,
     scope: "session",
     handler: (args, invocation) => options.handler(args, invocation as SessionBridgeToolInvocation),

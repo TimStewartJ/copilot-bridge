@@ -6,6 +6,7 @@ import type { HelmPeer } from "../../../shared/helm-thinker.js";
 import { buildTaskOverview, toOverviewSessions } from "../../task-overview.js";
 import { createHomeReader } from "../../home.js";
 import { sendChatMessage } from "../../chat-message-delivery.js";
+import { isRecord } from "../../../shared/is-record.js";
 
 export interface SourceSession {
   sessionId: string;
@@ -43,13 +44,14 @@ export interface HelmSource {
 
 export class HelmSourceError extends Error {}
 
-function toSourceSession(raw: any): SourceSession | undefined {
-  if (!raw || typeof raw.sessionId !== "string") return undefined;
+function toSourceSession(raw: unknown): SourceSession | undefined {
+  if (!isRecord(raw) || typeof raw.sessionId !== "string") return undefined;
   return {
     sessionId: raw.sessionId,
     title: typeof raw.summary === "string" && raw.summary.trim() ? raw.summary.trim() : "Untitled conversation",
-    lastActivityAt: raw.lastActivityAt ?? raw.lastVisibleActivityAt ?? raw.modifiedTime ?? raw.startTime ?? null,
-    linkedTaskIds: Array.isArray(raw.linkedTaskIds) ? raw.linkedTaskIds.filter((id: unknown) => typeof id === "string") : [],
+    // Session list rows carry these as ISO strings; passed through unchecked as before.
+    lastActivityAt: (raw.lastActivityAt ?? raw.lastVisibleActivityAt ?? raw.modifiedTime ?? raw.startTime ?? null) as string | null,
+    linkedTaskIds: Array.isArray(raw.linkedTaskIds) ? raw.linkedTaskIds.filter((id: unknown): id is string => typeof id === "string") : [],
     runState: typeof raw.runState === "string" ? raw.runState : "idle",
     needsUserInput: raw.needsUserInput === true,
     ...(typeof raw.triggeredBy === "string" ? { triggeredBy: raw.triggeredBy } : {}),
@@ -59,13 +61,13 @@ function toSourceSession(raw: any): SourceSession | undefined {
 
 function toMessages(raw: unknown): SourceMessage[] {
   if (!Array.isArray(raw)) return [];
-  return raw.flatMap((entry: any) => entry?.type === "message" && typeof entry.content === "string" && entry.content.trim()
-    ? [{ role: String(entry.role ?? ""), content: entry.content as string, ...(entry.timestamp ? { timestamp: String(entry.timestamp) } : {}) }]
+  return raw.flatMap((entry: unknown) => isRecord(entry) && entry.type === "message" && typeof entry.content === "string" && entry.content.trim()
+    ? [{ role: String(entry.role ?? ""), content: entry.content, ...(entry.timestamp ? { timestamp: String(entry.timestamp) } : {}) }]
     : []);
 }
 
-export function createLocalSource(ctx: AppContext, readSessions: () => Promise<any[]>, label: string): HelmSource {
-  const reader = createHomeReader(ctx as any, readSessions);
+export function createLocalSource(ctx: AppContext, readSessions: () => Promise<unknown[]>, label: string): HelmSource {
+  const reader = createHomeReader(ctx, readSessions);
   return {
     id: "local",
     label,
@@ -77,7 +79,7 @@ export function createLocalSource(ctx: AppContext, readSessions: () => Promise<a
     snapshot: (section, offset = 0) => reader.snapshot(section, offset),
     async overview() {
       const parsed = toOverviewSessions(await readSessions());
-      return buildTaskOverview(ctx as any, parsed.sessions, Date.now(), undefined, parsed.invalid);
+      return buildTaskOverview(ctx, parsed.sessions, Date.now(), undefined, parsed.invalid);
     },
     async input(sessionId, kind, requestId) {
       const native = await ctx.sessionManager.hydratePendingInteractions(sessionId);
@@ -104,7 +106,7 @@ export function createLocalSource(ctx: AppContext, readSessions: () => Promise<a
     },
     async tick(actionId) {
       if (!ctx.checklistStore) throw new HelmSourceError("Checklists are not available on this Bridge.");
-      ctx.checklistStore.updateChecklistItem(actionId, { done: true } as any);
+      ctx.checklistStore.updateChecklistItem(actionId, { done: true });
     },
   };
 }

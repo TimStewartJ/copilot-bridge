@@ -4,6 +4,8 @@ import type { DatabaseSync } from "./db.js";
 
 type ReadStateMap = Record<string, string>; // sessionId → ISO lastReadAt
 
+type ReadStateRow = { sessionId: string; lastReadAt: string };
+
 // ── Factory ───────────────────────────────────────────────────────
 
 export function createReadStateStore(db: DatabaseSync) {
@@ -14,7 +16,7 @@ export function createReadStateStore(db: DatabaseSync) {
   }
 
   function getReadState(): ReadStateMap {
-    const rows = db.prepare("SELECT sessionId, lastReadAt FROM read_state").all() as any[];
+    const rows = db.prepare("SELECT sessionId, lastReadAt FROM read_state").all() as ReadStateRow[];
     const result: ReadStateMap = {};
     for (const row of rows) {
       result[row.sessionId] = row.lastReadAt;
@@ -26,7 +28,7 @@ export function createReadStateStore(db: DatabaseSync) {
     if (sessionIds.length === 0) return {};
     const rows = db.prepare(
       "SELECT sessionId, lastReadAt FROM read_state WHERE sessionId IN (SELECT value FROM json_each(?))",
-    ).all(JSON.stringify(sessionIds)) as any[];
+    ).all(JSON.stringify(sessionIds)) as ReadStateRow[];
     return Object.fromEntries(rows.map((row) => [row.sessionId, row.lastReadAt]));
   }
 
@@ -41,7 +43,7 @@ export function createReadStateStore(db: DatabaseSync) {
            ELSE read_state.lastReadAt
          END`,
     ).run(sessionId, readThrough);
-    const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as any;
+    const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as { lastReadAt: string } | undefined;
     return row?.lastReadAt ?? readThrough;
   }
 
@@ -61,7 +63,7 @@ export function createReadStateStore(db: DatabaseSync) {
 
   function isUnread(sessionId: string, activityTime?: string): boolean {
     if (!activityTime) return false;
-    const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as any;
+    const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as { lastReadAt: string } | undefined;
     if (!row) return true; // never opened = unread
     return new Date(activityTime).getTime() > new Date(row.lastReadAt).getTime();
   }
@@ -72,7 +74,7 @@ export function createReadStateStore(db: DatabaseSync) {
 
   /** Restores the read point unless it moved since `expected` (then returns false, unchanged). */
   function restoreRead(sessionId: string, previous: string | null, expected: string): boolean {
-    const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as any;
+    const row = db.prepare("SELECT lastReadAt FROM read_state WHERE sessionId = ?").get(sessionId) as { lastReadAt: string } | undefined;
     if (!row || row.lastReadAt !== normalizeTimestamp(expected)) return false;
     if (previous) db.prepare("UPDATE read_state SET lastReadAt = ? WHERE sessionId = ?").run(normalizeTimestamp(previous), sessionId);
     else db.prepare("DELETE FROM read_state WHERE sessionId = ?").run(sessionId);

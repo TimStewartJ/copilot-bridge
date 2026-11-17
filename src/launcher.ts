@@ -32,6 +32,7 @@ import {
 import { resolveBridgePort } from "./server/port-config.js";
 import { clearRollbackCheckpoint } from "./server/pre-deploy-checkpoint.js";
 import { gitHash } from "./launcher-git.js";
+import { isRecord } from "./shared/is-record.js";
 import { runSyncCommand } from "./server/sync-command-runner.js";
 import { createValidationCommandEnv, prependNodePath } from "./server/validation-command-env.js";
 import { readDeployValidationStamp, validateDeployValidationStamp } from "./server/deploy-validation-stamp.js";
@@ -462,8 +463,8 @@ function hasOperationalRestartSourceChanges(): boolean {
       timeout: 10_000,
     }).trim();
     return untracked.length > 0;
-  } catch (error: any) {
-    if (error?.status === 1) {
+  } catch (error) {
+    if (isRecord(error) && error.status === 1) {
       return true;
     }
     log(`Unable to determine operational restart source changes — running deploy validation: ${error instanceof Error ? error.message : String(error)}`);

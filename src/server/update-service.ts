@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { RuntimePaths } from "./runtime-paths.js";
 import { isPathAtOrUnder } from "./path-utils.js";
 import { getProcessHost, type HostChild } from "./process-host.js";
+import { isRecord } from "../shared/is-record.js";
 
 export type UpdateChannel = "stable" | "preview";
 export type UpdateCheckStatus =
@@ -136,9 +137,11 @@ function getInstalledAppRoot(): string {
   return join(moduleDir, "..", "..");
 }
 
-function readJsonFile(path: string): any | null {
+function readJsonFile(path: string): Record<string, unknown> | null {
   if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, "utf8"));
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  // Callers read named fields, which a non-object JSON value never has.
+  return isRecord(parsed) ? parsed : null;
 }
 
 function readStatusJsonFile(path: string): UpdateInstallStatus | null {
@@ -418,7 +421,7 @@ function validateManifest(raw: unknown, expected: { channel: UpdateChannel; plat
   if (typeof raw !== "object" || raw === null) {
     throw new Error("Update manifest must be an object.");
   }
-  const manifest = raw as Record<string, any>;
+  const manifest = raw as Record<string, unknown>;
   if (manifest.schemaVersion !== 1) throw new Error("Unsupported update manifest schemaVersion.");
   if (manifest.appId !== "copilot-bridge") throw new Error("Update manifest appId does not match.");
   if (manifest.channel !== expected.channel) throw new Error("Update manifest channel does not match.");

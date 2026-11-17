@@ -219,7 +219,8 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     sessionContextStore,
     globalBus,
     eventBusRegistry,
-    sessionManager: null as any,
+    // Late-bound: the session manager and voice job manager need ctx, so they are set below.
+    sessionManager: null!,
     transcriptionService: createTranscriptionService({
       installer: voiceRuntime.installer,
       engine: voiceRuntime.engine,
@@ -229,7 +230,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     voiceRuntime,
     helmStore,
     helmThinkerStore,
-    voiceJobManager: null as any,
+    voiceJobManager: null!,
     pushSubscriptionStore,
     managementJobStore,
     deferredPromptStore,

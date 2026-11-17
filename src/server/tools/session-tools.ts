@@ -34,8 +34,12 @@ interface SessionStartArgs {
   contextTier?: CopilotContextTier;
 }
 
+type SessionRenameArgs = { sessionId?: string; title: string };
+type SessionSetWorkspaceArgs = { sessionId?: string; cwd?: string; taskId?: string; reset?: boolean };
+type SessionArchiveArgs = { sessionIds: string[]; archived?: boolean };
+
 // Only trim: the title normalizer would corrupt an opaque id.
-function targetSessionId(args: any, invocation: SessionBridgeToolInvocation): string {
+function targetSessionId(args: { sessionId?: string }, invocation: SessionBridgeToolInvocation): string {
   const explicit = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
   return explicit || invocation.sessionId;
 }
@@ -191,7 +195,7 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
   defineSessionBridgeTool("session_rename", {
     description: "Rename a chat session. Use this to give a session a more descriptive title.",
     parameters: { type: "object", properties: { sessionId: { type: "string", description: "The session ID to rename. Defaults to the current session." }, title: { type: "string", description: "The new title (3-6 words recommended)" } }, required: ["title"] },
-    handler: async (args: any, invocation) => {
+    handler: async (args: SessionRenameArgs, invocation) => {
       const sessionId = targetSessionId(args, invocation);
       const title = normalizeSessionTitle(args.title);
 
@@ -217,13 +221,13 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
         reset: { type: "boolean", description: "When true, copy the linked task's current default working directory into this session's pinned workspace." },
       },
     },
-    handler: async (args: any, invocation) => {
+    handler: async (args: SessionSetWorkspaceArgs, invocation) => {
       const sessionId = targetSessionId(args, invocation);
 
       const hasCwd = typeof args.cwd === "string";
-      const cwd = hasCwd ? args.cwd.trim() : undefined;
+      const cwd = typeof args.cwd === "string" ? args.cwd.trim() : undefined;
       const hasTaskId = typeof args.taskId === "string";
-      const taskId = hasTaskId ? args.taskId.trim() : undefined;
+      const taskId = typeof args.taskId === "string" ? args.taskId.trim() : undefined;
       const reset = args.reset === true;
 
       if (reset === hasCwd) {
@@ -282,7 +286,7 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
       },
       required: ["sessionIds"],
     },
-    handler: async (args: any) => {
+    handler: async (args: SessionArchiveArgs) => {
       if (!Array.isArray(args.sessionIds)) return toolFailure("sessionIds must be an array of session IDs");
       const archived = args.archived !== false;
       const sessionIds = [...new Set<string>(

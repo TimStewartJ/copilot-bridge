@@ -200,7 +200,7 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
         },
         required: ["query"],
       },
-      handler: async (args: any) => {
+      handler: async (args: { query: string }) => {
         const query: string = args.query;
         const browserOpId = randomUUID();
         const queryHash = queryFingerprint(query);
@@ -410,7 +410,7 @@ export function createWebSearchTools(ctx: AppContext): BridgeToolDefinition[] {
               queryHash,
             },
           }, runFlow);
-        } catch (err: any) {
+        } catch (err) {
           return webSearchFailure(`Search failed: ${String(err).slice(0, 400)}`, { query });
         } finally {
           const duration = Date.now() - toolStart;

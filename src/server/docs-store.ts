@@ -12,7 +12,7 @@ export interface DocPage {
   path: string;
   title: string;
   tags: string[];
-  frontmatter: Record<string, any>;
+  frontmatter: Record<string, unknown>;
   body: string;
   folder: string;
   isDbItem: boolean;
@@ -51,7 +51,7 @@ export interface DbEntry {
   path: string;
   slug: string;
   title: string;
-  fields: Record<string, any>;
+  fields: Record<string, unknown>;
   body: string;
   created: string;
   modified: string;
@@ -64,6 +64,13 @@ const SYSTEM_DB_FIELD_KEYS = new Set(["created", "modified"]);
 const WINDOWS_RESERVED_PATH_CHARS = /[<>:"|?*]/;
 const WINDOWS_RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 export const TAGGED_DOC_DESCRIPTION_ERROR = "Tagged docs must include a non-empty frontmatter description";
+
+function isDbFieldType(value: unknown): value is DbField["type"] {
+  return typeof value === "string" && VALID_FIELD_TYPES.has(value);
+}
+
+// _schema.yaml is not validated on read; name and options reach callers as written, as before.
+type SchemaFileField = { name: string; type?: unknown; options?: string[]; required?: unknown };
 
 export class DocsStoreValidationError extends Error {
   constructor(message: string) {
@@ -251,11 +258,11 @@ export function createDocsStore(docsDir: string) {
     return `docs_db_update expects { folder: "${targetFolder}", slug: "entry-slug", fields: { ... }, body?: "# Markdown body" }. If you passed field values at the top level, nest them under fields.`;
   }
 
-  function createSafeFieldMap(): Record<string, any> {
-    return Object.create(null) as Record<string, any>;
+  function createSafeFieldMap(): Record<string, unknown> {
+    return Object.create(null);
   }
 
-  function assignDbFields(target: Record<string, any>, source: Record<string, any>): void {
+  function assignDbFields(target: Record<string, unknown>, source: Record<string, unknown>): void {
     for (const [key, value] of Object.entries(source)) {
       if (DANGEROUS_DB_FIELD_KEYS.has(key)) {
         throw new Error(`Field name "${key}" is not allowed`);
@@ -302,12 +309,12 @@ export function createDocsStore(docsDir: string) {
     const sp = schemaPath(folder);
     if (!existsSync(sp)) return null;
 
-    const parsed = parseYaml(readFileSync(sp, "utf-8")) as Record<string, any>;
+    const parsed = parseYaml(readFileSync(sp, "utf-8"));
     return {
       name: parsed.name || folder,
-      fields: (parsed.fields || []).map((f: Record<string, any>) => ({
+      fields: (parsed.fields || []).map((f: SchemaFileField) => ({
         name: f.name,
-        type: VALID_FIELD_TYPES.has(f.type) ? f.type : "text",
+        type: isDbFieldType(f.type) ? f.type : "text",
         options: f.options,
         required: !!f.required,
       })),
@@ -322,7 +329,7 @@ export function createDocsStore(docsDir: string) {
     const yamlContent = stringifyYaml({
       name: schema.name,
       fields: schema.fields.map((f) => {
-        const field: Record<string, any> = { name: f.name, type: f.type };
+        const field: Record<string, unknown> = { name: f.name, type: f.type };
         if (f.options?.length) field.options = f.options;
         if (f.required) field.required = true;
         return field;
@@ -335,7 +342,7 @@ export function createDocsStore(docsDir: string) {
 
   // ── Field validation ──────────────────────────────────────────
 
-  function validateFields(schema: DbSchema, fields: Record<string, any>, partial = false): string[] {
+  function validateFields(schema: DbSchema, fields: Record<string, unknown>, partial = false): string[] {
     const errors: string[] = [];
     const knownFields = new Set(schema.fields.map((f) => f.name));
 
@@ -385,7 +392,7 @@ export function createDocsStore(docsDir: string) {
   }
 
   /** Coerce a value to its declared field type */
-  function coerceValue(value: any, type: string): any {
+  function coerceValue(value: unknown, type: string): unknown {
     if (value === undefined || value === null) return value;
     switch (type) {
       case "number": return Number(value);
@@ -629,7 +636,7 @@ export function createDocsStore(docsDir: string) {
 
   // ── DB entry CRUD ─────────────────────────────────────────────
 
-  function normalizeDbEntryInput(input: Record<string, any>, mode: "add" | "update", folder?: string): { fields: Record<string, any>; body?: string } {
+  function normalizeDbEntryInput(input: Record<string, unknown>, mode: "add" | "update", folder?: string): { fields: Record<string, unknown>; body?: string } {
     // Parse strictly: bad frontmatter must error, not be written into the body.
     if (typeof input.content === "string") {
       let parsed: matter.GrayMatterFile<string>;
@@ -685,19 +692,22 @@ export function createDocsStore(docsDir: string) {
     return { fields, body: normalizedBody };
   }
 
-  function addDbEntry(folder: string, fields: Record<string, any>, body?: string): DbEntry {
+  function addDbEntry(folder: string, fields: Record<string, unknown>, body?: string): DbEntry {
     const schema = readSchema(folder);
     if (!schema) throw new Error(`No schema found for folder "${folder}"`);
-    if (!fields.title) throw new Error("title is required");
+    const title = fields.title;
+    if (!title) throw new Error("title is required");
 
     const errors = validateFields(schema, fields);
     if (errors.length) throw new Error(errors.join("; "));
 
-    const slug = resolveSlug(folder, generateSlug(fields.title));
+    // Slugging a title of another type threw a TypeError here before the title was typed.
+    if (typeof title !== "string") throw new TypeError("title must be a string");
+    const slug = resolveSlug(folder, generateSlug(title));
     const now = new Date().toISOString();
 
     // Build frontmatter in schema field order
-    const fm: Record<string, any> = { title: fields.title };
+    const fm: Record<string, unknown> = { title };
     for (const field of schema.fields) {
       if (fields[field.name] !== undefined) {
         fm[field.name] = coerceValue(fields[field.name], field.type);
@@ -712,10 +722,10 @@ export function createDocsStore(docsDir: string) {
     if (!existsSync(dirname(filePath))) mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, matter.stringify(body || "", fm), "utf-8");
 
-    return { path: `${folder}/${slug}`, slug, title: fields.title, fields: fm, body: body || "", created: now, modified: now };
+    return { path: `${folder}/${slug}`, slug, title, fields: fm, body: body || "", created: now, modified: now };
   }
 
-  function updateDbEntry(folder: string, slug: string, fields: Record<string, any>, body?: string): DbEntry {
+  function updateDbEntry(folder: string, slug: string, fields: Record<string, unknown>, body?: string): DbEntry {
     const schema = readSchema(folder);
     if (!schema) throw new Error(`No schema found for folder "${folder}"`);
 

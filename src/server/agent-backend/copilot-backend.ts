@@ -1,6 +1,6 @@
 // AgentBackend on @github/copilot-sdk; callers use typed methods, never raw SDK rpc.
 
-import { CopilotClient } from "@github/copilot-sdk";
+import { CopilotClient, type CopilotSession, type FusionTier, type MessageOptions, type SessionEventHandler } from "@github/copilot-sdk";
 import { ChildProcess } from "node:child_process";
 import { isRecord } from "../../shared/is-record.js";
 import { subagentSettingsForModel, type SubagentPlan } from "../../shared/subagent-settings.js";
@@ -92,6 +92,16 @@ const COPILOT_CAPABILITIES: AgentCapabilities = {
   toolMetadataWarmup: true,
 };
 
+// Reads SDK members that are private or absent from its types, which differ between SDK builds.
+function property(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined;
+}
+
+function callMethod(receiver: unknown, key: string, ...args: unknown[]): unknown {
+  const fn = property(receiver, key);
+  return typeof fn === "function" ? fn.apply(receiver, args) : undefined;
+}
+
 function normalizeString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -137,46 +147,50 @@ function readCodeChanges(value: unknown): AgentUsageCodeChanges | undefined {
 }
 
 /** Defensive: the `tasks` RPC is experimental and its fields vary across SDK builds. */
-function mapCopilotTaskInfo(raw: any): AgentBackgroundTask {
-  const kind = raw?.type === "shell" ? "shell" : "agent";
-  const numericActiveTime = typeof raw?.activeTimeMs === "number" ? raw.activeTimeMs : undefined;
+function mapCopilotTaskInfo(value: unknown): AgentBackgroundTask {
+  const raw: Record<string, unknown> = isRecord(value) ? value : {};
+  const kind = raw.type === "shell" ? "shell" : "agent";
+  const numericActiveTime = typeof raw.activeTimeMs === "number" ? raw.activeTimeMs : undefined;
   return {
     kind,
-    id: typeof raw?.id === "string" ? raw.id : "",
-    toolCallId: normalizeString(raw?.toolCallId),
-    displayName: normalizeString(raw?.displayName),
-    description: normalizeString(raw?.description),
-    status: typeof raw?.status === "string" ? raw.status : "unknown",
-    executionMode: normalizeString(raw?.executionMode),
-    agentType: normalizeString(raw?.agentType),
-    startedAt: normalizeString(raw?.startedAt),
-    completedAt: normalizeString(raw?.completedAt),
+    id: typeof raw.id === "string" ? raw.id : "",
+    toolCallId: normalizeString(raw.toolCallId),
+    displayName: normalizeString(raw.displayName),
+    description: normalizeString(raw.description),
+    status: typeof raw.status === "string" ? raw.status : "unknown",
+    executionMode: normalizeString(raw.executionMode),
+    agentType: normalizeString(raw.agentType),
+    startedAt: normalizeString(raw.startedAt),
+    completedAt: normalizeString(raw.completedAt),
     activeTimeMs: numericActiveTime,
-    activeStartedAt: normalizeString(raw?.activeStartedAt),
-    idleSince: normalizeString(raw?.idleSince),
-    model: normalizeString(raw?.model),
-    error: normalizeString(raw?.error),
-    prompt: normalizeString(raw?.prompt),
-    result: normalizeString(raw?.result),
-    latestResponse: normalizeString(raw?.latestResponse),
-    command: normalizeString(raw?.command),
-    attachmentMode: normalizeString(raw?.attachmentMode),
-    pid: Number.isSafeInteger(raw?.pid) && raw.pid > 0 ? raw.pid : undefined,
+    activeStartedAt: normalizeString(raw.activeStartedAt),
+    idleSince: normalizeString(raw.idleSince),
+    model: normalizeString(raw.model),
+    error: normalizeString(raw.error),
+    prompt: normalizeString(raw.prompt),
+    result: normalizeString(raw.result),
+    latestResponse: normalizeString(raw.latestResponse),
+    command: normalizeString(raw.command),
+    attachmentMode: normalizeString(raw.attachmentMode),
+    pid: typeof raw.pid === "number" && Number.isSafeInteger(raw.pid) && raw.pid > 0 ? raw.pid : undefined,
   };
 }
 
-function normalizeCopilotSlashCommandInfo(command: any): AgentSlashCommandInfo | null {
-  const name = normalizeString(command?.name);
-  const description = normalizeString(command?.description);
+function normalizeCopilotSlashCommandInfo(command: unknown): AgentSlashCommandInfo | null {
+  if (!isRecord(command)) return null;
+  const name = normalizeString(command.name);
+  const description = normalizeString(command.description);
   if (!name || !description) return null;
-  const input = command.input && typeof command.input === "object"
+  const rawInput = command.input;
+  const required = property(rawInput, "required");
+  const completion = normalizeString(property(rawInput, "completion"));
+  const preserveMultilineInput = property(rawInput, "preserveMultilineInput");
+  const input = rawInput && typeof rawInput === "object"
     ? {
-        hint: normalizeString(command.input.hint) ?? "",
-        ...(typeof command.input.required === "boolean" ? { required: command.input.required } : {}),
-        ...(normalizeString(command.input.completion) ? { completion: command.input.completion } : {}),
-        ...(typeof command.input.preserveMultilineInput === "boolean"
-          ? { preserveMultilineInput: command.input.preserveMultilineInput }
-          : {}),
+        hint: normalizeString(property(rawInput, "hint")) ?? "",
+        ...(typeof required === "boolean" ? { required } : {}),
+        ...(completion ? { completion } : {}),
+        ...(typeof preserveMultilineInput === "boolean" ? { preserveMultilineInput } : {}),
       }
     : undefined;
   return {
@@ -190,17 +204,19 @@ function normalizeCopilotSlashCommandInfo(command: any): AgentSlashCommandInfo |
   };
 }
 
-function normalizeCopilotSlashCommandList(result: any): AgentSlashCommandList {
-  const commands = Array.isArray(result?.commands)
-    ? result.commands
+function normalizeCopilotSlashCommandList(result: unknown): AgentSlashCommandList {
+  const rawCommands = property(result, "commands");
+  const commands = Array.isArray(rawCommands)
+    ? rawCommands
         .map(normalizeCopilotSlashCommandInfo)
         .filter((command: AgentSlashCommandInfo | null): command is AgentSlashCommandInfo => command !== null)
     : [];
   return { commands };
 }
 
-function normalizeCopilotSlashCommandResult(result: any): AgentSlashCommandResult {
-  switch (result?.kind) {
+function normalizeCopilotSlashCommandResult(value: unknown): AgentSlashCommandResult {
+  const result: Record<string, unknown> = isRecord(value) ? value : {};
+  switch (result.kind) {
     case "agent-prompt": {
       const prompt = normalizeString(result.prompt);
       if (!prompt) throw new Error("Slash command returned an empty agent prompt");
@@ -220,11 +236,13 @@ function normalizeCopilotSlashCommandResult(result: any): AgentSlashCommandResul
         ...(typeof result.markdown === "boolean" ? { markdown: result.markdown } : {}),
         ...(typeof result.preserveAnsi === "boolean" ? { preserveAnsi: result.preserveAnsi } : {}),
       };
-    case "completed":
+    case "completed": {
+      const message = normalizeString(result.message);
       return {
         kind: "completed",
-        ...(normalizeString(result.message) ? { message: result.message } : {}),
+        ...(message ? { message } : {}),
       };
+    }
     case "select-subcommand":
       return {
         kind: "select",
@@ -233,8 +251,18 @@ function normalizeCopilotSlashCommandResult(result: any): AgentSlashCommandResul
         options: Array.isArray(result.options) ? result.options : [],
       };
     default:
-      throw new Error(`Unsupported slash command result: ${normalizeString(result?.kind) ?? "unknown"}`);
+      throw new Error(`Unsupported slash command result: ${normalizeString(result.kind) ?? "unknown"}`);
   }
+}
+
+type SdkSessionRpc = CopilotSession["rpc"];
+type SdkSendMode = Parameters<SdkSessionRpc["mode"]["set"]>[0]["mode"];
+type SdkElicitationRequest = Parameters<SdkSessionRpc["ui"]["elicitation"]>[0];
+type SdkElicitationResult = Parameters<SdkSessionRpc["ui"]["handlePendingElicitation"]>[0]["result"];
+
+// The Bridge's send arguments are the runtime's message options, typed more loosely than the SDK's.
+function toMessageOptions(args: AgentSendArgs): MessageOptions {
+  return args as MessageOptions;
 }
 
 /** Shared RPC guard so session- and backend-scoped calls report into one disconnect detector. */
@@ -254,7 +282,7 @@ class CopilotAgentSession implements AgentSession {
   private appliedSubagents: string | undefined;
   private stopSubagentWatch: (() => void) | undefined;
   constructor(
-    private readonly session: any,
+    private readonly session: CopilotSession,
     private readonly rpc: CopilotRpcGuard,
     private readonly onBackendDisconnect: (
       handler: (info: AgentBackendDisconnect) => void,
@@ -271,7 +299,7 @@ class CopilotAgentSession implements AgentSession {
   /** Re-applied on each session model change; agentId-tagged sub-agent changes are ignored. */
   async startSubagentPlan(plan: SubagentPlan, initialModel: string | undefined): Promise<void> {
     if (plan.secondOpinion.length > 0 && typeof this.session.on === "function") {
-      this.stopSubagentWatch = this.session.on((event: any) => {
+      this.stopSubagentWatch = this.session.on((event) => {
         if (event?.type !== "session.model_change" || (typeof event.agentId === "string" && event.agentId)) return;
         const model = event.data?.newModel;
         if (typeof model !== "string" || !model) return;
@@ -347,7 +375,7 @@ class CopilotAgentSession implements AgentSession {
   }
 
   send(args: AgentSendArgs): Promise<unknown> {
-    return this.withToolPermissions(() => this.rpc("session.send", () => this.session.send(args)));
+    return this.withToolPermissions(() => this.rpc("session.send", () => this.session.send(toMessageOptions(args))));
   }
 
   sendAndWait(args: AgentSendArgs, timeoutMs?: number | null): Promise<unknown> {
@@ -357,7 +385,7 @@ class CopilotAgentSession implements AgentSession {
   private sendAndWaitReady(args: AgentSendArgs, timeoutMs?: number | null): Promise<unknown> {
     if (timeoutMs !== null) {
       // Waits for the whole turn; callers own the timeout.
-      return this.session.sendAndWait(args, timeoutMs);
+      return this.session.sendAndWait(toMessageOptions(args), timeoutMs);
     }
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -378,7 +406,7 @@ class CopilotAgentSession implements AgentSession {
           settle(() => resolve(lastAssistantMessage));
         }
       };
-      unsubscribeSession = this.session.on((event: any) => {
+      unsubscribeSession = this.session.on((event) => {
         if (event?.type === "assistant.message") {
           lastAssistantMessage = event;
         } else if (event?.type === "session.idle") {
@@ -397,7 +425,7 @@ class CopilotAgentSession implements AgentSession {
         )));
       });
       if (!settled) {
-        void Promise.resolve(this.session.send(args))
+        void Promise.resolve(this.session.send(toMessageOptions(args)))
           .then(() => {
             sendCompleted = true;
             resolveIfComplete();
@@ -427,10 +455,10 @@ class CopilotAgentSession implements AgentSession {
     if (typeof accounts?.set !== "function") {
       throw new Error("Account switching is not available in this Copilot SDK build");
     }
-    const result: any = await this.rpc("session.switchAccount", () => accounts.set.call(accounts, {
+    const result: unknown = await this.rpc("session.switchAccount", () => accounts.set.call(accounts, {
       command: { kind: "switchActive", selectionId: accountId },
     }));
-    if (result?.ok !== true) throw new Error("Copilot did not switch the account");
+    if (property(result, "ok") !== true) throw new Error("Copilot did not switch the account");
   }
 
   async setReasoningEffort(reasoningEffort: string): Promise<void> {
@@ -442,7 +470,9 @@ class CopilotAgentSession implements AgentSession {
       if (typeof switchTier !== "function") {
         throw new Error("Auto tier updates are not available in this Copilot SDK build");
       }
-      await this.rpc("session.setReasoningEffort", () => switchTier.call(model, request.params));
+      await this.rpc("session.setReasoningEffort", () => (request.method === "switchAutoTier"
+        ? model.switchAutoTier(request.params)
+        : model.switchFusionTier(request.params as { fusionTier: FusionTier })));
       return;
     }
     const set = model?.setReasoningEffort;
@@ -477,7 +507,7 @@ class CopilotAgentSession implements AgentSession {
   }
 
   on(handler: AgentSessionEventHandler): () => void {
-    return this.session.on(handler);
+    return this.session.on(handler as SessionEventHandler);
   }
 
   async respondToUserInput(requestId: string, response: AgentUserInputResponse): Promise<boolean> {
@@ -486,7 +516,7 @@ class CopilotAgentSession implements AgentSession {
       throw new Error("Pending user input responses are not available in this Copilot SDK build");
     }
     const result = await this.rpc("session.respondToUserInput", () => handle.call(this.session.rpc.ui, { requestId, response }));
-    return (result as any)?.success === true;
+    return property(result, "success") === true;
   }
 
   async tryRespondToElicitation(
@@ -499,9 +529,9 @@ class CopilotAgentSession implements AgentSession {
     }
     const result = await this.rpc(
       "session.respondToElicitation",
-      () => handle.call(this.session.rpc.ui, { requestId, result: response }),
+      () => handle.call(this.session.rpc.ui, { requestId, result: response as SdkElicitationResult }),
     );
-    return (result as any)?.success === true;
+    return property(result, "success") === true;
   }
 
   requestElicitation(request: { message: string; requestedSchema: unknown }): Promise<AgentElicitationResponse> {
@@ -510,7 +540,7 @@ class CopilotAgentSession implements AgentSession {
       return Promise.reject(new Error("Asking the user from a tool is not available in this Copilot SDK build"));
     }
     // Unbounded: it waits for a person, and the Bridge's rules for unanswered questions end it.
-    return elicit.call(this.session.rpc.ui, request);
+    return elicit.call(this.session.rpc.ui, request as SdkElicitationRequest);
   }
 
   async setSendMode(opts: { mode: string }): Promise<unknown> {
@@ -525,7 +555,7 @@ class CopilotAgentSession implements AgentSession {
     }
     const mode = opts.mode;
     const raw = this.modeTail.then(async () => {
-      const result: unknown = await setMode.call(this.session.rpc.mode, { mode });
+      const result: unknown = await setMode.call(this.session.rpc.mode, { mode: mode as SdkSendMode });
       // CLI 1.0.95 retains Autopilot tools and their instructions after leaving that mode.
       const excludedTools = mode === "autopilot"
         ? [...this.excludedTools]
@@ -689,7 +719,9 @@ class CopilotAgentSession implements AgentSession {
   async listMcpServers(): Promise<{ servers?: AgentMcpServerStatus[] } | undefined> {
     const list = this.session?.rpc?.mcp?.list;
     if (typeof list !== "function") return undefined;
-    return this.rpc("session.listMcpServers", () => list.call(this.session.rpc.mcp));
+    return this.rpc<unknown>("session.listMcpServers", () => list.call(this.session.rpc.mcp)) as Promise<
+      { servers?: AgentMcpServerStatus[] } | undefined
+    >;
   }
 
   initializeTools(): Promise<unknown> {
@@ -703,7 +735,9 @@ class CopilotAgentSession implements AgentSession {
   async getCurrentToolMetadata(): Promise<{ tools?: AgentToolMetadata[] | null } | undefined> {
     const getCurrent = this.session?.rpc?.tools?.getCurrentMetadata;
     if (typeof getCurrent !== "function") return undefined;
-    return this.rpc("session.getCurrentToolMetadata", () => getCurrent.call(this.session.rpc.tools));
+    return this.rpc<unknown>("session.getCurrentToolMetadata", () => getCurrent.call(this.session.rpc.tools)) as Promise<
+      { tools?: AgentToolMetadata[] | null } | undefined
+    >;
   }
 
   async startMcpOauthLogin(opts: AgentMcpOauthLoginOptions): Promise<unknown> {
@@ -717,7 +751,7 @@ class CopilotAgentSession implements AgentSession {
   async getName(): Promise<{ name?: string } | undefined> {
     const get = this.session?.rpc?.name?.get;
     if (typeof get !== "function") return undefined;
-    return this.rpc("session.getName", () => get.call(this.session.rpc.name));
+    return this.rpc<unknown>("session.getName", () => get.call(this.session.rpc.name)) as Promise<{ name?: string } | undefined>;
   }
 
   async setName(opts: { name: string }): Promise<unknown> {
@@ -809,7 +843,7 @@ function prepareCopilotSessionConfig(config: AgentSessionConfig, fusionTiers?: F
 }
 
 function wrapCopilotSession(
-  session: any,
+  session: CopilotSession,
   pendingInteractionEvents: boolean,
   rpc: CopilotRpcGuard,
   onBackendDisconnect: (handler: (info: AgentBackendDisconnect) => void) => () => void,
@@ -821,7 +855,7 @@ function wrapCopilotSession(
 ): CopilotAgentSession {
   if (pendingInteractionEvents) {
     // The placeholder makes the SDK subscribe; drop it so only Bridge listeners answer requests.
-    session.registerElicitationHandler?.(undefined);
+    callMethod(session, "registerElicitationHandler", undefined);
   }
   return new CopilotAgentSession(session, rpc, onBackendDisconnect, useNativeToolPermissions, excludedTools, logger, fusionContextTokens, fusionTiers);
 }
@@ -1125,9 +1159,10 @@ export class CopilotBackend implements AgentBackend {
   forceStop(): Promise<unknown> {
     this.stopping = true;
     this.detachTransportWatchers?.();
-    const fn = (this.client as any).forceStop;
+    const client: unknown = this.client;
+    const fn = property(client, "forceStop");
     if (typeof fn !== "function") return Promise.resolve();
-    return fn.call(this.client);
+    return fn.call(client);
   }
 
   onDisconnect(handler: (info: AgentBackendDisconnect) => void): () => void {
@@ -1138,14 +1173,15 @@ export class CopilotBackend implements AgentBackend {
   }
 
   getConnectionStatus(): AgentBackendConnectionStatus {
-    const client = this.client as any;
-    const rawState = typeof client.state === "string" ? client.state : "unknown";
+    const client: unknown = this.client;
+    const clientState = property(client, "state");
+    const rawState = typeof clientState === "string" ? clientState : "unknown";
     const state: AgentBackendConnectionStatus["state"] = this.lastDisconnect
       ? "disconnected"
       : rawState === "connected" || rawState === "connecting" || rawState === "disconnected" || rawState === "error"
         ? rawState
         : "unknown";
-    const pid = client.cliProcess?.pid;
+    const pid = property(property(client, "cliProcess"), "pid");
     const tree = this.ownedTree;
     return {
       state,
@@ -1181,16 +1217,17 @@ export class CopilotBackend implements AgentBackend {
       for (let attempt = 1; ; attempt++) {
         if (this.stopping) return false;
         if (this.lastDisconnect) return false;
-        const client = this.client as any;
-        if (client.state !== "connected" || !client.connection) {
-          this.emitDisconnect("health-probe-failed", `${reason}: client state is ${String(client.state)}`);
+        const client: unknown = this.client;
+        const clientState = property(client, "state");
+        if (clientState !== "connected" || !property(client, "connection")) {
+          this.emitDisconnect("health-probe-failed", `${reason}: client state is ${String(clientState)}`);
           return false;
         }
         const heardBefore = this.inboundChunks;
         // The probe keeps each ping itself: boundRpc drops a reply that arrives after its limit.
         let ping: Promise<unknown>;
         try {
-          ping = Promise.resolve(client.ping("bridge-health"));
+          ping = Promise.resolve(this.client.ping("bridge-health"));
         } catch (error) {
           ping = Promise.reject(error);
         }
@@ -1275,48 +1312,48 @@ export class CopilotBackend implements AgentBackend {
 
   private attachTransportWatchers(): void {
     this.detachTransportWatchers?.();
-    const client = this.client as any;
+    const client: unknown = this.client;
     const disposers: Array<() => void> = [];
-    const connection = client.connection;
-    if (connection && typeof connection.onClose === "function") {
-      const closeDisposable = connection.onClose(() => {
+    const connection = property(client, "connection");
+    if (connection && typeof property(connection, "onClose") === "function") {
+      const closeDisposable = callMethod(connection, "onClose", () => {
         this.emitDisconnect("connection-closed", "JSON-RPC connection closed");
       });
-      disposers.push(() => closeDisposable?.dispose?.());
+      disposers.push(() => callMethod(closeDisposable, "dispose"));
     }
-    if (connection && typeof connection.onError === "function") {
-      const errorDisposable = connection.onError((error: unknown) => {
+    if (connection && typeof property(connection, "onError") === "function") {
+      const errorDisposable = callMethod(connection, "onError", (error: unknown) => {
         // Reader errors do not always end the stream; probe rather than fail on one bad frame.
         this.logger.warn(`[copilot-backend] JSON-RPC connection error: ${formatDisconnectDetail(error) ?? "unknown"}`);
         void this.probeHealth(undefined, "connection-error");
       });
-      disposers.push(() => errorDisposable?.dispose?.());
+      disposers.push(() => callMethod(errorDisposable, "dispose"));
     }
-    const child = client.cliProcess;
-    if (child && typeof child.once === "function") {
+    const child = property(client, "cliProcess");
+    if (child && typeof property(child, "once") === "function") {
       const onExit = (code: number | null, signal: string | null) => {
         this.emitDisconnect("process-exit", `runtime process exited (code=${code ?? "null"}, signal=${signal ?? "null"})`);
       };
-      child.once("exit", onExit);
-      disposers.push(() => child.off?.("exit", onExit));
+      callMethod(child, "once", "exit", onExit);
+      disposers.push(() => callMethod(child, "off", "exit", onExit));
       // Add after the SDK reader or `data` would eat its replies; over TCP, stdout is only logs.
-      const stdout = connection ? child.stdout : undefined;
-      if (stdout && typeof stdout.on === "function") {
+      const stdout = connection ? property(child, "stdout") : undefined;
+      if (stdout && typeof property(stdout, "on") === "function") {
         const onData = () => { this.inboundChunks += 1; };
-        stdout.on("data", onData);
+        callMethod(stdout, "on", "data", onData);
         this.inboundObserved = true;
         disposers.push(() => {
-          stdout.off?.("data", onData);
+          callMethod(stdout, "off", "data", onData);
           this.inboundObserved = false;
         });
       }
-      const stdin = child.stdin;
-      if (stdin && typeof stdin.on === "function") {
+      const stdin = property(child, "stdin");
+      if (stdin && typeof property(stdin, "on") === "function") {
         const onStdinError = (error: unknown) => {
           this.emitDisconnect("stdin-error", `stdin pipe error: ${formatDisconnectDetail(error) ?? "unknown"}`);
         };
-        stdin.on("error", onStdinError);
-        disposers.push(() => stdin.off?.("error", onStdinError));
+        callMethod(stdin, "on", "error", onStdinError);
+        disposers.push(() => callMethod(stdin, "off", "error", onStdinError));
       }
     }
     this.detachTransportWatchers = () => {
@@ -1375,16 +1412,17 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async checkSessionsInUse(sessionIds: readonly string[]): Promise<Set<string> | undefined> {
-    const sessions = (this.client as any).rpc?.sessions;
-    const checkInUse = sessions?.checkInUse;
+    const sessions = property(property(this.client, "rpc"), "sessions");
+    const checkInUse = property(sessions, "checkInUse");
     if (typeof checkInUse !== "function") return undefined;
     // Optional UI probe that can queue behind turns; a timeout means unknown, not a dead backend.
-    const result = await boundRpc(
+    const result: unknown = await boundRpc(
       "backend.checkSessionsInUse",
       () => checkInUse.call(sessions, { sessionIds: [...sessionIds] }),
     );
-    const inUse = Array.isArray((result as any)?.inUse)
-      ? (result as any).inUse.filter((sessionId: unknown): sessionId is string => typeof sessionId === "string")
+    const rawInUse = property(result, "inUse");
+    const inUse = Array.isArray(rawInUse)
+      ? rawInUse.filter((sessionId: unknown): sessionId is string => typeof sessionId === "string")
       : [];
     return new Set(inUse);
   }
@@ -1392,14 +1430,14 @@ export class CopilotBackend implements AgentBackend {
   async createSession(config: AgentSessionConfig): Promise<AgentSession> {
     if (this.fenceRequested) throw new Error("Cannot create a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config, this.fusionTierNames);
-    const session = await this.client.createSession(prepared.sdkConfig as any);
+    const session = await this.client.createSession(prepared.sdkConfig);
     return this.wrapSession(session, prepared, typeof prepared.sdkConfig.model === "string" ? prepared.sdkConfig.model : undefined);
   }
 
   async resumeSession(sessionId: string, config: AgentSessionConfig): Promise<AgentSession> {
     if (this.fenceRequested) throw new Error("Cannot resume a session on a fenced backend");
     const prepared = prepareCopilotSessionConfig(config, this.fusionTierNames);
-    const session = await this.client.resumeSession(sessionId, prepared.sdkConfig as any);
+    const session = await this.client.resumeSession(sessionId, prepared.sdkConfig);
     if (prepared.sdkConfig.enableConfigDiscovery === true) {
       // CLI 1.0.97 drops discovered agents on resume when explicit agents are supplied.
       try {
@@ -1421,7 +1459,7 @@ export class CopilotBackend implements AgentBackend {
   /** Resume forgets the Fusion context limit; it is restored only onto a chat still on Fusion. */
   private async restoreFusionContext(
     sessionId: string,
-    session: any,
+    session: CopilotSession,
     modelId: string | undefined,
     tokens: number | undefined,
   ): Promise<void> {
@@ -1438,7 +1476,7 @@ export class CopilotBackend implements AgentBackend {
   }
 
   /** Moves chats off the retired HydraFusion preview to Fusion High; returns the live model. */
-  private async leaveRetiredModel(sessionId: string, session: any): Promise<string | undefined> {
+  private async leaveRetiredModel(sessionId: string, session: CopilotSession): Promise<string | undefined> {
     const get = session?.rpc?.model?.getCurrent;
     if (typeof get !== "function") return undefined;
     let modelId: string | undefined;
@@ -1459,7 +1497,7 @@ export class CopilotBackend implements AgentBackend {
     }
   }
 
-  private async isolateAgentShells(session: any): Promise<void> {
+  private async isolateAgentShells(session: CopilotSession): Promise<void> {
     if (!this.agentShellDir) return;
     const sessionId = typeof session?.sessionId === "string" ? session.sessionId.slice(0, 8) : "?";
     const update = session?.rpc?.options?.update;
@@ -1480,7 +1518,7 @@ export class CopilotBackend implements AgentBackend {
     }
   }
 
-  private async wrapSession(session: any, prepared: ReturnType<typeof prepareCopilotSessionConfig>, initialModel: string | undefined): Promise<AgentSession> {
+  private async wrapSession(session: CopilotSession, prepared: ReturnType<typeof prepareCopilotSessionConfig>, initialModel: string | undefined): Promise<AgentSession> {
     await this.isolateAgentShells(session);
     const wrapped = wrapCopilotSession(
       session,
@@ -1509,19 +1547,20 @@ export class CopilotBackend implements AgentBackend {
     sourceSessionId: string,
     opts?: { toEventId?: string },
   ): Promise<{ sessionId: string }> {
-    const fork = (this.client as any).rpc?.sessions?.fork;
+    const sessions = property(property(this.client, "rpc"), "sessions");
+    const fork = property(sessions, "fork");
     if (typeof fork !== "function") {
       throw new Error("Session fork is not available in this Copilot SDK build");
     }
     const params = opts?.toEventId
       ? { sessionId: sourceSessionId, toEventId: opts.toEventId }
       : { sessionId: sourceSessionId };
-    return this.rpc("backend.forkSession", () => fork.call((this.client as any).rpc.sessions, params));
+    return this.rpc("backend.forkSession", () => fork.call(sessions, params));
   }
 
   async getAccountQuota(): Promise<unknown> {
-    const account = (this.client as any).rpc?.account;
-    const getQuota = account?.getQuota;
+    const account = property(property(this.client, "rpc"), "account");
+    const getQuota = property(account, "getQuota");
     if (typeof getQuota !== "function") {
       throw new Error("Account quota lookup is not available in this Copilot SDK build");
     }
@@ -1529,8 +1568,8 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async getAccountAuth(): Promise<unknown> {
-    const account = (this.client as any).rpc?.account;
-    const getCurrentAuth = account?.getCurrentAuth;
+    const account = property(property(this.client, "rpc"), "account");
+    const getCurrentAuth = property(account, "getCurrentAuth");
     if (typeof getCurrentAuth !== "function") {
       throw new Error("Account auth lookup is not available in this Copilot SDK build");
     }
@@ -1538,15 +1577,17 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async listAccounts(): Promise<CopilotAccount[]> {
-    const account = (this.client as any).rpc?.account;
-    const { getAllUsers, getCurrentAuth, getQuota } = account ?? {};
+    const account = property(property(this.client, "rpc"), "account");
+    const getAllUsers = property(account, "getAllUsers");
+    const getCurrentAuth = property(account, "getCurrentAuth");
+    const getQuota = property(account, "getQuota");
     if (typeof getAllUsers !== "function" || typeof getCurrentAuth !== "function") {
       throw new Error("Account listing is not available in this Copilot SDK build");
     }
-    const [users, auth] = await Promise.all([
+    const [users, auth]: [unknown, unknown] = await Promise.all([
       this.rpc("backend.getAccountUsers", () => getAllUsers.call(account)),
       this.rpc("backend.getAccountAuth", () => getCurrentAuth.call(account)),
-    ]) as [unknown, any];
+    ]);
     const quotaById = new Map<string, unknown>();
     if (typeof getQuota === "function") {
       await Promise.all(signedInAccountIds(users).map(async (selectionId) => {
@@ -1555,26 +1596,31 @@ export class CopilotBackend implements AgentBackend {
         } catch { /* the row shows no usage */ }
       }));
     }
-    return toCopilotAccounts(users, auth?.authInfo, quotaById);
+    return toCopilotAccounts(users, property(auth, "authInfo"), quotaById);
   }
 
   async fetchAccountCopilotUser(): Promise<unknown> {
-    const account = (this.client as any).rpc?.account;
-    const getCurrentAuth = account?.getCurrentAuth;
-    const getAllUsers = account?.getAllUsers;
+    const account = property(property(this.client, "rpc"), "account");
+    const getCurrentAuth = property(account, "getCurrentAuth");
+    const getAllUsers = property(account, "getAllUsers");
     if (typeof getCurrentAuth !== "function" || typeof getAllUsers !== "function") {
       throw new Error("Account user lookup is not available in this Copilot SDK build");
     }
-    const [auth, users] = await Promise.all([
+    const [auth, users]: [unknown, unknown] = await Promise.all([
       this.rpc("backend.getAccountAuth", () => getCurrentAuth.call(account)),
       this.rpc("backend.getAccountUsers", () => getAllUsers.call(account)),
-    ]) as [any, unknown];
-    const login = accountLogin(auth?.authInfo);
-    const host = auth?.authInfo?.host;
-    const current = login && Array.isArray(users)
-      ? users.find((user: any) => accountLogin(user?.authInfo) === login && user?.authInfo?.host === host)
+    ]);
+    const authInfo = property(auth, "authInfo");
+    const login = accountLogin(authInfo);
+    const host = property(authInfo, "host");
+    const current: unknown = login && Array.isArray(users)
+      ? users.find((user: unknown) => {
+        const userAuthInfo = property(user, "authInfo");
+        return accountLogin(userAuthInfo) === login && property(userAuthInfo, "host") === host;
+      })
       : undefined;
-    const token = typeof current?.token === "string" ? current.token : null;
+    const currentToken = property(current, "token");
+    const token = typeof currentToken === "string" ? currentToken : null;
     if (!login || !token) throw new Error("No token for the current Copilot account");
     const response = await fetch(`${githubApiBase(host)}/copilot_internal/user`, {
       headers: { Authorization: `token ${token}`, Accept: "application/json", "User-Agent": "copilot-bridge" },
@@ -1585,8 +1631,8 @@ export class CopilotBackend implements AgentBackend {
   }
 
   async classifyTrajectory(request: AgentTrajectoryClassifyRequest): Promise<AgentTrajectoryClassifyResult> {
-    const analytics = (this.client as any).rpc?.taskAnalytics;
-    const classify = analytics?.classifyTrajectory;
+    const analytics = property(property(this.client, "rpc"), "taskAnalytics");
+    const classify = property(analytics, "classifyTrajectory");
     if (typeof classify !== "function") {
       throw new Error("Trajectory classification is not available in this Copilot runtime");
     }
@@ -1610,8 +1656,8 @@ export class CopilotBackend implements AgentBackend {
 }
 
 /** Token auth (`--auth-token-env`) omits `authInfo.login`; only the Copilot user has it. */
-function accountLogin(authInfo: any): string | null {
-  const login = authInfo?.login ?? authInfo?.copilotUser?.login;
+function accountLogin(authInfo: unknown): string | null {
+  const login = property(authInfo, "login") ?? property(property(authInfo, "copilotUser"), "login");
   return typeof login === "string" && login.trim() ? login.trim() : null;
 }
 

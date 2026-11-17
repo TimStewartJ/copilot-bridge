@@ -1,6 +1,7 @@
 import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTaskGroup } from "./helpers.js";
+import { GROUP_COLORS, type GroupColor } from "../task-group-store.js";
 import { notesWriteRefusal, notesWriteTokenField } from "../task-note-pages.js";
 import {
   defineBridgeTool,
@@ -8,6 +9,14 @@ import {
   type BridgeToolDefinition,
   type BridgeToolsMcpServer,
 } from "../agent-tools-mcp/index.js";
+
+type TaskGroupCreateArgs = { name: string; color?: string; notes?: string };
+type TaskGroupDeleteArgs = { groupId: string };
+type TaskGroupUpdateArgs = { groupId: string; name?: string; color?: string; notes?: string; notesWriteToken?: string };
+
+function isGroupColor(value: string): value is GroupColor {
+  return GROUP_COLORS.some((color) => color === value);
+}
 
 export interface RegisterTaskGroupToolsOptions {
   hiddenTools?: ReadonlySet<string>;
@@ -18,8 +27,10 @@ export function createTaskGroupToolDefinitions(ctx: AppContext): BridgeToolDefin
   defineBridgeTool("task_group_create", {
     description: "Create a new task group for organizing related tasks",
     parameters: { type: "object", properties: { name: { type: "string", description: "Group name (e.g., 'Frontend App', 'Backend API')" }, color: { type: "string", description: "Optional color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: "Optional markdown notes for the group" } }, required: ["name"] },
-    handler: async (args: any) => {
-      const group = ctx.taskGroupStore.createGroup(args.name, args.color);
+    handler: async (args: TaskGroupCreateArgs) => {
+      // createGroup picks the next colour for an unknown one, as it does for none.
+      const color = args.color !== undefined && isGroupColor(args.color) ? args.color : undefined;
+      const group = ctx.taskGroupStore.createGroup(args.name, color);
       if (args.notes) ctx.taskGroupStore.updateGroup(group.id, { notes: args.notes });
       return { success: true, message: `Group "${group.name}" created`, groupId: group.id };
     },
@@ -34,7 +45,7 @@ export function createTaskGroupToolDefinitions(ctx: AppContext): BridgeToolDefin
   defineBridgeTool("task_group_delete", {
     description: "Delete a task group. Tasks in the group become ungrouped.",
     parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to delete" } }, required: ["groupId"] },
-    handler: async (args: any) => {
+    handler: async (args: TaskGroupDeleteArgs) => {
       try {
         const result = ctx.taskGroupStore.deleteGroup(args.groupId);
         if (!result.deleted && result.affectedTaskIds.length === 0) {
@@ -52,12 +63,12 @@ export function createTaskGroupToolDefinitions(ctx: AppContext): BridgeToolDefin
   defineBridgeTool("task_group_update", {
     description: "Update a task group's name, color, and/or notes. Only provided fields are changed.",
     parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to update" }, name: { type: "string", description: "New group name" }, color: { type: "string", description: "New color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." }, notesWriteToken: { type: "string", description: "Required to replace long notes: the notesWriteToken from task_group_list or task_get_info." } }, required: ["groupId"] },
-    handler: async (args: any) => {
+    handler: async (args: TaskGroupUpdateArgs) => {
       const group = ensureTaskGroup(ctx, args.groupId);
       if (!group.ok) return toolFailure(group.error);
       const refusal = args.notes === undefined ? undefined : notesWriteRefusal(group.value.notes, args.notesWriteToken);
       if (refusal) return toolFailure(refusal);
-      const updates: any = {};
+      const updates: { name?: string; color?: string; notes?: string } = {};
       if (args.name !== undefined) updates.name = args.name;
       if (args.color !== undefined) updates.color = args.color;
       if (args.notes !== undefined) updates.notes = args.notes;

@@ -37,6 +37,8 @@ function browserFetchFailure(
   });
 }
 
+type BrowserFetchArgs = { url: string; selector?: string; context?: BrowserContext; reason?: string };
+
 export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[] {
   const browserBroker = getBrowserRuntime(ctx).broker;
   return [
@@ -76,7 +78,7 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
         },
         required: ["url"],
       },
-      handler: async (args: any) => {
+      handler: async (args: BrowserFetchArgs) => {
         const url: string = args.url;
         const selector: string | undefined = args.selector;
         const context: BrowserContext = args.context ?? "public";
@@ -176,7 +178,7 @@ export function createBrowserFetchTools(ctx: AppContext): BridgeToolDefinition[]
               urlHost,
             },
           }, runFlow);
-        } catch (err: any) {
+        } catch (err) {
           return browserFetchFailure(`Browser fetch failed: ${String(err).slice(0, 400)}`, {
             url,
             selector,

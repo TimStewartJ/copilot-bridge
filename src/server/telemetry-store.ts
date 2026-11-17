@@ -21,6 +21,17 @@ export interface RecordableTelemetrySpan {
   ingestKey?: string;
 }
 
+type TelemetrySpanRow = {
+  id: number;
+  name: string;
+  sessionId: string | null;
+  duration: number;
+  metadata: string | null;
+  // Only "server" and "client" are ever written.
+  source: TelemetrySpan["source"];
+  createdAt: string;
+};
+
 export function createTelemetryStore(db: DatabaseSync) {
   const insertSpan = db.prepare(`
       INSERT INTO telemetry_spans (name, sessionId, duration, metadata, source, createdAt)
@@ -103,7 +114,7 @@ export function createTelemetryStore(db: DatabaseSync) {
 
     const rows = db.prepare(
       `SELECT * FROM telemetry_spans ${where} ORDER BY createdAt DESC, id DESC LIMIT ?`,
-    ).all(...params, limit) as any[];
+    ).all(...params, limit) as TelemetrySpanRow[];
 
     return rows.map(hydrate);
   }
@@ -113,10 +124,10 @@ export function createTelemetryStore(db: DatabaseSync) {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     const result = db.prepare("DELETE FROM telemetry_spans WHERE createdAt < ?").run(cutoff);
     pruneIngestKeys.run(cutoff);
-    return (result as any).changes ?? 0;
+    return (result.changes ?? 0) as number;
   }
 
-  function hydrate(row: any): TelemetrySpan {
+  function hydrate(row: TelemetrySpanRow): TelemetrySpan {
     return {
       id: row.id,
       name: row.name,

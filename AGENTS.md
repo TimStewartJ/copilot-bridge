@@ -47,6 +47,10 @@ Never decide anything from the words a model wrote. That covers assistant replie
 
 `npm run test:agent-text-audit` (in `check:fast` and `check:pr`) flags regex literals that match words and multi-word string literals compared or searched for in production code. Each must name where its text comes from in an `agent-text-audit:` comment, and `agent` is never an accepted source; `src/server/agent-text-audit.ts` lists the sources. The audit cannot see needles held in variables, word sets or single-word checks, so the rule applies where it is silent too.
 
+## Types
+
+Production code has no `any`: not as a cast, a parameter, a field or a type argument. Use a real type, or take the value as `unknown` and narrow it. Tool handlers declare an args type matching their `parameters` schema (`defineBridgeTool` is generic over it), and SQLite reads cast rows to a `type` row alias. `npm run test:any-audit` (in `check:fast`, `check:pr` and CI) fails on any `any`; tests are not scanned. It also reports `as unknown as` casts, which are not a way around the rule.
+
 ## Cross-platform code
 
 - Code and tests must work on Linux and Windows.

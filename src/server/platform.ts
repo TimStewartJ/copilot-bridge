@@ -12,6 +12,7 @@ import {
   type Deadline,
 } from "./deadline.js";
 import { getProcessHost, type HostExecOptions } from "./process-host.js";
+import { isRecord } from "../shared/is-record.js";
 import { readNativeWindowsProcessTable } from "./windows-process-table.js";
 
 function execFileAsync(
@@ -587,8 +588,9 @@ export function createDirectoryLink(
   try {
     symlinkSync(resolve(cwd, targetPath), resolve(cwd, linkPath), isWindows() ? "junction" : "dir");
     return { ok: true, output: "" };
-  } catch (err: any) {
-    return { ok: false, output: err.stderr || err.stdout || String(err) };
+  } catch (err) {
+    const fields = isRecord(err) ? err : {};
+    return { ok: false, output: String(fields.stderr || fields.stdout || err) };
   }
 }
 
@@ -607,8 +609,8 @@ export function removeDirectoryLink(
     }
     // Neither a link nor a directory: nothing was removed, so success would mask a no-op.
     return { ok: false, output: `Refusing to delete non-link path: ${linkPath}` };
-  } catch (err: any) {
-    if (err.code === "ENOENT") return { ok: true, output: "already removed" };
+  } catch (err) {
+    if (isRecord(err) && err.code === "ENOENT") return { ok: true, output: "already removed" };
     return { ok: false, output: String(err) };
   }
 }

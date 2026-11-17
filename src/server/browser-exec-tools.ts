@@ -35,7 +35,15 @@ interface BrowserExecNormalizedInput {
   capture?: BrowserAutomationCaptureInput;
 }
 
-export function normalizeBrowserExecInput(args: any): Result<BrowserExecNormalizedInput> {
+type BrowserExecArgs = {
+  context?: BrowserContext;
+  reason?: string;
+  allowedOrigins?: string[];
+  commands: unknown;
+  capture?: unknown;
+};
+
+export function normalizeBrowserExecInput(args: BrowserExecArgs): Result<BrowserExecNormalizedInput> {
   const context = args.context;
   if (context !== undefined && context !== "public" && context !== "authenticated") {
     return err("context must be one of: public, authenticated");
@@ -127,7 +135,7 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
         },
         required: ["commands"],
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: BrowserExecArgs, invocation) => {
         const normalized = normalizeBrowserExecInput(args);
         if (!normalized.ok) return toolFailure(normalized.error);
         const normalizedInput = normalized.value;
@@ -205,7 +213,7 @@ export function createBrowserExecTools(ctx: AppContext): BridgeToolDefinition[] 
               stepNames,
             },
           }, runFlow);
-        } catch (err: any) {
+        } catch (err) {
           const detail = `Browser exec failed: ${String(err).slice(0, 400)}`;
           return toolFailure("Browser exec failed.", {
             detail,

@@ -15,6 +15,7 @@ import {
   type ProcessIdentity,
 } from "../../platform.js";
 import { getProcessHost, type HostChild } from "../../process-host.js";
+import { isRecord } from "../../../shared/is-record.js";
 
 /** Largest JSON-RPC message a source may send; a bigger one ends the connection. */
 export const SOURCE_MAX_FRAME_BYTES = 2 * 1024 * 1024;
@@ -227,12 +228,12 @@ function clipText(value: unknown, max: number): string | undefined {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-function toToolInfo(raw: any): SourceToolInfo | undefined {
-  if (!raw || typeof raw.name !== "string" || !raw.name.trim() || raw.name.length > 128) return undefined;
+function toToolInfo(raw: unknown): SourceToolInfo | undefined {
+  if (!isRecord(raw) || typeof raw.name !== "string" || !raw.name.trim() || raw.name.length > 128) return undefined;
   const schema = raw.inputSchema && typeof raw.inputSchema === "object" && JSON.stringify(raw.inputSchema).length <= MAX_SCHEMA_CHARS
     ? raw.inputSchema as Record<string, unknown>
     : undefined;
-  const annotations = raw.annotations && typeof raw.annotations === "object" ? raw.annotations : {};
+  const annotations: Record<string, unknown> = isRecord(raw.annotations) ? raw.annotations : {};
   const description = clipText(raw.description, MAX_DESCRIPTION_CHARS);
   return {
     name: raw.name,
@@ -243,19 +244,21 @@ function toToolInfo(raw: any): SourceToolInfo | undefined {
 }
 
 /** Text of a tool result: text parts as they are, other parts named but left out. */
-export function sourceResultText(result: any): SourceCallResult {
+export function sourceResultText(result: unknown): SourceCallResult {
   const parts: string[] = [];
-  const content = Array.isArray(result?.content) ? result.content : [];
+  const record: Record<string, unknown> = isRecord(result) ? result : {};
+  const content: unknown[] = Array.isArray(record.content) ? record.content : [];
   for (const part of content) {
-    if (part?.type === "text" && typeof part.text === "string") parts.push(part.text);
-    else if (part?.type) parts.push(`[${String(part.type).slice(0, 20)} content left out]`);
+    if (!isRecord(part)) continue;
+    if (part.type === "text" && typeof part.text === "string") parts.push(part.text);
+    else if (part.type) parts.push(`[${String(part.type).slice(0, 20)} content left out]`);
   }
-  if (parts.length === 0 && result?.structuredContent !== undefined) parts.push(JSON.stringify(result.structuredContent));
+  if (parts.length === 0 && record.structuredContent !== undefined) parts.push(JSON.stringify(record.structuredContent));
   let text = parts.join("\n");
   if (text.length > SOURCE_MAX_RESULT_CHARS) {
     text = `${text.slice(0, SOURCE_MAX_RESULT_CHARS)}\n[… ${text.length - SOURCE_MAX_RESULT_CHARS} more characters cut; ask for less]`;
   }
-  return { text, isError: result?.isError === true };
+  return { text, isError: record.isError === true };
 }
 
 /** Connects to a configured local MCP server and lists its tools. */

@@ -51,7 +51,7 @@ export function createGitWorktreeToolDefinitions(ctx: AppContext): BridgeToolDef
           },
         },
       },
-      handler: async (args: any, invocation) => {
+      handler: async (args: { worktreePath?: string }, invocation) => {
         const explicitPath = typeof args.worktreePath === "string" ? args.worktreePath.trim() : "";
         const currentSessionCwd = explicitPath
           ? undefined

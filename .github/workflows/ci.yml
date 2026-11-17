@@ -63,6 +63,10 @@ jobs:
         shell: pwsh
         run: npm run test:comment-audit
 
+      - name: Any audit
+        shell: pwsh
+        run: npm run test:any-audit
+
       - name: Design system audit
         shell: pwsh
         run: npm run test:design-audit

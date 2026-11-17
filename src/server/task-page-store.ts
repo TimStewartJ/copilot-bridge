@@ -14,7 +14,7 @@ export interface TaskPageInfo {
 
 export function createTaskPageStore(db: DatabaseSync) {
   function info(taskId: string): TaskPageInfo | undefined {
-    const row = db.prepare("SELECT taskId, sessionId, updatedAt, length(CAST(html AS BLOB)) AS size FROM task_pages WHERE taskId = ?").get(taskId) as any;
+    const row = db.prepare("SELECT taskId, sessionId, updatedAt, length(CAST(html AS BLOB)) AS size FROM task_pages WHERE taskId = ?").get(taskId) as { taskId: string; sessionId: string | null; updatedAt: string; size: number } | undefined;
     if (!row) return undefined;
     return { taskId: String(row.taskId), updatedAt: String(row.updatedAt), ...(row.sessionId ? { sessionId: String(row.sessionId) } : {}), size: Number(row.size) };
   }

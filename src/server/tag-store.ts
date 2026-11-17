@@ -46,10 +46,20 @@ export interface ResolvedTagConfig {
 
 // ── Factory ───────────────────────────────────────────────────────
 
+type TagRow = {
+  id: string;
+  name: string;
+  color: string;
+  instructions: string;
+  order: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export function createTagStore(db: DatabaseSync) {
   const mcpServerStore = createMcpServerStore(db);
 
-  function hydrate(row: any): Tag {
+  function hydrate(row: TagRow): Tag {
     return {
       id: row.id,
       name: row.name,
@@ -63,7 +73,7 @@ export function createTagStore(db: DatabaseSync) {
 
   function nextColor(): TagColor {
     const used = new Set(
-      (db.prepare("SELECT color FROM tags").all() as any[]).map((r) => r.color),
+      (db.prepare("SELECT color FROM tags").all() as Array<{ color: string }>).map((r) => r.color),
     );
     return TAG_COLORS.find((c) => !used.has(c)) ?? TAG_COLORS[0];
   }
@@ -71,16 +81,16 @@ export function createTagStore(db: DatabaseSync) {
   // ── CRUD ──────────────────────────────────────────────────────────
 
   function listTags(): Tag[] {
-    return (db.prepare('SELECT * FROM tags ORDER BY "order"').all() as any[]).map(hydrate);
+    return (db.prepare('SELECT * FROM tags ORDER BY "order"').all() as TagRow[]).map(hydrate);
   }
 
   function getTag(id: string): Tag | undefined {
-    const row = db.prepare("SELECT * FROM tags WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM tags WHERE id = ?").get(id) as TagRow | undefined;
     return row ? hydrate(row) : undefined;
   }
 
   function getTagByName(name: string): Tag | undefined {
-    const row = db.prepare("SELECT * FROM tags WHERE nameKey = ?").get(normalizeTagNameKey(name)) as any;
+    const row = db.prepare("SELECT * FROM tags WHERE nameKey = ?").get(normalizeTagNameKey(name)) as TagRow | undefined;
     return row ? hydrate(row) : undefined;
   }
 
@@ -88,7 +98,7 @@ export function createTagStore(db: DatabaseSync) {
     if (getTagByName(name)) throw new Error(`Tag "${name}" already exists`);
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const count = (db.prepare("SELECT COUNT(*) as cnt FROM tags").get() as any).cnt;
+    const count = (db.prepare("SELECT COUNT(*) as cnt FROM tags").get() as { cnt: number }).cnt;
     const resolvedColor = color && TAG_COLORS.includes(color) ? color : nextColor();
     const nameKey = normalizeTagNameKey(name);
 
@@ -104,11 +114,11 @@ export function createTagStore(db: DatabaseSync) {
     id: string,
     updates: Partial<Pick<Tag, "name" | "color" | "instructions">>,
   ): Tag {
-    const row = db.prepare("SELECT * FROM tags WHERE id = ?").get(id) as any;
+    const row = db.prepare("SELECT * FROM tags WHERE id = ?").get(id);
     if (!row) throw new Error(`Tag ${id} not found`);
 
     const fields: string[] = ["updatedAt = ?"];
-    const values: any[] = [new Date().toISOString()];
+    const values: string[] = [new Date().toISOString()];
 
     if (updates.name !== undefined) {
       const existing = getTagByName(updates.name);
@@ -136,7 +146,7 @@ export function createTagStore(db: DatabaseSync) {
       const result = db.prepare("DELETE FROM tags WHERE id = ?").run(id) as { changes?: number };
       if ((result.changes ?? 0) === 0) return false;
       // Re-order remaining tags
-      const remaining = db.prepare('SELECT id FROM tags ORDER BY "order"').all() as any[];
+      const remaining = db.prepare('SELECT id FROM tags ORDER BY "order"').all() as Array<{ id: string }>;
       const stmt = db.prepare('UPDATE tags SET "order" = ? WHERE id = ?');
       remaining.forEach((r, i) => stmt.run(i, r.id));
       return true;
@@ -179,15 +189,15 @@ export function createTagStore(db: DatabaseSync) {
       JOIN entity_tags et ON et.tagId = t.id
       WHERE et.entityType = ? AND et.entityId = ?
       ORDER BY t."order"
-    `).all(entityType, entityId) as any[];
+    `).all(entityType, entityId) as TagRow[];
     return rows.map(hydrate);
   }
 
   function getEntitiesByTag(tagId: string, entityType?: "task" | "task_group"): { entityType: string; entityId: string }[] {
     if (entityType) {
-      return db.prepare("SELECT entityType, entityId FROM entity_tags WHERE tagId = ? AND entityType = ?").all(tagId, entityType) as any[];
+      return db.prepare("SELECT entityType, entityId FROM entity_tags WHERE tagId = ? AND entityType = ?").all(tagId, entityType) as Array<{ entityType: string; entityId: string }>;
     }
-    return db.prepare("SELECT entityType, entityId FROM entity_tags WHERE tagId = ?").all(tagId) as any[];
+    return db.prepare("SELECT entityType, entityId FROM entity_tags WHERE tagId = ?").all(tagId) as Array<{ entityType: string; entityId: string }>;
   }
 
   function getEffectiveTaskTags(taskId: string, groupId?: string): Tag[] {

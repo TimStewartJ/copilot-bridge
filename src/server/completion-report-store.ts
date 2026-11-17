@@ -18,7 +18,21 @@ function parseList<T>(json: unknown): T[] {
   }
 }
 
-function hydrate(row: any): CompletionReport {
+type CompletionReportRow = {
+  id: string;
+  sessionId: string;
+  taskId: string | null;
+  playbook: string | null;
+  playbookLabel: string | null;
+  status: string;
+  summary: string;
+  evidenceJson: string;
+  unverifiedJson: string;
+  notesJson: string;
+  createdAt: string;
+};
+
+function hydrate(row: CompletionReportRow): CompletionReport {
   return {
     id: String(row.id),
     sessionId: String(row.sessionId),
@@ -47,7 +61,7 @@ export function createCompletionReportStore(db: DatabaseSync) {
       id, report.sessionId, report.taskId ?? null, report.playbook ?? null, report.playbookLabel ?? null,
       report.status, report.summary, JSON.stringify(report.evidence), JSON.stringify(report.unverified), JSON.stringify(report.notes ?? []), createdAt,
     );
-    return hydrate(db.prepare("SELECT * FROM completion_reports WHERE id = ?").get(id));
+    return hydrate(db.prepare("SELECT * FROM completion_reports WHERE id = ?").get(id) as CompletionReportRow);
   }
 
   function clampLimit(limit: number | undefined): number {
@@ -58,14 +72,14 @@ export function createCompletionReportStore(db: DatabaseSync) {
   function listForSession(sessionId: string, limit?: number): CompletionReport[] {
     return (db.prepare(`
       SELECT * FROM completion_reports WHERE sessionId = ? ORDER BY createdAt DESC, rowid DESC LIMIT ?
-    `).all(sessionId, clampLimit(limit)) as any[]).map(hydrate);
+    `).all(sessionId, clampLimit(limit)) as CompletionReportRow[]).map(hydrate);
   }
 
   /** Newest first. */
   function listForTask(taskId: string, limit?: number): CompletionReport[] {
     return (db.prepare(`
       SELECT * FROM completion_reports WHERE taskId = ? ORDER BY createdAt DESC, rowid DESC LIMIT ?
-    `).all(taskId, clampLimit(limit)) as any[]).map(hydrate);
+    `).all(taskId, clampLimit(limit)) as CompletionReportRow[]).map(hydrate);
   }
 
   return { add, listForSession, listForTask };

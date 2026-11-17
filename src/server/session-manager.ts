@@ -34,6 +34,7 @@ import { ShellAuthRequests } from "./shell-auth-requests.js";
 import type { ShellAuthRequestId, SubmittedShellAuthResponse } from "./shell-auth-types.js";
 import {
   buildSessionConfig as buildSessionConfigWithDeps,
+  type BuiltSessionConfig,
   type ScheduleContext,
   type SessionConfigOptions,
 } from "./session-config-builder.js";
@@ -920,7 +921,7 @@ export class SessionManager {
   private readonly runStateController: SessionRunStateController;
   private readonly agentRegistry: SessionAgentRegistry;
   private readonly sessionNameRpc: SessionNameRpc;
-  private readonly sessionNameAutogenerator: SessionNameAutogenerator;
+  private readonly sessionNameAutogenerator: SessionNameAutogenerator<AgentSession>;
   private readonly triggerWorker: DisposableTriggerWorker;
   private readonly sessionRunner: SessionRunner;
   private readonly imageBudget: ImageBudgetController;
@@ -1077,7 +1078,7 @@ export class SessionManager {
       getSessionStateDir: (sessionId) => this.getSessionStateDir(sessionId),
       emitSessionNameChanged: (sessionId, name) => this.emitSessionNameChanged(sessionId, name),
     });
-    this.sessionNameAutogenerator = createSessionNameAutogenerator({
+    this.sessionNameAutogenerator = createSessionNameAutogenerator<AgentSession>({
       listModels: () => this.listModels(),
       resolveHelperRole: (models) => {
         const settings = this.deps.settingsStore?.getSettings();
@@ -1358,7 +1359,7 @@ export class SessionManager {
   private async finishSessionCreation(options: {
     client: AgentBackend;
     expectedSessionId?: string;
-    sessionConfig: any;
+    sessionConfig: BuiltSessionConfig;
     creationReservation: SessionCapacityReservation;
     startedAt: number;
     spanName: string;
@@ -2262,7 +2263,7 @@ export class SessionManager {
   private async resumeRuntimeSession(
     backend: AgentBackend,
     sessionId: string,
-    resumeConfig: any,
+    resumeConfig: AgentSessionConfig,
   ): Promise<AgentSession> {
     try {
       return await backend.resumeSession(sessionId, resumeConfig);
@@ -2282,7 +2283,7 @@ export class SessionManager {
   }
 
   /** The create config for a chat that can be made again (see `resumeRuntimeSession`). */
-  private async configToRecreateUnsavedSession(sessionId: string, error: unknown): Promise<any | undefined> {
+  private async configToRecreateUnsavedSession(sessionId: string, error: unknown): Promise<BuiltSessionConfig | undefined> {
     const message = error instanceof Error ? error.message : String(error);
     // agent-text-audit: error (agent runtime and file system errors)
     if (!/\bSession not found\b/i.test(message) || !this.isSessionStatePathSegment(sessionId)) return undefined;
@@ -4209,12 +4210,12 @@ export class SessionManager {
   }
 
   /** Uncached: session-list.ts owns the cache. For specific sessions use readSessionsFromDisk. */
-  listSessionsFromDisk(options: { includeArchived?: boolean; skip?: ReadonlySet<string> } = {}): Promise<any[]> {
+  listSessionsFromDisk(options: { includeArchived?: boolean; skip?: ReadonlySet<string> } = {}) {
     return listSessionsFromDiskWithDeps(this.sessionListReaderDeps(), options);
   }
 
   /** The given sessions as their folders describe them; gone folders are left out. */
-  readSessionsFromDisk(sessionIds: readonly string[], options: SessionsFromDiskOptions = {}): Promise<any[]> {
+  readSessionsFromDisk(sessionIds: readonly string[], options: SessionsFromDiskOptions = {}) {
     return readSessionsFromDiskWithDeps(this.sessionListReaderDeps(), sessionIds, options);
   }
 
@@ -4223,7 +4224,7 @@ export class SessionManager {
     this.deps.globalBus.emit({ type: "session:title", sessionId, title: name });
   }
 
-  private async withSessionNameRpc<T>(sessionId: string, operation: (session: any) => Promise<T>): Promise<T> {
+  private async withSessionNameRpc<T>(sessionId: string, operation: (session: AgentSession) => Promise<T>): Promise<T> {
     const client = this.getBackend();
     const owner = this.captureRuntimeOwner(client);
 
@@ -4239,7 +4240,7 @@ export class SessionManager {
     const sessionConfig = buildSessionNameResumeConfig(this.backend?.permissionPolicy);
     const resumeLease = await this.beginSessionResume(sessionId, sessionConfig);
     if (!resumeLease) throw new Error("Session name resume cancelled before admission");
-    let session: any | undefined;
+    let session: AgentSession | undefined;
     try {
       this.assertRuntimeOwner(owner);
       session = await this.resumeAgentSessionWithTimeout(
@@ -4275,7 +4276,7 @@ export class SessionManager {
 
   maybeAutoNameSession(
     sessionId: string,
-    options: SessionAutoNameOptions = {},
+    options: SessionAutoNameOptions<AgentSession> = {},
   ): void {
     const pendingForkName = this.deps.sessionMetaStore?.consumePendingAutoName(sessionId);
     this.sessionNameAutogenerator.maybeAutoNameSession(
@@ -4931,8 +4932,9 @@ export class SessionManager {
       }
 
       const lastVisibleActivityAt = remainingActivity.getLastVisibleActivityAt();
-      const boundaryEvent = boundary.event as any;
-      const boundaryOccurredAt = boundaryEvent?.data?.timestamp ?? boundaryEvent?.timestamp;
+      const boundaryEvent = isRecord(boundary.event) ? boundary.event : undefined;
+      const boundaryData = isRecord(boundaryEvent?.data) ? boundaryEvent.data : undefined;
+      const boundaryOccurredAt = boundaryData?.timestamp ?? boundaryEvent?.timestamp;
       try {
         clearEventLogStatsCache(sessionId);
         // A rewritten transcript invalidates any bridge-native run notice from the removed turns.
