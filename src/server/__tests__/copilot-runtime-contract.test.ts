@@ -7,8 +7,8 @@ import { isTransientBackendError } from "../backend-availability.js";
 import { COMPUTER_USE_PLUGIN_NAME, resolveComputerUsePlugin } from "../computer-use-plugin.js";
 import { isStaleAgentSessionError } from "../session-runner.js";
 
-const EXPECTED_CLI_VERSION = "1.0.107";
-const EXPECTED_SDK_VERSION = "1.0.29";
+const EXPECTED_CLI_VERSION = "1.0.112";
+const EXPECTED_SDK_VERSION = "1.0.34";
 
 // Launching the pinned CLI lives in copilot-cli-launch.native.test.ts.
 describe("installed Copilot package contract", () => {
