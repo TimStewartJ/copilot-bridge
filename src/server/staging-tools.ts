@@ -48,6 +48,7 @@ import {
   STAGING_DEPLOY_GATE,
   runValidationGateAsync,
 } from "./validation-pipeline.js";
+import { testFlakeGateEnv } from "./test-flakes.js";
 import { writeDeployValidationStamp } from "./deploy-validation-stamp.js";
 import {
   deleteStagingValidationStamp,
@@ -606,6 +607,7 @@ function commandFailure(
 function deployValidationEnv(): NodeJS.ProcessEnv {
   return {
     BRIDGE_VALIDATION_LOG_DIR: join(PRODUCTION_DATA_DIR, "validation-logs"),
+    ...testFlakeGateEnv(PRODUCTION_DATA_DIR, PRODUCTION_ROOT),
   };
 }
 
@@ -1038,7 +1040,8 @@ export async function runStagingPreviewJob(
     const preValidationDependencyHash = dependencySyncHash(stagingDir);
     const validationResult = await runValidationGateAsync(PREVIEW_GATE, {
       cwd: stagingDir,
-      run: (command, validationOptions) => runCommand(command, stagingDir, validationOptions),
+      run: (command, validationOptions) =>
+        runCommand(command, stagingDir, { ...validationOptions, env: testFlakeGateEnv(PRODUCTION_DATA_DIR, PRODUCTION_ROOT) }),
       log: writeLog,
     });
     if (!validationResult.ok) {

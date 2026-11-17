@@ -15,14 +15,11 @@ import { SessionCapacityError, SessionHistoryUndoError } from "../server/session
 installApiRouteTestHooks();
 
 async function waitForForkJob(app: ApiRouteTestState["app"], jobId: string) {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  return vi.waitFor(async () => {
     const response = await request(app).get(`/api/session-forks/${jobId}`);
-    if (response.body.status === "succeeded" || response.body.status === "failed") {
-      return response;
-    }
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  throw new Error(`Session fork job ${jobId} did not finish`);
+    expect(response.body.status, `Session fork job ${jobId} did not finish`).toMatch(/^(succeeded|failed)$/);
+    return response;
+  });
 }
 
 // ── Session manager routes (mock-based) ──────────────────────────

@@ -100,6 +100,98 @@ export const CROSS_PLATFORM_TEST_RULES: ReadonlyArray<CrossPlatformTestRule> = [
   },
 ];
 
+/** A rule that needs the whole file: it reads the syntax tree instead of one line. */
+export interface TestFileRule {
+  id: string;
+  message: string;
+  /** Zero-based lines that break the rule. */
+  findLines(sourceFile: ts.SourceFile, content: string): number[];
+}
+
+const EVENT_LOOP_TURN_RE = /\b(?:setImmediate|process\.nextTick|queueMicrotask)\b|\bPromise\.resolve\(\s*\)/;
+const REAL_TEMP_DIR_RE = /\b(?:makeTestDir|mkdtempSync|mkdtemp|createTempDir|tmpdir)\s*\(/;
+const RETRY_SLEEP_SEAM_RE = /^__set\w*(?:Sleep|Delay|Backoff)\w*ForTests$/;
+
+function lineOf(sourceFile: ts.SourceFile, node: ts.Node): number {
+  return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
+}
+
+function visit(node: ts.Node, callback: (node: ts.Node) => void): void {
+  callback(node);
+  ts.forEachChild(node, (child) => visit(child, callback));
+}
+
+function hasNumericBound(condition: ts.Expression | undefined): boolean {
+  let found = false;
+  if (condition) visit(condition, (node) => {
+    if (ts.isBinaryExpression(node) && ts.isNumericLiteral(node.right)) found = true;
+  });
+  return found;
+}
+
+function awaitsEventLoopTurn(body: ts.Statement, sourceFile: ts.SourceFile): boolean {
+  let found = false;
+  visit(body, (node) => {
+    if (ts.isAwaitExpression(node) && EVENT_LOOP_TURN_RE.test(node.expression.getText(sourceFile))) found = true;
+  });
+  return found;
+}
+
+/** A loop that waits a counted number of event-loop turns and then throws: it races real I/O. */
+function findTurnCountedWaits(sourceFile: ts.SourceFile): number[] {
+  const lines: number[] = [];
+  visit(sourceFile, (node) => {
+    if (!ts.isBlock(node) && !ts.isSourceFile(node)) return;
+    node.statements.forEach((statement, index) => {
+      const condition = ts.isForStatement(statement)
+        ? statement.condition
+        : ts.isWhileStatement(statement) || ts.isDoStatement(statement)
+          ? statement.expression
+          : undefined;
+      if (!condition || !hasNumericBound(condition)) return;
+      const loop = statement as ts.IterationStatement;
+      if (!awaitsEventLoopTurn(loop.statement, sourceFile)) return;
+      const next = node.statements[index + 1];
+      if (next && ts.isThrowStatement(next)) lines.push(lineOf(sourceFile, statement));
+    });
+  });
+  return lines;
+}
+
+function isInstantFunction(node: ts.Expression, sourceFile: ts.SourceFile): boolean {
+  if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) return false;
+  if (ts.isBlock(node.body)) return node.body.statements.length === 0;
+  return /^Promise\.resolve\(\s*\)$/.test(node.body.getText(sourceFile));
+}
+
+/** An instant retry backoff in a test on real files, where a scanner hold needs the real wait. */
+function findInstantRetrySleeps(sourceFile: ts.SourceFile, content: string): number[] {
+  if (!REAL_TEMP_DIR_RE.test(content)) return [];
+  const lines: number[] = [];
+  visit(sourceFile, (node) => {
+    if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)) return;
+    if (!RETRY_SLEEP_SEAM_RE.test(node.expression.text)) return;
+    const [sleep] = node.arguments;
+    if (sleep && isInstantFunction(sleep, sourceFile)) lines.push(lineOf(sourceFile, node));
+  });
+  return lines;
+}
+
+export const TEST_FILE_RULES: ReadonlyArray<TestFileRule> = [
+  {
+    id: "turn-counted-wait",
+    message:
+      "This loop gives up after a fixed number of event-loop turns, which fails when real I/O is slow. Wait on the completion signal or use vi.waitFor.",
+    findLines: (sourceFile) => findTurnCountedWaits(sourceFile),
+  },
+  {
+    id: "instant-retry-sleep",
+    message:
+      "This skips every retry wait in a test that uses real files, so a scanner holding a file makes it fail. Skip the wait only for the failures the test injects, or mock the file calls.",
+    findLines: findInstantRetrySleeps,
+  },
+];
+
 function isAuditedTestFile(filePath: string): boolean {
   if (TEST_FILE_RE.test(filePath)) return true;
   return TEST_SUPPORT_FILE_RE.test(filePath) && filePath.split(/[/\\]/).includes("__tests__");
@@ -194,24 +286,24 @@ export function auditCrossPlatformTests(rootDir = REPO_ROOT): CrossPlatformAudit
     }
 
     const lines = maskCommentContent(content, comments).split(/\r?\n/);
+    const report = (ruleId: string, message: string, index: number, advisory?: boolean) => {
+      violations.push({ ruleId, filePath, lineNumber: index + 1, message, snippet: lines[index]?.trim() ?? "", advisory });
+    };
     lines.forEach((line, index) => {
       const trimmed = line.trim();
       if (!trimmed || lineIgnore.has(index) || nextLineIgnore.has(index)) {
         return;
       }
       for (const rule of CROSS_PLATFORM_TEST_RULES) {
-        if (rule.pattern.test(line)) {
-          violations.push({
-            ruleId: rule.id,
-            filePath,
-            lineNumber: index + 1,
-            message: rule.message,
-            snippet: line.trim(),
-            advisory: rule.advisory,
-          });
-        }
+        if (rule.pattern.test(line)) report(rule.id, rule.message, index, rule.advisory);
       }
     });
+    const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, false);
+    for (const rule of TEST_FILE_RULES) {
+      for (const index of rule.findLines(sourceFile, content)) {
+        if (!lineIgnore.has(index) && !nextLineIgnore.has(index)) report(rule.id, rule.message, index);
+      }
+    }
   }
 
   return {

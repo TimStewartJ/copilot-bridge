@@ -19,13 +19,14 @@ import { createValidationCommandEnv, prependNodePath } from "./validation-comman
 import { withNonInteractiveCommandEnv } from "./noninteractive-env.js";
 import { createGitCommand, createGitPullRebaseCommand } from "./git-command.js";
 import { commandSpec, commandText, sh, type Command } from "./shell-command.js";
+import { DEPLOY_CHECK_COMMAND, DEPLOY_CHECK_TIMEOUT_MS } from "./validation-pipeline.js";
+import { testFlakeGateEnv } from "./test-flakes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONTROL_ROOT = resolveBridgeControlRoot(join(__dirname, "..", ".."));
 const SELF_UPDATE_INSTALL_COMMAND = sh`npm install --no-audit --no-fund --include=dev`;
 // Sized to catch a hang, not a busy machine; see STAGING_INSTALL_TIMEOUT_MS.
 const SELF_UPDATE_INSTALL_TIMEOUT_MS = 15 * 60_000;
-const SELF_UPDATE_DEPLOY_CHECK_TIMEOUT_MS = 10 * 60_000;
 
 export interface SelfUpdateJobOptions {
   controlRoot?: string;
@@ -47,6 +48,7 @@ interface SelfUpdateRunOptions {
 
 function createSelfUpdateRunner(
   controlRoot: string,
+  dataDir: string,
   log: (message: string) => void,
 ): (cmd: Command, options?: SelfUpdateRunOptions) => Promise<CommandResult> {
   return async (cmd, options = {}) => {
@@ -55,7 +57,10 @@ function createSelfUpdateRunner(
     const validationEnv = options.isolateRuntimeEnv
       ? createValidationCommandEnv(process.env, { nodeDir, prefix: "bridge-self-update-" })
       : undefined;
-    const baseEnv = validationEnv?.env ?? prependNodePath(process.env, nodeDir);
+    // Release slots have no git history, so flakes here are recorded but never excused.
+    const baseEnv = validationEnv
+      ? { ...validationEnv.env, ...testFlakeGateEnv(dataDir) }
+      : prependNodePath(process.env, nodeDir);
     const env = withNonInteractiveCommandEnv(baseEnv);
     log(`$ ${commandText(cmd)}\n[cwd] ${cwd}`);
     try {
@@ -151,8 +156,9 @@ async function prepareOrReuseReleaseCandidate(options: {
     log: options.log,
     installCommand: SELF_UPDATE_INSTALL_COMMAND,
     installTimeoutMs: SELF_UPDATE_INSTALL_TIMEOUT_MS,
-    buildCommand: sh`npm run check:deploy`,
-    buildTimeoutMs: SELF_UPDATE_DEPLOY_CHECK_TIMEOUT_MS,
+    buildCommand: DEPLOY_CHECK_COMMAND,
+    // Same budget as every other gate: the full suite alone has taken over ten minutes.
+    buildTimeoutMs: DEPLOY_CHECK_TIMEOUT_MS,
   });
   return prepared.ok
     ? { ok: true, manifest: prepared.manifest, reused: false }
@@ -291,7 +297,7 @@ export async function runSelfUpdateJob(_input: unknown = {}, options: SelfUpdate
   }
 
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-  const run = createSelfUpdateRunner(controlRoot, log);
+  const run = createSelfUpdateRunner(controlRoot, dataDir, log);
 
   const branchResult = await run(sh`git rev-parse --abbrev-ref HEAD`);
   const branch = branchResult.ok ? branchResult.output.trim() : "main";

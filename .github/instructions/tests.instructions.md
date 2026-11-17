@@ -30,7 +30,8 @@ Every test is code someone has to keep passing through later refactors, so add o
 ## Deterministic tests
 
 - Do not depend on wall-clock budgets. The full suite runs one worker per core on a shared machine, so real I/O can be many times slower than on an idle machine.
-- Wait for a completion signal (a returned promise, a `settle()`/`waitFor*Idle()` hook, a lifecycle callback) instead of polling. When polling is unavoidable, use the shared `vi.waitFor` default from `src/test-support/vitest-setup.ts`, not a tight explicit timeout.
+- Wait for a completion signal (a returned promise, a `settle()`/`waitFor*Idle()` hook, a lifecycle callback) instead of polling. When polling is unavoidable, use the shared `vi.waitFor` default from `src/test-support/vitest-setup.ts`, not a tight explicit timeout. Never count event-loop turns and then give up: `turn-counted-wait` in the audit fails it.
+- A retry seam that skips the backoff (`__set…SleepForTests(() => Promise.resolve())`) is only safe when every file call it retries is mocked. In a test that also uses real files, skip the wait only for the failures the test injects; a Windows scanner can hold a real file for tens of seconds. `instant-retry-sleep` in the audit fails the blanket form.
 - Fake only what the test needs. Code under test yields with `setImmediate` and does real I/O, so a test that only needs a fixed calendar uses `vi.useFakeTimers({ toFake: ["Date"] })`.
 - Production deadlines (session release and retirement budgets, capacity waits, RPC bounds) run on real timers. A test that holds such an operation open and then asserts on state calls `freezeLifecycleDeadlines()` from `src/server/__tests__/helpers.ts` and restores real timers in `afterEach`.
 - Background work a test starts must finish before the test ends, or it races temp-directory cleanup and the next test.
@@ -55,8 +56,15 @@ Every test is code someone has to keep passing through later refactors, so add o
 
 ## Audits
 
-- `npm run test:xplat-audit` runs in `check:fast` and blocks known non-portable test patterns. Avoid `xplat-audit-ignore-*` comments; if one is truly necessary, keep it narrow and say why the test is still safe.
+- `npm run test:xplat-audit` runs in `check:fast` and blocks known non-portable or load-sensitive test patterns. Avoid `xplat-audit-ignore-*` comments; if one is truly necessary, keep it narrow and say why the test is still safe.
 - `npm run test:any-audit` runs in `check:fast` and CI. It fails on any `any` type in production code; tests are not scanned. See "Types" in `AGENTS.md`.
 - `npm run test:agent-text-audit` runs in `check:fast` and CI. It fails on a word or phrase check in production code that does not say where its text comes from; see "Agent output" in `AGENTS.md`.
 - `npm run test:comment-audit` runs in `check:fast` and CI, on tests too. It fails on a comment over one line or 100 columns, or two comments with no code between; see "Comments" in `AGENTS.md`.
 - `npm run test:public-audit` runs in `check:fast` and CI. It fails on `package-lock.json` entries outside the public npm registry and on Azure DevOps orgs that are not on its list of made-up names. Installing through a mirror writes the mirror's address into the lockfile; `npm run lockfile:public` puts it back.
+
+## Flakes in validation gates
+
+- `npm run test` runs `src/test-support/run-tests.ts`. In a validation gate it reruns up to 10 failed test files once (`MAX_RERUN_FILES`). A file that passes the second time is a flake, appended to `data/test-flakes.jsonl` in the live data directory.
+- A flake lets the gate pass only when `vitest list --changed` from the production checkout does not reach its test file. A change to `package.json`, any Vitest config file or `src/test-support` reaches every test (`forceRerunTriggers` in `vitest.config.ts`). A run with unhandled errors is never rerun, and an unhandled error during the rerun counts as failing again. Self-update release slots have no git history, so their flakes are recorded and still fail.
+- A recorded flake is a bug. Fix it and add an audit rule when the pattern is new; do not rely on the rerun.
+- Outside a gate, `npm run test` is plain `vitest run`.

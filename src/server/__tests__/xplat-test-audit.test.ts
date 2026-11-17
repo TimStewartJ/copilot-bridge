@@ -180,6 +180,51 @@ describe("cross-platform test audit", () => {
     expect(ruleIds(result, true)).toEqual(Array(2).fill("repo-runtime-path"));
   });
 
+  it("reports a wait that gives up after counted event-loop turns, but not a counted loop that does not give up", () => {
+    const result = audit({
+      "turns.test.ts": [
+        "async function waitForJob() {",
+        "  for (let attempt = 0; attempt < 50; attempt += 1) {",
+        "    if (await done()) return;",
+        "    await new Promise((resolve) => setImmediate(resolve));",
+        "  }",
+        '  throw new Error("did not finish");',
+        "}",
+        "async function flush() {",
+        "  for (let index = 0; index < 8; index++) await Promise.resolve();",
+        "}",
+        "async function sleepPoll() {",
+        "  for (let attempt = 0; attempt < 50; attempt += 1) {",
+        "    await new Promise((resolve) => setTimeout(resolve, 100));",
+        "  }",
+        '  throw new Error("timed out");',
+        "}",
+      ],
+    });
+
+    expect(result.violations.map((v) => [v.ruleId, v.lineNumber])).toEqual([["turn-counted-wait", 2]]);
+  });
+
+  it("reports an instant retry sleep only in a test that uses real files", () => {
+    const result = audit({
+      "real-files.test.ts": [
+        'const dir = makeTestDir("retry");',
+        "__setRestartStateFsRetrySleepForTests(() => Promise.resolve());",
+        "__setRestartStateFsRetrySleepSyncForTests(() => {});",
+        "__setRestartStateFsRetrySleepForTests((ms) => injected-- > 0 ? Promise.resolve() : realSleep(ms));",
+      ],
+      "mocked-files.test.ts": [
+        'const statePath = join("repo", "data", "state.json");',
+        "__setRestartStateFsRetrySleepForTests(() => Promise.resolve());",
+      ],
+    });
+
+    expect(result.violations.map((v) => [v.filePath.endsWith("real-files.test.ts"), v.ruleId, v.lineNumber])).toEqual([
+      [true, "instant-retry-sleep", 2],
+      [true, "instant-retry-sleep", 3],
+    ]);
+  });
+
   it("reports direct-mkdtemp as advisory", () => {
     const result = audit({
       "mkdtemp.test.ts": [

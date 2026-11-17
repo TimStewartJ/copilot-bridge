@@ -3,6 +3,13 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     silent: "passed-only",
+    // Reach every test, so run-tests.ts never excuses a flake a shared test setting could cause.
+    forceRerunTriggers: [
+      "**/package.json/**",
+      "**/{vitest,vite}.config.*/**",
+      "**/vitest.*.ts/**",
+      "**/src/test-support/**",
+    ],
     projects: [
       "./vitest.client.config.ts",
       "./vitest.server.config.ts",

@@ -28,7 +28,7 @@
     "typecheck:client": "tsc --noEmit -p tsconfig.client.json",
     "typecheck:packages": "node scripts/packages.mjs typecheck",
     "typecheck": "npm run typecheck:server && npm run typecheck:client && npm run typecheck:packages",
-    "test": "vitest run",
+    "test": "tsx src/test-support/run-tests.ts",
     "test:client": "vitest run --project client",
     "test:server": "vitest run --project server",
     "test:packages": "vitest run --project packages",

@@ -71,6 +71,7 @@ const DEPLOY_CHECK_STEP: ValidationStep = {
 };
 
 export const DEPLOY_CHECK_COMMAND = DEPLOY_CHECK_STEP.command;
+export const DEPLOY_CHECK_TIMEOUT_MS = DEPLOY_CHECK_STEP.timeoutMs;
 
 const PREVIEW_SMOKE_STEP: ValidationStep = {
   command: sh`npm run preview:smoke`,

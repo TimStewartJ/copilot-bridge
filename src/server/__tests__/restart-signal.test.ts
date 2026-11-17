@@ -64,17 +64,21 @@ describe("restart requests", () => {
 
   it("waits out a scanner holding the signal while replacing it with a newer deployment", async () => {
     const dir = makeTestDir("restart-eperm");
-    __setRestartStateFsRetrySleepForTests(() => Promise.resolve());
     const initial = await requestRestart(dir, { validationMode: "operational", source: "self_restart" });
     // Longer than the retry budget: a Windows hold can last tens of seconds.
-    for (let attempt = 0; attempt < 10; attempt++) {
+    const injected = 10;
+    for (let attempt = 0; attempt < injected; attempt++) {
       vi.mocked(rename).mockRejectedValueOnce(Object.assign(new Error("signal held open"), { code: "EPERM" }));
     }
+    // Only injected failures skip the wait: a real scanner hold needs the real backoff.
+    let sleeps = 0;
+    __setRestartStateFsRetrySleepForTests((ms) =>
+      sleeps++ < injected ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms)));
     const updated = await requestRestart(dir, { validationMode: "deploy", source: "staging_deploy_batch", releaseCandidate: candidate(dir, 1) });
     expect(updated).toMatchObject({ requestId: initial.requestId, releaseCandidate: candidate(dir, 1) });
     await expect(readPendingRestartSignal(dir)).resolves.toEqual(updated);
     expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
-  });
+  }, 90_000);
 
   it("surfaces corrupt control state rather than discarding a pending candidate", async () => {
     const dir = makeTestDir("restart-corrupt");
