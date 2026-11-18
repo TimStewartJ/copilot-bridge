@@ -67,6 +67,17 @@ describe("DraftTextField", () => {
     expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
+  it("settles when the server normalizes the text back to the value it replaced", async () => {
+    const onCommit = await renderField({ value: "old" });
+    await typeAndSave("old ");
+    await renderField({ value: "old ", pending: true }, onCommit);
+    await renderField({ value: "old", pending: false }, onCommit);
+
+    expect(getReactProps(textarea())?.value).toBe("old");
+    expect(button("Save")).toBeUndefined();
+    expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
   it("keeps text typed after Save while that save is still pending", async () => {
     const onCommit = await renderField({ value: "old" });
     await typeAndSave("new");

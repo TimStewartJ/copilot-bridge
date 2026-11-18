@@ -19,6 +19,7 @@ import {
   type ModelPresetSlot,
 } from "../shared/model-presets.js";
 import type { ModelAbTestSettings } from "../shared/model-ab-test.js";
+import { MAX_USER_NAME_LENGTH } from "../shared/user-name.js";
 import { isRecord } from "../shared/is-record.js";
 import { isModelRole, isTierChoice, type ModelRoleChoice, type ModelRoles } from "../shared/model-roles.js";
 import {
@@ -132,6 +133,8 @@ export interface AppSettings {
   /** Overrides the device prefers-reduced-motion setting when not "system". */
   motion?: MotionPreference;
   identity?: string;
+  /** What the user is called; prompts say it instead of only "the user". */
+  userName?: string;
   customInstructions?: string;
   responseStyle?: ResponseStyleSettings;
   /** Skill sets added from git repositories or folders (Settings › Skills). */
@@ -206,6 +209,14 @@ function normalizeOptionalString(
   if (typeof value !== "string") validationError(`${field} must be a string`);
   const normalized = options.trim ? value.trim() : value;
   return options.emptyAsUndefined && !normalized ? undefined : normalized;
+}
+
+function normalizeUserName(value: unknown): string | undefined {
+  const name = normalizeOptionalString(value, "userName", { trim: true, emptyAsUndefined: true });
+  if (name === undefined) return undefined;
+  if (/[\r\n]/.test(name)) validationError("userName must be one line");
+  if (name.length > MAX_USER_NAME_LENGTH) validationError(`userName must be at most ${MAX_USER_NAME_LENGTH} characters`);
+  return name;
 }
 
 function normalizeProviders(value: unknown): ProvidersConfig | undefined {
@@ -825,6 +836,7 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   if ("theme" in value) normalized.theme = normalizeTheme(value.theme);
   if ("motion" in value) normalized.motion = normalizeMotion(value.motion);
   if ("identity" in value) normalized.identity = normalizeOptionalString(value.identity, "identity");
+  if ("userName" in value) normalized.userName = normalizeUserName(value.userName);
   if ("customInstructions" in value) {
     normalized.customInstructions = normalizeOptionalString(value.customInstructions, "customInstructions");
   }

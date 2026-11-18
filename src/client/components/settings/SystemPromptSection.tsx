@@ -12,6 +12,7 @@ import { Button, Details, SettingList, SettingRow } from "../../design/primitive
 import { useSettingsWriter } from "../../hooks/queries/useSettings";
 import { DraftTextField } from "./DraftTextField";
 import { DEFAULT_IDENTITY } from "../../../shared/session-identity.js";
+import { MAX_USER_NAME_LENGTH } from "../../../shared/user-name.js";
 
 export function SystemPromptSection({
   draft,
@@ -94,6 +95,15 @@ export function SystemPromptSection({
 
       <SettingsSection title="Instructions">
         <div className="space-y-1">
+          <DraftTextField
+            storageKey="userName"
+            label="Your name"
+            value={draft.userName ?? ""}
+            maxLength={MAX_USER_NAME_LENGTH}
+            error={failedKeys.has("userName") ? writeError?.message : null}
+            pending={pendingKeys.has("userName")}
+            onCommit={(userName) => commit({ userName })}
+          />
           <Details label="Identity" detail={draft.identity?.trim() ? "Custom identity" : "Bridge default"}>
             <div className="pt-2">
               <DraftTextField

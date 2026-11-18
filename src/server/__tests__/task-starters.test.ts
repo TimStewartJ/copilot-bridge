@@ -18,26 +18,30 @@ beforeEach(() => {
 
 function service(reply: string | undefined, extra: Record<string, unknown> = {}, options = {}, transcripts: Record<string, Array<{ role: string; content: string; timestamp?: string }>> = {}) {
   const prompts: string[] = [];
+  const systemPrompts: string[] = [];
   const ctx = {
     ...extra,
     taskStore,
     taskStartersStore: starters,
-    settingsStore: { getSettings: () => ({}) },
+    settingsStore: { getSettings: () => extra.settings ?? {} },
     sessionTitles: { getTitle: () => undefined },
     sessionManager: {
       isSessionBusy: (id: string) => ((extra.busy as string[] | undefined) ?? []).includes(id),
       readMessagesFromDisk: async (sessionId: string) => ({ messages: (transcripts[sessionId] ?? []).map((entry) => ({ type: "message", ...entry })) }),
       listModels: async () => [],
-      createHelperSession: async () => ({
-        session: {
-          sendAndWait: async ({ prompt }: { prompt: string }) => { prompts.push(prompt); return { data: { content: reply } }; },
-          abort: async () => undefined,
-        },
-        dispose: async () => undefined,
-      }),
+      createHelperSession: async (config: { systemMessage: { content: string } }) => {
+        systemPrompts.push(config.systemMessage.content);
+        return {
+          session: {
+            sendAndWait: async ({ prompt }: { prompt: string }) => { prompts.push(prompt); return { data: { content: reply } }; },
+            abort: async () => undefined,
+          },
+          dispose: async () => undefined,
+        };
+      },
     },
   } as unknown as ConstructorParameters<typeof TaskStartersService>[0];
-  return { svc: new TaskStartersService(ctx, options), prompts };
+  return { svc: new TaskStartersService(ctx, options), prompts, systemPrompts };
 }
 
 describe("task starters store", () => {
@@ -60,9 +64,10 @@ describe("task starters refresh", () => {
 
   it("writes the model's chats for that task, and reports a reply that doesn't fit", async () => {
     const task = taskStore.createTask("Example launch");
-    const good = service("Here you go:\n```json\n{\"chats\":[{\"label\":\"Draft the notes\",\"prompt\":\"Draft the release notes.\"}]}\n```");
+    const good = service("Here you go:\n```json\n{\"chats\":[{\"label\":\"Draft the notes\",\"prompt\":\"Draft the release notes.\"}]}\n```", { settings: { userName: "Alex Example" } });
     await good.svc.refresh(task.id);
     expect(good.prompts[0]).toContain("Example launch");
+    expect(good.systemPrompts[0]).toContain("The user's name is Alex Example.");
     expect(good.svc.get(task.id)).toMatchObject({ refreshing: false, starters: [{ label: "Draft the notes", source: "refresh" }] });
 
     const bad = service(JSON.stringify({ chats: [{ label: "x".repeat(200), prompt: "p" }] }));

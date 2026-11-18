@@ -71,6 +71,7 @@ const MESSAGE_LABELS: Partial<Record<SettingsKey, string>> = {
   motion: "motion",
   favicon: "app icon",
   identity: "identity",
+  userName: "your name",
   responseStyle: "response style",
   customInstructions: "custom instructions",
   skillPacks: "skill packs",

@@ -179,20 +179,23 @@ describe("Settings routes", () => {
     expect(local.ctx.settingsStore.getSettings().model).toBeUndefined();
   });
 
-  it("PATCH /api/settings evicts cached sessions when the Fusion context limit changes, not when it stays", async () => {
+  it.each([
+    ["the Fusion context limit", { experimental: { fusionContextTokens: 600_000 } }, { experimental: null }],
+    ["the user's name", { userName: "Alex Example" }, { userName: "" }],
+  ])("PATCH /api/settings evicts cached sessions when %s changes, not when it stays", async (_name, set, clear) => {
     const sessionManager = createMockSessionManager();
     const evictSpy = vi.fn();
     sessionManager.evictAllCachedSessions = evictSpy;
     const local = createTestApp({ sessionManager });
 
-    const set = await request(local.app).patch("/api/settings").send({ experimental: { fusionContextTokens: 600_000 } });
-    expect(set.status).toBe(200);
-    expect(set.body.experimental).toEqual({ fusionContextTokens: 600_000 });
+    const res = await request(local.app).patch("/api/settings").send(set);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject(set);
     expect(evictSpy).toHaveBeenCalledOnce();
 
-    await request(local.app).patch("/api/settings").send({ experimental: { fusionContextTokens: 600_000 } });
+    await request(local.app).patch("/api/settings").send(set);
     expect(evictSpy).toHaveBeenCalledOnce();
-    await request(local.app).patch("/api/settings").send({ experimental: null });
+    await request(local.app).patch("/api/settings").send(clear);
     expect(evictSpy).toHaveBeenCalledTimes(2);
   });
 

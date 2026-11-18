@@ -52,7 +52,7 @@ describe("SystemPromptSection", () => {
     const { container } = await renderSection({ mcpServers: {} });
     expect(getReactProps(styleTextarea(container))?.value).toBe(DEFAULT_RESPONSE_STYLE_GUIDANCE);
     expect(getReactProps(styleTextarea(container))?.maxLength).toBe(MAX_RESPONSE_STYLE_GUIDANCE_LENGTH);
-    const radios = findAllByTag(container, "INPUT");
+    const radios = findAllByTag(container, "INPUT").filter((input) => getReactProps(input)?.type === "radio");
     expect(radios.map((radio) => getReactProps(radio)?.value)).toEqual(["adaptive", "concise", "detailed"]);
     expect(radios.map((radio) => getReactProps(radio)?.checked)).toEqual([true, false, false]);
     expect(container.textContent).toContain("Response quality (always on)");

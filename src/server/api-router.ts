@@ -4604,10 +4604,12 @@ export function createApiRouter(
       const modelChanged = prev.model !== updated.model;
       const reasoningChanged = prev.reasoningEffort !== updated.reasoningEffort;
       const contextTierChanged = prev.contextTier !== updated.contextTier;
+      const userNameChanged = prev.userName !== updated.userName;
 
       // These can't change on a live session; evict so the next resume uses the new config.
-      if (computerUseChanged || imageGenerationChanged || fusionContextChanged) {
-        const changed = computerUseChanged ? "Computer use" : imageGenerationChanged ? "Image generation" : "Fusion context limit";
+      if (computerUseChanged || imageGenerationChanged || fusionContextChanged || userNameChanged) {
+        const changed = computerUseChanged ? "Computer use" : imageGenerationChanged ? "Image generation"
+          : fusionContextChanged ? "Fusion context limit" : "Your name";
         console.log(`[settings] ${changed} changed — evicting cached sessions for re-resume`);
         void ctx.sessionManager.evictAllCachedSessions();
       } else if (modelChanged || reasoningChanged || contextTierChanged) {

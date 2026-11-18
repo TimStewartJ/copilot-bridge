@@ -1,3 +1,4 @@
+import { userNameLine } from "../shared/user-name.js";
 import type { AgentPermissionPolicy } from "./agent-backend/index.js";
 import type { ShellAuthHandler } from "./shell-auth-requests.js";
 import { dirname, join } from "node:path";
@@ -450,6 +451,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams): BuiltSessi
   const contextParts: string[] = [
     RESPONSE_QUALITY_GUIDANCE,
     ASK_OR_PROCEED_GUIDANCE,
+    userNameLine(settings?.userName),
     ...(settings?.customInstructions?.trim() ? [settings.customInstructions.trim()] : []),
     RESEARCH_GUIDANCE,
     HOME_GUIDANCE,

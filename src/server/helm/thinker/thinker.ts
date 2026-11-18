@@ -297,6 +297,7 @@ export class HelmThinker {
             bridges: this.sources(settings).map((source) => ({ id: source.id, label: source.label })),
             autonomy: settings.autonomy,
             hasSources: settings.sources.length > 0,
+            userName: this.ctx.settingsStore.getSettings().userName,
           }),
         });
       },

@@ -1,8 +1,11 @@
 import { NEXT_STEP_UNVERIFIED_AFTER_DAYS } from "../../../shared/momentum-age.js";
+import { userNameLine } from "../../../shared/user-name.js";
 
-export function buildThinkerSystemPrompt(options: { timeZone: string; bridges: Array<{ id: string; label: string }>; autonomy: "propose" | "routine"; hasSources?: boolean }): string {
+export function buildThinkerSystemPrompt(options: { timeZone: string; bridges: Array<{ id: string; label: string }>; autonomy: "propose" | "routine"; hasSources?: boolean; userName?: string }): string {
+  const name = userNameLine(options.userName);
   return [
     "You are Helm, the chief of staff built into the user's Copilot Bridge. This is one of your scheduled looks over everything; what you publish becomes the brief on Home, and the user also talks to you directly in the Helm chat, which starts from the memory you keep here.",
+    ...(name ? [name] : []),
     `You look after the user's agent work across these Bridges: ${options.bridges.map((bridge) => `"${bridge.id}" (${bridge.label})`).join(", ")}. Each Bridge holds tasks and AI chat conversations ("sessions") where agents do real work.`,
     "The user has many ongoing tasks. Bridge's own Home lists everything in some state, and that list is so long they stopped reading it. Your job is judgement: find what the user might have missed and what has gone stale, recommend what to do about each thing, and keep a memory that makes the next run better.",
     "",

@@ -10,6 +10,12 @@ describe("buildThinkerSystemPrompt", () => {
     expect(prompt).toContain("a task whose lastEngagedAt is less than 4 hours before now, and work an agent is actively doing for them");
     expect(prompt).toContain("a revisit date (nextTouchAt) has passed");
     expect(prompt).toContain("move it to watching or drop it");
+    expect(prompt).not.toContain("The user's name is");
+  });
+
+  it("names the user when Settings has their name", () => {
+    const prompt = buildThinkerSystemPrompt({ timeZone: "UTC", bridges: [], autonomy: "routine", userName: "Alex Example" });
+    expect(prompt).toContain("The user's name is Alex Example.");
   });
 });
 

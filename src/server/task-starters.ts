@@ -1,4 +1,5 @@
 // Task suggested chats; panel refresh and helm_publish both validate and replace the open set.
+import { userNameLine } from "../shared/user-name.js";
 import type { AppContext } from "./app-context.js";
 import type { AgentModelInfo } from "./agent-backend/types.js";
 import { chooseHelmModel, usableModels } from "./helm/helm-model.js";
@@ -43,7 +44,7 @@ type StartersContext = Pick<AppContext, "taskStore" | "settingsStore" | "session
   taskHistoryStore?: AppContext["taskHistoryStore"];
 };
 
-const SYSTEM_PROMPT = [
+const SYSTEM_PROMPT_LINES = [
   "You suggest the next chats the user could start on one of their tasks in Copilot Bridge, their agent workspace.",
   "Each suggestion becomes a button on the task. Tapping it opens a new chat on the task with your prompt in the composer, so the user can read and send it.",
   "Reply with JSON only, no prose and no code fence: {\"chats\": [{\"label\": string, \"prompt\": string, \"playbook\"?: string}]}.",
@@ -54,7 +55,12 @@ const SYSTEM_PROMPT = [
   "- Do not suggest a chat that only repeats one already running or one that just finished, or one like those the user dismissed.",
   "- latestReply, when present, is the latest reply in a chat on this task (a long one keeps its start and end): suggest what comes after it, not what it already did.",
   "- playbook: optional; one of bug-fix, feature, investigate, research, decide, write, plan-project, refactor, pr-to-merge-ready, buy-or-book, schedule-it, watch, sweep, or \"none\" for a small direct request. Leave it out when unsure.",
-].join("\n");
+];
+
+function systemPrompt(userName: string | undefined): string {
+  const name = userNameLine(userName);
+  return [SYSTEM_PROMPT_LINES[0], ...(name ? [name] : []), ...SYSTEM_PROMPT_LINES.slice(1)].join("\n");
+}
 
 function clip(text: string | undefined, max: number): string | undefined {
   if (!text?.trim()) return undefined;
@@ -295,7 +301,7 @@ export class TaskStartersService {
       clientName: "Copilot Bridge suggested chats",
       ...(choice.model ? { model: choice.model } : {}),
       ...(choice.reasoningEffort ? { reasoningEffort: choice.reasoningEffort } : {}),
-      systemMessage: { mode: "replace", content: SYSTEM_PROMPT },
+      systemMessage: { mode: "replace", content: systemPrompt(this.ctx.settingsStore.getSettings().userName) },
     });
     try {
       const response = await helper.session.sendAndWait({ prompt: packet, attachments: [] }, REFRESH_TIMEOUT_MS) as { data?: { content?: unknown } } | undefined;

@@ -68,6 +68,8 @@ export function DraftTextField({
   const submittedRef = useRef(submitted);
   submittedRef.current = submitted;
   const savedRef = useRef(value);
+  const writeSeenRef = useRef(false);
+  if (submitted !== null && pending) writeSeenRef.current = true;
   const dirty = text !== value;
   const unsaved = dirty || submitted !== null;
 
@@ -78,8 +80,8 @@ export function DraftTextField({
   }, [value]);
 
   useEffect(() => {
-    // Settled once the writer is done and either failed or shows a new value for this field.
-    if (submitted === null || pending || (!error && value === replaced)) return;
+    // Settled once the writer is done: failed, shows a new value, or wrote (it may normalize back).
+    if (submitted === null || pending || (!error && value === replaced && !writeSeenRef.current)) return;
     if (!error && textRef.current === submitted) {
       // Accepted and not edited since: show what the server keeps, which may be normalized.
       setText(value);
@@ -102,6 +104,7 @@ export function DraftTextField({
 
   const save = () => {
     if (!dirty) return;
+    writeSeenRef.current = false;
     setSubmitted(text);
     setReplaced(value);
     onCommit(text);

@@ -2555,6 +2555,7 @@ export interface AppSettings {
   theme?: ThemePreference;
   motion?: MotionPreference;
   identity?: string;
+  userName?: string;
   customInstructions?: string;
   responseStyle?: ResponseStyleSettings;
   /** Skill sets synced from git or a folder; written as a whole list. */

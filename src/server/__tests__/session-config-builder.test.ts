@@ -150,6 +150,7 @@ describe("session-config-builder base method", () => {
     const customInstructions = "Keep exact approved wording and do not send unapproved messages.";
     const taskInstructions = "Do not deploy until the user reviews the preview.";
     settingsStore.updateSettings({
+      userName: "Alex Example",
       customInstructions,
       responseStyle: { detail: "concise", guidance: "Use plain language." },
     });
@@ -162,6 +163,7 @@ describe("session-config-builder base method", () => {
     expect(config.onPermissionRequest).toBe(permissionPolicy);
     expect(config.memory).toEqual({ enabled: false });
     expect(config.systemMessage.content).toContain(customInstructions);
+    expect(config.systemMessage.content).toContain("The user's name is Alex Example.");
     expect(config.systemMessage.content).toContain(taskInstructions);
     expect(config.systemMessage.content).toContain(ASK_OR_PROCEED_GUIDANCE);
     expect(config.systemMessage.content).toContain(RESPONSE_QUALITY_GUIDANCE);
