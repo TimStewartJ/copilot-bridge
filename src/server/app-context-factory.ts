@@ -23,7 +23,9 @@ import { parseWorkspaceYamlSessionName } from "./session-workspace-yaml.js";
 import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { createReadStateStore } from "./read-state-store.js";
-import { createModelAbTestStore } from "./model-ab-test.js";
+import { createModelComparisonService, createModelComparisonStore } from "./model-comparison.js";
+import { createTwinWorkspace, removeTwinWorkspace } from "./comparison-workspace.js";
+import { sendChatMessage } from "./chat-message-delivery.js";
 import { createChatGradeStore, createChatGrader, createChatGradesService, hasChatEventsLog, readChatEventsForGrading } from "./chat-grading.js";
 import { createChecklistStore } from "./checklist-store.js";
 import { createCalendarStore } from "./calendar-store.js";
@@ -120,7 +122,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
   const sessionTitles = createSessionTitlesStore(db);
   const bridgeSessionStateStore = createBridgeSessionStateStore(db);
   const readStateStore = createReadStateStore(db);
-  const modelAbTestStore = createModelAbTestStore(db);
+  const modelComparisonStore = createModelComparisonStore(db);
   const chatGradeStore = createChatGradeStore(db);
   const checklistStore = createChecklistStore(db, globalBus);
   const calendarStore = createCalendarStore(db, globalBus);
@@ -204,7 +206,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     bridgeSessionStateStore,
     cliSessionCatalog,
     readStateStore,
-    modelAbTestStore,
     chatGradeStore,
     checklistStore,
     calendarStore,
@@ -262,6 +263,60 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     runtimePaths,
   });
   ctx.sessionManager = sessionManager;
+  ctx.modelComparisons = createModelComparisonService({
+    store: modelComparisonStore,
+    getSettings: () => settingsStore.getSettings(),
+    listModels: () => sessionManager.listModels(),
+    createTwinWorkspace: (mainSessionId, twinSessionId) => createTwinWorkspace(
+      sessionManager.getEffectiveSessionCwd(mainSessionId),
+      join(dataDir, "comparison-worktrees", twinSessionId),
+    ),
+    removeTwinWorkspace: ({ repo, worktree }) => removeTwinWorkspace(repo, worktree),
+    createTwin: async ({ sessionId, taskId, playbook, setup, cwd }) => {
+      // Pinned before the chat exists, so it starts there rather than in the task's folder.
+      if (cwd) sessionWorkspaceStore.setWorkspace(sessionId, cwd);
+      const options = {
+        model: setup.model,
+        ...(setup.reasoningEffort ? { reasoningEffort: setup.reasoningEffort } : {}),
+        ...(setup.contextTier ? { contextTier: setup.contextTier } : {}),
+        ...(playbook ? { playbook } : {}),
+        expectedSessionId: sessionId,
+      };
+      const task = taskId ? taskStore.getTask(taskId) : undefined;
+      if (task) {
+        await sessionManager.createTaskSession(task.id, task.title, task.workItems, task.notes, task.cwd, undefined, options);
+      } else {
+        await sessionManager.createSession(options);
+      }
+    },
+    sendFirstMessage: async (sessionId, prompt, attachments, mode) => {
+      await sendChatMessage(ctx, sessionId, prompt, {
+        ...(attachments ? { attachments } : {}),
+        ...(mode ? { mode } : {}),
+        waitForDelivery: true,
+      });
+    },
+    readEvents: (sessionId) => readChatEventsForGrading(resolveSessionEventsPath(copilotHome, sessionId)),
+    isBusy: (sessionId) => sessionManager.getSessionRunState(sessionId) !== "idle",
+    hasPendingInput: (sessionId) => sessionManager.getPendingUserInputCount(sessionId) > 0,
+    abort: async (sessionId) => { await sessionManager.abortSession(sessionId); },
+    askJudge: async ({ model, reasoningEffort, system, prompt, timeoutMs }) => {
+      const helper = await sessionManager.createHelperSession({
+        clientName: "Copilot Bridge Comparison",
+        model,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        systemMessage: { mode: "replace", content: system },
+      });
+      try {
+        const response = await helper.session.sendAndWait({ prompt, attachments: [] }, timeoutMs) as { data?: { content?: unknown } } | undefined;
+        const content = response?.data?.content;
+        return typeof content === "string" ? content : undefined;
+      } finally {
+        void helper.dispose().catch(() => undefined);
+      }
+    },
+    copilotHome: copilotHome ?? join(homedir(), ".copilot"),
+  });
   ctx.chatGrades = createChatGradesService({
     store: chatGradeStore,
     grader: createChatGrader({
@@ -411,6 +466,7 @@ export function initializeTriggerAndDeliveryRunners(ctx: AppContext): void {
   ctx.deferredPromptRunner?.start();
   ctx.triggerChatRunner?.start();
   ctx.triggerTaskRunner?.start();
+  ctx.modelComparisons?.start();
 }
 /** Git packs older than this are fetched again when the server starts. */
 const SKILL_PACK_STARTUP_STALE_MS = 12 * 60 * 60_000;

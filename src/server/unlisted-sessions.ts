@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isComparisonTwinSessionId } from "./comparison-twin.js";
 import { isDisposableDeferWorkerSessionId } from "./defer-ids.js";
 import { isScratchSessionId } from "./scratch-sessions.js";
 import { isDisposableTitleSessionId } from "./session-name-generator.js";
@@ -7,7 +8,8 @@ import { isDisposableTitleSessionId } from "./session-name-generator.js";
 export function isUnlistedSessionId(sessionId: string): boolean {
   return isDisposableTitleSessionId(sessionId)
     || isDisposableDeferWorkerSessionId(sessionId)
-    || isScratchSessionId(sessionId);
+    || isScratchSessionId(sessionId)
+    || isComparisonTwinSessionId(sessionId);
 }
 
 /** A new id for an ordinary chat, never one that a reserved prefix would hide or delete. */

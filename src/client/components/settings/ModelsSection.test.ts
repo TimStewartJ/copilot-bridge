@@ -139,39 +139,45 @@ describe("ModelsSection", () => {
     expect(setDraft.mock.lastCall?.[0].modelRoles).not.toHaveProperty("reviewers");
   });
 
-  it("starts an A/B test between two set tiers and shows each arm's runs and cost", async () => {
+  it("compares a tier with any model, and shows each arm's wins and cost per reply", async () => {
     mocks.useModelsQuery.mockReturnValue({ data: MODELS });
     const setDraft = vi.fn();
     harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
     await harness.render(createElement(ModelsSection, { draft: DRAFT, setDraft }));
 
-    // A starts on Standard and B on Deep; one arm can't take the other's tier.
-    expect(getReactProps(button(group(harness.dom.container, "Tier A"), "Deep"))!.disabled).toBe(true);
     const toggle = findAllByTag(harness.dom.container, "input").find((element) => getReactProps(element)?.id === "model-ab-test");
     await harness.act(() => getReactProps(toggle)!.onChange({ target: { checked: true } }));
-    expect(setDraft).toHaveBeenLastCalledWith(expect.objectContaining({ modelAbTest: { enabled: true, a: "preset2", b: "preset3" } }));
+    expect(setDraft).toHaveBeenLastCalledWith(expect.objectContaining({ modelAbTest: { enabled: true, a: { tier: "preset2" }, b: { tier: "preset3" } } }));
+    // Custom starts from the tier the arm was on, so trying a new model is one change away.
+    await harness.act(() => getReactProps(button(group(harness!.dom.container, "Arm B"), "Custom"))!.onClick());
+    expect(setDraft.mock.lastCall?.[0].modelAbTest).toEqual({
+      enabled: false, a: { tier: "preset2" }, b: { model: "claude-opus-5.5", reasoningEffort: "high" },
+    });
 
     const startedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
     mocks.abTestReport = {
       startedAt,
+      pairs: 4,
+      pending: 0,
+      unusable: 1,
       arms: [
-        { arm: "a", tier: "preset2", setup: { model: "gpt-6.1-sol", reasoningEffort: "high" }, chats: 2, scheduledRuns: 1, switched: 1, meteredSessions: 2, meteredAiCredits: 300 },
-        { arm: "b", tier: "preset3", chats: 1, scheduledRuns: 0, switched: 0, meteredSessions: 0, meteredAiCredits: 0 },
+        { arm: "a", choice: { tier: "preset2" }, setup: { model: "gpt-6.1-sol", reasoningEffort: "high" }, decided: 3, wins: 2, ties: 0, userWins: 1, medianDurationMs: 42_000, medianAiCredits: 50 },
+        { arm: "b", choice: { model: "gpt-6-luna" }, decided: 3, wins: 1, ties: 0, userWins: 0 },
       ],
+      recent: [],
     };
     await harness.render(createElement(ModelsSection, {
-      draft: { ...DRAFT, modelAbTest: { enabled: true, a: "preset2", b: "preset3", startedAt } } as AppSettings,
+      draft: { ...DRAFT, modelAbTest: { enabled: true, a: { tier: "preset2" }, b: { model: "gpt-6-luna" }, startedAt } } as AppSettings,
       setDraft,
     }));
     const text = harness.dom.container.textContent;
     expect(text).toContain("Started 2h ago");
-    expect(text).toContain("GPT-6.1 Sol · High");
-    expect(text).toContain("$1.50 per run");
-    expect(text).toContain("2 of 3 recorded");
-    expect(text).toContain("1 model change");
-    expect(text).toContain("Cost not recorded yet");
+    expect(text).toContain("B · GPT-6 Luna");
+    expect(text).toContain("Won 2 of 3");
+    expect(text).toContain("1 by your vote");
+    expect(text).toContain("1 not compared");
     // A running test keeps its arms until it is turned off.
-    expect(getReactProps(button(group(harness.dom.container, "Tier A"), "Fast"))!.disabled).toBe(true);
+    expect(getReactProps(button(group(harness.dom.container, "Arm A"), "Fast"))!.disabled).toBe(true);
     mocks.abTestReport = undefined;
   });
 });

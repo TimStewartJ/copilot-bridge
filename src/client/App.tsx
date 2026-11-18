@@ -84,6 +84,7 @@ import {
 } from "./lib/new-session-launch";
 import type { ModelPresetSelection } from "./lib/model-presets";
 import { getModelPresetSlotLabel, type ModelPresetSlot } from "../shared/model-presets.js";
+import type { ModelRoleChoice } from "../shared/model-roles.js";
 import { modelUsesDynamicSelection, type CopilotContextTier } from "../shared/copilot-context.js";
 import { useTasksQuery } from "./hooks/queries/useTasks";
 import { usePlaybooksQuery } from "./hooks/queries/usePlaybooks";
@@ -2748,6 +2749,9 @@ function SessionRoute({
     && !draftLaunch?.reasoningEffort && !draftLaunch?.contextTier
     ? modelPresetMemory.abTest
     : undefined;
+  const armName = (arm: ModelRoleChoice) => ("tier" in arm
+    ? getModelPresetSlotLabel(arm.tier)
+    : launchState.availableModels.find((model) => model.id === arm.model)?.name ?? arm.model);
   const rememberModelPreset = modelPresetMemory.remember;
   const playbooksQuery = usePlaybooksQuery({ enabled: isDraft });
   // Only an explicit choice is sent; else the agent picks a playbook or the task's pin applies.
@@ -3060,7 +3064,7 @@ function SessionRoute({
       presets={presets}
       selectedModelId={abTestLaunch ? "" : launchState.modelKey}
       selectedPresetSlot={abTestLaunch ? undefined : activePresetSlot}
-      abTestTiers={abTestLaunch ? [abTestLaunch.a, abTestLaunch.b] : undefined}
+      abTestArms={abTestLaunch ? [armName(abTestLaunch.a), armName(abTestLaunch.b)] : undefined}
       reasoningEffortOptions={launchState.reasoningEffortOptions}
       selectedReasoningEffort={launchState.selectedReasoningEffort}
       contextOptions={launchState.contextOptions}

@@ -25,7 +25,8 @@ import {
   type SessionWorkspaceSummaryWithSource,
   type SessionWorkspaceWarningPayload,
 } from "./session-view.js";
-import { resolveSessionCreationOptions as resolveSessionCreationOptionsForContext } from "./session-creation-options.js";
+import { resolveSessionCreationOptions as resolveSessionCreationOptionsForContext, type SessionCreationOptions } from "./session-creation-options.js";
+import type { ModelComparisonPreparation } from "./model-comparison.js";
 import { startTaskTidyChat } from "./task-tidy.js";
 import { buildTaskPagePrompt, startTaskChat } from "./task-chat-start.js";
 import { TaskStartersError, TaskStartersService } from "./task-starters.js";
@@ -137,7 +138,6 @@ import {
 import { SESSION_HOLD_INTENT } from "./session-holds.js";
 import { createHelmRouter } from "./helm/helm-router.js";
 import { describeModelRoles } from "./model-roles.js";
-import { buildModelAbTestReport } from "./model-ab-test.js";
 import { CHAT_GRADES_MAX_EXCERPT_CHATS, parseChatGradesFilters } from "./chat-grading.js";
 import { MODEL_ROLES, isTierChoice } from "../shared/model-roles.js";
 import { createHelmThinkerRouter } from "./helm/thinker/router.js";
@@ -1294,22 +1294,36 @@ export function createApiRouter(
     }
   });
 
-  // GET /model-ab-test — the current model A/B test per arm: chats, scheduled runs and cost.
-  router.get("/model-ab-test", async (_req, res) => {
+  // GET /model-ab-test — the running side-by-side comparison: wins, ties and cost per arm.
+  router.get("/model-ab-test", (_req, res) => {
     try {
-      const test = ctx.settingsStore.getSettings().modelAbTest;
-      const assignments = test?.startedAt && ctx.modelAbTestStore
-        ? ctx.modelAbTestStore.listForTest(test.startedAt)
-        : [];
-      // Whole-chat totals: every chat in the test started after it began.
-      const usage = assignments.length > 0
-        ? await copilotUsageReader.readSummary({ sessionIds: assignments.map((assignment) => assignment.sessionId), range: "all" })
-        : undefined;
-      res.json(buildModelAbTestReport(test, assignments, usage?.sessions ?? []));
+      const report = ctx.modelComparisons?.report() ?? { startedAt: null, pairs: 0, pending: 0, unusable: 0, arms: [], recent: [] };
+      res.json(report);
     } catch (err) {
-      console.error("[model-ab-test] Error:", err);
-      res.status(500).json({ error: err instanceof Error ? err.message : "Unable to read the model A/B test." });
+      console.error("[model-comparison] Error:", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : "Unable to read the model comparison." });
     }
+  });
+
+  // GET /model-comparisons/by-session/:id — the pair a chat belongs to, as that chat sees it.
+  router.get("/model-comparisons/by-session/:id", (req, res) => {
+    if (!isCanonicalSessionId(req.params.id)) return res.status(400).json({ error: "Valid sessionId is required" });
+    res.json({ comparison: ctx.modelComparisons?.view(req.params.id) ?? null });
+  });
+
+  // POST /model-comparisons/:id/vote — the user's pick between the two chats of a pair.
+  router.post("/model-comparisons/:id/vote", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Voting on a model comparison")) return;
+    const { sessionId, winner } = isRecord(req.body) ? req.body : {};
+    if (typeof sessionId !== "string" || !isCanonicalSessionId(sessionId)) {
+      return res.status(400).json({ error: "Valid sessionId is required" });
+    }
+    if (winner !== "x" && winner !== "y" && winner !== "tie") {
+      return res.status(400).json({ error: "winner must be x, y or tie" });
+    }
+    const comparison = ctx.modelComparisons?.vote(req.params.id, sessionId, winner);
+    if (!comparison) return res.status(404).json({ error: "Comparison not found" });
+    res.json({ comparison });
   });
 
   // GET /chat-grades — matching chats, graded count, the grading run and label counts per model.
@@ -2100,6 +2114,29 @@ export function createApiRouter(
     return resolveSessionCreationOptionsForContext(ctx, body);
   }
 
+  /** A chat the user starts with no model of its own joins the running comparison, if any. */
+  async function prepareComparison(options: SessionCreationOptions | undefined): Promise<ModelComparisonPreparation | undefined> {
+    if (options?.model || options?.reasoningEffort || options?.contextTier) return undefined;
+    try {
+      return await ctx.modelComparisons?.prepare();
+    } catch (error) {
+      console.warn("[model-comparison] Could not prepare a comparison:", error instanceof Error ? error.message : error);
+      return undefined;
+    }
+  }
+
+  function comparisonLaunchOptions(comparison: ModelComparisonPreparation): SessionCreationOptions {
+    return {
+      model: comparison.main.model,
+      ...(comparison.main.reasoningEffort ? { reasoningEffort: comparison.main.reasoningEffort } : {}),
+      ...(comparison.main.contextTier ? { contextTier: comparison.main.contextTier } : {}),
+    };
+  }
+
+  function launchPlaybook(options: SessionCreationOptions | undefined): { playbook?: string } {
+    return options?.playbook ? { playbook: options.playbook } : {};
+  }
+
   function settingsModelSnapshot(settings: AppSettings): string {
     return JSON.stringify({
       model: settings.model,
@@ -2128,6 +2165,11 @@ export function createApiRouter(
       if (!choice || isTierChoice(choice)) continue;
       const before = current.modelRoles?.[role];
       if (JSON.stringify(before) !== JSON.stringify(choice)) add({ model: choice.model });
+    }
+    for (const arm of ["a", "b"] as const) {
+      const choice = next.modelAbTest?.[arm];
+      if (!choice || isTierChoice(choice)) continue;
+      if (JSON.stringify(current.modelAbTest?.[arm]) !== JSON.stringify(choice)) add({ model: choice.model });
     }
     return [...selections.values()];
   }
@@ -2333,11 +2375,15 @@ export function createApiRouter(
       return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
     }
     try {
+      const webClient = isWebClientRequest(req.headers);
+      const comparison = webClient ? await prepareComparison(creationResult.options) : undefined;
       const result = await ctx.sessionManager.createSession({
         background: true,
         ...creationResult.options,
-        ...(isWebClientRequest(req.headers) ? {} : { expectedSessionId: createScratchSessionId() }),
+        ...(comparison ? comparisonLaunchOptions(comparison) : {}),
+        ...(webClient ? {} : { expectedSessionId: createScratchSessionId() }),
       });
+      if (comparison) ctx.modelComparisons?.register(result.sessionId, comparison, launchPlaybook(creationResult.options));
       sessionList.invalidate("route:session:create");
       res.json(result);
     } catch (err) {
@@ -2564,6 +2610,7 @@ export function createApiRouter(
         skipOpenQuestions: true,
       });
       noteUserMessage(sessionId);
+      ctx.modelComparisons?.onFirstMessage(sessionId, prompt, attachments, mode, delivery);
       res.status(202).json(chatAcceptedResponse(delivery));
     } catch (err) {
       res.status(getChatDeliveryErrorStatus(err)).json({ error: err instanceof Error ? err.message : String(err) });
@@ -3645,6 +3692,7 @@ export function createApiRouter(
         return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
       }
       const scratch = !isWebClientRequest(req.headers);
+      const comparison = scratch ? undefined : await prepareComparison(creationResult.options);
       const result = await ctx.sessionManager.createTaskSession(
         task.id,
         task.title,
@@ -3655,9 +3703,13 @@ export function createApiRouter(
         {
           background: true,
           ...creationResult.options,
+          ...(comparison ? comparisonLaunchOptions(comparison) : {}),
           ...(scratch ? { expectedSessionId: createScratchSessionId() } : {}),
         },
       );
+      if (comparison) {
+        ctx.modelComparisons?.register(result.sessionId, comparison, { taskId: task.id, ...launchPlaybook(creationResult.options) });
+      }
       sessionList.invalidate("route:task-session:create");
 
       // A scratch chat starts with the task's context but stays off the task.

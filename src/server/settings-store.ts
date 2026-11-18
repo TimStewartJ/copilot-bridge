@@ -593,24 +593,24 @@ function migrateFamilyDefaults(familyDefaults: ModelFamilyDefaults | undefined):
   return Object.keys(presets).length > 0 ? presets : undefined;
 }
 
-function normalizeModelRoleChoice(value: unknown, role: string): ModelRoleChoice | undefined {
+function normalizeModelRoleChoice(value: unknown, path: string): ModelRoleChoice | undefined {
   if (value === undefined || value === null) return undefined;
-  if (!isRecord(value)) validationError(`modelRoles.${role} must be an object`);
+  if (!isRecord(value)) validationError(`${path} must be an object`);
   if ("tier" in value) {
-    if (!isModelPresetSlot(value.tier)) validationError(`modelRoles.${role}.tier must be preset1, preset2 or preset3`);
+    if (!isModelPresetSlot(value.tier)) validationError(`${path}.tier must be preset1, preset2 or preset3`);
     return { tier: value.tier };
   }
   if (typeof value.model !== "string" || !value.model.trim() || value.model.length > 200) {
-    validationError(`modelRoles.${role} needs a tier or a model`);
+    validationError(`${path} needs a tier or a model`);
   }
   if (value.reasoningEffort !== undefined && value.reasoningEffort !== null
     && (typeof value.reasoningEffort !== "string" || value.reasoningEffort.length > 32)) {
-    validationError(`modelRoles.${role}.reasoningEffort must be a reasoning effort name`);
+    validationError(`${path}.reasoningEffort must be a reasoning effort name`);
   }
   const effort = typeof value.reasoningEffort === "string" ? value.reasoningEffort.trim() : "";
   const contextTier = value.contextTier;
   if (contextTier !== undefined && contextTier !== null && contextTier !== "" && !isCopilotContextTier(contextTier)) {
-    validationError(`modelRoles.${role}.contextTier must be default or long_context`);
+    validationError(`${path}.contextTier must be default or long_context`);
   }
   return {
     model: value.model.trim(),
@@ -625,7 +625,7 @@ function normalizeModelRoles(value: unknown): ModelRoles | undefined {
   const roles: ModelRoles = {};
   for (const [role, choice] of Object.entries(value)) {
     if (!isModelRole(role)) validationError(`modelRoles key "${role}" is not a known role`);
-    const normalized = normalizeModelRoleChoice(choice, role);
+    const normalized = normalizeModelRoleChoice(choice, `modelRoles.${role}`);
     // New chats and background checks keep a custom model in their older fields.
     if (normalized && !isTierChoice(normalized) && (role === "chat" || role === "background")) {
       validationError(`modelRoles.${role} takes a tier; its own model is set with the matching setting`);
@@ -698,39 +698,53 @@ function normalizeModelAbTest(value: unknown): ModelAbTestSettings | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isRecord(value)) validationError("modelAbTest must be an object");
   if (typeof value.enabled !== "boolean") validationError("modelAbTest.enabled must be a boolean");
-  if (!isModelPresetSlot(value.a) || !isModelPresetSlot(value.b)) {
-    validationError("modelAbTest.a and modelAbTest.b must be preset1, preset2 or preset3");
-  }
-  if (value.a === value.b) validationError("modelAbTest.a and modelAbTest.b must be different tiers");
+  // Arms saved as bare tiers belong to the old random test; running both arms needs a new yes.
+  const legacy = isModelPresetSlot(value.a) || isModelPresetSlot(value.b);
+  const arm = (raw: unknown, name: "a" | "b"): ModelRoleChoice => {
+    const choice = isModelPresetSlot(raw) ? { tier: raw } : normalizeModelRoleChoice(raw, `modelAbTest.${name}`);
+    if (!choice) validationError(`modelAbTest.${name} needs a tier or a model`);
+    return choice;
+  };
+  const a = arm(value.a, "a");
+  const b = arm(value.b, "b");
+  if (JSON.stringify(a) === JSON.stringify(b)) validationError("modelAbTest.a and modelAbTest.b must be different");
   const startedAt = typeof value.startedAt === "string" && Number.isFinite(Date.parse(value.startedAt))
     ? new Date(Date.parse(value.startedAt)).toISOString()
     : undefined;
-  return { enabled: value.enabled, a: value.a, b: value.b, ...(startedAt ? { startedAt } : {}) };
+  return { enabled: value.enabled && !legacy, a, b, ...(startedAt && !legacy ? { startedAt } : {}) };
 }
 
-/** Server owns startedAt: arm or tier changes start a new test; an arm without a model ends it. */
+function armSetupKey(settings: AppSettings, choice: ModelRoleChoice): string {
+  const target = isTierChoice(choice) ? settings.modelPresets?.[choice.tier] : choice;
+  return target?.model ? `${target.model}|${target.reasoningEffort ?? ""}|${target.contextTier ?? "default"}` : "";
+}
+
+/** Server owns startedAt: an arm's model changing starts a new test; one with none ends it. */
 function reconcileModelAbTest(base: AppSettings, normalized: AppSettings, value: Record<string, unknown>): void {
   const next = normalized.modelAbTest;
   // Reading the stored row: keep it as saved.
   if (!next || base === DEFAULT_SETTINGS) return;
   const previous = base.modelAbTest;
-  const armsMoved = previous?.a !== next.a || previous?.b !== next.b;
+  const armsMoved = JSON.stringify(previous?.a) !== JSON.stringify(next.a) || JSON.stringify(previous?.b) !== JSON.stringify(next.b);
   let enabled = next.enabled;
-  const emptyTier = [next.a, next.b].find((slot) => !normalized.modelPresets?.[slot]?.model);
-  if (enabled && emptyTier) {
-    if ("modelAbTest" in value && (!previous?.enabled || armsMoved)) {
-      validationError(`The ${getModelPresetSlotLabel(emptyTier)} tier has no model yet`);
+  const aKey = armSetupKey(normalized, next.a);
+  const bKey = armSetupKey(normalized, next.b);
+  const asked = "modelAbTest" in value && (!previous?.enabled || armsMoved);
+  if (enabled && (!aKey || !bKey)) {
+    const empty = [next.a, next.b].find((choice) => !armSetupKey(normalized, choice));
+    if (asked) {
+      validationError(empty && isTierChoice(empty) ? `The ${getModelPresetSlotLabel(empty.tier)} tier has no model yet` : "Both arms need a model");
     }
     enabled = false;
   }
-  const runs = (settings: AppSettings, slot: ModelPresetSlot) => {
-    const preset = settings.modelPresets?.[slot];
-    return preset?.model ? `${preset.model}|${preset.reasoningEffort ?? ""}|${preset.contextTier ?? "default"}` : "";
-  };
+  if (enabled && aKey === bKey) {
+    if (asked) validationError("A and B run the same model and effort");
+    enabled = false;
+  }
   const restart = enabled && (
     !previous?.enabled || !previous.startedAt || armsMoved
-    || runs(base, next.a) !== runs(normalized, next.a)
-    || runs(base, next.b) !== runs(normalized, next.b)
+    || armSetupKey(base, next.a) !== aKey
+    || armSetupKey(base, next.b) !== bKey
   );
   const startedAt = restart ? new Date().toISOString() : previous?.startedAt;
   normalized.modelAbTest = { enabled, a: next.a, b: next.b, ...(startedAt ? { startedAt } : {}) };

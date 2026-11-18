@@ -6,7 +6,6 @@ import type {
 import { LaunchOptionRow } from "./shared/LaunchOptionControls";
 import ModelPresetPicker from "./shared/ModelPresetPicker";
 import type { ModelPresetSlot } from "../../shared/model-presets.js";
-import { getModelPresetSlotLabel } from "../../shared/model-presets.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
 import type { SendMode } from "../../shared/send-mode.js";
 import type { PlaybookInfo } from "../../shared/workflow-vocabulary.js";
@@ -41,8 +40,8 @@ interface NewSessionLaunchPanelProps {
   onModelSelectionCommitted?: () => void;
   /** Set when this chat's model, effort or context differ from its tier's. */
   tierChange?: { tierLabel: string; onReset: () => void; onSave: () => void };
-  /** A model A/B test's two tiers the chat will start on; choosing a tier opts out. */
-  abTestTiers?: readonly [ModelPresetSlot, ModelPresetSlot];
+  /** The running comparison's two arms, by name; choosing a tier opts this chat out. */
+  abTestArms?: readonly [string, string];
   /** Shown above the launch options, such as a task's suggested chats. */
   suggestions?: ReactNode;
 }
@@ -76,7 +75,7 @@ export default function NewSessionLaunchPanel({
   onModeChange,
   onModelSelectionCommitted,
   tierChange,
-  abTestTiers,
+  abTestArms,
   suggestions,
 }: NewSessionLaunchPanelProps) {
   const availableModels = models.filter((model) => model.policy?.state !== "disabled");
@@ -128,14 +127,14 @@ export default function NewSessionLaunchPanel({
                 Models could not be loaded.
               </p>
             )}
-            {abTestTiers && (
+            {abTestArms && (
               <p className={DS.text.meta}>
-                A/B test: starts on {getModelPresetSlotLabel(abTestTiers[0])} or {getModelPresetSlotLabel(abTestTiers[1])} at random
+                Runs on {abTestArms[0]} and {abTestArms[1]} side by side
               </p>
             )}
           </FormRow>
 
-          {!abTestTiers && reasoningEffortOptions.length > 0 && (
+          {!abTestArms && reasoningEffortOptions.length > 0 && (
             <FormRow label="Effort" hideLabel>
               <LaunchOptionRow
                 ariaLabel="Effort for new session"
@@ -148,7 +147,7 @@ export default function NewSessionLaunchPanel({
             </FormRow>
           )}
 
-          {!abTestTiers && contextOptions.length > 0 && (
+          {!abTestArms && contextOptions.length > 0 && (
             <FormRow label="Context" hideLabel>
               <LaunchOptionRow
                 ariaLabel="Context for new session"

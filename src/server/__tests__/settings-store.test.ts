@@ -455,7 +455,7 @@ describe("settings-store", () => {
 
 describe("settings-store model A/B test", () => {
   const TIERS = { preset2: { model: "model-standard" }, preset3: { model: "model-deep", reasoningEffort: "high" } };
-  const ON = { enabled: true, a: "preset2", b: "preset3" } as const;
+  const ON = { enabled: true, a: { tier: "preset2" }, b: { tier: "preset3" } } as const;
   afterEach(() => vi.useRealTimers());
 
   it("starts a test when it is turned on or what an arm runs changes, and keeps its start when turned off", () => {
@@ -473,16 +473,25 @@ describe("settings-store model A/B test", () => {
       .toBe("2026-03-02T10:00:00.000Z");
 
     vi.setSystemTime(new Date("2026-03-02T11:00:00.000Z"));
-    expect(store.updateSettings({ modelAbTest: { ...ON, enabled: false } }).modelAbTest)
-      .toEqual({ ...ON, enabled: false, startedAt: "2026-03-02T10:00:00.000Z" });
+    const custom = { ...ON, b: { model: "model-new", reasoningEffort: "medium" } };
+    expect(store.updateSettings({ modelAbTest: custom }).modelAbTest).toEqual({ ...custom, startedAt: "2026-03-02T11:00:00.000Z" });
+    expect(store.updateSettings({ modelAbTest: { ...custom, enabled: false } }).modelAbTest)
+      .toEqual({ ...custom, enabled: false, startedAt: "2026-03-02T11:00:00.000Z" });
   });
 
-  it("refuses a test on a tier without a model, and ends one whose tier loses its model", () => {
+  it("refuses arms that can't run or run the same thing, and ends a test whose tier loses its model", () => {
     store.updateSettings({ modelPresets: { preset2: TIERS.preset2 } });
     expect(() => store.updateSettings({ modelAbTest: ON })).toThrow("The Deep tier has no model yet");
-    expect(() => store.updateSettings({ modelAbTest: { ...ON, b: "preset2" } })).toThrow("must be different tiers");
+    expect(() => store.updateSettings({ modelAbTest: { ...ON, b: { tier: "preset2" } } })).toThrow("must be different");
+    expect(() => store.updateSettings({ modelAbTest: { ...ON, b: { model: "model-standard" } } })).toThrow("run the same model");
 
     store.updateSettings({ modelPresets: TIERS, modelAbTest: ON });
     expect(store.updateSettings({ modelPresets: { preset2: TIERS.preset2 } }).modelAbTest).toMatchObject({ enabled: false });
+  });
+
+  it("reads a saved random test as switched off, since running both arms needs a new yes", () => {
+    store.updateSettings({ modelPresets: TIERS });
+    const legacy = { enabled: true, a: "preset2", b: "preset3", startedAt: "2026-03-01T00:00:00.000Z" } as unknown as typeof ON;
+    expect(store.updateSettings({ modelAbTest: legacy }).modelAbTest).toEqual({ enabled: false, a: { tier: "preset2" }, b: { tier: "preset3" } });
   });
 });

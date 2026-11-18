@@ -27,6 +27,8 @@ export interface SessionWorkspaceControllerDeps {
   runtimePaths?: RuntimePaths;
   /** Test seam for the Bridge host directories whose recorded cwd is treated as implicit. */
   hostRoots?: readonly string[];
+  /** The chat whose task this one shares without being linked (a comparison twin's original). */
+  taskSourceSessionId?(sessionId: string): string | undefined;
   isSessionBusy(sessionId: string): boolean;
   onWorkspaceChange(sessionId: string, opts: { busy: boolean }): void;
 }
@@ -69,7 +71,8 @@ export class SessionWorkspaceController {
     return linkedTasks.length === 1 ? linkedTasks[0] : undefined;
   }
 
-  listLinkedTasks(sessionId: string): Task[] {
+  listLinkedTasks(requestedSessionId: string): Task[] {
+    const sessionId = this.deps.taskSourceSessionId?.(requestedSessionId) ?? requestedSessionId;
     const listedTasks = this.deps.taskStore.listTasks?.().filter((task) => task.sessionIds.includes(sessionId)) ?? [];
     if (listedTasks.length > 0) return listedTasks;
     const linkedTask = this.deps.taskStore.findTaskBySessionId?.(sessionId);

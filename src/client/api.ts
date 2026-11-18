@@ -1,6 +1,6 @@
 import type { TaskStartersResponse } from "../shared/task-starters.js";
 import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
-import type { ModelAbTestReport, ModelAbTestSettings } from "../shared/model-ab-test.js";
+import type { ModelAbTestReport, ModelAbTestSettings, ModelComparisonSide, ModelComparisonView } from "../shared/model-ab-test.js";
 import type { ChatGradesFilters, ChatGradesRunStatus, ChatGradesView } from "../shared/chat-grades.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
@@ -3149,6 +3149,23 @@ export async function fetchModelRoles(signal?: AbortSignal): Promise<ModelRolesV
 
 export async function fetchModelAbTestReport(signal?: AbortSignal): Promise<ModelAbTestReport> {
   return apiFetch<ModelAbTestReport>("/api/model-ab-test", undefined, { signal });
+}
+
+/** The side-by-side comparison this chat is part of, or null. */
+export async function fetchModelComparison(sessionId: string, signal?: AbortSignal): Promise<ModelComparisonView | null> {
+  const { comparison } = await apiFetch<{ comparison: ModelComparisonView | null }>(
+    `/api/model-comparisons/by-session/${encodeURIComponent(sessionId)}`, undefined, { signal });
+  return comparison;
+}
+
+export async function voteModelComparison(
+  comparisonId: string,
+  sessionId: string,
+  winner: ModelComparisonSide | "tie",
+): Promise<ModelComparisonView> {
+  const { comparison } = await apiFetch<{ comparison: ModelComparisonView }>(
+    `/api/model-comparisons/${encodeURIComponent(comparisonId)}/vote`, { sessionId, winner });
+  return comparison;
 }
 
 /** The chats matching the filters, their grades and the grading run (Settings › Usage). */

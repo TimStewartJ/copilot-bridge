@@ -90,14 +90,14 @@ describe("NewSessionLaunchPanel", () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
-  it("names an A/B test's two tiers in place of effort and context when the test picks the model", async () => {
+  it("names the comparison's two arms in place of effort and context when the test picks the models", async () => {
     await harness!.render(createElement(NewSessionLaunchPanel, {
       ...requiredProps(),
       reasoningEffortOptions: [{ value: "high", label: "High" }],
       contextOptions: [{ value: "default", label: "Standard context" }],
-      abTestTiers: ["preset2", "preset3"],
+      abTestArms: ["Standard", "GPT-6 Luna"],
     }));
-    expect(harness!.dom.container.textContent).toContain("A/B test: starts on Standard or Deep at random");
+    expect(harness!.dom.container.textContent).toContain("Runs on Standard and GPT-6 Luna side by side");
     const groups = findAllByTag(harness!.dom.container, "div").map((element) => getReactProps(element)?.["aria-label"]);
     expect(groups).not.toContain("Effort for new session");
     expect(groups).not.toContain("Context for new session");

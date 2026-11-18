@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { AlertTriangle, RotateCw } from "lucide-react";
 import { fetchModelAbTestReport, fetchModelRoles, refreshModels, type AppSettings, type ModelInfo } from "../../api";
 import { useModelsQuery } from "../../hooks/queries/useModels";
@@ -29,13 +30,16 @@ import {
 import { pickSecondOpinion } from "../../../shared/subagent-settings.js";
 import { getModelFamilyLabel, type ModelFamily } from "../../../shared/model-families.js";
 import {
-  DEFAULT_MODEL_AB_TEST_TIERS,
+  DEFAULT_MODEL_AB_TEST_ARMS,
   MODEL_AB_TEST_ARMS,
   type ModelAbTestArm,
+  type ModelAbTestArmChoice,
+  type ModelAbTestRecentPair,
   type ModelAbTestReport,
   type ModelAbTestSettings,
 } from "../../../shared/model-ab-test.js";
 import { COPILOT_AI_CREDIT_USD } from "../../../shared/copilot-pricing.js";
+import { formatDuration } from "../../lib/tool-presentation";
 import { formatUsageCount, formatUsageUsd } from "../../lib/usage-presentation";
 import { Button, ChoiceButton, Details, Field, FieldList, FormRow, MetaLine, Notice, SegmentedControl, SettingList, SettingRow, Switch } from "../../design/primitives";
 import { DS, cx } from "../../design/tokens";
@@ -286,46 +290,68 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
   </SettingsSection>;
 }
 
-// copy-ok: says which chats the test changes, a scope the reader cannot see
-const AB_TEST_SCOPE = "New chats, and triggers that follow them, start on A or B at random.";
+// copy-ok: says which chats the test doubles, a scope and cost the reader cannot see
+const AB_TEST_SCOPE = "Chats you start also run on the other arm; a judge compares the first replies.";
 
-/** Starts new chats on one of two tiers at random, so the two can be compared on the same work. */
+type ArmValue = ModelPresetSlot | "custom";
+
+function armLabel(choice: ModelAbTestArmChoice, models: readonly ModelInfo[] | undefined): string {
+  return isTierChoice(choice) ? MODEL_TIER_INFO[choice.tier].label : modelName(models, choice.model);
+}
+
+/** Runs each chat the user starts on both arms, so the two are compared on the same request. */
 function ModelAbTestBlock({ draft, setDraft, models }: {
   draft: AppSettings;
   setDraft: (draft: AppSettings) => void;
   models: readonly ModelInfo[] | undefined;
 }) {
   const presets = draft.modelPresets ?? {};
-  const test: ModelAbTestSettings = draft.modelAbTest ?? { enabled: false, ...DEFAULT_MODEL_AB_TEST_TIERS };
+  const available = (models ?? []).filter((model) => model.policy?.state !== "disabled");
+  const test: ModelAbTestSettings = draft.modelAbTest ?? { enabled: false, ...DEFAULT_MODEL_AB_TEST_ARMS };
   const report = useQuery({
     queryKey: queryKeys.modelAbTest(test.startedAt ?? null),
     queryFn: ({ signal }) => fetchModelAbTestReport(signal),
     enabled: Boolean(test.startedAt),
   });
   const save = (next: Partial<ModelAbTestSettings>) => setDraft({ ...draft, modelAbTest: { ...test, ...next } });
-  const ready = Boolean(presets[test.a]?.model && presets[test.b]?.model);
-  const otherArm = (arm: ModelAbTestArm): ModelAbTestArm => (arm === "a" ? "b" : "a");
-  const armOptions = (arm: ModelAbTestArm) => MODEL_PRESET_SLOTS.map((slot) => {
-    const taken = slot === test[otherArm(arm)];
-    return {
-      value: slot,
-      label: MODEL_TIER_INFO[slot].label,
-      disabled: !presets[slot]?.model || taken,
-      title: !presets[slot]?.model ? "Set this tier first" : taken ? `${otherArm(arm).toUpperCase()} runs this tier` : undefined,
-    };
-  });
+  const runs = (choice: ModelAbTestArmChoice) => (isTierChoice(choice) ? presets[choice.tier]?.model : choice.model);
+  const ready = Boolean(runs(test.a) && runs(test.b));
+  const setArm = (arm: ModelAbTestArm, value: ArmValue) => {
+    const current = test[arm];
+    if (value !== "custom") return save({ [arm]: { tier: value } });
+    if (!isTierChoice(current)) return;
+    const from = presets[current.tier];
+    save({ [arm]: from?.model ? { ...from } : { model: available[0]?.id ?? "" } });
+  };
+  const armOptions = MODEL_PRESET_SLOTS.map((slot) => ({
+    value: slot as ArmValue,
+    label: MODEL_TIER_INFO[slot].label,
+    disabled: !presets[slot]?.model,
+    title: presets[slot]?.model ? undefined : "Set this tier first",
+  })).concat([{ value: "custom", label: "Custom", disabled: false, title: "Any model, so a new one can be tried" }]);
   return (
     <div>
-      <h3 className={cx(DS.text.sectionLabel, "mb-1")}>A/B test</h3>
+      <h3 className={cx(DS.text.sectionLabel, "mb-1")}>Compare models</h3>
       <SettingList>
-        <SettingRow label="Compare two tiers" htmlFor="model-ab-test" hint={AB_TEST_SCOPE}
+        <SettingRow label="Side by side" htmlFor="model-ab-test" hint={AB_TEST_SCOPE}
           control={<Switch id="model-ab-test" checked={test.enabled} disabled={!test.enabled && !ready}
             onChange={(event) => save({ enabled: event.target.checked })} />} />
-        {MODEL_AB_TEST_ARMS.map((arm) => (
-          <SettingRow key={arm} label={arm.toUpperCase()} labelId={`model-ab-test-${arm}`}
-            control={<SegmentedControl<ModelPresetSlot> ariaLabel={`Tier ${arm.toUpperCase()}`} options={armOptions(arm)} value={test[arm]}
-              disabled={test.enabled} onChange={(slot) => save(arm === "a" ? { a: slot } : { b: slot })} />} />
-        ))}
+        {MODEL_AB_TEST_ARMS.map((arm) => {
+          const choice = test[arm];
+          return (
+            <div key={arm} className="py-3 first:pt-1 last:pb-0">
+              <SettingRow label={arm.toUpperCase()} labelId={`model-ab-test-${arm}`}
+                control={<SegmentedControl<ArmValue> ariaLabel={`Arm ${arm.toUpperCase()}`} options={armOptions}
+                  value={isTierChoice(choice) ? choice.tier : "custom"} disabled={test.enabled} onChange={(value) => setArm(arm, value)} />} />
+              {!isTierChoice(choice) && (
+                <div className={cx(DS.surface.inset, "mt-2 p-3", test.enabled && "pointer-events-none opacity-60")}>
+                  <ModelChoiceFields idPrefix={`model-ab-test-${arm}`} name={`Arm ${arm.toUpperCase()}`} models={available}
+                    value={choice} onChange={(next) => save({ [arm]: next })} />
+                </div>
+              )}
+            </div>
+          );
+        })}
       </SettingList>
       {report.data?.startedAt && report.data.startedAt === test.startedAt && (
         <ModelAbTestResults report={report.data} running={test.enabled} models={models} />
@@ -335,6 +361,15 @@ function ModelAbTestBlock({ draft, setDraft, models }: {
   );
 }
 
+function pairOutcome(pair: ModelAbTestRecentPair): string {
+  if (pair.winner) {
+    const who = pair.decidedBy === "user" ? "you" : "judge";
+    return pair.winner === "tie" ? `Tie (${who})` : `${pair.winner.toUpperCase()} won (${who})`;
+  }
+  if (pair.status === "failed" || pair.status === "incomplete") return "Not compared";
+  return "Running";
+}
+
 function ModelAbTestResults({ report, running, models }: {
   report: ModelAbTestReport;
   running: boolean;
@@ -342,25 +377,41 @@ function ModelAbTestResults({ report, running, models }: {
 }) {
   return (
     <div className="mt-3">
-      <MetaLine items={[`Started ${timeAgo(report.startedAt ?? undefined)}`, !running && "Stopped"]} />
+      <MetaLine items={[
+        `Started ${timeAgo(report.startedAt ?? undefined)}`,
+        !running && "Stopped",
+        formatUsageCount(report.pairs, "pair"),
+        report.pending > 0 && `${report.pending} running`,
+        report.unusable > 0 && `${report.unusable} not compared`,
+      ]} />
       <FieldList className="mt-1">
-        {report.arms.map((arm) => {
-          const runs = arm.chats + arm.scheduledRuns;
-          const perRun = arm.meteredSessions > 0 ? (arm.meteredAiCredits * COPILOT_AI_CREDIT_USD) / arm.meteredSessions : null;
-          return (
-            <Field key={arm.arm} label={`${arm.arm.toUpperCase()} · ${MODEL_TIER_INFO[arm.tier].label}`} stacked>
-              <MetaLine items={[
-                describeChoice(arm.setup, models),
-                formatUsageCount(arm.chats, "chat"),
-                formatUsageCount(arm.scheduledRuns, "scheduled run"),
-                runs > 0 && (perRun === null ? "Cost not recorded yet" : `${formatUsageUsd(perRun)} per run`),
-                perRun !== null && arm.meteredSessions < runs && `${arm.meteredSessions} of ${runs} recorded`,
-                arm.switched > 0 && formatUsageCount(arm.switched, "model change"),
-              ]} />
-            </Field>
-          );
-        })}
+        {report.arms.map((arm) => (
+          <Field key={arm.arm} label={`${arm.arm.toUpperCase()} · ${armLabel(arm.choice, models)}`} stacked>
+            <MetaLine items={[
+              describeChoice(arm.setup, models),
+              arm.decided > 0 && `Won ${arm.wins} of ${arm.decided}`,
+              arm.ties > 0 && formatUsageCount(arm.ties, "tie"),
+              arm.userWins > 0 && `${arm.userWins} by your vote`,
+              arm.medianDurationMs !== undefined && `${formatDuration(arm.medianDurationMs, { wholeSeconds: true })} per reply`,
+              arm.medianAiCredits !== undefined && `${formatUsageUsd(arm.medianAiCredits * COPILOT_AI_CREDIT_USD)} per reply`,
+            ]} />
+          </Field>
+        ))}
       </FieldList>
+      {report.recent.length > 0 && (
+        <Details label="Recent pairs" className="mt-2">
+          <ul className={DS.surface.divided}>
+            {report.recent.map((pair) => (
+              <li key={pair.id}>
+                <Link to={`/sessions/${pair.mainSessionId}`} className={cx(DS.row.base, DS.row.interactive)}>
+                  <span className={cx(DS.row.detail, "text-text-primary")}>{pair.reason || pair.failure || timeAgo(pair.createdAt)}</span>
+                  <span className={DS.row.trailing}>{pairOutcome(pair)}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Details>
+      )}
     </div>
   );
 }

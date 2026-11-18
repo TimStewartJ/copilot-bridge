@@ -296,27 +296,16 @@ describe("Read state routes", () => {
 
 // ── Model A/B test ───────────────────────────────────────────────
 
-describe("Model A/B test routes", () => {
-  it("GET /api/model-ab-test reports the current test's arms with their recorded cost", async () => {
-    const readSummary = vi.fn(async () => ({ sessions: [{ sessionId: "chat-a", meteredAiCredits: 30, meteredTokens: 500 }] }));
-    const local = createTestApp({ copilotUsageReader: { readSummary, invalidate: vi.fn(), shutdown: vi.fn(async () => {}) } as never });
-    expect((await request(local.app).get("/api/model-ab-test")).body).toEqual({ startedAt: null, arms: [] });
-
-    local.ctx.settingsStore.updateSettings({ modelPresets: { preset2: { model: "model-standard" }, preset3: { model: "model-deep" } } });
-    const startedAt = local.ctx.settingsStore.updateSettings({ modelAbTest: { enabled: true, a: "preset2", b: "preset3" } }).modelAbTest!.startedAt!;
-    local.ctx.modelAbTestStore!.record({ sessionId: "chat-a", testStartedAt: startedAt, arm: "a", tier: "preset2", model: "model-standard", source: "chat", assignedAt: startedAt });
-    local.ctx.modelAbTestStore!.record({ sessionId: "run-b", testStartedAt: startedAt, arm: "b", tier: "preset3", model: "model-deep", source: "schedule", assignedAt: startedAt });
-
-    const res = await request(local.app).get("/api/model-ab-test");
-    expect(res.status).toBe(200);
-    expect(readSummary).toHaveBeenCalledWith({ sessionIds: ["chat-a", "run-b"], range: "all" });
-    expect(res.body).toMatchObject({
-      startedAt,
-      arms: [
-        { arm: "a", chats: 1, scheduledRuns: 0, meteredSessions: 1, meteredAiCredits: 30 },
-        { arm: "b", chats: 0, scheduledRuns: 1, meteredSessions: 0 },
-      ],
-    });
+describe("Model comparison routes", () => {
+  it("report, a chat's pair and votes validate their input", async () => {
+    const local = createTestApp();
+    expect((await request(local.app).get("/api/model-ab-test")).body)
+      .toEqual({ startedAt: null, pairs: 0, pending: 0, unusable: 0, arms: [], recent: [] });
+    expect((await request(local.app).get("/api/model-comparisons/by-session/not-an-id")).status).toBe(400);
+    const sessionId = "11111111-2222-4333-8444-555555555555";
+    expect((await request(local.app).get(`/api/model-comparisons/by-session/${sessionId}`)).body).toEqual({ comparison: null });
+    expect((await request(local.app).post("/api/model-comparisons/pair-1/vote").send({ sessionId, winner: "a" })).status).toBe(400);
+    expect((await request(local.app).post("/api/model-comparisons/pair-1/vote").send({ sessionId, winner: "x" })).status).toBe(404);
   });
 });
 

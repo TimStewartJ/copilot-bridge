@@ -1127,22 +1127,34 @@ function initSchema(db: DatabaseSync): void {
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_externalId ON calendar_events(externalId) WHERE externalId IS NOT NULL");
   // The calendar an imported event comes from, so the calendar can say where it came from.
   addColumn("calendar_events", "source", "TEXT");
-  // A/B test arm per chat (shared/model-ab-test.ts); kept when the chat is deleted to avoid skew.
+  // Side-by-side model comparison pairs (model-comparison.ts); kept when a chat is deleted.
   db.exec(`
-    CREATE TABLE IF NOT EXISTS model_ab_assignments (
-      sessionId TEXT PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS model_comparisons (
+      id TEXT PRIMARY KEY,
       testStartedAt TEXT NOT NULL,
-      arm TEXT NOT NULL CHECK (arm IN ('a', 'b')),
-      tier TEXT NOT NULL,
-      model TEXT NOT NULL,
-      reasoningEffort TEXT,
-      contextTier TEXT,
-      source TEXT NOT NULL CHECK (source IN ('chat', 'schedule')),
-      assignedAt TEXT NOT NULL,
-      switchedAt TEXT
+      mainSessionId TEXT NOT NULL UNIQUE,
+      twinSessionId TEXT UNIQUE,
+      mainArm TEXT NOT NULL CHECK (mainArm IN ('a', 'b')),
+      setupsJson TEXT NOT NULL,
+      taskId TEXT,
+      playbook TEXT,
+      status TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      promptAt TEXT,
+      twinStartedAt TEXT,
+      metricsJson TEXT,
+      judgementJson TEXT,
+      userVote TEXT CHECK (userVote IN ('a', 'b', 'tie')),
+      votedAt TEXT,
+      failure TEXT
     );
-    CREATE INDEX IF NOT EXISTS idx_model_ab_assignments_test ON model_ab_assignments(testStartedAt);
+    CREATE INDEX IF NOT EXISTS idx_model_comparisons_test ON model_comparisons(testStartedAt);
+    CREATE INDEX IF NOT EXISTS idx_model_comparisons_status ON model_comparisons(status);
   `);
+  addColumn("model_comparisons", "twinStartedAt", "TEXT");
+  addColumn("model_comparisons", "twinRepo", "TEXT");
+  addColumn("model_comparisons", "twinWorktree", "TEXT");
   // Trajectory classifier results per graded chat: labels, metrics, token counts, never transcript.
   db.exec(`
     CREATE TABLE IF NOT EXISTS chat_grades (

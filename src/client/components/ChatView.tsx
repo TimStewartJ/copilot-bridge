@@ -127,6 +127,7 @@ import { AutopilotIcon, Button, Notice } from "../design/primitives";
 import ChatInput, { type ComposerTool } from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
+import ModelComparisonBar from "./ModelComparisonBar";
 import { recentToolFailures, statusLineHasProblem } from "./mcp-status-display";
 import SessionAgentsBar from "./SessionAgentsBar";
 import { ArrowDown, ArrowLeft, Check, CircleAlert, CircleSlash, ClipboardList, Copy, Terminal } from "lucide-react";
@@ -2980,6 +2981,7 @@ export default function ChatView({
           onCloseSheet={planOverlay.close}
         />
       )}
+      {!historicalMode && sessionId && <ModelComparisonBar sessionId={sessionId} busy={isStreaming} />}
       {externallyInUse && (
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted sm:px-4" role="status">
           <Terminal size={12} className="shrink-0 text-info" aria-hidden="true" />

@@ -1,3 +1,4 @@
+import { decideComparisonTwinTool, isComparisonTwinSessionId } from "./comparison-twin.js";
 import { userNameLine } from "../shared/user-name.js";
 import type { AgentPermissionPolicy } from "./agent-backend/index.js";
 import type { ShellAuthHandler } from "./shell-auth-requests.js";
@@ -232,8 +233,8 @@ type BuiltSessionConfigBase = {
   fusionContextTokens?: number;
   hooks?: {
     onPreToolUse: CuaForegroundGuard["beforeToolUse"];
-    onPostToolUse: CuaForegroundGuard["afterToolUse"];
-    onPostToolUseFailure: CuaForegroundGuard["afterToolUse"];
+    onPostToolUse?: CuaForegroundGuard["afterToolUse"];
+    onPostToolUseFailure?: CuaForegroundGuard["afterToolUse"];
   };
   pluginDirectories?: string[];
   imageGeneration?: { enabled: boolean };
@@ -371,6 +372,15 @@ export function buildSessionConfig(params: BuildSessionConfigParams): BuiltSessi
       cfg.pluginDirectories = [computerUsePlugin.pluginDirectory];
     }
   }
+  // A comparison twin runs the same request again, so actions outside its chat would happen twice.
+  if (sessionId && isComparisonTwinSessionId(sessionId)) {
+    const inner = cfg.hooks;
+    cfg.hooks = {
+      ...inner,
+      onPreToolUse: async (input, invocation) => decideComparisonTwinTool(input.toolName, input.toolArgs) ?? inner?.onPreToolUse(input, invocation),
+    };
+  }
+
   // Asking for the foreground only means something where the Cua guard can refuse it.
   if (!cuaMcpServer) cfg.excludedTools.push(CUA_FOREGROUND_REQUEST_TOOL);
 
