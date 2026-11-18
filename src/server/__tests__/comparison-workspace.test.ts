@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { makeTestDir } from "./helpers.js";
 import { runGit } from "../git-command.js";
-import { createTwinWorkspace, removeTwinWorkspace } from "../comparison-workspace.js";
+import { createTwinWorkspace, removeTwinWorkspace, twinWorkspaceChanged } from "../comparison-workspace.js";
 
 async function git(cwd: string, args: string[]): Promise<void> {
   const result = await runGit(cwd, args, 30_000);
@@ -23,6 +23,9 @@ describe("comparison twin workspace", () => {
     const workspace = await createTwinWorkspace(join(repo, "app"), worktree);
     expect(workspace?.cwd).toBe(join(worktree, "app"));
     expect(existsSync(join(worktree, "app", "index.txt"))).toBe(true);
+    expect(await twinWorkspaceChanged(worktree)).toBe(false);
+    writeFileSync(join(worktree, "app", "index.txt"), "changed");
+    expect(await twinWorkspaceChanged(worktree)).toBe(true);
 
     await removeTwinWorkspace(workspace!.repo, workspace!.worktree);
     expect(existsSync(worktree)).toBe(false);

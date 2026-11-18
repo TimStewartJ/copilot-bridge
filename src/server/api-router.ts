@@ -1305,6 +1305,20 @@ export function createApiRouter(
     }
   });
 
+  // POST /model-comparisons/:id/combine — hands Y's answer to X, on X's or Y's model (`keep`).
+  router.post("/model-comparisons/:id/combine", async (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Combining a model comparison")) return;
+    try {
+      const keep = isRecord(req.body) ? req.body.keep : undefined;
+      if (keep !== "x" && keep !== "y") return res.status(400).json({ error: "keep must be x or y" });
+      const comparison = await ctx.modelComparisons?.combine(req.params.id, keep);
+      if (!comparison) return res.status(409).json({ error: "This pair can't be combined." });
+      res.json({ comparison });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // GET /model-comparisons/by-session/:id — the pair a chat belongs to, as that chat sees it.
   router.get("/model-comparisons/by-session/:id", (req, res) => {
     if (!isCanonicalSessionId(req.params.id)) return res.status(400).json({ error: "Valid sessionId is required" });

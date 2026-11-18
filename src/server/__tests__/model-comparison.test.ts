@@ -102,7 +102,10 @@ function setup(randoms: number[]) {
     listModels: async () => undefined,
     createTwinWorkspace: vi.fn(async (_main: string, twin: string) => ({ cwd: `/work/${twin}/app`, repo: "/repo", worktree: `/work/${twin}` })),
     removeTwinWorkspace: vi.fn(async () => {}),
+    twinWorkspaceChanged: vi.fn(async () => false),
     createTwin: vi.fn(async ({ sessionId, setup }) => { models.set(sessionId, setup.model); }),
+    switchModel: vi.fn(async () => true),
+    sendMessage: vi.fn(async () => {}),
     sendFirstMessage: vi.fn(async (sessionId: string, prompt: string) => { events.set(sessionId, answeredTurn(prompt, "Twin reply.")); }),
     readEvents: async (sessionId) => (events.has(sessionId) ? { kind: "ok", events: events.get(sessionId)!, malformedLines: 0 } : { kind: "missing" }),
     isBusy: () => false,
@@ -152,6 +155,13 @@ describe("model comparison service", () => {
       vote: "y",
       revealed: { x: { model: "gpt-6" }, y: { model: "claude-9" }, judge: { winner: "y" } },
     });
+    // Combining once on Y's model switches X first, so the winner writes the merge and carries on.
+    expect(service.view(MAIN)).toMatchObject({ suggestedKeep: "y" });
+    expect(await service.combine(record.id, "y")).toMatchObject({ side: "x", combinedKeep: "y", combinable: false, taskId: "task-1" });
+    expect(deps.switchModel).toHaveBeenCalledWith(MAIN, { model: "claude-9", reasoningEffort: "high", contextTier: "default" });
+    expect(deps.sendMessage).toHaveBeenCalledWith(MAIN, expect.stringContaining("Twin reply."));
+    expect(await service.combine(record.id, "x")).toBeUndefined();
+    expect(deps.sendMessage).toHaveBeenCalledTimes(1);
     expect(service.report().arms).toEqual([
       expect.objectContaining({ arm: "a", decided: 1, wins: 0 }),
       expect.objectContaining({ arm: "b", decided: 1, wins: 1, userWins: 1 }),

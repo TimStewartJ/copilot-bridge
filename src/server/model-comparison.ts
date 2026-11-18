@@ -123,6 +123,10 @@ export interface ModelComparisonRecord {
   twinStartedAt?: string;
   /** The twin's own worktree, removed a day after the pair is over. */
   twinWorkspace?: { repo: string; worktree: string };
+  /** When Y's answer was handed to X, so the conversation carries on in X alone. */
+  combinedAt?: string;
+  /** The arm whose model X carries on with after combining. */
+  combinedArm?: ModelAbTestArm;
   metrics?: Partial<Record<ModelAbTestArm, ModelComparisonTurnMetrics>>;
   judgement?: ModelComparisonJudgement;
   userVote?: ModelComparisonVerdict;
@@ -146,6 +150,8 @@ interface ComparisonRow {
   twinStartedAt: string | null;
   twinRepo: string | null;
   twinWorktree: string | null;
+  combinedAt: string | null;
+  combinedArm: string | null;
   metricsJson: string | null;
   judgementJson: string | null;
   userVote: string | null;
@@ -242,6 +248,8 @@ function fromRow(row: ComparisonRow): ModelComparisonRecord | undefined {
     updatedAt: row.updatedAt,
     ...(row.promptAt ? { promptAt: row.promptAt } : {}),
     ...(row.twinStartedAt ? { twinStartedAt: row.twinStartedAt } : {}),
+    ...(row.combinedAt ? { combinedAt: row.combinedAt } : {}),
+    ...(isArm(row.combinedArm) ? { combinedArm: row.combinedArm } : {}),
     ...(row.twinRepo && row.twinWorktree ? { twinWorkspace: { repo: row.twinRepo, worktree: row.twinWorktree } } : {}),
     ...(Object.keys(metrics).length > 0 ? { metrics } : {}),
     ...(judgement ? { judgement } : {}),
@@ -271,6 +279,9 @@ export function createModelComparisonStore(db: DatabaseSync) {
      WHERE id = ? AND status = 'judging'`,
   );
   const vote = db.prepare("UPDATE model_comparisons SET userVote = ?, votedAt = ?, updatedAt = ? WHERE id = ?");
+  const combine = db.prepare(
+    "UPDATE model_comparisons SET combinedAt = ?, combinedArm = ?, updatedAt = ? WHERE id = ? AND combinedAt IS NULL",
+  );
   const byId = db.prepare("SELECT * FROM model_comparisons WHERE id = ?");
   const bySession = db.prepare("SELECT * FROM model_comparisons WHERE mainSessionId = ? OR twinSessionId = ?");
   const byStatus = db.prepare("SELECT * FROM model_comparisons WHERE status = ? ORDER BY createdAt");
@@ -319,6 +330,10 @@ export function createModelComparisonStore(db: DatabaseSync) {
     vote(id: string, verdict: ModelComparisonVerdict, at: string): void {
       vote.run(verdict, at, at, id);
     },
+    /** False when the pair was already combined. */
+    markCombined(id: string, arm: ModelAbTestArm, at: string): boolean {
+      return Number(combine.run(at, arm, at, id).changes) === 1;
+    },
     get: (id: string) => one(byId.get(id)),
     getBySession: (sessionId: string) => one(bySession.get(sessionId, sessionId)),
     listByStatus: (status: ModelComparisonStatus) => many(byStatus.all(status)),
@@ -345,6 +360,8 @@ export interface FirstTurn {
   lastEventAt?: number;
   /** The model that wrote the turn's last reply, as the runtime recorded it. */
   model?: string;
+  /** The turn's last non-empty reply text. */
+  reply?: string;
   transcript: string;
   metrics?: ModelComparisonTurnMetrics;
 }
@@ -391,6 +408,7 @@ export function readFirstTurn(events: readonly unknown[]): FirstTurn {
   let stopped = false;
   let toolCalls = 0;
   let model: string | undefined;
+  let reply: string | undefined;
   for (const raw of turnEvents.slice(1)) {
     if (!isRecord(raw) || getSdkAgentId(raw)) continue;
     const data = isRecord(raw.data) ? raw.data : {};
@@ -398,7 +416,10 @@ export function readFirstTurn(events: readonly unknown[]): FirstTurn {
     switch (raw.type) {
       case "assistant.message": {
         const content = typeof data.content === "string" ? data.content.trim() : "";
-        if (content) lines.push(`Assistant: ${content}`);
+        if (content) {
+          lines.push(`Assistant: ${content}`);
+          reply = content;
+        }
         if (typeof data.model === "string" && data.model) model = data.model;
         lastMessageAskedForTools = Array.isArray(data.toolRequests) && data.toolRequests.length > 0;
         lastWasEnd = false;
@@ -446,11 +467,27 @@ export function readFirstTurn(events: readonly unknown[]): FirstTurn {
     prompt,
     ...(lastEventAt !== undefined ? { lastEventAt } : {}),
     ...(model ? { model } : {}),
+    ...(reply ? { reply } : {}),
     transcript: keepEnds(lines.join("\n"), SIDE_TRANSCRIPT_CHARS),
     ...(metrics ? { metrics } : {}),
   };
 }
 
+
+/** What X is sent to fold Y's answer into its own and carry the conversation on. */
+export function buildCombinePrompt(otherReply: string, worktree: string | undefined): string {
+  return [
+    "Another assistant worked on the same request in parallel. Its final reply is below.",
+    ...(worktree ? [`It changed files in a separate Git worktree of this repository: ${worktree}`] : []),
+    "Combine the two into one answer: keep what is better in either and fix what either got wrong.",
+    ...(worktree ? ["Bring any of its changes worth keeping into this workspace."] : []),
+    "Reply with the combined answer. The conversation continues here.",
+    "",
+    "<other_reply>",
+    otherReply,
+    "</other_reply>",
+  ].join("\n");
+}
 
 export const JUDGE_SYSTEM_PROMPT = [
   "You compare how two AI assistants handled the same request from the same user, with the same tools and setup.",
@@ -610,8 +647,13 @@ export interface ModelComparisonDeps {
   /** The twin's own worktree of the user's chat's folder, or undefined when that is not in Git. */
   createTwinWorkspace(mainSessionId: string, twinSessionId: string): Promise<{ cwd: string; repo: string; worktree: string } | undefined>;
   removeTwinWorkspace(workspace: { repo: string; worktree: string }): Promise<void>;
+  twinWorkspaceChanged(worktree: string): Promise<boolean>;
   /** Makes the twin on this setup, in `cwd` when given, with the user chat's task and playbook. */
   createTwin(input: { sessionId: string; taskId?: string; playbook?: string; setup: ModelAbTestSetup; cwd?: string }): Promise<void>;
+  /** Moves an idle chat to this setup; false when the runtime would not switch. */
+  switchModel(sessionId: string, setup: ModelAbTestSetup): Promise<boolean>;
+  /** Sends a chat a message from the Bridge and resolves once the runtime has it. */
+  sendMessage(sessionId: string, prompt: string): Promise<void>;
   /** Sends the twin its first message and resolves once the runtime has it. */
   sendFirstMessage(sessionId: string, prompt: string, attachments: StartWorkAttachment[] | undefined, mode: SendMode | undefined): Promise<void>;
   readEvents(sessionId: string): Promise<ChatEventsRead>;
@@ -631,6 +673,11 @@ function otherArm(arm: ModelAbTestArm): ModelAbTestArm {
 
 function sideArm(record: ModelComparisonRecord, side: ModelComparisonSide): ModelAbTestArm {
   return side === "x" ? record.mainArm : otherArm(record.mainArm);
+}
+
+/** The side to carry on with for a verdict; a tie keeps the user's own chat. */
+function winnerSide(record: ModelComparisonRecord, verdict: ModelComparisonVerdict): ModelComparisonSide {
+  return verdict === "tie" ? "x" : armSide(record, verdict);
 }
 
 function armSide(record: ModelComparisonRecord, arm: ModelAbTestArm): ModelComparisonSide {
@@ -917,6 +964,11 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
       ...(otherSessionId ? { otherSessionId } : {}),
       status: record.status,
       votable: votable && !record.userVote,
+      combinable: votable && !record.combinedAt,
+      ...(record.combinedArm ? { combinedKeep: armSide(record, record.combinedArm) } : {}),
+      ...(!record.combinedAt && (record.userVote ?? record.judgement?.winner)
+        ? { suggestedKeep: winnerSide(record, record.userVote ?? record.judgement!.winner) } : {}),
+      ...(record.taskId ? { taskId: record.taskId } : {}),
       ...(record.userVote ? { vote: record.userVote === "tie" ? "tie" as const : armSide(record, record.userVote) } : {}),
       ...(revealed ? { revealed } : {}),
       ...(record.failure ? { failure: record.failure } : {}),
@@ -930,6 +982,27 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     if (!isVotable(record)) return undefined;
     deps.store.vote(id, verdict === "tie" ? "tie" : sideArm(record, verdict), iso());
     return view(sessionId);
+  }
+
+  /** Hands Y's answer to X, on `keep`'s model, so the conversation carries on in X alone. */
+  async function combine(id: string, keep: ModelComparisonSide): Promise<ModelComparisonView | undefined> {
+    const record = deps.store.get(id);
+    if (!record?.twinSessionId || !isVotable(record) || record.combinedAt) return undefined;
+    const twin = await firstTurnOf(record.twinSessionId);
+    if ("unreadable" in twin || !twin.reply) throw new Error("The second chat has no reply to combine.");
+    const keepArm = sideArm(record, keep);
+    // Switched first, so the merge itself is written by the model that carries on.
+    if (keep === "y" && !await deps.switchModel(record.mainSessionId, record.setups[keepArm])) {
+      throw new Error("X couldn't switch to Y's model.");
+    }
+    if (!deps.store.markCombined(id, keepArm, iso())) return view(record.mainSessionId);
+    if (deps.isBusy(record.twinSessionId)) {
+      await deps.abort(record.twinSessionId).catch((error: unknown) => logger.warn(`[model-comparison] Could not stop the twin: ${message(error)}`));
+    }
+    const worktree = record.twinWorkspace?.worktree;
+    const changed = worktree ? await deps.twinWorkspaceChanged(worktree).catch(() => true) : false;
+    await deps.sendMessage(record.mainSessionId, buildCombinePrompt(twin.reply, changed ? worktree : undefined));
+    return view(record.mainSessionId);
   }
 
   function report(): ModelAbTestReport {
@@ -959,7 +1032,7 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     timer = undefined;
   }
 
-  return { prepare, register, onFirstMessage, tick: runTick, view, vote, report, sourceSessionId, start, stop };
+  return { prepare, register, onFirstMessage, tick: runTick, view, vote, combine, report, sourceSessionId, start, stop };
 }
 
 export type ModelComparisonService = ReturnType<typeof createModelComparisonService>;

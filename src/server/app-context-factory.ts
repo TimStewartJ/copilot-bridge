@@ -24,7 +24,7 @@ import { createBridgeSessionStateStore } from "./bridge-session-state-store.js";
 import { createCopilotCliSessionCatalog } from "./copilot-cli-session-catalog.js";
 import { createReadStateStore } from "./read-state-store.js";
 import { createModelComparisonService, createModelComparisonStore } from "./model-comparison.js";
-import { createTwinWorkspace, removeTwinWorkspace } from "./comparison-workspace.js";
+import { createTwinWorkspace, removeTwinWorkspace, twinWorkspaceChanged } from "./comparison-workspace.js";
 import { sendChatMessage } from "./chat-message-delivery.js";
 import { createChatGradeStore, createChatGrader, createChatGradesService, hasChatEventsLog, readChatEventsForGrading } from "./chat-grading.js";
 import { createChecklistStore } from "./checklist-store.js";
@@ -272,6 +272,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
       join(dataDir, "comparison-worktrees", twinSessionId),
     ),
     removeTwinWorkspace: ({ repo, worktree }) => removeTwinWorkspace(repo, worktree),
+    twinWorkspaceChanged,
     createTwin: async ({ sessionId, taskId, playbook, setup, cwd }) => {
       // Pinned before the chat exists, so it starts there rather than in the task's folder.
       if (cwd) sessionWorkspaceStore.setWorkspace(sessionId, cwd);
@@ -288,6 +289,16 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
       } else {
         await sessionManager.createSession(options);
       }
+    },
+    switchModel: async (sessionId, setup) => {
+      // A first turn is short, so compacting to fit a smaller model is safe to accept.
+      const result = await sessionManager.setSessionModel(sessionId, setup.model, setup.reasoningEffort, setup.contextTier, {
+        compactionDecision: "compact",
+      });
+      return result.status === "applied";
+    },
+    sendMessage: async (sessionId, prompt) => {
+      await sendChatMessage(ctx, sessionId, prompt, { waitForDelivery: true });
     },
     sendFirstMessage: async (sessionId, prompt, attachments, mode) => {
       await sendChatMessage(ctx, sessionId, prompt, {

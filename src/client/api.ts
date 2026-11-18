@@ -3158,6 +3158,13 @@ export async function fetchModelComparison(sessionId: string, signal?: AbortSign
   return comparison;
 }
 
+/** Hands Y's answer to X, which carries on with the model of `keep`. */
+export async function combineModelComparison(comparisonId: string, keep: ModelComparisonSide): Promise<ModelComparisonView> {
+  const { comparison } = await apiFetch<{ comparison: ModelComparisonView }>(
+    `/api/model-comparisons/${encodeURIComponent(comparisonId)}/combine`, { keep });
+  return comparison;
+}
+
 export async function voteModelComparison(
   comparisonId: string,
   sessionId: string,

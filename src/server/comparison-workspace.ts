@@ -30,3 +30,12 @@ export async function removeTwinWorkspace(repo: string, worktree: string): Promi
   const removed = await runGit(repo, ["worktree", "remove", "--force", worktree], WORKTREE_TIMEOUT_MS);
   if (!removed.ok) throw new Error(removed.error);
 }
+
+/** Whether the twin changed anything in its worktree, committed or not. */
+export async function twinWorkspaceChanged(worktree: string): Promise<boolean> {
+  const status = await runGit(worktree, ["status", "--porcelain"]);
+  if (status.ok && status.output) return true;
+  // The worktree is detached, so its own commits are the ones on no branch.
+  const ahead = await runGit(worktree, ["rev-list", "--count", "HEAD", "--not", "--branches"]);
+  return ahead.ok && ahead.output !== "" && ahead.output !== "0";
+}

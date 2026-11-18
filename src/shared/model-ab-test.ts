@@ -80,6 +80,14 @@ export interface ModelComparisonView {
   status: ModelComparisonStatus;
   /** Both chats ran the message and the user has not voted yet. */
   votable: boolean;
+  /** Y's answer can still be handed to X, to carry on in X alone. */
+  combinable: boolean;
+  /** Whose model X carried on with, once combined. */
+  combinedKeep?: ModelComparisonSide;
+  /** Whose model to carry on with by default: the user's vote, else the judge's. */
+  suggestedKeep?: ModelComparisonSide;
+  /** The task the pair's chats belong to, so either opens inside it. */
+  taskId?: string;
   vote?: ModelComparisonSide | "tie";
   revealed?: {
     x: ModelAbTestSetup;

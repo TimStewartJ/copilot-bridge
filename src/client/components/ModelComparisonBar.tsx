@@ -1,14 +1,17 @@
 import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Columns2 } from "lucide-react";
-import { Link } from "react-router-dom";
-import { fetchModelComparison, voteModelComparison } from "../api";
+import { useNavigate, useParams } from "react-router-dom";
+import { combineModelComparison, fetchModelComparison, voteModelComparison } from "../api";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { queryKeys } from "../queryClient";
-import { Button, MetaLine } from "../design/primitives";
+import { Button, MetaLine, SegmentedControl } from "../design/primitives";
 import type { ModelAbTestSetup, ModelComparisonSide, ModelComparisonView } from "../../shared/model-ab-test.js";
 
 const WORKING = new Set<ModelComparisonView["status"]>(["starting", "running", "judging"]);
+const SIDES: ReadonlyArray<{ value: ModelComparisonSide; label: string }> = [
+  { value: "x", label: "X" },
+  { value: "y", label: "Y" },
+];
 const VOTES: ReadonlyArray<{ value: ModelComparisonSide | "tie"; label: string }> = [
   { value: "x", label: "X better" },
   { value: "tie", label: "Tie" },
@@ -22,6 +25,8 @@ function verdictLabel(verdict: ModelComparisonSide | "tie"): string {
 /** A line under the status line of a chat in a comparison; `busy` refetches once a turn starts. */
 export default function ModelComparisonBar({ sessionId, busy }: { sessionId: string; busy: boolean }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { taskId: routeTaskId } = useParams<{ taskId?: string }>();
   const { data: models } = useModelsQuery();
   const query = useQuery({
     queryKey: queryKeys.modelComparison(sessionId),
@@ -30,32 +35,33 @@ export default function ModelComparisonBar({ sessionId, busy }: { sessionId: str
   });
   const { refetch } = query;
   useEffect(() => { void refetch(); }, [busy, refetch]);
+  const comparison = query.data;
+  const taskId = routeTaskId ?? comparison?.taskId;
+  const chatPath = (id: string) => (taskId ? `/tasks/${taskId}/sessions/${id}` : `/sessions/${id}`);
+  const mainSessionId = comparison?.side === "x" ? sessionId : comparison?.otherSessionId;
   const vote = useMutation({
     mutationFn: ({ id, winner }: { id: string; winner: ModelComparisonSide | "tie" }) => voteModelComparison(id, sessionId, winner),
-    onSuccess: (comparison) => queryClient.setQueryData(queryKeys.modelComparison(sessionId), comparison),
+    onSuccess: (next) => queryClient.setQueryData(queryKeys.modelComparison(sessionId), next),
   });
-  const comparison = query.data;
+  const combine = useMutation({
+    mutationFn: ({ id, keep }: { id: string; keep: ModelComparisonSide }) => combineModelComparison(id, keep),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["model-comparison"] });
+      if (mainSessionId && mainSessionId !== sessionId) navigate(chatPath(mainSessionId));
+    },
+  });
   if (!comparison) return null;
 
   const name = (setup: ModelAbTestSetup) => models?.find((model) => model.id === setup.model)?.name ?? setup.model;
-  const other: ModelComparisonSide = comparison.side === "x" ? "y" : "x";
-  const canVote = comparison.votable && comparison.otherSessionId;
   const { revealed } = comparison;
+  const error = vote.error ?? combine.error;
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3 py-1.5 text-xs text-text-muted sm:px-4" role="status">
-      <Columns2 size={12} className="shrink-0" aria-hidden="true" />
-      <MetaLine className="flex-1" items={[
-        `This is ${comparison.side.toUpperCase()}`,
-        comparison.otherSessionId && <Link key="other" to={`/sessions/${comparison.otherSessionId}`} className="underline">Open {other.toUpperCase()}</Link>,
-        WORKING.has(comparison.status) && "First replies running",
-        comparison.status === "incomplete" && comparison.failure,
-        comparison.status === "failed" && comparison.failure,
-        comparison.vote && `You: ${verdictLabel(comparison.vote)}`,
-        revealed?.judge && <span key="judge" title={revealed.judge.reason}>Judge: {verdictLabel(revealed.judge.winner)}</span>,
-        revealed && `X ${name(revealed.x)}, Y ${name(revealed.y)}`,
-      ]} />
-      {canVote && (
-        <div className="ml-auto flex items-center gap-1">
+    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border px-3 py-1.5 text-xs text-text-muted sm:px-4" role="status">
+      <SegmentedControl<ModelComparisonSide> ariaLabel="Compared chats" size="sm" options={SIDES} value={comparison.side}
+        disabled={!comparison.otherSessionId}
+        onChange={(side) => { if (side !== comparison.side && comparison.otherSessionId) navigate(chatPath(comparison.otherSessionId)); }} />
+      {comparison.votable && (
+        <div className="flex items-center gap-1">
           {VOTES.map((option) => (
             <Button key={option.value} size="sm" variant="ghost" disabled={vote.isPending}
               onClick={() => vote.mutate({ id: comparison.id, winner: option.value })}>
@@ -64,7 +70,27 @@ export default function ModelComparisonBar({ sessionId, busy }: { sessionId: str
           ))}
         </div>
       )}
-      {vote.error && <span role="alert" className="text-error">{vote.error instanceof Error ? vote.error.message : String(vote.error)}</span>}
+      {comparison.combinable && (
+        <div className="flex items-center gap-1">
+          {SIDES.map((side) => (
+            <Button key={side.value} size="sm" variant={comparison.suggestedKeep === side.value ? "secondary" : "ghost"}
+              disabled={combine.isPending} title={`Merge both replies into X and carry on there with ${side.label}'s model`}
+              onClick={() => combine.mutate({ id: comparison.id, keep: side.value })}>
+              Combine, keep {side.label}
+            </Button>
+          ))}
+        </div>
+      )}
+      <MetaLine className="min-w-0 basis-full sm:basis-auto sm:flex-1" items={[
+        WORKING.has(comparison.status) && "First replies running",
+        comparison.status === "incomplete" && comparison.failure,
+        comparison.status === "failed" && comparison.failure,
+        comparison.combinedKeep && `Combined into X, on ${comparison.combinedKeep.toUpperCase()}'s model`,
+        comparison.vote && `You: ${verdictLabel(comparison.vote)}`,
+        revealed?.judge && <span key="judge" title={revealed.judge.reason}>Judge: {verdictLabel(revealed.judge.winner)}</span>,
+        revealed && `X ${name(revealed.x)}, Y ${name(revealed.y)}`,
+      ]} />
+      {error && <span role="alert" className="text-error">{error instanceof Error ? error.message : String(error)}</span>}
     </div>
   );
 }

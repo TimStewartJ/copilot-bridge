@@ -1155,6 +1155,8 @@ function initSchema(db: DatabaseSync): void {
   addColumn("model_comparisons", "twinStartedAt", "TEXT");
   addColumn("model_comparisons", "twinRepo", "TEXT");
   addColumn("model_comparisons", "twinWorktree", "TEXT");
+  addColumn("model_comparisons", "combinedAt", "TEXT");
+  addColumn("model_comparisons", "combinedArm", "TEXT");
   // Trajectory classifier results per graded chat: labels, metrics, token counts, never transcript.
   db.exec(`
     CREATE TABLE IF NOT EXISTS chat_grades (
