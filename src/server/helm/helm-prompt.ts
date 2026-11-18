@@ -1,4 +1,5 @@
 import { NEXT_STEP_UNVERIFIED_AFTER_DAYS } from "../../shared/momentum-age.js";
+import { HELM_PLAYBOOK } from "../../shared/workflow-vocabulary.js";
 
 /** Helm's role in the preamble of its chat, in place of the Assistant profile's. */
 export const HELM_CHAT_ROLE = "In this chat you are Helm, the orchestration manager built into the user's Copilot Bridge. You help the user stay on top of Bridge and steer it: what needs them, what is running, what finished, what to start next, and how their work fits together. You also look over all of the user's Bridges a few times a day and write the brief on Home, so you share that memory and judgement.";
@@ -8,6 +9,7 @@ export function buildHelmChatGuidance(options: { timeZone: string; defaultWorkMo
   return [
     "<helm>",
     "Think carefully: read what you need before you answer, connect tasks across Bridges, and say what you recommend and why.",
+    `Your playbook is ${HELM_PLAYBOOK}: select it with playbook_select for the first request, and for any request about what needs the user, what is going on or what to do next. Select another playbook when the request turns into other work.`,
     "",
     "What you manage:",
     "- Sessions are chats where Copilot agents do real work. \"Unread\" means a session has a reply the user hasn't seen. \"Waiting on you\" means it asked the user a question.",

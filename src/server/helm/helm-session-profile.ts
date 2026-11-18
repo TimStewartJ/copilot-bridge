@@ -52,27 +52,22 @@ export function applyHelmSessionProfile<T extends Record<string, unknown>>(base:
   } as unknown as T;
 }
 
-/** ask_user forms can't work hands-free, and Helm chat has no playbooks. */
-export const HELM_CHAT_EXCLUDED_TOOLS = ["ask_user", "playbook_select", "verify_complete"] as const;
+/** ask_user forms can't work hands-free. */
+export const HELM_CHAT_EXCLUDED_TOOLS = ["ask_user"] as const;
 
-/** Adds Helm's tools to a chat and hides playbook skills, which need tools Helm lacks. */
+/** Adds Helm's tools to a chat. */
 export function applyHelmChatProfile<T extends Record<string, unknown>>(
   base: T,
-  options: { tools: readonly BridgeToolDefinition[]; playbookSkills?: readonly string[] },
+  options: { tools: readonly BridgeToolDefinition[] },
 ): T {
   const own = createNativeBridgeTools(options.tools);
   const ownNames = new Set(own.map((tool) => tool.name));
   const baseTools = Array.isArray(base.tools) ? (base.tools as Array<{ name: string }>).filter((tool) => !ownNames.has(tool.name)) : [];
   const excluded = Array.isArray(base.excludedTools) ? (base.excludedTools as string[]) : [];
-  const disabledSkills = [...new Set([
-    ...(Array.isArray(base.disabledSkills) ? (base.disabledSkills as string[]) : []),
-    ...(options.playbookSkills ?? []),
-  ])];
   return {
     ...base,
     clientName: HELM_CLIENT_NAME,
     tools: [...baseTools, ...own],
     excludedTools: [...new Set([...excluded, ...HELM_CHAT_EXCLUDED_TOOLS])],
-    ...(disabledSkills.length > 0 ? { disabledSkills } : {}),
   } as unknown as T;
 }

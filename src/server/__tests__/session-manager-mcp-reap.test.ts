@@ -705,6 +705,31 @@ describe("SessionManager bounded session lifecycle", () => {
       expect(manager.getSessionPlaybook("helm-chat")).toBeUndefined();
     });
 
+    it("lets Helm's chat use playbooks and offers the Helm playbook only there", async () => {
+      const { manager } = createManager();
+      const helm = { id: "helm", kind: "playbook", label: "Helm", description: "Playbook: Helm's own chat.", comparePrevious: false, evidence: [], extends: [], roles: [] };
+      manager.deps.skillCatalog = {
+        current: () => [...Object.values(PLAYBOOKS), helm],
+        findPlaybook: (name: string | undefined) => (name === "helm" ? helm : name ? PLAYBOOKS[name] : undefined),
+      };
+      manager.findLinkedTask = () => undefined;
+      for (const id of ["chat", "helm-chat"]) mkdirSync(manager.getSessionStateDir(id), { recursive: true });
+      manager.deps.resolveSessionProfile = (sessionId: string) => (sessionId === "helm-chat"
+        ? { usesPlaybooks: true, apply: (cfg: unknown) => cfg, conversationContext: () => "<helm_task_index/>" }
+        : undefined);
+
+      expect(manager.prepareTurnContext("chat").block).not.toContain("- helm (Helm)");
+      const first = manager.prepareTurnContext("helm-chat");
+      expect(first.block).toContain("<helm_task_index/>");
+      expect(first.block).toContain("- helm (Helm)");
+      expect(first.block).not.toContain("not linked to a Bridge task");
+      first.commit();
+      await expect(manager.setSessionPlaybook("helm-chat", "helm", "user")).resolves.toMatchObject({ playbook: "helm" });
+      const next = manager.prepareTurnContext("helm-chat").block;
+      expect(next).toContain('Active playbook: helm ("Helm")');
+      expect(next).not.toContain("<helm_task_index/>");
+    });
+
     it("tells the agent about a playbook change in the next message without evicting the chat", async () => {
       const { manager } = createManager();
       manager.deps.skillCatalog = catalog;

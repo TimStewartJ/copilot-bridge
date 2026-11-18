@@ -54,7 +54,7 @@ import type { UnattendedRunStore } from "./unattended-run-store.js";
 import type { SkillPackRoot } from "./skills-registry.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
 import { buildBridgeContextSections, emptyBridgeContextHashes, renderBridgeContextBlock, type BridgeContextSectionName, type PlaybookContext } from "./session-context-block.js";
-import { NO_PLAYBOOK, type PlaybookSource, type SessionPlaybookView } from "../shared/workflow-vocabulary.js";
+import { HELM_PLAYBOOK, NO_PLAYBOOK, type PlaybookSource, type SessionPlaybookView } from "../shared/workflow-vocabulary.js";
 import { isRecord } from "../shared/is-record.js";
 import type { SendMode } from "../shared/send-mode.js";
 import { AUTOMATIC_ANSWERS, unshowableQuestionAnswer, type AutomaticAnswerReason } from "../shared/automatic-answer.js";
@@ -657,8 +657,10 @@ export interface SessionManagerDeps {
 export interface SessionConfigProfile {
   /** Tools the session must expose once initialized, given an ordinary chat's Bridge tools. */
   expectedToolNames(bridgeToolNames: readonly string[]): readonly string[];
+  /** True when the chat picks playbooks like any chat (Helm's chat); profiles default to none. */
+  usesPlaybooks?: boolean;
   /** Prompt choices for the profile's base config; they win over the chat's stored ones. */
-  configOptions?(): Pick<SessionConfigOptions, "promptRole" | "extraGuidance" | "playbooks">;
+  configOptions?(): Pick<SessionConfigOptions, "promptRole" | "extraGuidance">;
   apply<T extends Record<string, unknown>>(config: T): T;
   /** Effort for a turn that set none; read per turn, so settings changes apply to the next one. */
   defaultTurnReasoningEffort?(): string | undefined;
@@ -5688,29 +5690,40 @@ export class SessionManager {
     const none = { commit: () => {} };
     // Profiled chats (Helm and its looks) have no task and read the Bridge through their own tools.
     const profile = this.deps.resolveSessionProfile?.(sessionId);
-    if (profile) return this.prepareProfileContext(sessionId, profile);
-    const task = this.findLinkedTask(sessionId) ?? null;
-    const sections = buildBridgeContextSections(
+    if (profile && !profile.usesPlaybooks) return this.prepareProfileContext(sessionId, profile);
+    const task = profile ? null : this.findLinkedTask(sessionId) ?? null;
+    const all = buildBridgeContextSections(
       this.deps,
       task,
       this.lookupGroupNotes(task?.groupId),
       this.playbookContext(sessionId, task),
       (this.deps.skillCatalog?.current() ?? [])
-        .filter((skill) => skill.kind === "playbook")
+        .filter((skill) => skill.kind === "playbook" && (!!profile || skill.id !== HELM_PLAYBOOK))
         .map((skill) => ({ id: skill.id, ...(skill.label ? { label: skill.label } : {}), description: skill.description })),
     );
+    // Helm's chat only needs to know its playbook; the rest it reads through its tools.
+    const sections = profile ? all.filter((section) => section.name === "playbook") : all;
     const delivered = this.deliveredTurnContext.get(sessionId) ?? { generation: 0, hashes: emptyBridgeContextHashes() };
     this.deliveredTurnContext.set(sessionId, delivered);
     const changed = sections.filter((section) => delivered.hashes.get(section.name) !== section.hash);
     const block = renderBridgeContextBlock(changed);
-    if (!block) return none;
     const generation = delivered.generation;
-    return {
+    const own: { block?: string; commit(): void } = block ? {
       block,
       commit: () => {
         const current = this.deliveredTurnContext.get(sessionId);
         if (!current || current.generation !== generation) return;
         for (const section of changed) current.hashes.set(section.name, section.hash);
+      },
+    } : none;
+    if (!profile) return own;
+    const conversation = this.prepareProfileContext(sessionId, profile);
+    const blocks = [conversation.block, own.block].filter((part): part is string => !!part);
+    return {
+      ...(blocks.length > 0 ? { block: blocks.join("\n\n") } : {}),
+      commit: () => {
+        conversation.commit();
+        own.commit();
       },
     };
   }
@@ -5810,9 +5823,10 @@ export class SessionManager {
     this.deliveredTurnContext.set(sessionId, { generation: (current?.generation ?? 0) + 1, hashes: emptyBridgeContextHashes() });
   }
 
-  /** The chat's playbook and who chose it; undefined for profiled chats (Helm). */
+  /** The chat's playbook and who chose it; undefined for Helm's looks, which have none. */
   getSessionPlaybook(sessionId: string): SessionPlaybookView | undefined {
-    if (this.deps.resolveSessionProfile?.(sessionId)) return undefined;
+    const profile = this.deps.resolveSessionProfile?.(sessionId);
+    if (profile && !profile.usesPlaybooks) return undefined;
     const resolved = resolveSessionPlaybook(
       this.deps.sessionPlaybookStore?.get(sessionId),
       this.findLinkedTask(sessionId)?.playbook,
@@ -5828,7 +5842,8 @@ export class SessionManager {
   ): Promise<SessionPlaybookView> {
     const store = this.deps.sessionPlaybookStore;
     if (!store) throw new Error("Playbooks are not available");
-    if (this.deps.resolveSessionProfile?.(sessionId)) {
+    const profile = this.deps.resolveSessionProfile?.(sessionId);
+    if (profile && !profile.usesPlaybooks) {
       throw new Error("This chat does not use playbooks");
     }
     if (playbook !== null && playbook !== NO_PLAYBOOK && !this.deps.skillCatalog?.findPlaybook(playbook)) {

@@ -172,6 +172,25 @@ describe("playbook_select", () => {
     const unknown: any = await tool.handler({ playbook: "astrology" }, invocation);
     expect(JSON.stringify(unknown)).toContain("Installed: research");
   });
+
+  it("leaves out the completion card for a playbook that reports in its reply", async () => {
+    const { ctx } = createTestApp();
+    vi.spyOn(ctx.sessionManager, "setSessionPlaybook").mockResolvedValue({ playbook: "helm", source: "agent", label: "Helm" });
+    ctx.skillCatalog = {
+      ...ctx.skillCatalog!,
+      current: () => [] as never,
+      playbooks: () => [{ id: "helm" }] as never,
+      findPlaybook: (name: string | undefined) => (name === "helm" ? { id: "helm", evidence: [], completionReport: false } as never : undefined),
+    };
+    const homeSkills = join(ctx.copilotHome!, "skills");
+    mkdirSync(join(homeSkills, "helm"), { recursive: true });
+    writeFileSync(join(homeSkills, "helm", "SKILL.md"), "---\nname: helm\ndescription: d\n---\n1. Read the latest state.\n");
+    const tool = getBridgeToolDefinitions(ctx).find((candidate) => candidate.name === "playbook_select")!;
+    const picked: any = await tool.handler({ playbook: "helm" }, { sessionId: SESSION, toolCallId: "call-1", toolName: "playbook_select", arguments: {} });
+    expect(picked.steps).toContain("1. Read the latest state.");
+    expect(picked.steps).not.toContain("verify_complete");
+    expect(picked.message).not.toContain("verify_complete");
+  });
 });
 
 describe("unattended run routes", () => {

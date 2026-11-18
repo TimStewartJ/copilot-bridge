@@ -81,15 +81,17 @@ export function createWorkflowToolDefinitions(ctx: AppContext): BridgeToolDefini
         ].join("\n\n");
         if (steps.length > MAX_STEPS_CHARS) steps = `${steps.slice(0, MAX_STEPS_CHARS)}\n[truncated: load the rest with the skill tool]`;
         const required = playbook?.evidence ?? [];
+        const report = playbook?.completionReport !== false;
         // The completion check goes last so it ends every playbook's todo list.
-        steps += delegated ? "\n\n# Final step for delegated work\nReturn your findings, evidence and limits to your parent agent instead of calling verify_complete." : `\n\n# Final step (required)\nBefore your final reply, call verify_complete with the evidence "Done means" describes${required.length > 0 ? ` (it must include ${required.join(", ")})` : ""}. Report results honestly: "pass" when a check supports the work you report (a reproduced bug is pass, and so is a premise you checked and found false), "fail" only when your own work failed a check, "not_run" for an in-scope check you could not run. List in-scope checks you skipped in unverified, and caveats outside what was asked in notes.`;
+        if (delegated) steps += "\n\n# Final step for delegated work\nReturn your findings, evidence and limits to your parent agent instead of calling verify_complete.";
+        else if (report) steps += `\n\n# Final step (required)\nBefore your final reply, call verify_complete with the evidence "Done means" describes${required.length > 0 ? ` (it must include ${required.join(", ")})` : ""}. Report results honestly: "pass" when a check supports the work you report (a reproduced bug is pass, and so is a premise you checked and found false), "fail" only when your own work failed a check, "not_run" for an in-scope check you could not run. List in-scope checks you skipped in unverified, and caveats outside what was asked in notes.`;
         return {
           success: true,
           playbook: name,
           label,
           requiredEvidence: required,
           ...(extensions.length > 0 ? { extensions } : {}),
-          message: delegated ? `Use ${label} for your assignment. The parent chat is unchanged; return your evidence to the parent.` : `Recorded ${label}. Use the steps below for the remaining work; keep evidence that still applies, and mark a step you skip "skip: <reason>". When they are done, call verify_complete${required.length > 0 ? ` with evidence of kind ${required.join(", ")}` : ""}.${replacedUserChoice}`,
+          message: delegated ? `Use ${label} for your assignment. The parent chat is unchanged; return your evidence to the parent.` : `Recorded ${label}. Use the steps below for the remaining work; keep evidence that still applies, and mark a step you skip "skip: <reason>".${report ? ` When they are done, call verify_complete${required.length > 0 ? ` with evidence of kind ${required.join(", ")}` : ""}.` : ""}${replacedUserChoice}`,
           steps,
         };
       },

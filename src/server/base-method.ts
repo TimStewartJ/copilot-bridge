@@ -37,6 +37,3 @@ function renderMethod(steps: readonly string[]): string {
 }
 
 export const BASE_METHOD = renderMethod([STEPS.scope, STEPS.playbook, `${STEPS.proof}${STEPS.proofWithPlaybook}`, ...STEPS.rest]);
-
-/** For chats without playbooks (Helm's chat): no playbook_select or verify_complete. */
-export const BASE_METHOD_WITHOUT_PLAYBOOKS = renderMethod([STEPS.scope, STEPS.proof, ...STEPS.rest]);

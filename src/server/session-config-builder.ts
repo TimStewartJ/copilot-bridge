@@ -61,7 +61,7 @@ import {
 } from "../shared/copilot-context.js";
 import { pathsEqual } from "./path-utils.js";
 import { formatPreviousRunReport, type PreviousRunReport } from "./scheduled-run-report.js";
-import { BASE_METHOD, BASE_METHOD_REPORTING, BASE_METHOD_ROLE, BASE_METHOD_WITHOUT_PLAYBOOKS } from "./base-method.js";
+import { BASE_METHOD, BASE_METHOD_REPORTING, BASE_METHOD_ROLE } from "./base-method.js";
 import { formatModelRolesBlock, formatSkillRolesBlock, type SkillCatalog } from "./skill-catalog.js";
 import { getBundledSkillsDir, getHomeSkillsDir, type SkillPackRoot } from "./skills-registry.js";
 import { resolveComputerUsePlugin, type ComputerUsePluginStatus } from "./computer-use-plugin.js";
@@ -108,8 +108,6 @@ export interface SessionConfigOptions {
   promptRole?: string;
   /** Guidance appended after the Bridge's own, for chats with a role of their own (Helm). */
   extraGuidance?: string;
-  /** False for chats without playbooks (Helm's chat): the method and roles are left out. */
-  playbooks?: false;
   /** Omits model and effort: the SDK swaps models on resume without fixing history's tool calls. */
   forResume?: boolean;
   modelMetadata?: readonly CopilotModelContextMetadata[];
@@ -461,8 +459,8 @@ export function buildSessionConfig(params: BuildSessionConfigParams): BuiltSessi
     ...(computerUseGuidance ? [computerUseGuidance] : []),
     ...(imageGenerationEnabled ? [IMAGE_GENERATION_GUIDANCE] : []),
     // Changes only when skills, packs or Settings › Models change, which reach a chat on resume.
-    ...(deps.skillCatalog && params.options?.playbooks !== false ? [formatSkillRolesBlock(catalogSkills, new Set(activePacks.map((pack) => pack.id)))] : []),
-    ...(settings ? [formatModelRolesBlock(settings, undefined, params.options?.playbooks === false ? { playbooks: false } : {})] : []),
+    ...(deps.skillCatalog ? [formatSkillRolesBlock(catalogSkills, new Set(activePacks.map((pack) => pack.id)))] : []),
+    ...(settings ? [formatModelRolesBlock(settings)] : []),
   ].filter((part): part is string => !!part);
 
   if (task) {
@@ -513,7 +511,7 @@ export function buildSessionConfig(params: BuildSessionConfigParams): BuiltSessi
       action: "replace",
       content: `${renderResponseStyle(resolvedStyle)}\n\n${WRITING_GUIDANCE}\n\n${BASE_METHOD_REPORTING}`,
     },
-    guidelines: { action: "append", content: params.options?.playbooks === false ? BASE_METHOD_WITHOUT_PLAYBOOKS : BASE_METHOD },
+    guidelines: { action: "append", content: BASE_METHOD },
     tool_efficiency: { action: removeCliOutputSurfaceNote },
     last_instructions: {
       action: resolvedStyle.detail === "concise"

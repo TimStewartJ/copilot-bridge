@@ -35,6 +35,8 @@ export interface SkillWorkflowMetadata {
   evidence: EvidenceKind[];
   /** Scheduled runs of this playbook get the previous run's report to compare against. */
   comparePrevious: boolean;
+  /** False when the playbook ends without a verify_complete card (`bridge-report: none`). */
+  completionReport?: false;
   /** Roles this skill fills on this machine. */
   roles: SkillRole[];
   /** Playbooks this skill adds steps to. */
@@ -169,6 +171,7 @@ export function parseWorkflowMetadata(data: Record<string, unknown>): SkillWorkf
     ...(label ? { label: label.slice(0, 60) } : {}),
     evidence: parseMetadataList(metadata["bridge-evidence"]).filter(isEvidenceKind),
     comparePrevious: metadataString(metadata, "bridge-compare-previous") === "true",
+    ...(metadataString(metadata, "bridge-report") === "none" ? { completionReport: false as const } : {}),
     roles: parseMetadataList(metadata["bridge-roles"]).filter(isSkillRole),
     extends: parseMetadataList(metadata["bridge-extends"]).filter(isValidSkillId),
   };

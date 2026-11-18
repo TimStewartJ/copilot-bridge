@@ -2,6 +2,9 @@
 export const PLAYBOOK_FAMILIES = ["code", "knowledge", "ongoing", "errand", "meta"] as const;
 export type PlaybookFamily = typeof PLAYBOOK_FAMILIES[number];
 
+/** The playbook Helm's chat starts on; other chats are not offered it. */
+export const HELM_PLAYBOOK = "helm";
+
 export const PLAYBOOK_FAMILY_LABELS: Record<PlaybookFamily, string> = {
   code: "Code",
   knowledge: "Knowledge work",

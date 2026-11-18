@@ -374,15 +374,14 @@ describe("Helm session profiles", () => {
   it("makes Helm's chat an ordinary chat with Helm's own role, tools and guidance added", async () => {
     const { helm } = createHarness();
     const profile = helm.getSessionProfile();
+    expect(profile.usesPlaybooks).toBe(true);
     expect(profile.configOptions?.()).toMatchObject({
       promptRole: expect.stringContaining("you are Helm"),
       extraGuidance: expect.stringContaining("(claude-opus-5)"),
-      playbooks: false,
     });
-    const expected = profile.expectedToolNames(["task_list", "session_start", "playbook_select", "verify_complete"]);
-    expect(expected).toEqual(expect.arrayContaining(["task_list", "session_start", "bridge_overview", "read_bridge"]));
-    expect(expected).not.toContain("playbook_select");
-    expect(expected).not.toContain("verify_complete");
+    const expected = profile.expectedToolNames(["task_list", "session_start", "playbook_select", "verify_complete", "ask_user"]);
+    expect(expected).toEqual(expect.arrayContaining(["task_list", "session_start", "playbook_select", "verify_complete", "bridge_overview", "read_bridge"]));
+    expect(expected).not.toContain("ask_user");
     const applied = profile.apply({
       sessionId: "abc",
       tools: [{ name: "task_list" }, { name: "bridge_overview" }],
@@ -398,7 +397,7 @@ describe("Helm session profiles", () => {
     // The size-capped wrappers of Bridge tools are for looks; the chat has the originals.
     expect(names.filter((name: string) => name === "task_list")).toHaveLength(1);
     expect(new Set(names).size).toBe(names.length);
-    expect(applied.excludedTools).toEqual(["report_intent", "ask_user", "playbook_select", "verify_complete"]);
+    expect(applied.excludedTools).toEqual(["report_intent", "ask_user"]);
     expect(applied.mcpServers).toEqual({ github: {} });
     expect(applied.skillDirectories).toEqual(["/skills"]);
     expect(applied.availableTools).toBeUndefined();

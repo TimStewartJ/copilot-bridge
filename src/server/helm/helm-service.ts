@@ -224,12 +224,12 @@ export class HelmService implements HelmToolRuntime {
       const tools = this.getTools();
       const excluded = new Set<string>(HELM_CHAT_EXCLUDED_TOOLS);
       this.profile = {
+        usesPlaybooks: true,
         expectedToolNames: (bridgeToolNames) => [...new Set([...bridgeToolNames, ...tools.map((tool) => tool.name)])].filter((name) => !excluded.has(name)),
         configOptions: () => {
           const settings = this.ctx.settingsStore.getSettings();
           return {
             promptRole: HELM_CHAT_ROLE,
-            playbooks: false,
             extraGuidance: buildHelmChatGuidance({
               timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
               ...(settings.model ? { defaultWorkModel: settings.model } : {}),
@@ -237,10 +237,7 @@ export class HelmService implements HelmToolRuntime {
             }),
           };
         },
-        apply: (config) => applyHelmChatProfile(config, {
-          tools,
-          playbookSkills: this.ctx.skillCatalog?.playbooks().map((skill) => skill.id) ?? [],
-        }),
+        apply: (config) => applyHelmChatProfile(config, { tools }),
         conversationContext: (sessionId, { afterLoss }) => {
           // A conversation that replied before this process started already got its index.
           if (!afterLoss && this.store.get(sessionId)?.lastReplyAt) return undefined;
