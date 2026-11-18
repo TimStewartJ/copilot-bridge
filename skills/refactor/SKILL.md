@@ -27,6 +27,7 @@ You own a behavior-preserving change: the code is different afterward and nothin
 8. Rerun the checks and compare results at the named boundary. A difference there is a behavior change. If a test fails only because a private call changed, check the outcome it protected rather than restoring the old call. Keep call counts when they are the promise, such as sending a payment only once.
    - Name the one fact the restructure is safe because of and prove it by running code (principles skill: Prove the safety fact).
    - For a simplification, check that layers or shared state actually went down; if not, revert it (principles skill: Minimize reader load).
+   - When the restructure claims a speed or size gain, measure it with repeated runs and report the spread (principles skill: Explain the number).
 9. Run the broader check lane and the type checker for the repository.
 10. For pull request mechanics, hand off to the `pr-to-merge-ready` playbook.
 

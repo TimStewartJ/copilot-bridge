@@ -32,6 +32,7 @@ You own the feature from its data shape to proof on the real surface it changes.
    - Name the one fact the change is safe because of and prove it by running code (principles skill: Prove the safety fact).
 9. Verify on the matching real surface: run the app, call the API, run the command. For UI, take screenshots at the widths and themes the project cares about and check them against the screen rule in step 6.
    - Use the skill that fills the `verify` role when <skill_roles> lists one, or the project's own verify skill in the skill list. If there is none, use the tools available, say which, and suggest the `verify-setup` helper when the project will be verified again.
+   - When the change is about speed, size or cost, report the number with n and spread, or say it is a single run (principles skill: Explain the number).
 10. Update the guide someone uses to do the work today. Remove obsolete directions or mark a retained decision as superseded; an old design note alone is not a reason to keep its implementation.
 11. For pull request mechanics, hand off to the `pr-to-merge-ready` playbook.
 

@@ -24,6 +24,7 @@ You own a bounded run toward one pass/fail condition, every decision along the w
    - If the user is still present, confirm these with ask_user before starting.
 4. For code, work in an isolated workspace: a separate worktree and working branch, never the user's checkout or a default branch.
 5. Measure the starting point against the exit condition and record it with task_history_add. Run the check once by hand first and confirm it fails or passes for the right reason; a loop with a broken check only produces unchecked work faster.
+   - When the condition is a number, measure the spread of repeated baseline runs and keep a change only when it moves the number past that spread (principles skill: Explain the number).
 6. Each iteration: make the smallest change the evidence justifies, verify it against the condition, keep it if it helps and discard it if not, then add one task_history_add row with the decision, why, the evidence and the result.
    - When the same kind of edit repeats, script it and prove the script on the first unit (principles skill: Build the lever).
 7. On a plateau, change the approach (a different hypothesis, a different lens, a sub-agent's idea) rather than stopping. When two attempts fail on the same assumption, test the assumption before the next one (principles skill: Attack the premise).

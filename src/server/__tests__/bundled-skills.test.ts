@@ -17,6 +17,7 @@ const CONTRACT_PLAYBOOKS: Record<string, PlaybookFamily> = {
   feature: "code",
   refactor: "code",
   "pr-to-merge-ready": "code",
+  measure: "code",
   research: "knowledge",
   write: "knowledge",
   decide: "knowledge",

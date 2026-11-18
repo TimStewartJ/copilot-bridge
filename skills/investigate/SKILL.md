@@ -22,6 +22,7 @@ You own the answer and the evidence behind it. You change nothing: no edits, com
 4. Prefer runtime evidence over reading when it is cheap: run the code, a read-only query, a test or a command, and keep the output.
    - Commands stay read-only. Scratch files go in the session folder, never in the repository.
    - For a hang, leak or slowdown, reduce a profile, heap snapshot or trace to the hot path or the retainer chain. Capture one from a local or test process; from a shared one only when pausing it is safe, otherwise use an existing capture. Load a large capture into a form you can query (for example SQLite) before reading it.
+   - Before reporting a timing, size or cost, check that the work ran and repeat it to see the spread, or say it is one run (principles skill: Explain the number).
 5. Cite every claim that matters as `path:line`, a commit, a link or a quoted output line, and label it measured, sourced, inferred or unknown.
 6. Look for the case that would prove you wrong (another caller, a config override, a different version or platform) and check it. When two explanations fail on the same assumption, test the assumption (principles skill: Attack the premise).
 7. For "are we sure" questions, give your real judgment and the confidence the evidence supports, including "no" or "not proven" when that is what it shows.

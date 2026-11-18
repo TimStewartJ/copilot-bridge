@@ -55,6 +55,10 @@ Weigh the experience of whoever uses the result: the end user of a screen, the c
 
 Most risky-looking changes are safe because of one fact, such as "this call only removes entries that are already dead". Name that fact and push its proof as far down this ladder as is cheap, saying where it stopped: you said so; you cited the line; you showed the bad case cannot happen; you ran code that fails if you are wrong; you reproduced it in the running app. Unproven means say so.
 
+## Explain the number
+
+Before you report or act on a number, know why it is that number. Name what limits it, confirm the work it measures ran without errors, repeat it enough to see the spread, and give a small result as a share of the whole. A gap within the spread is inconclusive, not a win and not proof of no difference. If you cannot explain the number, say so instead of reporting it as a finding.
+
 ## Prototype the choice
 
 When a design or behavior choice can be settled by trying it, build throwaway variants in a scratch folder, put them behind one switch (a button, key or flag), observe each on the real surface, then recommend one. The prototype is evidence, not the build: the chosen direction is built properly afterward.

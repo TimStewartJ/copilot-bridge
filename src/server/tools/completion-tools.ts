@@ -87,7 +87,7 @@ export function createCompletionToolDefinitions(ctx: AppContext): BridgeToolDefi
             items: {
               type: "object",
               properties: {
-                kind: { type: "string", enum: [...EVIDENCE_KINDS], description: "Kind of evidence." },
+                kind: { type: "string", enum: [...EVIDENCE_KINDS], description: "Kind of evidence. A measured number gives n and the spread, or says it was a single run." },
                 claim: { type: "string", minLength: 1, maxLength: COMPLETION_LIMITS.claim, description: "What was checked and what it showed." },
                 ref: { type: "string", maxLength: COMPLETION_LIMITS.ref, description: "Where to see it: URL, command, file path, run or commit id." },
                 result: { type: "string", enum: [...EVIDENCE_RESULTS], description: "pass when the check supports the work you report (a reproduced bug is pass), fail when your work failed it, not_run when it could not run." },

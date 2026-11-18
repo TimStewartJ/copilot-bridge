@@ -24,6 +24,7 @@ You own the fix from the first reproduction to before-and-after proof on the sur
 5. Revert every change a refuted hypothesis motivated, including temporary instrumentation, before you go on. Once the evidence confirms a root cause, record it and its evidence with task_history_add when the chat has a task.
 6. Make the smallest fix the evidence justifies, at the place that causes the bug rather than where the symptom shows. A guard, retry or caught error is a fix only when the state it handles is legitimate (principles skill: Fix root causes). When people misread a screen, fix its layout or names rather than adding explanatory text.
 7. Rerun the exact reproduction from step 2 and keep the failing-then-passing output (or before and after screenshots) to paste in the reply.
+   - For a slowdown or regression, compare repeated runs before and after and report n and spread (principles skill: Explain the number).
 8. Add a regression test only where it is cheap and the repository's test rules call for one; extend an existing test before writing a new one. Run the checks for the area you touched.
 9. Check the neighbors the fix could break (other callers, the other platform, empty and error inputs) on the real surface.
 10. Leave changes uncommitted unless the user asked for commits or the repository's instructions say to commit. If you commit, stay on the current branch unless it is the default branch; then create a working branch named the way the user's instructions say. Never switch branches over uncommitted work. A commit message names the cause.
