@@ -11,7 +11,12 @@ export interface ModelAbTestSettings {
   b: ModelAbTestArmChoice;
   /** Reset when the test is turned on or an arm changes; kept when off so results stay readable. */
   startedAt?: string;
+  /** Up to two judge models chosen by hand; empty or missing picks them from the catalog. */
+  judges?: string[];
 }
+
+/** How many judges score each pair; each scores it in both orders. */
+export const MODEL_COMPARISON_JUDGE_COUNT = 2;
 
 export type ModelAbTestArm = "a" | "b";
 
@@ -62,14 +67,30 @@ export const MODEL_COMPARISON_CRITERIA: readonly ModelComparisonCriterion[] = ["
 
 export type ModelComparisonScores = Record<ModelComparisonCriterion, number>;
 
-export interface ModelComparisonJudgement {
+/** One judge's scoring of the pair in one order. */
+export interface ModelComparisonJudgeRun {
   model: string;
-  /** False when no model from a third family was set up, so the judge shares one with an arm. */
+  /** False when the judge's maker also made one of the arms. */
   otherFamily: boolean;
+  /** The arm shown as Response 1; missing on verdicts from before both orders were scored. */
+  firstArm?: ModelAbTestArm;
   winner: ModelComparisonVerdict;
   scores: Record<ModelAbTestArm, ModelComparisonScores>;
   /** The judge's own words, shown as written. */
   reason: string;
+}
+
+/** An arm wins only when every judge picked it in both orders; any disagreement is a split. */
+export type ModelComparisonPanelVerdict = ModelComparisonVerdict | "split";
+
+export interface ModelComparisonJudgement {
+  verdict: ModelComparisonPanelVerdict;
+  runs: ModelComparisonJudgeRun[];
+  /** Judges asked; fewer counted when one could not score both orders. */
+  judgesAsked: number;
+  /** Judges whose two orders both came back, the ones the verdict counts. */
+  judgesCounted: number;
+  judgedAt?: string;
 }
 
 /** A pair as one of its chats sees it; models are named once the user voted or it is over. */
@@ -84,7 +105,7 @@ export interface ModelComparisonView {
   combinable: boolean;
   /** Whose model X carried on with, once combined. */
   combinedKeep?: ModelComparisonSide;
-  /** Whose model to carry on with by default: the user's vote, else the judge's. */
+  /** Whose model to carry on with by default: the user's vote. */
   suggestedKeep?: ModelComparisonSide;
   /** The task the pair's chats belong to, so either opens inside it. */
   taskId?: string;
@@ -92,7 +113,12 @@ export interface ModelComparisonView {
   revealed?: {
     x: ModelAbTestSetup;
     y: ModelAbTestSetup;
-    judge?: { winner: ModelComparisonSide | "tie"; reason: string; model: string };
+    judge?: {
+      verdict: ModelComparisonSide | "tie" | "split";
+      judgesAsked: number;
+      judgesCounted: number;
+      runs: Array<{ model: string; winner: ModelComparisonSide | "tie"; reason: string; firstSide?: ModelComparisonSide }>;
+    };
   };
   failure?: string;
 }
@@ -106,6 +132,8 @@ export interface ModelAbTestArmReport {
   decided: number;
   wins: number;
   ties: number;
+  /** Pairs the judges disagreed on and the user did not vote. */
+  splits: number;
   /** Wins by the user's vote alone; the rest are the judge's. */
   userWins: number;
   medianDurationMs?: number;
@@ -118,10 +146,32 @@ export interface ModelAbTestRecentPair {
   twinSessionId?: string;
   status: ModelComparisonStatus;
   createdAt: string;
-  winner?: ModelComparisonVerdict;
+  winner?: ModelComparisonPanelVerdict;
   decidedBy?: "user" | "judge";
   reason?: string;
   failure?: string;
+}
+
+/** A judge as the report shows it: who would judge a pair now. */
+export interface ModelAbTestJudge {
+  model: string;
+  pinned: boolean;
+  otherFamily: boolean;
+}
+
+/** How often a judge model's verdict matched the user's vote, over pairs the user voted on. */
+export interface ModelAbTestJudgeAgreement {
+  model: string;
+  votes: number;
+  agreed: number;
+}
+
+export interface ModelAbTestRejudgeProgress {
+  running: boolean;
+  total: number;
+  done: number;
+  /** Pairs left as they were: a chat's log is gone, or the judges gave no usable verdict. */
+  skipped: number;
 }
 
 export interface ModelAbTestReport {
@@ -132,4 +182,7 @@ export interface ModelAbTestReport {
   unusable: number;
   arms: ModelAbTestArmReport[];
   recent: ModelAbTestRecentPair[];
+  judges: ModelAbTestJudge[];
+  agreement: ModelAbTestJudgeAgreement[];
+  rejudge?: ModelAbTestRejudgeProgress;
 }

@@ -18,7 +18,8 @@ import {
   isModelPresetSlot,
   type ModelPresetSlot,
 } from "../shared/model-presets.js";
-import type { ModelAbTestSettings } from "../shared/model-ab-test.js";
+import { MODEL_COMPARISON_JUDGE_COUNT, type ModelAbTestSettings } from "../shared/model-ab-test.js";
+import { modelMaker, type BestModels } from "../shared/best-models.js";
 import { MAX_USER_NAME_LENGTH } from "../shared/user-name.js";
 import { isRecord } from "../shared/is-record.js";
 import { isModelRole, isTierChoice, type ModelRoleChoice, type ModelRoles } from "../shared/model-roles.js";
@@ -148,6 +149,8 @@ export interface AppSettings {
   modelRoles?: ModelRoles;
   /** Starts new chats on one of two random tiers to compare them; see shared/model-ab-test.ts. */
   modelAbTest?: ModelAbTestSettings;
+  /** Best model per maker; a missing maker uses its priciest (shared/best-models.ts). */
+  bestModels?: BestModels;
   /** Legacy input fields migrated into modelPresets. */
   familyDefaults?: ModelFamilyDefaults;
   lastModelFamily?: ModelFamily;
@@ -711,7 +714,36 @@ function normalizeModelAbTest(value: unknown): ModelAbTestSettings | undefined {
   const startedAt = typeof value.startedAt === "string" && Number.isFinite(Date.parse(value.startedAt))
     ? new Date(Date.parse(value.startedAt)).toISOString()
     : undefined;
-  return { enabled: value.enabled && !legacy, a, b, ...(startedAt && !legacy ? { startedAt } : {}) };
+  const judges = normalizeJudgePins(value.judges);
+  return {
+    enabled: value.enabled && !legacy, a, b,
+    ...(startedAt && !legacy ? { startedAt } : {}),
+    ...(judges.length > 0 ? { judges } : {}),
+  };
+}
+
+function normalizeBestModels(value: unknown): BestModels {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value)) validationError("bestModels must be an object");
+  const best: BestModels = {};
+  for (const [maker, raw] of Object.entries(value)) {
+    const choice = normalizeModelRoleChoice(raw, `bestModels.${maker}`);
+    if (!choice) continue;
+    if (isTierChoice(choice)) validationError(`bestModels.${maker} takes a model, not a tier`);
+    if (modelMaker(choice.model) !== maker) validationError(`bestModels.${maker} must be a model of that maker`);
+    best[maker] = choice;
+  }
+  return best;
+}
+
+function normalizeJudgePins(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string")) {
+    validationError("modelAbTest.judges must be a list of model ids");
+  }
+  const ids = [...new Set((value as string[]).map((id) => id.trim()).filter(Boolean))];
+  if (ids.length > MODEL_COMPARISON_JUDGE_COUNT) validationError(`modelAbTest.judges takes at most ${MODEL_COMPARISON_JUDGE_COUNT} models`);
+  return ids;
 }
 
 function armSetupKey(settings: AppSettings, choice: ModelRoleChoice): string {
@@ -747,7 +779,11 @@ function reconcileModelAbTest(base: AppSettings, normalized: AppSettings, value:
     || armSetupKey(base, next.b) !== bKey
   );
   const startedAt = restart ? new Date().toISOString() : previous?.startedAt;
-  normalized.modelAbTest = { enabled, a: next.a, b: next.b, ...(startedAt ? { startedAt } : {}) };
+  normalized.modelAbTest = {
+    enabled, a: next.a, b: next.b,
+    ...(startedAt ? { startedAt } : {}),
+    ...(next.judges?.length ? { judges: next.judges } : {}),
+  };
 }
 
 // An Automatic Helm role with a legacy `helm.model` becomes a custom role with that model.
@@ -896,6 +932,8 @@ function normalizeAppSettings(base: AppSettings, value: unknown): AppSettings {
   // A write sends the whole role map; a missing role is Automatic.
   if ("modelRoles" in value) normalized.modelRoles = normalizeModelRoles(value.modelRoles) ?? {};
   if ("modelAbTest" in value) normalized.modelAbTest = normalizeModelAbTest(value.modelAbTest);
+  // A write sends the whole map; a missing maker uses its default.
+  if ("bestModels" in value) normalized.bestModels = normalizeBestModels(value.bestModels);
   reconcileModelRoles(base, normalized, value);
   migrateHelmModel(normalized, value);
   reconcileModelAbTest(base, normalized, value);

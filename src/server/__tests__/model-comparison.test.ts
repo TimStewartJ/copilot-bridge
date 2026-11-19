@@ -4,7 +4,9 @@ import {
   createModelComparisonService,
   createModelComparisonStore,
   parseJudgeReply,
+  pickJudges,
   readFirstTurn,
+  type JudgeCatalogModel,
   type ModelComparisonDeps,
 } from "../model-comparison.js";
 import { decideComparisonTwinTool, isComparisonTwinSessionId } from "../comparison-twin.js";
@@ -83,6 +85,48 @@ describe("decideComparisonTwinTool", () => {
   });
 });
 
+const priced = (id: string, outputPrice: number, efforts = ["low", "high"]): JudgeCatalogModel => ({
+  id, supportedReasoningEfforts: efforts, billing: { tokenPrices: { outputPrice } },
+});
+const ARMS = { a: { model: "gpt-6" }, b: { model: "claude-9" } };
+
+describe("pickJudges", () => {
+  const catalog = [
+    { id: "auto" },
+    priced("gpt-6", 1000), priced("claude-9", 1000), priced("gpt-5", 500),
+    priced("gemini-5-pro", 1000), priced("gemini-5-flash", 200), priced("gemini-4-ultra", 1500),
+    priced("grok-3", 600), priced("grok-4-heavy", 9000), priced("mai-2", 800, []),
+    { ...priced("zeta-1", 12000), policy: { state: "disabled" } },
+  ];
+  const ids = (judges: ReturnType<typeof pickJudges>) => judges.map((judge) => judge.setup.model);
+
+  it("takes the best models of the makers neither arm uses, strongest first", () => {
+    const judges = pickJudges(catalog, ARMS);
+    expect(ids(judges)).toEqual(["grok-4-heavy", "gemini-4-ultra"]);
+    expect(judges.every((judge) => judge.otherFamily && !judge.pinned)).toBe(true);
+    expect(judges[0].setup).toEqual({ model: "grok-4-heavy", reasoningEffort: "high", contextTier: "default" });
+  });
+
+  it("judges on the model, effort and context the user chose for a maker", () => {
+    const judges = pickJudges(catalog, ARMS, { bestModels: { gemini: { model: "gemini-5-pro", reasoningEffort: "low" } } });
+    expect(judges.map((judge) => judge.setup)).toContainEqual({ model: "gemini-5-pro", reasoningEffort: "low", contextTier: "default" });
+    const pinned = pickJudges(catalog, ARMS, { pinned: ["gemini-5-pro"], bestModels: { gemini: { model: "gemini-5-pro", reasoningEffort: "low" } } });
+    expect(pinned[0]).toEqual({ setup: { model: "gemini-5-pro", reasoningEffort: "low", contextTier: "default" }, otherFamily: true, pinned: true });
+  });
+
+  it.each([
+    ["a pin replaces the first automatic pick", { pinned: ["gpt-5"] }, ["gpt-5", "grok-4-heavy"]],
+    ["an unknown pin is ignored", { pinned: ["gone-1"] }, ["grok-4-heavy", "gemini-4-ultra"]],
+  ])("%s", (_name, options, expected) => {
+    expect(ids(pickJudges(catalog, ARMS, options))).toEqual(expected);
+  });
+
+  it("falls back to a model of an arm's maker that is not an arm, marked as the same family", () => {
+    const judges = pickJudges([priced("gpt-6", 1000), priced("claude-9", 1000), priced("gpt-5", 500)], ARMS);
+    expect(judges).toEqual([{ setup: { model: "gpt-5", reasoningEffort: "high", contextTier: "default" }, otherFamily: false, pinned: false }]);
+  });
+});
+
 const SETTINGS: AppSettings = {
   modelPresets: { preset1: { model: "gemini-5" }, preset2: { model: "gpt-6" }, preset3: { model: "claude-9", reasoningEffort: "high" } },
   modelAbTest: { enabled: true, a: { tier: "preset2" }, b: { tier: "preset3" }, startedAt: "2026-03-02T08:00:00.000Z" },
@@ -90,16 +134,29 @@ const SETTINGS: AppSettings = {
 const SCORES = { outcome: 3, correctness: 3, efficiency: 3, clarity: 3 };
 const MAIN = "11111111-2222-4333-8444-555555555555";
 
+/** Picks the response that contains `pick`, whichever order it is shown in. */
+function judgeFavouring(pick: string) {
+  return (prompt: string) => {
+    const second = prompt.indexOf("=== Response 2 ===");
+    const winner = prompt.indexOf(pick) > second ? "2" : "1";
+    return JSON.stringify({ scores: { "1": SCORES, "2": SCORES }, winner, reason: `Response ${winner} finished the job.` });
+  };
+}
+
+const CATALOG = [priced("gpt-6", 1000), priced("claude-9", 1000), priced("gemini-5", 1000), priced("grok-3", 600)];
+
 function setup(randoms: number[]) {
-  const store = createModelComparisonStore(setupTestDb());
+  const db = setupTestDb();
+  const store = createModelComparisonStore(db);
   const events = new Map<string, unknown[]>();
   const models = new Map<string, string>();
   const queue = [...randoms];
   const clock = { now: Date.parse("2026-03-02T10:00:00.000Z") };
+  const judgeFor: Record<string, (prompt: string) => string> = { "gemini-5": judgeFavouring("Twin reply."), "grok-3": judgeFavouring("Twin reply.") };
   const deps: ModelComparisonDeps = {
     store,
     getSettings: () => SETTINGS,
-    listModels: async () => undefined,
+    listModels: async () => CATALOG,
     createTwinWorkspace: vi.fn(async (_main: string, twin: string) => ({ cwd: `/work/${twin}/app`, repo: "/repo", worktree: `/work/${twin}` })),
     removeTwinWorkspace: vi.fn(async () => {}),
     twinWorkspaceChanged: vi.fn(async () => false),
@@ -111,19 +168,19 @@ function setup(randoms: number[]) {
     isBusy: () => false,
     hasPendingInput: () => false,
     abort: vi.fn(async () => {}),
-    askJudge: vi.fn(async () => JSON.stringify({ scores: { "1": SCORES, "2": SCORES }, winner: "1", reason: "Finished the job." })),
+    askJudge: vi.fn(async ({ model, prompt }: { model: string; prompt: string }) => judgeFor[model]?.(prompt)),
     copilotHome: "/unused",
     now: () => clock.now,
     random: () => queue.shift() ?? 0.5,
     logger: { log: () => {}, warn: () => {} },
   };
-  return { store, events, models, deps, clock, service: createModelComparisonService(deps) };
+  return { db, store, events, models, deps, clock, judgeFor, service: createModelComparisonService(deps) };
 }
 
 describe("model comparison service", () => {
-  it("runs the first message once on the other arm, then has a third-family judge decide by arm", async () => {
-    // First random: the user's chat runs on A. Second: the judge sees the twin as Response 1.
-    const { store, events, models, deps, clock, service } = setup([0.25, 0.75]);
+  it("runs the first message once on the other arm, then has two third-family judges decide by arm", async () => {
+    // The user's chat runs on A.
+    const { store, events, models, deps, clock, service } = setup([0.25]);
     const preparation = await service.prepare();
     expect(preparation).toMatchObject({ mainArm: "a", main: { model: "gpt-6" } });
     service.register(MAIN, preparation!, { taskId: "task-1", playbook: "research" });
@@ -143,17 +200,19 @@ describe("model comparison service", () => {
     expect(service.sourceSessionId(twinId)).toBe(MAIN);
 
     await service.tick();
-    expect(deps.askJudge).toHaveBeenCalledWith(expect.objectContaining({ model: "gemini-5" }));
+    // Each judge scores both orders.
+    expect(vi.mocked(deps.askJudge).mock.calls.map(([call]) => call.model).sort()).toEqual(["gemini-5", "gemini-5", "grok-3", "grok-3"]);
     const record = store.getBySession(MAIN)!;
     expect(record.status).toBe("judged");
-    expect(record.judgement).toMatchObject({ winner: "b", otherFamily: true });
-    // Hidden from both chats until the user votes.
+    expect(record.judgement).toMatchObject({ verdict: "b", judgesAsked: 2, judgesCounted: 2 });
+    // Hidden from both chats until the user votes, with no hint that would lead the vote.
     expect(service.view(MAIN)?.revealed).toBeUndefined();
+    expect(service.view(MAIN)?.suggestedKeep).toBeUndefined();
     // X is always the chat the user started, from whichever chat they vote.
     expect(service.vote(record.id, twinId, "y")).toMatchObject({
       side: "y",
       vote: "y",
-      revealed: { x: { model: "gpt-6" }, y: { model: "claude-9" }, judge: { winner: "y" } },
+      revealed: { x: { model: "gpt-6" }, y: { model: "claude-9" }, judge: { verdict: "y" } },
     });
     // Combining once on Y's model switches X first, so the winner writes the merge and carries on.
     expect(service.view(MAIN)).toMatchObject({ suggestedKeep: "y" });
@@ -162,7 +221,7 @@ describe("model comparison service", () => {
     expect(deps.sendMessage).toHaveBeenCalledWith(MAIN, expect.stringContaining("Twin reply."));
     expect(await service.combine(record.id, "x")).toBeUndefined();
     expect(deps.sendMessage).toHaveBeenCalledTimes(1);
-    expect(service.report().arms).toEqual([
+    expect((await service.report()).arms).toEqual([
       expect.objectContaining({ arm: "a", decided: 1, wins: 0 }),
       expect.objectContaining({ arm: "b", decided: 1, wins: 1, userWins: 1 }),
     ]);
@@ -193,6 +252,69 @@ describe("model comparison service", () => {
     // Its twin never got the message, so there is nothing to vote on or count.
     expect(service.view(other)).toMatchObject({ votable: false });
     expect(service.vote(store.getBySession(other)!.id, other, "x")).toBeUndefined();
-    expect(service.report().arms.every((arm) => arm.decided === 0)).toBe(true);
+    expect((await service.report()).arms.every((arm) => arm.decided === 0)).toBe(true);
+  });
+
+  async function judgedPair(randoms: number[], tweak?: (judgeFor: Record<string, (prompt: string) => string>) => void) {
+    const context = setup(randoms);
+    tweak?.(context.judgeFor);
+    context.service.register(MAIN, (await context.service.prepare())!, {});
+    context.events.set(MAIN, answeredTurn("Plan it", "Main reply."));
+    context.service.onFirstMessage(MAIN, "Plan it", undefined, undefined, "accepted");
+    await vi.waitFor(() => expect(context.store.getBySession(MAIN)?.status).toBe("running"));
+    await context.service.tick();
+    return context;
+  }
+
+  it.each([
+    ["one judge picks by position", () => JSON.stringify({ scores: { "1": SCORES, "2": SCORES }, winner: "1", reason: "First." }), "split", 2],
+    ["one judge never answers in a usable shape", () => "no verdict", "b", 1],
+    ["one judge throws in one order", (prompt: string) => {
+      if (prompt.indexOf("Main reply.") < prompt.indexOf("=== Response 2 ===")) throw new Error("helper died");
+      return judgeFavouring("Twin reply.")(prompt);
+    }, "b", 1],
+  ])("counts only judges with both orders back, and splits on any disagreement: %s", async (_name, grok, verdict, counted) => {
+    const { store } = await judgedPair([0.25], (judgeFor) => { judgeFor["grok-3"] = grok; });
+    expect(store.getBySession(MAIN)?.judgement).toMatchObject({ verdict, judgesAsked: 2, judgesCounted: counted });
+  });
+
+  it("re-judges judged pairs in place, keeping the vote and the cleanup clock, and keeps a pair whose log is gone", async () => {
+    const { store, events, judgeFor, service, deps } = await judgedPair([0.25]);
+    const record = store.getBySession(MAIN)!;
+    service.vote(record.id, MAIN, "x");
+    const before = store.get(record.id)!;
+    judgeFor["gemini-5"] = judgeFavouring("Main reply.");
+    judgeFor["grok-3"] = judgeFavouring("Main reply.");
+
+    expect(service.rejudge()).toMatchObject({ running: true, total: 1 });
+    // A second request joins the running batch instead of paying for it twice.
+    expect(service.rejudge()).toMatchObject({ running: true, total: 1 });
+    await vi.waitFor(async () => expect((await service.report()).rejudge).toMatchObject({ running: false, done: 1, skipped: 0 }));
+    const after = store.get(record.id)!;
+    expect(after.judgement).toMatchObject({ verdict: "a" });
+    expect(after).toMatchObject({ status: "judged", userVote: "a", updatedAt: before.updatedAt });
+    expect((await service.report()).agreement).toEqual([
+      { model: "gemini-5", votes: 1, agreed: 1 },
+      { model: "grok-3", votes: 1, agreed: 1 },
+    ]);
+
+    events.delete(after.twinSessionId!);
+    const calls = vi.mocked(deps.askJudge).mock.calls.length;
+    service.rejudge();
+    await vi.waitFor(async () => expect((await service.report()).rejudge).toMatchObject({ running: false, done: 0, skipped: 1 }));
+    expect(vi.mocked(deps.askJudge).mock.calls.length).toBe(calls);
+    expect(store.get(record.id)?.judgement).toMatchObject({ verdict: "a" });
+  });
+
+  it("reads a single judge's verdict from before panels as one run", async () => {
+    const { db, store, service } = await judgedPair([0.25]);
+    const legacy = { model: "gpt-5", otherFamily: false, winner: "a", scores: { a: SCORES, b: SCORES }, reason: "Old." };
+    db.prepare("UPDATE model_comparisons SET judgementJson = ?").run(JSON.stringify(legacy));
+    const record = store.getBySession(MAIN)!;
+    expect(record.judgement).toEqual({ verdict: "a", judgesAsked: 1, judgesCounted: 1, runs: [legacy] });
+    service.vote(record.id, MAIN, "tie");
+    expect(service.view(MAIN)?.revealed?.judge).toEqual({
+      verdict: "x", judgesAsked: 1, judgesCounted: 1, runs: [{ model: "gpt-5", winner: "x", reason: "Old." }],
+    });
   });
 });

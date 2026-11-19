@@ -25,7 +25,7 @@ export const queryKeys = {
   models: ["models"] as const,
   modelClientInfo: ["models", "client-info"] as const,
   /** Keyed by the test's start, so a new test never shows the last one's results. */
-  modelAbTest: (startedAt: string | null) => ["model-ab-test", startedAt] as const,
+  modelAbTest: (startedAt: string | null, judges: string) => ["model-ab-test", startedAt, judges] as const,
   modelComparison: (sessionId: string) => ["model-comparison", sessionId] as const,
   chatGrades: (filters: { from?: string; to?: string; models?: readonly string[]; includeScheduled?: boolean }) =>
     ["chat-grades", filters.from ?? null, filters.to ?? null, [...(filters.models ?? [])].sort(), filters.includeScheduled ?? false] as const,

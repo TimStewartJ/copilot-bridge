@@ -477,6 +477,14 @@ describe("settings-store model A/B test", () => {
     expect(store.updateSettings({ modelAbTest: custom }).modelAbTest).toEqual({ ...custom, startedAt: "2026-03-02T11:00:00.000Z" });
     expect(store.updateSettings({ modelAbTest: { ...custom, enabled: false } }).modelAbTest)
       .toEqual({ ...custom, enabled: false, startedAt: "2026-03-02T11:00:00.000Z" });
+
+    // Judge pins re-score old pairs instead of restarting, and survive writes to other settings.
+    vi.setSystemTime(new Date("2026-03-02T12:00:00.000Z"));
+    store.updateSettings({ modelAbTest: { ...custom, enabled: false, judges: [" model-judge ", "model-judge", "model-other"] } });
+    store.updateSettings({ theme: "light" });
+    expect(store.getSettings().modelAbTest)
+      .toEqual({ ...custom, enabled: false, startedAt: "2026-03-02T11:00:00.000Z", judges: ["model-judge", "model-other"] });
+    expect(() => store.updateSettings({ modelAbTest: { ...custom, judges: ["one", "two", "three"] } })).toThrow("at most 2");
   });
 
   it("refuses arms that can't run or run the same thing, and ends a test whose tier loses its model", () => {

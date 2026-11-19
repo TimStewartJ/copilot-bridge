@@ -307,11 +307,12 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     isBusy: (sessionId) => sessionManager.getSessionRunState(sessionId) !== "idle",
     hasPendingInput: (sessionId) => sessionManager.getPendingUserInputCount(sessionId) > 0,
     abort: async (sessionId) => { await sessionManager.abortSession(sessionId); },
-    askJudge: async ({ model, reasoningEffort, system, prompt, timeoutMs }) => {
+    askJudge: async ({ model, reasoningEffort, contextTier, system, prompt, timeoutMs }) => {
       const helper = await sessionManager.createHelperSession({
         clientName: "Copilot Bridge Comparison",
         model,
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(contextTier ? { contextTier } : {}),
         systemMessage: { mode: "replace", content: system },
       });
       try {

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { AlertTriangle, RotateCw } from "lucide-react";
-import { fetchModelAbTestReport, fetchModelRoles, refreshModels, type AppSettings, type ModelInfo } from "../../api";
+import { fetchModelAbTestReport, fetchModelRoles, rejudgeModelAbTest, refreshModels, type AppSettings, type ModelInfo } from "../../api";
+import { settingsWriter } from "../../hooks/queries/useSettings";
 import { useModelsQuery } from "../../hooks/queries/useModels";
 import { useModelClientInfoQuery } from "../../hooks/queries/useModelClientInfo";
 import { queryKeys } from "../../queryClient";
@@ -32,6 +33,7 @@ import { getModelFamilyLabel, type ModelFamily } from "../../../shared/model-fam
 import {
   DEFAULT_MODEL_AB_TEST_ARMS,
   MODEL_AB_TEST_ARMS,
+  MODEL_COMPARISON_JUDGE_COUNT,
   type ModelAbTestArm,
   type ModelAbTestArmChoice,
   type ModelAbTestRecentPair,
@@ -39,6 +41,7 @@ import {
   type ModelAbTestSettings,
 } from "../../../shared/model-ab-test.js";
 import { COPILOT_AI_CREDIT_USD } from "../../../shared/copilot-pricing.js";
+import { canBeBestModel, modelMaker, modelMakerLabel, resolveBestModels, type BestModels } from "../../../shared/best-models.js";
 import { formatDuration } from "../../lib/tool-presentation";
 import { formatUsageCount, formatUsageUsd } from "../../lib/usage-presentation";
 import { Button, ChoiceButton, Details, Field, FieldList, FormRow, MetaLine, Notice, SegmentedControl, SettingList, SettingRow, Switch } from "../../design/primitives";
@@ -283,6 +286,8 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
         {roles.error && <Notice tone="warning" className="mt-3" title="Couldn't check the models in use">{roles.error instanceof Error ? roles.error.message : String(roles.error)}</Notice>}
       </div>
 
+      <BestModelsBlock draft={draft} setDraft={setDraft} models={models} />
+
       <ModelAbTestBlock draft={draft} setDraft={setDraft} models={models} />
 
       <ModelListFooter presets={presets} />
@@ -290,8 +295,56 @@ export function ModelsSection({ draft, setDraft }: { draft: AppSettings; setDraf
   </SettingsSection>;
 }
 
+/** Each maker's best model, which Compare models judges with; the user can change any of them. */
+function BestModelsBlock({ draft, setDraft, models }: {
+  draft: AppSettings;
+  setDraft: (draft: AppSettings) => void;
+  models: readonly ModelInfo[] | undefined;
+}) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const stored: BestModels = draft.bestModels ?? {};
+  const resolved = resolveBestModels(models, stored);
+  const makers = [...resolved.map((entry) => entry.maker), ...Object.keys(stored).filter((maker) => !resolved.some((entry) => entry.maker === maker))];
+  const save = (next: BestModels) => setDraft({ ...draft, bestModels: next });
+  const reset = (maker: string) => {
+    const { [maker]: _dropped, ...rest } = stored;
+    save(rest);
+  };
+  if (makers.length === 0) return null;
+  return (
+    <div>
+      <h3 className={cx(DS.text.sectionLabel, "mb-1")}>Best model per family</h3>
+      <SettingList>
+        {makers.map((maker) => {
+          const entry = resolved.find((candidate) => candidate.maker === maker);
+          const label = modelMakerLabel(maker);
+          const choices = (models ?? []).filter((model) => modelMaker(model.id) === maker && canBeBestModel(model));
+          const runs = entry ? describeChoice(entry, models) : undefined;
+          const open = editing === maker;
+          return (
+            <SettingRow key={maker} label={label} labelId={`best-model-${maker}`}
+              hint={entry ? `${runs}${entry.custom ? "" : " · default"}` : `${modelName(models, stored[maker]!.model)} is not available`}
+              control={<div className="flex items-center gap-1">
+                {stored[maker] && <Button size="sm" variant="ghost" onClick={() => { reset(maker); setEditing(null); }}>Reset</Button>}
+                {entry && <Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setEditing(open ? null : maker)}>{open ? "Done" : "Edit"}</Button>}
+              </div>}>
+              {open && entry && (
+                <div className={cx(DS.surface.inset, "space-y-2 p-3")}>
+                  <ModelChoiceFields idPrefix={`best-model-${maker}`} name={`${label} best model`} models={choices}
+                    value={stored[maker] ?? { model: entry.model, reasoningEffort: entry.reasoningEffort, contextTier: entry.contextTier }}
+                    onChange={(choice) => save({ ...stored, [maker]: { model: choice.model, ...(choice.reasoningEffort ? { reasoningEffort: choice.reasoningEffort } : {}), ...(choice.contextTier === "long_context" ? { contextTier: choice.contextTier } : {}) } })} />
+                </div>
+              )}
+            </SettingRow>
+          );
+        })}
+      </SettingList>
+    </div>
+  );
+}
+
 // copy-ok: says which chats the test doubles, a scope and cost the reader cannot see
-const AB_TEST_SCOPE = "Chats you start also run on the other arm; a judge compares the first replies.";
+const AB_TEST_SCOPE = "Chats you start also run on the other arm; two judges compare the first replies.";
 
 type ArmValue = ModelPresetSlot | "custom";
 
@@ -308,11 +361,31 @@ function ModelAbTestBlock({ draft, setDraft, models }: {
   const presets = draft.modelPresets ?? {};
   const available = (models ?? []).filter((model) => model.policy?.state !== "disabled");
   const test: ModelAbTestSettings = draft.modelAbTest ?? { enabled: false, ...DEFAULT_MODEL_AB_TEST_ARMS };
+  const pins = test.judges ?? [];
+  const queryClient = useQueryClient();
   const report = useQuery({
-    queryKey: queryKeys.modelAbTest(test.startedAt ?? null),
-    queryFn: ({ signal }) => fetchModelAbTestReport(signal),
-    enabled: Boolean(test.startedAt),
+    queryKey: queryKeys.modelAbTest(test.startedAt ?? null, JSON.stringify([pins, draft.bestModels ?? {}])),
+    // Waits for a pin change to save, so the judges shown are the ones that would judge.
+    queryFn: async ({ signal }) => { await settingsWriter.whenIdle(); return fetchModelAbTestReport(signal); },
+    refetchInterval: (query) => (query.state.data?.rejudge?.running ? 5_000 : false),
   });
+  const rejudging = report.data?.rejudge?.running ?? false;
+  useEffect(() => {
+    if (!rejudging) void queryClient.invalidateQueries({ queryKey: ["model-comparison"] });
+  }, [rejudging, queryClient]);
+  const rejudge = useMutation({
+    mutationFn: async () => { await settingsWriter.whenIdle(); return rejudgeModelAbTest(); },
+    onSuccess: () => { void report.refetch(); },
+  });
+  const [judgeMode, setJudgeMode] = useState<"auto" | "custom">(pins.length > 0 ? "custom" : "auto");
+  const setPin = (index: number, id: string) => {
+    const next = [...pins];
+    next[index] = id;
+    save({ judges: [...new Set(next.filter(Boolean))] });
+  };
+  // A router picks a model per request, so it never judges.
+  const judgeOptions = available.filter((model) => !modelUsesDynamicSelection(model));
+  const judgeNames = (report.data?.judges ?? []).map((judge) => modelName(models, judge.model)).join(", ");
   const save = (next: Partial<ModelAbTestSettings>) => setDraft({ ...draft, modelAbTest: { ...test, ...next } });
   const runs = (choice: ModelAbTestArmChoice) => (isTierChoice(choice) ? presets[choice.tier]?.model : choice.model);
   const ready = Boolean(runs(test.a) && runs(test.b));
@@ -352,10 +425,30 @@ function ModelAbTestBlock({ draft, setDraft, models }: {
             </div>
           );
         })}
+        <div className="py-3 last:pb-0">
+          <SettingRow label="Judges" labelId="model-ab-test-judges" hint={judgeNames || undefined}
+            control={<SegmentedControl<"auto" | "custom"> ariaLabel="Judges" value={judgeMode}
+              options={[{ value: "auto", label: "Automatic" }, { value: "custom", label: "Custom" }]}
+              onChange={(mode) => { setJudgeMode(mode); if (mode === "auto") save({ judges: [] }); }} />} />
+          {judgeMode === "custom" && (
+            <div className={cx(DS.surface.inset, "mt-2 space-y-2 p-3")}>
+              {Array.from({ length: MODEL_COMPARISON_JUDGE_COUNT }, (_, index) => (
+                <FormRow key={index} label={`Judge ${index + 1}`} htmlFor={`model-ab-test-judge-${index}`}>
+                  <LaunchModelSelect id={`model-ab-test-judge-${index}`} ariaLabel={`Judge ${index + 1} model`} models={judgeOptions}
+                    value={pins[index] ?? ""} placeholderLabel="Automatic" placeholderDisabled={false}
+                    unlistedModelId={pins[index] && !judgeOptions.some((model) => model.id === pins[index]) ? pins[index] : undefined}
+                    onChange={(id) => setPin(index, id)} />
+                </FormRow>
+              ))}
+            </div>
+          )}
+        </div>
       </SettingList>
       {report.data?.startedAt && report.data.startedAt === test.startedAt && (
-        <ModelAbTestResults report={report.data} running={test.enabled} models={models} />
+        <ModelAbTestResults report={report.data} running={test.enabled} models={models}
+          onRejudge={() => rejudge.mutate()} rejudgePending={rejudge.isPending} />
       )}
+      {rejudge.error && <p role="alert" className="mt-2 text-xs text-error">{rejudge.error instanceof Error ? rejudge.error.message : String(rejudge.error)}</p>}
       {report.error && <p role="alert" className="mt-2 text-xs text-error">{report.error instanceof Error ? report.error.message : String(report.error)}</p>}
     </div>
   );
@@ -363,18 +456,22 @@ function ModelAbTestBlock({ draft, setDraft, models }: {
 
 function pairOutcome(pair: ModelAbTestRecentPair): string {
   if (pair.winner) {
-    const who = pair.decidedBy === "user" ? "you" : "judge";
+    const who = pair.decidedBy === "user" ? "you" : "judges";
+    if (pair.winner === "split") return "Judges split";
     return pair.winner === "tie" ? `Tie (${who})` : `${pair.winner.toUpperCase()} won (${who})`;
   }
   if (pair.status === "failed" || pair.status === "incomplete") return "Not compared";
   return "Running";
 }
 
-function ModelAbTestResults({ report, running, models }: {
+function ModelAbTestResults({ report, running, models, onRejudge, rejudgePending }: {
   report: ModelAbTestReport;
   running: boolean;
   models: readonly ModelInfo[] | undefined;
+  onRejudge: () => void;
+  rejudgePending: boolean;
 }) {
+  const progress = report.rejudge;
   return (
     <div className="mt-3">
       <MetaLine items={[
@@ -391,6 +488,7 @@ function ModelAbTestResults({ report, running, models }: {
               describeChoice(arm.setup, models),
               arm.decided > 0 && `Won ${arm.wins} of ${arm.decided}`,
               arm.ties > 0 && formatUsageCount(arm.ties, "tie"),
+              arm.splits > 0 && formatUsageCount(arm.splits, "split"),
               arm.userWins > 0 && `${arm.userWins} by your vote`,
               arm.medianDurationMs !== undefined && `${formatDuration(arm.medianDurationMs, { wholeSeconds: true })} per reply`,
               arm.medianAiCredits !== undefined && `${formatUsageUsd(arm.medianAiCredits * COPILOT_AI_CREDIT_USD)} per reply`,
@@ -398,6 +496,21 @@ function ModelAbTestResults({ report, running, models }: {
           </Field>
         ))}
       </FieldList>
+      {report.agreement.length > 0 && (
+        <MetaLine className="mt-1" items={report.agreement.map((entry) => `${modelName(models, entry.model)} agreed with you ${entry.agreed} of ${entry.votes}`)} />
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="secondary" icon={<RotateCw size={14} />} disabled={rejudgePending || progress?.running || report.pairs === 0}
+          onClick={onRejudge}>
+          Re-judge all
+        </Button>
+        {progress && (
+          <MetaLine items={[
+            progress.running ? `Re-judging ${progress.done + progress.skipped} of ${progress.total}` : `Re-judged ${progress.done} of ${progress.total}`,
+            progress.skipped > 0 && `${progress.skipped} kept as they were`,
+          ]} />
+        )}
+      </div>
       {report.recent.length > 0 && (
         <Details label="Recent pairs" className="mt-2">
           <ul className={DS.surface.divided}>
@@ -492,6 +605,8 @@ function ModelListFooter({ presets }: { presets: NonNullable<AppSettings["modelP
     setError(null);
     try {
       queryClient.setQueryData(queryKeys.models, await refreshModels());
+      // Who would judge depends on the list.
+      void queryClient.invalidateQueries({ queryKey: ["model-ab-test"] });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {

@@ -300,7 +300,9 @@ describe("Model comparison routes", () => {
   it("report, a chat's pair and votes validate their input", async () => {
     const local = createTestApp();
     expect((await request(local.app).get("/api/model-ab-test")).body)
-      .toEqual({ startedAt: null, pairs: 0, pending: 0, unusable: 0, arms: [], recent: [] });
+      .toEqual({ startedAt: null, pairs: 0, pending: 0, unusable: 0, arms: [], recent: [], judges: [], agreement: [] });
+    // Re-judging needs a running test.
+    expect((await request(local.app).post("/api/model-ab-test/rejudge").send({})).status).toBe(409);
     expect((await request(local.app).get("/api/model-comparisons/by-session/not-an-id")).status).toBe(400);
     const sessionId = "11111111-2222-4333-8444-555555555555";
     expect((await request(local.app).get(`/api/model-comparisons/by-session/${sessionId}`)).body).toEqual({ comparison: null });

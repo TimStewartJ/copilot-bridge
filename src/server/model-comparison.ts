@@ -15,18 +15,25 @@ import { isRecord } from "../shared/is-record.js";
 import { isTierChoice } from "../shared/model-roles.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { resolveSupportedReasoningEffort } from "../shared/reasoning-effort.js";
-import { isCopilotContextTier } from "../shared/copilot-context.js";
+import { isCopilotContextTier, type CopilotContextTier } from "../shared/copilot-context.js";
+import { canBeBestModel, modelMaker, resolveBestModels, type BestModelCatalogEntry, type BestModels, type ResolvedBestModel } from "../shared/best-models.js";
 import type { SendMode } from "../shared/send-mode.js";
 import {
   MODEL_AB_TEST_ARMS,
   MODEL_COMPARISON_CRITERIA,
+  MODEL_COMPARISON_JUDGE_COUNT,
   type ModelAbTestArm,
   type ModelAbTestArmChoice,
   type ModelAbTestArmReport,
+  type ModelAbTestJudge,
+  type ModelAbTestJudgeAgreement,
+  type ModelAbTestRejudgeProgress,
   type ModelAbTestRecentPair,
   type ModelAbTestReport,
   type ModelAbTestSetup,
   type ModelComparisonJudgement,
+  type ModelComparisonJudgeRun,
+  type ModelComparisonPanelVerdict,
   type ModelComparisonScores,
   type ModelComparisonSide,
   type ModelComparisonStatus,
@@ -82,29 +89,59 @@ function sameSetup(left: ModelAbTestSetup | undefined, right: ModelAbTestSetup |
     && (left.contextTier ?? "default") === (right.contextTier ?? "default");
 }
 
-/** The model maker, by the id's first word: a judge from another one has no stake in either arm. */
-export function modelVendor(modelId: string): string {
-  const id = modelId.trim().toLowerCase();
-  const dash = id.indexOf("-");
-  return dash > 0 ? id.slice(0, dash) : id;
+/** A catalog entry as judge picking reads it. */
+export type JudgeCatalogModel = RoleModelInfo & BestModelCatalogEntry;
+
+export interface ChosenJudge {
+  setup: ModelAbTestSetup;
+  /** False when the judge's maker also made one of the arms. */
+  otherFamily: boolean;
+  pinned: boolean;
 }
 
-/** The strongest tier model from a third maker; else one that is neither arm; else arm A. */
-export function pickJudge(
-  settings: Pick<AppSettings, "modelPresets"> | undefined,
-  models: readonly RoleModelInfo[] | undefined,
+function judgeSetup(model: JudgeCatalogModel | undefined, id: string): ModelAbTestSetup {
+  const reasoningEffort = resolveSupportedReasoningEffort("high", model?.supportedReasoningEfforts);
+  return { model: id, ...(reasoningEffort ? { reasoningEffort } : {}) };
+}
+
+/** Pins, then best models of makers neither arm uses, then any best model not an arm. */
+export function pickJudges(
+  models: readonly JudgeCatalogModel[] | undefined,
   setups: Record<ModelAbTestArm, ModelAbTestSetup>,
-): { setup: ModelAbTestSetup; otherFamily: boolean } {
-  const candidates = [...MODEL_PRESET_SLOTS].reverse()
-    .map((slot) => resolveArmSetup(settings, { tier: slot }, models))
-    .filter((setup): setup is ModelAbTestSetup => !!setup);
-  const armVendors = new Set([modelVendor(setups.a.model), modelVendor(setups.b.model)]);
-  const outside = candidates.find((setup) => !armVendors.has(modelVendor(setup.model)));
-  if (outside) return { setup: outside, otherFamily: true };
-  const neither = candidates.find((setup) => setup.model !== setups.a.model && setup.model !== setups.b.model);
-  return { setup: neither ?? candidates[0] ?? setups.a, otherFamily: false };
+  options: { pinned?: readonly string[]; bestModels?: BestModels; tierModels?: readonly string[] } = {},
+): ChosenJudge[] {
+  const catalog = models ?? [];
+  const armMakers = new Set([modelMaker(setups.a.model), modelMaker(setups.b.model)]);
+  const armModels = new Set([setups.a.model, setups.b.model]);
+  const chosen: ChosenJudge[] = [];
+  const add = (setup: ModelAbTestSetup, pinned: boolean) => {
+    if (chosen.length >= MODEL_COMPARISON_JUDGE_COUNT || chosen.some((judge) => judge.setup.model === setup.model)) return;
+    chosen.push({ setup, otherFamily: !armMakers.has(modelMaker(setup.model)), pinned });
+  };
+  const setupOf = (entry: ResolvedBestModel): ModelAbTestSetup => ({
+    model: entry.model,
+    ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
+    contextTier: entry.contextTier,
+  });
+  // A pin that is its maker's best model runs on that model's effort and context.
+  const canonical = resolveBestModels(catalog, options.bestModels);
+  for (const id of options.pinned ?? []) {
+    const known = catalog.find((model) => model.id === id);
+    const entry = canonical.find((candidate) => candidate.model === id);
+    if (entry) add(setupOf(entry), true);
+    else if (catalog.length === 0 || (known && canBeBestModel(known))) add(judgeSetup(known, id), true);
+  }
+  if (catalog.length === 0) {
+    for (const id of options.tierModels ?? []) if (!armModels.has(id)) add(judgeSetup(undefined, id), false);
+    return chosen;
+  }
+  // Resolved without the arms, so a maker whose best model is an arm offers its next one.
+  const best = resolveBestModels(catalog.filter((model) => !armModels.has(model.id)), options.bestModels);
+  const usedMakers = () => new Set(chosen.map((judge) => modelMaker(judge.setup.model)));
+  for (const entry of best) if (!armMakers.has(entry.maker) && !usedMakers().has(entry.maker)) add(setupOf(entry), false);
+  for (const entry of best) if (!usedMakers().has(entry.maker)) add(setupOf(entry), false);
+  return chosen;
 }
-
 
 export interface ModelComparisonRecord {
   id: string;
@@ -207,7 +244,7 @@ function parseStoredScores(value: unknown): ModelComparisonScores | undefined {
   return scores;
 }
 
-function parseJudgement(value: unknown): ModelComparisonJudgement | undefined {
+function parseRun(value: unknown): ModelComparisonJudgeRun | undefined {
   if (!isRecord(value) || typeof value.model !== "string" || !isVerdict(value.winner) || !isRecord(value.scores)) return undefined;
   const a = parseStoredScores(value.scores.a);
   const b = parseStoredScores(value.scores.b);
@@ -215,9 +252,38 @@ function parseJudgement(value: unknown): ModelComparisonJudgement | undefined {
   return {
     model: value.model,
     otherFamily: value.otherFamily === true,
+    ...(isArm(value.firstArm) ? { firstArm: value.firstArm } : {}),
     winner: value.winner,
     scores: { a, b },
     reason: typeof value.reason === "string" ? value.reason : "",
+  };
+}
+
+function isPanelVerdict(value: unknown): value is ModelComparisonPanelVerdict {
+  return isVerdict(value) || value === "split";
+}
+
+function count(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+/** A panel verdict, or a single judge's from before panels, kept as its one run. */
+function parseJudgement(value: unknown): ModelComparisonJudgement | undefined {
+  if (!isRecord(value)) return undefined;
+  if (!Array.isArray(value.runs)) {
+    const legacy = parseRun(value);
+    return legacy ? { verdict: legacy.winner, runs: [legacy], judgesAsked: 1, judgesCounted: 1 } : undefined;
+  }
+  const runs = value.runs.map(parseRun);
+  if (runs.length === 0 || !isPanelVerdict(value.verdict)) return undefined;
+  if (runs.some((run) => !run)) return undefined;
+  const judgesCounted = count(value.judgesCounted, 1);
+  return {
+    verdict: value.verdict,
+    runs: runs as ModelComparisonJudgeRun[],
+    judgesAsked: Math.max(count(value.judgesAsked, judgesCounted), judgesCounted),
+    judgesCounted,
+    ...(typeof value.judgedAt === "string" ? { judgedAt: value.judgedAt } : {}),
   };
 }
 
@@ -278,6 +344,8 @@ export function createModelComparisonStore(db: DatabaseSync) {
     `UPDATE model_comparisons SET status = 'judged', setupsJson = ?, metricsJson = ?, judgementJson = ?, updatedAt = ?
      WHERE id = ? AND status = 'judging'`,
   );
+  // updatedAt stays: it times the twin worktree's removal, which a later re-judge must not delay.
+  const rejudged = db.prepare("UPDATE model_comparisons SET judgementJson = ? WHERE id = ? AND status = 'judged'");
   const vote = db.prepare("UPDATE model_comparisons SET userVote = ?, votedAt = ?, updatedAt = ? WHERE id = ?");
   const combine = db.prepare(
     "UPDATE model_comparisons SET combinedAt = ?, combinedArm = ?, updatedAt = ? WHERE id = ? AND combinedAt IS NULL",
@@ -326,6 +394,10 @@ export function createModelComparisonStore(db: DatabaseSync) {
       at: string,
     ): boolean {
       return Number(judged.run(JSON.stringify(setups), JSON.stringify(metrics), JSON.stringify(judgement), at, id).changes) === 1;
+    },
+    /** Replaces a judged pair's verdict; false when the pair is no longer judged. */
+    replaceJudgement(id: string, judgement: ModelComparisonJudgement): boolean {
+      return Number(rejudged.run(JSON.stringify(judgement), id).changes) === 1;
     },
     vote(id: string, verdict: ModelComparisonVerdict, at: string): void {
       vote.run(verdict, at, at, id);
@@ -565,24 +637,51 @@ export function isVotable(record: ModelComparisonRecord): boolean {
   return !!record.twinStartedAt && (record.status === "judged" || record.status === "judging" || record.status === "failed");
 }
 
-/** The verdict that counts: the user's vote, else the judge's. */
-export function decidedVerdict(record: ModelComparisonRecord): { winner: ModelComparisonVerdict; by: "user" | "judge" } | undefined {
+/** The verdict that counts: the user's vote, else the judges'. */
+export function decidedVerdict(record: ModelComparisonRecord): { winner: ModelComparisonPanelVerdict; by: "user" | "judge" } | undefined {
   if (!isVotable(record)) return undefined;
   if (record.userVote) return { winner: record.userVote, by: "user" };
-  if (record.judgement) return { winner: record.judgement.winner, by: "judge" };
+  if (record.judgement) return { winner: record.judgement.verdict, by: "judge" };
   return undefined;
 }
+
+/** An arm or a tie when every run agrees, else a split. */
+export function panelVerdict(runs: readonly Pick<ModelComparisonJudgeRun, "winner">[]): ModelComparisonPanelVerdict {
+  const first = runs[0]?.winner;
+  return first && runs.every((run) => run.winner === first) ? first : "split";
+}
+
+/** Per judge model, how often its own verdict on a pair matched the user's vote. */
+export function judgeAgreement(records: readonly ModelComparisonRecord[]): ModelAbTestJudgeAgreement[] {
+  const byModel = new Map<string, ModelAbTestJudgeAgreement>();
+  for (const record of records) {
+    if (!record.userVote || !record.judgement || !isVotable(record)) continue;
+    const models = [...new Set(record.judgement.runs.map((run) => run.model))];
+    for (const model of models) {
+      const entry = byModel.get(model) ?? { model, votes: 0, agreed: 0 };
+      entry.votes += 1;
+      if (panelVerdict(record.judgement.runs.filter((run) => run.model === model)) === record.userVote) entry.agreed += 1;
+      byModel.set(model, entry);
+    }
+  }
+  return [...byModel.values()].sort((left, right) => right.votes - left.votes || left.model.localeCompare(right.model));
+}
+
+export const EMPTY_MODEL_AB_TEST_REPORT: ModelAbTestReport = {
+  startedAt: null, pairs: 0, pending: 0, unusable: 0, arms: [], recent: [], judges: [], agreement: [],
+};
 
 export function buildModelAbTestReport(
   settings: Pick<AppSettings, "modelAbTest" | "modelPresets"> | undefined,
   records: readonly ModelComparisonRecord[],
+  extra: { judges?: ModelAbTestJudge[]; rejudge?: ModelAbTestRejudgeProgress } = {},
 ): ModelAbTestReport {
   const test = settings?.modelAbTest;
-  if (!test?.startedAt) return { startedAt: null, pairs: 0, pending: 0, unusable: 0, arms: [], recent: [] };
+  if (!test?.startedAt) return { ...EMPTY_MODEL_AB_TEST_REPORT, judges: extra.judges ?? [] };
   const arms = MODEL_AB_TEST_ARMS.map((arm): ModelAbTestArmReport => {
     const durations: number[] = [];
     const credits: number[] = [];
-    const report: ModelAbTestArmReport = { arm, choice: test[arm], decided: 0, wins: 0, ties: 0, userWins: 0 };
+    const report: ModelAbTestArmReport = { arm, choice: test[arm], decided: 0, wins: 0, ties: 0, splits: 0, userWins: 0 };
     for (const record of records) {
       report.setup ??= record.setups[arm];
       const metrics = record.metrics?.[arm];
@@ -594,6 +693,7 @@ export function buildModelAbTestReport(
       if (!verdict) continue;
       report.decided += 1;
       if (verdict.winner === "tie") report.ties += 1;
+      else if (verdict.winner === "split") report.splits += 1;
       else if (verdict.winner === arm) {
         report.wins += 1;
         if (verdict.by === "user") report.userWins += 1;
@@ -616,7 +716,7 @@ export function buildModelAbTestReport(
       status: record.status,
       createdAt: record.createdAt,
       ...(verdict ? { winner: verdict.winner, decidedBy: verdict.by } : {}),
-      ...(record.judgement?.reason ? { reason: record.judgement.reason } : {}),
+      ...(record.judgement?.runs[0]?.reason ? { reason: record.judgement.runs[0].reason } : {}),
       ...(record.failure ? { failure: record.failure } : {}),
     };
   });
@@ -628,6 +728,9 @@ export function buildModelAbTestReport(
     unusable: started.filter((record) => record.status === "failed" || record.status === "incomplete").length,
     arms,
     recent,
+    judges: extra.judges ?? [],
+    agreement: judgeAgreement(records),
+    ...(extra.rejudge ? { rejudge: extra.rejudge } : {}),
   };
 }
 
@@ -643,7 +746,7 @@ export interface ModelComparisonPreparation {
 export interface ModelComparisonDeps {
   store: ModelComparisonStore;
   getSettings(): AppSettings | undefined;
-  listModels(): Promise<readonly RoleModelInfo[] | undefined>;
+  listModels(): Promise<readonly JudgeCatalogModel[] | undefined>;
   /** The twin's own worktree of the user's chat's folder, or undefined when that is not in Git. */
   createTwinWorkspace(mainSessionId: string, twinSessionId: string): Promise<{ cwd: string; repo: string; worktree: string } | undefined>;
   removeTwinWorkspace(workspace: { repo: string; worktree: string }): Promise<void>;
@@ -660,7 +763,7 @@ export interface ModelComparisonDeps {
   isBusy(sessionId: string): boolean;
   hasPendingInput(sessionId: string): boolean;
   abort(sessionId: string): Promise<void>;
-  askJudge(input: { model: string; reasoningEffort?: string; system: string; prompt: string; timeoutMs: number }): Promise<string | undefined>;
+  askJudge(input: { model: string; reasoningEffort?: string; contextTier?: CopilotContextTier; system: string; prompt: string; timeoutMs: number }): Promise<string | undefined>;
   copilotHome: string;
   now?: () => number;
   random?: () => number;
@@ -680,6 +783,10 @@ function winnerSide(record: ModelComparisonRecord, verdict: ModelComparisonVerdi
   return verdict === "tie" ? "x" : armSide(record, verdict);
 }
 
+function verdictSide(record: ModelComparisonRecord, verdict: ModelComparisonPanelVerdict): ModelComparisonSide | "tie" | "split" {
+  return verdict === "tie" || verdict === "split" ? verdict : armSide(record, verdict);
+}
+
 function armSide(record: ModelComparisonRecord, arm: ModelAbTestArm): ModelComparisonSide {
   return arm === record.mainArm ? "x" : "y";
 }
@@ -697,6 +804,74 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
   const working = new Set<string>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ticking: Promise<void> | undefined;
+  let rejudging: (ModelAbTestRejudgeProgress & { testStartedAt: string }) | undefined;
+
+  /** The model catalog, or undefined when it can't be read. */
+  async function catalog(): Promise<readonly JudgeCatalogModel[] | undefined> {
+    try {
+      return await deps.listModels();
+    } catch {
+      return undefined;
+    }
+  }
+
+  function judgesFor(setups: Record<ModelAbTestArm, ModelAbTestSetup>, models: readonly JudgeCatalogModel[] | undefined): ChosenJudge[] {
+    const settings = deps.getSettings();
+    const tierModels = MODEL_PRESET_SLOTS.map((slot) => settings?.modelPresets?.[slot]?.model)
+      .filter((model): model is string => !!model).reverse();
+    return pickJudges(models, setups, { pinned: settings?.modelAbTest?.judges, bestModels: settings?.bestModels, tierModels });
+  }
+
+  async function askOnce(judge: ChosenJudge, prompt: string): Promise<ParsedJudgeReply | undefined> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const parsed = parseJudgeReply(await deps.askJudge({
+          model: judge.setup.model,
+          ...(judge.setup.reasoningEffort ? { reasoningEffort: judge.setup.reasoningEffort } : {}),
+          ...(judge.setup.contextTier === "long_context" ? { contextTier: judge.setup.contextTier } : {}),
+          system: JUDGE_SYSTEM_PROMPT,
+          prompt,
+          timeoutMs: JUDGE_TIMEOUT_MS,
+        }));
+        if (parsed) return parsed;
+      } catch (error) {
+        logger.warn(`[model-comparison] Judge ${judge.setup.model} failed: ${message(error)}`);
+      }
+    }
+    return undefined;
+  }
+
+  /** Every judge scores both orders; only judges with both orders back count toward the verdict. */
+  async function scorePanel(record: ModelComparisonRecord, main: FirstTurn, twin: FirstTurn, judges: readonly ChosenJudge[]): Promise<ModelComparisonJudgement | undefined> {
+    const transcriptOf = (arm: ModelAbTestArm) => (arm === record.mainArm ? main : twin).transcript;
+    const request = main.prompt ?? twin.prompt ?? "";
+    const slots = judges.flatMap((judge) => MODEL_AB_TEST_ARMS.map((firstArm) => ({ judge, firstArm })));
+    const results = await Promise.all(slots.map(async ({ judge, firstArm }): Promise<ModelComparisonJudgeRun | undefined> => {
+      const secondArm = otherArm(firstArm);
+      const parsed = await askOnce(judge, buildJudgePrompt(request, transcriptOf(firstArm), transcriptOf(secondArm)));
+      if (!parsed) return undefined;
+      const labelArm: Record<JudgeLabel, ModelAbTestArm> = { "1": firstArm, "2": secondArm };
+      return {
+        model: judge.setup.model,
+        otherFamily: judge.otherFamily,
+        firstArm,
+        winner: parsed.winner === "tie" ? "tie" : labelArm[parsed.winner],
+        scores: { [firstArm]: parsed.scores["1"], [secondArm]: parsed.scores["2"] } as Record<ModelAbTestArm, ModelComparisonScores>,
+        reason: parsed.reason,
+      };
+    }));
+    const runs = results.filter((run): run is ModelComparisonJudgeRun => !!run);
+    const counted = judges.filter((judge) => runs.filter((run) => run.model === judge.setup.model).length === MODEL_AB_TEST_ARMS.length);
+    if (counted.length === 0) return undefined;
+    const countedModels = new Set(counted.map((judge) => judge.setup.model));
+    return {
+      verdict: panelVerdict(runs.filter((run) => countedModels.has(run.model))),
+      runs,
+      judgesAsked: judges.length,
+      judgesCounted: counted.length,
+      judgedAt: iso(),
+    };
+  }
 
   /** For a chat the user is starting: which arm it runs on, or undefined when no test can run. */
   async function prepare(): Promise<ModelComparisonPreparation | undefined> {
@@ -856,47 +1031,19 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
         return;
       }
       const setups = record.setups;
-      const settings = deps.getSettings();
-      let models: readonly RoleModelInfo[] | undefined;
-      try {
-        models = await deps.listModels();
-      } catch {
-        models = undefined;
-      }
-      const chosen = pickJudge(settings, models, setups);
-      const mainFirst = random() < 0.5;
-      const labelArm: Record<JudgeLabel, ModelAbTestArm> = mainFirst
-        ? { "1": record.mainArm, "2": twinArm }
-        : { "1": twinArm, "2": record.mainArm };
-      const transcriptOf = (arm: ModelAbTestArm) => (arm === record.mainArm ? main : twin).transcript;
-      const prompt = buildJudgePrompt(main.prompt ?? twin.prompt ?? "", transcriptOf(labelArm["1"]), transcriptOf(labelArm["2"]));
-      let parsed: ParsedJudgeReply | undefined;
-      for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) {
-        parsed = parseJudgeReply(await deps.askJudge({
-          model: chosen.setup.model,
-          ...(chosen.setup.reasoningEffort ? { reasoningEffort: chosen.setup.reasoningEffort } : {}),
-          system: JUDGE_SYSTEM_PROMPT,
-          prompt,
-          timeoutMs: JUDGE_TIMEOUT_MS,
-        }));
-      }
-      if (!parsed) {
-        deps.store.fail(record.id, "judging", "failed", "The judge didn't give a usable verdict.", iso());
+      const judges = judgesFor(setups, await catalog());
+      const judgement = judges.length > 0 ? await scorePanel(record, main, twin, judges) : undefined;
+      if (!judgement) {
+        deps.store.fail(record.id, "judging", "failed", "The judges didn't give a usable verdict.", iso());
         return;
       }
-      const judgement: ModelComparisonJudgement = {
-        model: chosen.setup.model,
-        otherFamily: chosen.otherFamily,
-        winner: parsed.winner === "tie" ? "tie" : labelArm[parsed.winner],
-        scores: { [labelArm["1"]]: parsed.scores["1"], [labelArm["2"]]: parsed.scores["2"] } as Record<ModelAbTestArm, ModelComparisonScores>,
-        reason: parsed.reason,
-      };
       const metrics: Partial<Record<ModelAbTestArm, ModelComparisonTurnMetrics>> = {
         ...(main.metrics ? { [record.mainArm]: main.metrics } : {}),
         ...(twin.metrics ? { [twinArm]: twin.metrics } : {}),
       };
       deps.store.recordJudgement(record.id, setups, metrics, judgement, iso());
-      logger.log(`[model-comparison] [${record.mainSessionId.slice(0, 8)}] Judged by ${chosen.setup.model}: ${judgement.winner === "tie" ? "tie" : judgement.winner.toUpperCase()}`);
+      const by = judges.map((judge) => judge.setup.model).join(", ");
+      logger.log(`[model-comparison] [${record.mainSessionId.slice(0, 8)}] Judged by ${by}: ${judgement.verdict}`);
     } catch (error) {
       logger.warn(`[model-comparison] [${record.mainSessionId.slice(0, 8)}] Judging failed: ${message(error)}`);
       deps.store.fail(record.id, "judging", "failed", `Judging failed: ${message(error)}`, iso());
@@ -914,6 +1061,57 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
       // Cleared either way: a worktree removed by hand would otherwise be retried forever.
       deps.store.setTwinWorkspace(record.id, null);
     }
+  }
+
+  /** Re-scores one judged pair from its chats' first turns; false leaves its verdict as it was. */
+  async function rejudgeOne(id: string, judges: readonly ChosenJudge[]): Promise<boolean> {
+    const record = deps.store.get(id);
+    if (!record?.twinSessionId || record.status !== "judged" || working.has(id)) return false;
+    working.add(id);
+    try {
+      const [main, twin] = await Promise.all([firstTurnOf(record.mainSessionId), firstTurnOf(record.twinSessionId)]);
+      // Only turns that answered: a missing log or an open turn is not what was first judged.
+      if ("unreadable" in main || "unreadable" in twin || main.state !== "ended" || twin.state !== "ended") return false;
+      const judgement = await scorePanel(record, main, twin, judges);
+      return !!judgement && deps.store.replaceJudgement(id, judgement);
+    } catch (error) {
+      logger.warn(`[model-comparison] [${record.mainSessionId.slice(0, 8)}] Re-judging failed: ${message(error)}`);
+      return false;
+    } finally {
+      working.delete(id);
+    }
+  }
+
+  function rejudgeProgress(): ModelAbTestRejudgeProgress | undefined {
+    if (!rejudging) return undefined;
+    const { running, total, done, skipped } = rejudging;
+    return { running, total, done, skipped };
+  }
+
+  /** Re-scores every judged pair of the running test with today's judges; one batch at a time. */
+  function rejudge(): ModelAbTestRejudgeProgress | undefined {
+    if (rejudging?.running) return rejudgeProgress();
+    const settings = deps.getSettings();
+    const testStartedAt = settings?.modelAbTest?.startedAt;
+    if (!testStartedAt) return undefined;
+    const records = deps.store.listForTest(testStartedAt).filter((record) => record.status === "judged");
+    const batch = { running: true, total: records.length, done: 0, skipped: 0, testStartedAt };
+    rejudging = batch;
+    void (async () => {
+      const models = await catalog();
+      for (const record of records) {
+        // Each pair keeps the arms it ran on, so its judges are picked against those.
+        const judges = judgesFor(record.setups, models);
+        if (judges.length > 0 && await rejudgeOne(record.id, judges)) batch.done += 1;
+        else batch.skipped += 1;
+      }
+    })().catch((error: unknown) => {
+      logger.warn(`[model-comparison] Re-judging stopped: ${message(error)}`);
+    }).finally(() => {
+      batch.running = false;
+      logger.log(`[model-comparison] Re-judged ${batch.done} of ${batch.total} pairs (${batch.skipped} left as they were)`);
+    });
+    return rejudgeProgress();
   }
 
   /** One pass: recover pairs a restart cut off, judge finished pairs, remove old worktrees. */
@@ -952,9 +1150,15 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
       y: record.setups[otherArm(record.mainArm)],
       ...(record.judgement ? {
         judge: {
-          winner: record.judgement.winner === "tie" ? "tie" as const : armSide(record, record.judgement.winner),
-          reason: record.judgement.reason,
-          model: record.judgement.model,
+          verdict: verdictSide(record, record.judgement.verdict),
+          judgesAsked: record.judgement.judgesAsked,
+          judgesCounted: record.judgement.judgesCounted,
+          runs: record.judgement.runs.map((run) => ({
+            model: run.model,
+            winner: run.winner === "tie" ? "tie" as const : armSide(record, run.winner),
+            reason: run.reason,
+            ...(run.firstArm ? { firstSide: armSide(record, run.firstArm) } : {}),
+          })),
         },
       } : {}),
     } : undefined;
@@ -966,8 +1170,8 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
       votable: votable && !record.userVote,
       combinable: votable && !record.combinedAt,
       ...(record.combinedArm ? { combinedKeep: armSide(record, record.combinedArm) } : {}),
-      ...(!record.combinedAt && (record.userVote ?? record.judgement?.winner)
-        ? { suggestedKeep: winnerSide(record, record.userVote ?? record.judgement!.winner) } : {}),
+      // Only the user's own vote: a hint before it would lead the vote that judges are measured by.
+      ...(!record.combinedAt && record.userVote ? { suggestedKeep: winnerSide(record, record.userVote) } : {}),
       ...(record.taskId ? { taskId: record.taskId } : {}),
       ...(record.userVote ? { vote: record.userVote === "tie" ? "tie" as const : armSide(record, record.userVote) } : {}),
       ...(revealed ? { revealed } : {}),
@@ -1005,10 +1209,19 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     return view(record.mainSessionId);
   }
 
-  function report(): ModelAbTestReport {
+  /** The running test's results, with who would judge a pair now. */
+  async function report(): Promise<ModelAbTestReport> {
     const settings = deps.getSettings();
-    const startedAt = settings?.modelAbTest?.startedAt;
-    return buildModelAbTestReport(settings, startedAt ? deps.store.listForTest(startedAt) : []);
+    const test = settings?.modelAbTest;
+    const startedAt = test?.startedAt;
+    const models = await catalog();
+    const a = test ? resolveArmSetup(settings, test.a, models) : undefined;
+    const b = test ? resolveArmSetup(settings, test.b, models) : undefined;
+    const judges = a && b
+      ? judgesFor({ a, b }, models).map((judge) => ({ model: judge.setup.model, pinned: judge.pinned, otherFamily: judge.otherFamily }))
+      : [];
+    const rejudge = rejudging && rejudging.testStartedAt === startedAt ? rejudgeProgress() : undefined;
+    return buildModelAbTestReport(settings, startedAt ? deps.store.listForTest(startedAt) : [], { judges, ...(rejudge ? { rejudge } : {}) });
   }
 
   function sourceSessionId(sessionId: string): string | undefined {
@@ -1032,7 +1245,7 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     timer = undefined;
   }
 
-  return { prepare, register, onFirstMessage, tick: runTick, view, vote, combine, report, sourceSessionId, start, stop };
+  return { prepare, register, onFirstMessage, tick: runTick, view, vote, combine, report, rejudge, sourceSessionId, start, stop };
 }
 
 export type ModelComparisonService = ReturnType<typeof createModelComparisonService>;

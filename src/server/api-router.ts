@@ -26,7 +26,7 @@ import {
   type SessionWorkspaceWarningPayload,
 } from "./session-view.js";
 import { resolveSessionCreationOptions as resolveSessionCreationOptionsForContext, type SessionCreationOptions } from "./session-creation-options.js";
-import type { ModelComparisonPreparation } from "./model-comparison.js";
+import { EMPTY_MODEL_AB_TEST_REPORT, type ModelComparisonPreparation } from "./model-comparison.js";
 import { startTaskTidyChat } from "./task-tidy.js";
 import { buildTaskPagePrompt, startTaskChat } from "./task-chat-start.js";
 import { TaskStartersError, TaskStartersService } from "./task-starters.js";
@@ -1214,14 +1214,22 @@ export function createApiRouter(
   });
 
   // GET /model-ab-test — the running side-by-side comparison: wins, ties and cost per arm.
-  router.get("/model-ab-test", (_req, res) => {
+  router.get("/model-ab-test", async (_req, res) => {
     try {
-      const report = ctx.modelComparisons?.report() ?? { startedAt: null, pairs: 0, pending: 0, unusable: 0, arms: [], recent: [] };
+      const report = await ctx.modelComparisons?.report() ?? EMPTY_MODEL_AB_TEST_REPORT;
       res.json(report);
     } catch (err) {
       console.error("[model-comparison] Error:", err);
       res.status(500).json({ error: err instanceof Error ? err.message : "Unable to read the model comparison." });
     }
+  });
+
+  // POST /model-ab-test/rejudge — re-scores the running test's judged pairs with today's judges.
+  router.post("/model-ab-test/rejudge", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Re-judging model comparisons")) return;
+    const progress = ctx.modelComparisons?.rejudge();
+    if (!progress) return res.status(409).json({ error: "No comparison is running." });
+    res.status(202).json({ rejudge: progress });
   });
 
   // POST /model-comparisons/:id/combine — hands Y's answer to X, on X's or Y's model (`keep`).
@@ -2077,6 +2085,7 @@ export function createApiRouter(
       modelRoles: settings.modelRoles,
       reasoningEffort: settings.reasoningEffort,
       contextTier: settings.contextTier,
+      bestModels: settings.bestModels,
     });
   }
 
@@ -2103,6 +2112,9 @@ export function createApiRouter(
       const choice = next.modelAbTest?.[arm];
       if (!choice || isTierChoice(choice)) continue;
       if (JSON.stringify(current.modelAbTest?.[arm]) !== JSON.stringify(choice)) add({ model: choice.model });
+    }
+    for (const [maker, choice] of Object.entries(next.bestModels ?? {})) {
+      if (JSON.stringify(current.bestModels?.[maker]) !== JSON.stringify(choice)) add({ model: choice.model });
     }
     return [...selections.values()];
   }

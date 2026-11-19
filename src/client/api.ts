@@ -1,6 +1,13 @@
 import type { TaskStartersResponse } from "../shared/task-starters.js";
 import type { ModelRoles, ModelRolesView } from "../shared/model-roles.js";
-import type { ModelAbTestReport, ModelAbTestSettings, ModelComparisonSide, ModelComparisonView } from "../shared/model-ab-test.js";
+import type {
+  ModelAbTestRejudgeProgress,
+  ModelAbTestReport,
+  ModelAbTestSettings,
+  ModelComparisonSide,
+  ModelComparisonView,
+} from "../shared/model-ab-test.js";
+import type { BestModels } from "../shared/best-models.js";
 import type { ChatGradesFilters, ChatGradesRunStatus, ChatGradesView } from "../shared/chat-grades.js";
 import { createTelemetryBatcher } from "./telemetry-batcher";
 import type { ImageBudgetSettings } from "../shared/image-budget.js";
@@ -2569,6 +2576,8 @@ export interface AppSettings {
   modelRoles?: ModelRoles;
   /** New chats start on one of two tiers at random; the server sets `startedAt`. */
   modelAbTest?: ModelAbTestSettings;
+  /** The user's best model per maker; a missing maker uses its default. */
+  bestModels?: BestModels;
   browser?: BrowserSettings;
   deferWorker?: DeferWorkerSettings;
   computerUse?: ComputerUseSettings;
@@ -3098,6 +3107,12 @@ export async function fetchModelRoles(signal?: AbortSignal): Promise<ModelRolesV
 
 export async function fetchModelAbTestReport(signal?: AbortSignal): Promise<ModelAbTestReport> {
   return apiFetch<ModelAbTestReport>("/api/model-ab-test", undefined, { signal });
+}
+
+/** Re-scores the running test's judged pairs with today's judges; returns the batch's progress. */
+export async function rejudgeModelAbTest(): Promise<ModelAbTestRejudgeProgress> {
+  const { rejudge } = await apiFetch<{ rejudge: ModelAbTestRejudgeProgress }>("/api/model-ab-test/rejudge", {});
+  return rejudge;
 }
 
 /** The side-by-side comparison this chat is part of, or null. */

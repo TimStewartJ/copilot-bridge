@@ -18,8 +18,25 @@ const VOTES: ReadonlyArray<{ value: ModelComparisonSide | "tie"; label: string }
   { value: "y", label: "Y better" },
 ];
 
+type JudgeView = NonNullable<NonNullable<ModelComparisonView["revealed"]>["judge"]>;
+
 function verdictLabel(verdict: ModelComparisonSide | "tie"): string {
   return verdict === "tie" ? "tie" : verdict.toUpperCase();
+}
+
+/** "Judges: Y", "Judges split", or "Judge: X" for a verdict from before panels. */
+function judgeSummary(judge: JudgeView): string {
+  const counted = judge.judgesCounted < judge.judgesAsked ? ` (${judge.judgesCounted} of ${judge.judgesAsked})` : "";
+  if (judge.verdict === "split") return `Judges split${counted}`;
+  return `${judge.judgesAsked > 1 ? "Judges" : "Judge"}: ${verdictLabel(judge.verdict)}${counted}`;
+}
+
+/** Each judge's pick and reason; "Response 1" in a reason is the side shown first. */
+function judgeDetail(judge: JudgeView, name: (model: string) => string): string {
+  return judge.runs.map((run) => {
+    const order = run.firstSide ? ` (${run.firstSide.toUpperCase()} first)` : "";
+    return `${name(run.model)}${order}: ${verdictLabel(run.winner)}. ${run.reason}`;
+  }).join("\n");
 }
 
 /** A line under the status line of a chat in a comparison; `busy` refetches once a turn starts. */
@@ -52,7 +69,8 @@ export default function ModelComparisonBar({ sessionId, busy }: { sessionId: str
   });
   if (!comparison) return null;
 
-  const name = (setup: ModelAbTestSetup) => models?.find((model) => model.id === setup.model)?.name ?? setup.model;
+  const modelLabel = (id: string) => models?.find((model) => model.id === id)?.name ?? id;
+  const name = (setup: ModelAbTestSetup) => modelLabel(setup.model);
   const { revealed } = comparison;
   const error = vote.error ?? combine.error;
   return (
@@ -87,7 +105,7 @@ export default function ModelComparisonBar({ sessionId, busy }: { sessionId: str
         comparison.status === "failed" && comparison.failure,
         comparison.combinedKeep && `Combined into X, on ${comparison.combinedKeep.toUpperCase()}'s model`,
         comparison.vote && `You: ${verdictLabel(comparison.vote)}`,
-        revealed?.judge && <span key="judge" title={revealed.judge.reason}>Judge: {verdictLabel(revealed.judge.winner)}</span>,
+        revealed?.judge && <span key="judge" title={judgeDetail(revealed.judge, modelLabel)}>{judgeSummary(revealed.judge)}</span>,
         revealed && `X ${name(revealed.x)}, Y ${name(revealed.y)}`,
       ]} />
       {error && <span role="alert" className="text-error">{error instanceof Error ? error.message : String(error)}</span>}

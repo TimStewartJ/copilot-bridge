@@ -17,13 +17,15 @@ vi.mock("@tanstack/react-query", () => ({
     error: null,
   }),
   useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries, setQueryData: vi.fn() }),
+  useMutation: () => ({ mutate: vi.fn(), isPending: false, error: null }),
 }));
+vi.mock("../../hooks/queries/useSettings", () => ({ settingsWriter: { whenIdle: async () => {} } }));
 vi.mock("../../hooks/queries/useModelClientInfo", () => ({ useModelClientInfoQuery: () => ({ data: undefined }) }));
 vi.mock("../../queryClient", () => ({
   queryKeys: {
     models: ["models"],
     modelClientInfo: ["models", "client"],
-    modelAbTest: (startedAt: string | null) => ["model-ab-test", startedAt],
+    modelAbTest: (startedAt: string | null, judges: string) => ["model-ab-test", startedAt, judges],
   },
 }));
 vi.mock("./ModelMoveDisclosure", () => ({ ModelMoveDisclosure: () => null }));
@@ -139,6 +141,26 @@ describe("ModelsSection", () => {
     expect(setDraft.mock.lastCall?.[0].modelRoles).not.toHaveProperty("reviewers");
   });
 
+  it("lists each family's priciest model, and edits or resets one family's choice", async () => {
+    const priced = (id: string, name: string, outputPrice: number) => ({ id, name, supportedReasoningEfforts: ["low", "high"], billing: { tokenPrices: { outputPrice } } });
+    mocks.useModelsQuery.mockReturnValue({ data: [priced("gpt-6-luna", "GPT-6 Luna", 50), priced("gpt-6.1-sol", "GPT-6.1 Sol", 1000), priced("claude-opus-5.5", "Claude Opus 5.5", 2000)] });
+    const setDraft = vi.fn();
+    harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
+    await harness.render(createElement(ModelsSection, { draft: DRAFT, setDraft }));
+    const text = harness.dom.container.textContent;
+    expect(text).toContain("Claude Opus 5.5 · High · default");
+    expect(text).toContain("GPT-6.1 Sol · High · default");
+
+    await harness.act(() => getReactProps(button(harness!.dom.container, "Edit"))!.onClick());
+    await harness.act(() => getReactProps(button(group(harness!.dom.container, "Claude best model effort"), "Low"))!.onClick());
+    expect(setDraft.mock.lastCall?.[0].bestModels).toEqual({ claude: { model: "claude-opus-5.5", reasoningEffort: "low" } });
+
+    await harness.render(createElement(ModelsSection, { draft: { ...DRAFT, bestModels: { gpt: { model: "gpt-6-luna" } } } as AppSettings, setDraft }));
+    expect(harness.dom.container.textContent).toContain("GPT-6 Luna");
+    await harness.act(() => getReactProps(button(harness!.dom.container, "Reset"))!.onClick());
+    expect(setDraft.mock.lastCall?.[0].bestModels).toEqual({});
+  });
+
   it("compares a tier with any model, and shows each arm's wins and cost per reply", async () => {
     mocks.useModelsQuery.mockReturnValue({ data: MODELS });
     const setDraft = vi.fn();
@@ -161,10 +183,12 @@ describe("ModelsSection", () => {
       pending: 0,
       unusable: 1,
       arms: [
-        { arm: "a", choice: { tier: "preset2" }, setup: { model: "gpt-6.1-sol", reasoningEffort: "high" }, decided: 3, wins: 2, ties: 0, userWins: 1, medianDurationMs: 42_000, medianAiCredits: 50 },
-        { arm: "b", choice: { model: "gpt-6-luna" }, decided: 3, wins: 1, ties: 0, userWins: 0 },
+        { arm: "a", choice: { tier: "preset2" }, setup: { model: "gpt-6.1-sol", reasoningEffort: "high" }, decided: 3, wins: 2, ties: 0, splits: 0, userWins: 1, medianDurationMs: 42_000, medianAiCredits: 50 },
+        { arm: "b", choice: { model: "gpt-6-luna" }, decided: 3, wins: 0, ties: 0, splits: 1, userWins: 0 },
       ],
       recent: [],
+      judges: [{ model: "claude-opus-5.5", pinned: false, otherFamily: true }],
+      agreement: [{ model: "claude-opus-5.5", votes: 2, agreed: 1 }],
     };
     await harness.render(createElement(ModelsSection, {
       draft: { ...DRAFT, modelAbTest: { enabled: true, a: { tier: "preset2" }, b: { model: "gpt-6-luna" }, startedAt } } as AppSettings,
@@ -176,8 +200,16 @@ describe("ModelsSection", () => {
     expect(text).toContain("Won 2 of 3");
     expect(text).toContain("1 by your vote");
     expect(text).toContain("1 not compared");
+    expect(text).toContain("1 split");
+    expect(text).toContain("Claude Opus 5.5 agreed with you 1 of 2");
     // A running test keeps its arms until it is turned off.
     expect(getReactProps(button(group(harness.dom.container, "Arm A"), "Fast"))!.disabled).toBe(true);
+    // Judges show who decides now and can be pinned while the test runs.
+    expect(text).toContain("Claude Opus 5.5");
+    await harness.act(() => getReactProps(button(group(harness!.dom.container, "Judges"), "Custom"))!.onClick());
+    const judgeSelect = findAllByTag(harness.dom.container, "select").find((element) => getReactProps(element)?.id === "model-ab-test-judge-0");
+    await harness.act(() => getReactProps(judgeSelect)!.onChange({ target: { value: "gpt-6-luna" } }));
+    expect(setDraft.mock.lastCall?.[0].modelAbTest).toMatchObject({ enabled: true, judges: ["gpt-6-luna"] });
     mocks.abTestReport = undefined;
   });
 });
