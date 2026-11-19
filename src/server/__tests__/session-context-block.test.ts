@@ -83,9 +83,9 @@ describe("bridge context sections", () => {
     expect(content).not.toContain("Two strong leads.");
     expect(notes!.content).toBe([
       "<task_notes>",
-      "Task notes (where the work stands, kept by earlier chats and possibly out of date: check facts your work depends on; standing rules belong in the task instructions):\nTwo strong leads.",
+      "Task notes [17 of 6,000 characters] (where the work stands, kept by earlier chats and possibly out of date: check facts your work depends on; standing rules belong in the task instructions):\nTwo strong leads.",
       "",
-      'Group notes (task group "Home"):\nBudget $3k',
+      'Group notes [10 of 6,000 characters] (task group "Home"):\nBudget $3k',
       "</task_notes>",
     ].join("\n"));
     expect(content).toContain("Checklist: 1 open, 1 completed. Use action_list for the full checklist.");

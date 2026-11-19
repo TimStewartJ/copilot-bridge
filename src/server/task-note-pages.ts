@@ -32,10 +32,18 @@ export function notesWriteRefusal(current: string, token: unknown): string | und
 }
 
 /** Why an agent may not save these notes; notes over the limit may still shrink step by step. */
-export function notesLengthRefusal(current: string, next: string): string | undefined {
+export function notesLengthRefusal(current: string, next: string, source: TaskNotesSource = "task"): string | undefined {
   if (next.length <= TASK_NOTES_MAX_LENGTH || next.length <= current.length) return undefined;
   const limit = TASK_NOTES_MAX_LENGTH.toLocaleString("en-US");
-  return `Task notes are limited to ${limit} characters so every chat sees all of them; this would make them ${next.length.toLocaleString("en-US")}. Keep only where the task stands now: replace lines that are out of date, record what happened with task_history_add, put standing rules in the task instructions and reference material in a docs page linked from the notes, then save again.`;
+  const size = next.length.toLocaleString("en-US");
+  return source === "task"
+    ? `Task notes are limited to ${limit} characters so every chat sees all of them; this would make them ${size}. Keep only where the task stands now: replace lines that are out of date, record what happened with task_history_add, put standing rules in the task instructions and reference material in a docs page linked from the notes, then save again.`
+    : `Group notes are limited to ${limit} characters so every chat in the group sees all of them; this would make them ${size}. Keep only what every task in the group needs: scope boundaries, decisions and links. Move history and reference material to docs pages linked from the notes, and task state to that task's notes, then save again.`;
+}
+
+/** Notes length against the cap, so an agent knows its room before an edit is refused. */
+export function notesLengthLabel(notes: string): string {
+  return `${notes.length.toLocaleString("en-US")} of ${TASK_NOTES_MAX_LENGTH.toLocaleString("en-US")} characters`;
 }
 
 /** Changes one exact passage, so nothing else has to be read or sent back. */

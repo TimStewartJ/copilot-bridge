@@ -2,7 +2,7 @@ import { toolFailure } from "../tool-results.js";
 import type { AppContext } from "../app-context.js";
 import { ensureTaskGroup } from "./helpers.js";
 import { GROUP_COLORS, type GroupColor } from "../task-group-store.js";
-import { notesWriteRefusal, notesWriteTokenField } from "../task-note-pages.js";
+import { notesLengthLabel, notesLengthRefusal, notesWriteRefusal, notesWriteTokenField, TASK_NOTES_MAX_LENGTH } from "../task-note-pages.js";
 import {
   defineBridgeTool,
   registerBridgeToolDefinitions,
@@ -26,8 +26,10 @@ export function createTaskGroupToolDefinitions(ctx: AppContext): BridgeToolDefin
   return [
   defineBridgeTool("task_group_create", {
     description: "Create a new task group for organizing related tasks",
-    parameters: { type: "object", properties: { name: { type: "string", description: "Group name (e.g., 'Frontend App', 'Backend API')" }, color: { type: "string", description: "Optional color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: "Optional markdown notes for the group" } }, required: ["name"] },
+    parameters: { type: "object", properties: { name: { type: "string", description: "Group name (e.g., 'Frontend App', 'Backend API')" }, color: { type: "string", description: "Optional color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: `Optional markdown notes for the group, at most ${TASK_NOTES_MAX_LENGTH.toLocaleString("en-US")} characters` } }, required: ["name"] },
     handler: async (args: TaskGroupCreateArgs) => {
+      const tooLong = args.notes === undefined ? undefined : notesLengthRefusal("", args.notes, "group");
+      if (tooLong) return toolFailure(tooLong);
       // createGroup picks the next colour for an unknown one, as it does for none.
       const color = args.color !== undefined && isGroupColor(args.color) ? args.color : undefined;
       const group = ctx.taskGroupStore.createGroup(args.name, color);
@@ -62,18 +64,21 @@ export function createTaskGroupToolDefinitions(ctx: AppContext): BridgeToolDefin
   }),
   defineBridgeTool("task_group_update", {
     description: "Update a task group's name, color, and/or notes. Only provided fields are changed.",
-    parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to update" }, name: { type: "string", description: "New group name" }, color: { type: "string", description: "New color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: "New notes content (markdown). Overwrites existing notes." }, notesWriteToken: { type: "string", description: "Required to replace long notes: the notesWriteToken from task_group_list or task_get_info." } }, required: ["groupId"] },
+    parameters: { type: "object", properties: { groupId: { type: "string", description: "The group ID to update" }, name: { type: "string", description: "New group name" }, color: { type: "string", description: "New color: blue, purple, amber, rose, cyan, orange, slate" }, notes: { type: "string", description: `New notes content (markdown, at most ${TASK_NOTES_MAX_LENGTH.toLocaleString("en-US")} characters): what every task in the group needs, such as scope boundaries, decisions and links to docs. Overwrites existing notes.` }, notesWriteToken: { type: "string", description: "Required to replace long notes: the notesWriteToken from task_group_list or task_get_info." } }, required: ["groupId"] },
     handler: async (args: TaskGroupUpdateArgs) => {
       const group = ensureTaskGroup(ctx, args.groupId);
       if (!group.ok) return toolFailure(group.error);
       const refusal = args.notes === undefined ? undefined : notesWriteRefusal(group.value.notes, args.notesWriteToken);
       if (refusal) return toolFailure(refusal);
+      const tooLong = args.notes === undefined ? undefined : notesLengthRefusal(group.value.notes, args.notes, "group");
+      if (tooLong) return toolFailure(tooLong);
       const updates: { name?: string; color?: string; notes?: string } = {};
       if (args.name !== undefined) updates.name = args.name;
       if (args.color !== undefined) updates.color = args.color;
       if (args.notes !== undefined) updates.notes = args.notes;
       const updatedGroup = ctx.taskGroupStore.updateGroup(args.groupId, updates);
-      return { success: true, message: `Group "${updatedGroup.name}" updated`, groupId: updatedGroup.id, ...notesWriteTokenField(updatedGroup.notes) };
+      const notesSize = args.notes === undefined ? "" : `. Notes are now ${notesLengthLabel(updatedGroup.notes)}${updatedGroup.notes.length > TASK_NOTES_MAX_LENGTH ? "; edits may only shorten them until they fit" : ""}`;
+      return { success: true, message: `Group "${updatedGroup.name}" updated${notesSize}`, groupId: updatedGroup.id, ...notesWriteTokenField(updatedGroup.notes) };
     },
   }),
   ];

@@ -11,7 +11,7 @@ import type { Task, TaskChangeActor, TaskStore } from "../task-store.js";
 import type { ProvidersConfig } from "../providers/types.js";
 import type { TagStore } from "../tag-store.js";
 import { describeMomentumStamp, type MomentumFieldStamp } from "../../shared/momentum-age.js";
-import { applyNotesEdit, notesContinuationRefusal, notesLengthRefusal, notesWriteRefusal, notesWriteTokenField, readTaskNotesPage, TASK_NOTES_MAX_LENGTH } from "../task-note-pages.js";
+import { applyNotesEdit, notesContinuationRefusal, notesLengthLabel, notesLengthRefusal, notesWriteRefusal, notesWriteTokenField, readTaskNotesPage, TASK_NOTES_MAX_LENGTH } from "../task-note-pages.js";
 import { ensureTagStore, ensureTask } from "./helpers.js";
 import {
   InvalidTaskHistoryEntryError,
@@ -179,7 +179,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         notes: { type: "string", description: `Where the task stands now, written for the user in plain language (markdown, at most ${TASK_NOTES_MAX_LENGTH.toLocaleString("en-US")} characters): what is done or decided, what is open, what to watch out for, and pointers to docs. Overwrites existing notes. Replace lines that are out of date rather than adding to the end. The next step belongs in task_update_momentum, what happened in task_history_add, standing rules in instructions, and reference material in a docs page.` },
         notesEdit: {
           type: "object",
-          description: "Change one passage instead of sending all the notes, such as replacing a line that is out of date. Instead of notes.",
+          description: `Change one passage instead of sending all the notes, such as replacing a line that is out of date. Instead of notes. Refused if it grows the notes past ${TASK_NOTES_MAX_LENGTH.toLocaleString("en-US")} characters; the task notes in your context show their current length.`,
           properties: {
             old_str: { type: "string", description: "The exact text to replace. It must appear exactly once." },
             new_str: { type: "string", description: "The replacement text." },
@@ -262,7 +262,8 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         tagStore.setEntityTags("task", args.taskId, tagIds);
       }
       const fields = [...Object.keys(updates), ...(hasTags ? ["tags"] : [])].join(", ");
-      return { success: true, message: `Task updated (${fields})`, kind: updatedTask.kind, ...notesWriteTokenField(updatedTask.notes) };
+      const notesSize = updates.notes === undefined ? "" : `. Notes are now ${notesLengthLabel(updatedTask.notes)}${updatedTask.notes.length > TASK_NOTES_MAX_LENGTH ? "; edits may only shorten them until they fit" : ""}.`;
+      return { success: true, message: `Task updated (${fields})${notesSize}`, kind: updatedTask.kind, ...notesWriteTokenField(updatedTask.notes) };
     },
   }),
   defineBridgeTool("task_update_momentum", {

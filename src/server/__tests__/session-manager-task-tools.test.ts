@@ -149,7 +149,7 @@ describe("session manager task tools", () => {
     const saved = () => ctx.taskStore.getTask(task.id)!.notes;
     const atLimit = `Open: visa.\n${"x".repeat(TASK_NOTES_MAX_LENGTH - "Open: visa.\n".length)}`;
 
-    expect(await update({ notes: atLimit })).toMatchObject({ success: true });
+    expect(await update({ notes: atLimit })).toMatchObject({ success: true, message: "Task updated (notes). Notes are now 6,000 of 6,000 characters." });
     for (const growing of [{ notes: `${atLimit}y` }, { notesEdit: { old_str: "Open: visa.", new_str: "Open: visa, insurance." } }]) {
       const refused = await update(growing);
       expect(refused).toMatchObject({ resultType: "failure" });
@@ -166,6 +166,22 @@ describe("session manager task tools", () => {
     expect(saved()).toBe(legacy.slice("Booked: hotel.\n".length));
   });
 
+  it("caps agent-written group notes the same way, but lets over-limit group notes shrink", async () => {
+    const { ctx } = createTestApp();
+    const group = ctx.taskGroupStore.createGroup("Trips");
+    const update = (notes: string) => getTool(ctx, "task_group_update").handler({ groupId: group.id, notes }, createInvocation("task_group_update"));
+    const tooLong = "x".repeat(TASK_NOTES_MAX_LENGTH + 1);
+
+    expect(await getTool(ctx, "task_group_create").handler({ name: "Too long", notes: tooLong }, createInvocation("task_group_create"))).toMatchObject({ resultType: "failure" });
+    expect(ctx.taskGroupStore.listGroups().map((g) => g.name)).toEqual(["Trips"]);
+    expect(await update(tooLong)).toMatchObject({ resultType: "failure" });
+    expect(await update("Scope: flights only.")).toMatchObject({ success: true, message: 'Group "Trips" updated. Notes are now 20 of 6,000 characters' });
+
+    ctx.taskGroupStore.updateGroup(group.id, { notes: `${tooLong}yy` });
+    expect(await update(`${tooLong}y`)).toMatchObject({ success: true });
+    expect(ctx.taskGroupStore.getGroup(group.id)!.notes).toBe(`${tooLong}y`);
+  });
+
   it("changes one passage of long notes without a read, and only when it is unambiguous", async () => {
     const { ctx } = createTestApp();
     const task = ctx.taskStore.createTask("Release review");
@@ -179,7 +195,7 @@ describe("session manager task tools", () => {
     }
     expect(ctx.taskStore.getTask(task.id)!.notes).toBe(long);
 
-    expect(await update(notesEdit("comparing vendors", "picked Acme"))).toMatchObject({ success: true, message: "Task updated (notes)" });
+    expect(await update(notesEdit("comparing vendors", "picked Acme"))).toMatchObject({ success: true, message: "Task updated (notes). Notes are now 19,038 of 6,000 characters; edits may only shorten them until they fit." });
     expect(ctx.taskStore.getTask(task.id)!.notes).toBe(long.replace("comparing vendors", "picked Acme"));
   });
 

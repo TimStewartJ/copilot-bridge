@@ -6,7 +6,7 @@ import type { TagStore } from "./tag-store.js";
 import { PLACEHOLDER_TASK_TITLE, type Task } from "./task-store.js";
 import type { TaskHistoryStore } from "./task-history-store.js";
 import { escapePromptLiteral, formatLinkedPullRequest, formatRelatedDocManifestEntry } from "./session-formatting.js";
-import { sliceTaskNotes, TASK_NOTES_BRIEF_LENGTH, taskNotesRevision, type TaskNotesSource } from "./task-note-pages.js";
+import { notesLengthLabel, sliceTaskNotes, TASK_NOTES_BRIEF_LENGTH, taskNotesRevision, type TaskNotesSource } from "./task-note-pages.js";
 import { formatTaskMomentumContext } from "./session-task-momentum.js";
 import { NO_PLAYBOOK, type PlaybookSource } from "../shared/workflow-vocabulary.js";
 
@@ -89,19 +89,19 @@ function buildTaskNotes(
   if (!task) return section("task_notes", [], NO_TASK_NOTES);
   const lines: string[] = [];
   let hasExcerpt = false;
-  function addNotes(source: TaskNotesSource, label: string, raw: string) {
+  function addNotes(source: TaskNotesSource, name: string, about: string, raw: string) {
     if (!raw.trim()) return;
     if (raw.length <= TASK_NOTES_BRIEF_LENGTH) {
-      lines.push(`${label}:\n${raw.trim()}`);
+      lines.push(`${name} [${notesLengthLabel(raw)}]${about}:\n${raw.trim()}`);
     } else {
       hasExcerpt = true;
       // Cut the stored text, not a trimmed copy, so nextOffset continues where this stops.
       const shown = sliceTaskNotes(raw, 0, TASK_NOTES_BRIEF_LENGTH);
-      lines.push(`${label} [first ${shown.length} of ${raw.length} characters, revision ${taskNotesRevision(raw)}, notesSource: "${source}", nextOffset: ${shown.length}]:\n${shown.trim()}…`);
+      lines.push(`${name}${about} [first ${shown.length} of ${raw.length} characters, revision ${taskNotesRevision(raw)}, notesSource: "${source}", nextOffset: ${shown.length}]:\n${shown.trim()}…`);
     }
   }
-  addNotes("task", "Task notes (where the work stands, kept by earlier chats and possibly out of date: check facts your work depends on; standing rules belong in the task instructions)", task.notes);
-  if (groupNotes) addNotes("group", `Group notes (task group "${escapePromptLiteral(oneLine(groupNotes.groupName, 80))}")`, groupNotes.notes);
+  addNotes("task", "Task notes", " (where the work stands, kept by earlier chats and possibly out of date: check facts your work depends on; standing rules belong in the task instructions)", task.notes);
+  if (groupNotes) addNotes("group", "Group notes", ` (task group "${escapePromptLiteral(oneLine(groupNotes.groupName, 80))}")`, groupNotes.notes);
   if (hasExcerpt) {
     lines.push(`Excerpts can omit rules and decisions. When your work depends on them, read the rest with task_get_info (taskId: ${task.id}, with the notesSource, nextOffset as offset, and revision shown; repeat until nextOffset is null). To change part of task notes, use task_update with notesEdit.`);
   }
