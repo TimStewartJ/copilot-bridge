@@ -23,7 +23,7 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   { id: "responses", label: "Responses", group: "preferences" },
   { id: "helm", label: "Helm", group: "preferences" },
   { id: "appearance", label: "Appearance", group: "preferences" },
-  { id: "device", label: "Notifications & device", group: "preferences" },
+  { id: "device", label: "Device", group: "preferences" },
   { id: "integrations", label: "Integrations", group: "connections" },
   { id: "skills", label: "Skills & playbooks", group: "connections" },
   { id: "tags", label: "Tags", group: "connections" },

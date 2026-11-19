@@ -13,7 +13,6 @@ import {
   ImageBudgetSection,
   ExperimentalSection,
   AppearanceSection,
-  NotificationsSection,
   DeviceManagementSection,
   ProvidersSection,
   TagsSection,
@@ -329,7 +328,6 @@ export default function SettingsView() {
             </CategoryPanel>
 
             <CategoryPanel category="device" activeCategory={activeCategory}>
-              <NotificationsSection />
               <DeviceManagementSection />
             </CategoryPanel>
 

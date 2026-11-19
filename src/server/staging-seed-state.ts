@@ -16,7 +16,8 @@ export function isolateStagingRuntimeState(db: DatabaseSync): Record<string, num
     changed.chatTriggers = Number(db.prepare(`UPDATE triggers SET status='cancelled',runNow=0,claimToken=NULL,leaseExpiresAt=NULL,lastError=?,updatedAt=?
       WHERE lane='chat' AND status IN ('active','running','paused')`).run(reason, now).changes);
   }
-  if (hasTable("push_subscriptions")) changed.pushSubscriptions = Number(db.prepare("DELETE FROM push_subscriptions").run().changes);
+  // An older preview can open a legacy snapshot before the new schema migration runs.
+  db.exec("DROP TABLE IF EXISTS push_subscriptions");
   for (const table of ["deferred_prompts", "defer_loops"]) {
     if (!hasTable(table)) continue;
     const pending = table === "defer_loops" ? "active" : "pending";

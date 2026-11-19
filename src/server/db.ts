@@ -924,18 +924,7 @@ function initSchema(db: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_trigger_runs_occurrence
       ON trigger_runs(triggerId, occurrence) WHERE occurrence IS NOT NULL;
 
-    -- Browser Web Push subscriptions
-    CREATE TABLE IF NOT EXISTS push_subscriptions (
-      id TEXT PRIMARY KEY,
-      endpoint TEXT NOT NULL UNIQUE,
-      expirationTime INTEGER,
-      p256dh TEXT NOT NULL,
-      auth TEXT NOT NULL,
-      userAgent TEXT,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      lastSeenAt TEXT NOT NULL
-    );
+    DROP TABLE IF EXISTS push_subscriptions;
 
     -- Durable management jobs (self update / staging preview / staging deploy)
     CREATE TABLE IF NOT EXISTS management_jobs (

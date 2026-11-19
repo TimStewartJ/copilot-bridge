@@ -124,8 +124,6 @@ import {
 import { deleteTaskWithOwnedState, isTaskUntouched } from "./task-deletion.js";
 import type { GitWorktreeHead, TaskGitStatusResponse } from "./git-worktree-status.js";
 import { PendingInteractionError } from "./pending-interaction-validation.js";
-import { getPushPublicStatus, type BridgePushPayload, type PushNotificationService } from "./push-notification-service.js";
-import { isPushSubscriptionInput, type PushSubscriptionInput, type PushSubscriptionStore } from "./push-subscription-store.js";
 import { getDeviceHibernateCommand, requestDeviceHibernate, type DeviceHibernateCommand } from "./platform.js";
 import {
   armHibernateOnIdleForServer,
@@ -387,19 +385,6 @@ interface SessionWorkspaceDetailsPayload extends SessionWorkspaceSummaryPayload 
   canResetToTask: boolean;
   runState: SessionRunState;
   gitStatus: TaskGitStatusResponse;
-}
-
-function normalizePushSubscriptionBody(body: unknown): PushSubscriptionInput | undefined {
-  if (isPushSubscriptionInput(body)) return body;
-  if (!body || typeof body !== "object") return undefined;
-  const subscription = (body as Record<string, unknown>).subscription;
-  return isPushSubscriptionInput(subscription) ? subscription : undefined;
-}
-
-function normalizeEndpointBody(body: unknown): string | undefined {
-  if (!body || typeof body !== "object") return undefined;
-  const endpoint = (body as Record<string, unknown>).endpoint;
-  return typeof endpoint === "string" && endpoint.startsWith("https://") ? endpoint : undefined;
 }
 
 const AGENT_TEXT_MAX_LENGTH = 2_000;
@@ -1194,72 +1179,6 @@ export function createApiRouter(
       agentBackend: ctx.sessionManager.getBackendStatus(),
       ...(ctx.docsIndex ? { docsFts: ctx.docsIndex.getFtsHealth() } : {}),
     });
-  });
-
-  router.get("/push/status", (_req, res) => {
-    try {
-      res.json(getPushPublicStatus(ensurePushSubscriptionStore(ctx)));
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  router.post("/push/subscriptions", (req, res) => {
-    const subscription = normalizePushSubscriptionBody(req.body);
-    if (!subscription) {
-      return res.status(400).json({ error: "Valid push subscription is required." });
-    }
-
-    try {
-      const saved = ensurePushSubscriptionStore(ctx).upsertSubscription(subscription, req.get("user-agent") ?? undefined);
-      res.status(201).json({
-        ok: true,
-        subscription: {
-          id: saved.id,
-          endpoint: saved.endpoint,
-          createdAt: saved.createdAt,
-          updatedAt: saved.updatedAt,
-          lastSeenAt: saved.lastSeenAt,
-        },
-      });
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  router.delete("/push/subscriptions", (req, res) => {
-    const endpoint = normalizeEndpointBody(req.body);
-    if (!endpoint) {
-      return res.status(400).json({ error: "Valid push subscription endpoint is required." });
-    }
-
-    try {
-      res.json({ ok: true, deleted: ensurePushSubscriptionStore(ctx).deleteSubscription(endpoint) });
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  router.post("/push/test", async (req, res) => {
-    const endpoint = normalizeEndpointBody(req.body);
-    const payload: BridgePushPayload = {
-      title: "Copilot Bridge test",
-      body: "Push notifications are working.",
-      url: "./",
-      tag: "bridge-test-notification",
-      data: { eventType: "push:test" },
-      suppressIfFocused: false,
-    };
-
-    try {
-      const pushNotificationService = ensurePushNotificationService(ctx);
-      const result = endpoint
-        ? await pushNotificationService.sendToEndpoint(endpoint, payload)
-        : await pushNotificationService.sendToAll(payload);
-      res.json({ ok: true, result });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
   });
 
   router.get("/copilot-usage", async (req, res) => {
@@ -5119,19 +5038,10 @@ export function createApiRouter(
     res.json({ ok: true, accepted: parsed.length });
   });
 
+  // An unknown API URL must not fall through to the SPA's index.html.
+  router.use((req, res, next) => {
+    if (req.method === "OPTIONS") return next();
+    res.status(404).json({ error: "API route not found" });
+  });
   return router;
-}
-
-function ensurePushSubscriptionStore(ctx: AppContext): PushSubscriptionStore {
-  if (!ctx.pushSubscriptionStore) {
-    throw new Error("Push subscription store is not configured.");
-  }
-  return ctx.pushSubscriptionStore;
-}
-
-function ensurePushNotificationService(ctx: AppContext): PushNotificationService {
-  if (!ctx.pushNotificationService) {
-    throw new Error("Push notification service is not configured.");
-  }
-  return ctx.pushNotificationService;
 }

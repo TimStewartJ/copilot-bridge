@@ -24,6 +24,15 @@ installApiRouteTestHooks((state) => {
   ({ app, ctx, db } = state);
 });
 
+it("returns JSON for an unknown API URL without swallowing OPTIONS on a real route", async () => {
+  const missing = await request(app).get("/api/no-such-route").set("Accept", "text/html");
+  expect(missing.status).toBe(404);
+  expect(missing.body).toEqual({ error: "API route not found" });
+  const options = await request(app).options("/api/tasks");
+  expect(options.status).toBe(200);
+  expect(options.headers.allow.split(/\s*,\s*/)).toEqual(expect.arrayContaining(["GET", "POST"]));
+});
+
 describe("Shutdown route", () => {
   it("POST /api/shutdown stops the trigger and delivery runners before sessions drain", async () => {
     const order: string[] = [];

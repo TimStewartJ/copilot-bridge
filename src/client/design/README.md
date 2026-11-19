@@ -258,7 +258,7 @@ The first migration covered task/chat/usage. The second audited the 81 remaining
 | Shared controls | Docs adapters, settings sections/configuration rows, compound fields, menus, dialogs, notices and feedback |
 | Focus and dashboard | Actions, alerts, decisions, coverage, digests, quiet sources, history, lifecycle/launch/protection review and work map |
 | Docs and search | Navigation, landing/folders, collections, page reader, editor, fields, tags, contents rail, dialogs and saved-text search |
-| Settings | Every category: general/response style, models/effort/workers, appearance, providers/MCP/skills/tags, notifications/devices, speech, updates/jobs/commits and diagnostics |
+| Settings | Every category: general/response style, models/effort/workers, appearance, providers/MCP/skills/tags, device, speech, updates/jobs/commits and diagnostics |
 | Supporting surfaces | Workspace, notes, schedule, task picker/deletion, agent/doc/reference/artifact previews, model-switch prompt, backend banner/toasts, Helm and hands-free |
 | Readable surfaces | Loaded task collections, inspector identity/Momentum/Sessions/Checklist/Details and task overview groups, with explicit canvas/pane/group/inset/overlay roles |
 
@@ -282,7 +282,7 @@ loaded/empty/error states, both themes and phone/container widths before publish
   the line. A section has at most a one-line description. Longer explanations, raw configuration,
   logs and diagnostic figures sit behind a `Details` or open beneath their row. Collections (MCP
   servers, skills, tags, jobs) are one line per item that opens for more. Categories are
-  Chat, Responses, Appearance, Notifications & device, Integrations, Tags, Voice, System and
+  Chat, Responses, Appearance, Device, Integrations, Tags, Voice, System and
   Copilot usage; System holds status, controls, release updates, management jobs, the browser and
   the source version, with one Refresh for the page. Retired `?group=` ids (`general`, `updates`,
   `management`, `diagnostics`) still resolve, and `?section=` opens a part of System.

@@ -31,8 +31,6 @@ import { createTelemetryStore } from "../telemetry-store.js";
 import { createSessionContextStore } from "../session-context-store.js";
 import { createVoiceJobStore } from "../voice-job-store.js";
 import { createHelmStore } from "../helm/helm-store.js";
-import { createPushNotificationService } from "../push-notification-service.js";
-import { createPushSubscriptionStore } from "../push-subscription-store.js";
 import { createVoiceJobManager } from "../voice-job-manager.js";
 import { createDocsStore } from "../docs-store.js";
 import { createDocsIndex } from "../docs-index.js";
@@ -92,7 +90,6 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
   const sessionManager = createMockSessionManager();
   const taskStore = overrides?.taskStore ?? createTaskStore(db, globalBus, { runtimePaths });
   const taskGroupStore = createTaskGroupStore(db, globalBus);
-  const pushSubscriptionStore = createPushSubscriptionStore(db);
   const checklistStore = createChecklistStore(db, globalBus);
   const calendarStore = createCalendarStore(db, globalBus);
   const telemetryStore = createTelemetryStore(db);
@@ -126,8 +123,6 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
     eventBusRegistry,
     sessionManager,
     transcriptionService,
-    pushSubscriptionStore,
-    pushNotificationService: createPushNotificationService({ subscriptionStore: pushSubscriptionStore }),
     deferredPromptStore: createDeferredPromptStore(db),
     triggerStore: createTriggerStore(db),
     interruptedRunStore: createInterruptedRunStore(db),
@@ -182,7 +177,6 @@ export function createTestApp(overrides?: Partial<AppContext>, routerOptions: Ap
   const cleanup = registerTestAppCleanup(async () => {
     const cleanupErrors: unknown[] = [];
     ctx.helm?.dispose();
-    await ctx.stopPushEventNotifications?.();
     if (hasNoArgFunction(ctx.copilotUsageReader, "shutdown")) {
       try {
         await ctx.copilotUsageReader.shutdown();

@@ -40,8 +40,6 @@ import { createCopilotUsageStore } from "./copilot-usage-store.js";
 import { createTelemetryStore } from "./telemetry-store.js";
 import { createSessionContextStore } from "./session-context-store.js";
 import { createVoiceJobStore } from "./voice-job-store.js";
-import { createPushNotificationService, initPushEventNotifications } from "./push-notification-service.js";
-import { createPushSubscriptionStore } from "./push-subscription-store.js";
 import { createEventBusRegistry } from "./event-bus.js";
 import { createGlobalBus } from "./global-bus.js";
 import type { AppContext } from "./app-context.js";
@@ -140,7 +138,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
       telemetryStore.recordSpan({ name, duration, sessionId, metadata, source: "server" }),
   });
   const voiceJobStore = createVoiceJobStore(db);
-  const pushSubscriptionStore = createPushSubscriptionStore(db);
   const managementJobStore = createManagementJobStore(db, { dataDir });
   const docsStore = createDocsStore(runtimePaths.docsDir);
   const docsIndex = createDocsIndex(db, docsStore, {
@@ -232,7 +229,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     helmStore,
     helmThinkerStore,
     voiceJobManager: null!,
-    pushSubscriptionStore,
     managementJobStore,
     deferredPromptStore,
     triggerStore,
@@ -418,16 +414,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     chatDelivery: ctx,
     settingsStore,
   });
-  ctx.pushNotificationService = createPushNotificationService({
-    subscriptionStore: pushSubscriptionStore,
-    env: runtimePaths.env,
-  });
-  ctx.stopPushEventNotifications = initPushEventNotifications(ctx, ctx.pushNotificationService, {
-    getSessions: () => sessionManager.getPendingInputSessionIds().filter(sessionId => !isUnlistedSessionId(sessionId)).map(sessionId => ({
-      sessionId, pendingUserInputCount: sessionManager.getPendingUserInputCount(sessionId),
-    })),
-    startImmediately: false,
-  });
   const emitTriggerSummary = (sessionId: string) => ctx.triggerService?.emitChatSummary(sessionId);
   ctx.deferredPromptRunner = createDeferredPromptRunner(
     deferredPromptStore,
@@ -467,7 +453,6 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
 }
 
 export function initializeTriggerAndDeliveryRunners(ctx: AppContext): void {
-  void ctx.stopPushEventNotifications?.flush();
   startSkillCatalog(ctx);
   try {
     ctx.managementJobStore?.reconcileResultDeliveries();

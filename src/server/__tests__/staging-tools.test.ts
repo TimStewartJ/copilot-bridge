@@ -247,8 +247,6 @@ describe("staging tools", () => {
     try {
       const schedules = stagingDb.prepare("SELECT enabled FROM schedules").all() as Array<{ enabled: number }>;
       expect(schedules).toEqual([{ enabled: 0 }]);
-      const pushSubscriptions = stagingDb.prepare("SELECT COUNT(*) AS count FROM push_subscriptions").get() as { count: number };
-      expect(pushSubscriptions.count).toBe(0);
       const usageSessions = stagingDb.prepare("SELECT COUNT(*) AS count FROM copilot_usage_sessions").get() as { count: number };
       expect(usageSessions.count).toBe(0);
       const usageScanState = stagingDb.prepare("SELECT COUNT(*) AS count FROM copilot_usage_scan_state").get() as { count: number };
@@ -1885,19 +1883,24 @@ describe("staging seed runtime isolation", () => {
     expect(existsSync(join(stagingDir, "data", "bridge.db"))).toBe(false);
   });
 
-  it("clears push subscriptions and disables schedules atomically", async () => {
+  it("strips legacy browser endpoints from a preview copy without touching the source", async () => {
     const mod = await loadStagingToolsModule();
     const productionDataDir = createProductionDataDir();
     const stagingDir = createTempDir("bridge-stage-isolation-ok-");
 
-    const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
-    const stagingDb = new DatabaseSync(join(seededDataDir, "bridge.db"));
+    const source = new DatabaseSync(join(productionDataDir, "bridge.db"));
     try {
-      expect(stagingDb.prepare("SELECT enabled FROM schedules").all()).toEqual([{ enabled: 0 }]);
-      expect(stagingDb.prepare("SELECT COUNT(*) AS count FROM push_subscriptions").get())
-        .toEqual({ count: 0 });
+      source.exec("CREATE TABLE push_subscriptions(endpoint TEXT); INSERT INTO push_subscriptions VALUES('legacy');");
+      const seededDataDir = mod.__testing.seedStagingData(stagingDir, { productionDataDir });
+      const copy = new DatabaseSync(join(seededDataDir, "bridge.db"));
+      try {
+        expect(copy.prepare("SELECT name FROM sqlite_schema WHERE name='push_subscriptions'").all()).toEqual([]);
+      } finally {
+        copy.close();
+      }
+      expect(source.prepare("SELECT endpoint FROM push_subscriptions").get()).toEqual({ endpoint: "legacy" });
     } finally {
-      stagingDb.close();
+      source.close();
     }
   });
 });

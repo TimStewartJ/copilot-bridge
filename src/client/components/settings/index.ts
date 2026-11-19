@@ -9,7 +9,6 @@ export { ImageGenerationSection } from "./ImageGenerationSection";
 export { ImageBudgetSection } from "./ImageBudgetSection";
 export { ExperimentalSection } from "./ExperimentalSection";
 export { AppearanceSection } from "./AppearanceSection";
-export { NotificationsSection } from "./NotificationsSection";
 export { DeviceManagementSection } from "./DeviceManagementSection";
 export { ProvidersSection } from "./ProvidersSection";
 export { ServerCard } from "./ServerCard";

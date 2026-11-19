@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setupTestDb, createTestBus } from "./helpers.js";
 import {
-  areSessionUnreadBubblesMuted,
   createTaskStore,
   PLACEHOLDER_TASK_TITLE,
   TASK_MOMENTUM_EVENT_PREVIEW_CHARS,
@@ -32,7 +31,6 @@ describe("task-store", () => {
       const context = { notes: "Keep this", nextAction: "Review", waitingOn: "A reply", nextTouchAt: "2000-01-01T00:00:00Z" };
       const deferred = store.updateTask(task.id, { ...context, deferred: true });
       expect(deferred).toMatchObject({ ...context, nextTouchAt: "2000-01-01T00:00:00.000Z", deferred: true, muted: false, status: "active", sessionIds: ["conversation"] });
-      expect(areSessionUnreadBubblesMuted([deferred])).toBe(false);
       expect(store.listTasks()).toContainEqual(deferred);
       expect(store.updateTask(task.id, { nextAction: "A different step" }).deferred).toBe(true);
       const resumed = store.updateTask(task.id, { deferred: false });
@@ -200,19 +198,6 @@ describe("task-store", () => {
 
       expect(() => store.updateTask(task.id, { muted: "yes" as any }))
         .toThrow("muted must be a boolean");
-    });
-
-    it("treats a linked session as muted only when every visible linked task is muted", () => {
-      const muted = store.updateTask(store.createTask("Muted").id, { muted: true });
-      const unmuted = store.createTask("Unmuted");
-      const archivedMuted = store.updateTask(store.createTask("Archived muted").id, {
-        muted: true,
-        status: "archived",
-      });
-
-      expect(areSessionUnreadBubblesMuted([muted])).toBe(true);
-      expect(areSessionUnreadBubblesMuted([muted, unmuted])).toBe(false);
-      expect(areSessionUnreadBubblesMuted([archivedMuted])).toBe(false);
     });
 
     it("updateTask rejects completion for ongoing tasks unless the kind is changed", () => {

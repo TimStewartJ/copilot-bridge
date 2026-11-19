@@ -8,18 +8,10 @@ import { ToastProvider } from "./useToast";
 import App from "./App";
 import { FileTab } from "./components/FilePreview";
 import { fileFromTabPath } from "./components/file-preview";
-import { initPushSubscriptionReconciliation, registerPushServiceWorker } from "./push-notifications";
 import { installCleanCopy } from "./lib/clean-copy";
 import "./index.css";
 
 installCleanCopy();
-initPushSubscriptionReconciliation();
-void registerPushServiceWorker().catch(() => {});
-if (typeof window !== "undefined") {
-  window.addEventListener("focus", () => {
-    void registerPushServiceWorker().catch(() => {});
-  });
-}
 
 const tabFile = fileFromTabPath(window.location.pathname);
 

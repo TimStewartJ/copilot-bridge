@@ -21,7 +21,7 @@ function schemaObjects(db: DatabaseSync): string[] {
 }
 
 describe("fresh database schema", () => {
-  it("matches the persistent fresh-database bootstrap and reopens unchanged", () => {
+  it("matches the fresh bootstrap on reopen, discarding legacy browser endpoints", () => {
     const fresh = openMemoryDatabase();
     const dataDir = makeTestDir("db-fresh-parity");
     const persistent = openDatabase(dataDir);
@@ -29,12 +29,14 @@ describe("fresh database schema", () => {
     expect(fresh.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 
     expect(schemaObjects(persistent)).toEqual(expected);
+    persistent.exec("CREATE TABLE push_subscriptions(endpoint TEXT); INSERT INTO push_subscriptions VALUES('legacy');");
     persistent.close();
 
-    // The DDL is idempotent: reopening an existing database must not alter it.
-    const reopened = openDatabase(dataDir);
-    expect(schemaObjects(reopened)).toEqual(expected);
-    reopened.close();
+    for (let start = 0; start < 2; start++) {
+      const reopened = openDatabase(dataDir);
+      expect(schemaObjects(reopened)).toEqual(expected);
+      reopened.close();
+    }
 
     fresh.close();
   });

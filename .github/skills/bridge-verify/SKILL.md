@@ -90,6 +90,6 @@ Screenshots show the preview's copy of real data. Keep them out of the repositor
    than all of them, each captioned with page, width and theme.
 2. Call `verify_complete` with a `live` entry per surface you checked: the claim, `ref` set to the
    `summary.json` path and the screenshot paths, and the result. Add `tested` entries for the check
-   lanes you ran. Put what you could not check (a phone's push notification, a microphone) in
+   lanes you ran. Put what you could not check (a phone's Home Screen launch, a microphone) in
    `unverified`.
 3. In the reply, give the lane's pass, fail and skip counts and any failure; do not paste the JSON.

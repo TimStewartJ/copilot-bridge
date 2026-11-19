@@ -6076,10 +6076,6 @@ export class SessionManager {
     return this.getPendingInteractionCount(sessionId);
   }
 
-  getPendingInputSessionIds(): string[] {
-    return [...this.pendingInteractionCounts.keys()];
-  }
-
   hasActiveTurns(): boolean {
     return this.runStateController.hasActiveTurns();
   }

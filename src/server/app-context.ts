@@ -49,11 +49,6 @@ import type { TriggerStore } from "./triggers/store.js";
 import type { TriggerService } from "./triggers/service.js";
 import type { TriggerChatRunner } from "./triggers/chat-runner.js";
 import type { TriggerTaskRunner } from "./triggers/task-runner.js";
-import type { PushSubscriptionStore } from "./push-subscription-store.js";
-import type {
-  PushEventNotificationDisposer,
-  PushNotificationService,
-} from "./push-notification-service.js";
 import type { BridgeToolsMcpServer } from "./agent-tools-mcp/index.js";
 import type { ManagementJobStore } from "./management-job-store.js";
 import type { StagingPreviewDiscoveryController } from "./staging-preview-discovery.js";
@@ -103,7 +98,6 @@ export interface AppContext {
   checklistStore: ChecklistStore;
   /** The Bridge's own calendar events. */
   calendarStore?: CalendarStore;
-  stopPushEventNotifications?: PushEventNotificationDisposer;
   docsStore?: DocsStore;
   docsIndex?: DocsIndex;
   searchIndex?: SearchIndex;
@@ -120,9 +114,7 @@ export interface AppContext {
   sessionManager: SessionManager;
   transcriptionService: TranscriptionService;
   voiceJobManager: VoiceJobManager;
-  pushSubscriptionStore?: PushSubscriptionStore;
   managementJobStore?: ManagementJobStore;
-  pushNotificationService?: PushNotificationService;
   /** Chat delivery outbox: queued trigger and job results and restart notices for chats. */
   deferredPromptStore?: DeferredPromptStore;
   interruptedRunStore?: InterruptedRunStore;

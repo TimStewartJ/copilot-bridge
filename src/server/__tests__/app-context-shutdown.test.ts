@@ -67,7 +67,6 @@ function createShutdownSpies() {
     sessionManagerShutdown: vi.fn(async (_deadline?: Deadline) => {}),
     voiceGatewayShutdown: vi.fn(async () => {}),
     voiceShutdown: vi.fn(async () => {}),
-    pushUnsubscribe: vi.fn(async () => {}),
     focusDispose: vi.fn(async () => {}),
     launchStop: vi.fn(),
     launchDrain: vi.fn(async () => {}),
@@ -86,7 +85,6 @@ function createFakeContext(spies: ReturnType<typeof createShutdownSpies>): AppCo
     sessionManager: { stopAdmittingWork: spies.sessionManagerStopAdmitting, gracefulShutdown: spies.sessionManagerShutdown },
     voiceGateway: { shutdown: spies.voiceGatewayShutdown },
     voiceJobManager: { shutdown: spies.voiceShutdown },
-    stopPushEventNotifications: spies.pushUnsubscribe,
   } as unknown as AppContext;
 }
 
@@ -217,7 +215,6 @@ describe("shutdownAppContextServices", () => {
     expect(spies.sessionManagerShutdown).toHaveBeenCalledWith(deadline);
     expect(spies.voiceShutdown).toHaveBeenCalledTimes(1);
     expect(spies.taskTriggerShutdown).toHaveBeenCalledTimes(1);
-    expect(spies.pushUnsubscribe).toHaveBeenCalledTimes(1);
     expect(spies.focusDispose).not.toHaveBeenCalled();
     expect(spies.launchStop).not.toHaveBeenCalled();
     expect(spies.protectionStop).not.toHaveBeenCalled();

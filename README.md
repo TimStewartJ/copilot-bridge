@@ -651,8 +651,8 @@ A question an agent asks with `ask_user` is shown as a form in the chat and on H
 turn waits for the answer. A chat that is waiting counts as working, so it also holds a
 pending restart. Bridge answers in the user's place in two cases.
 
-A question asked while the chat is in Autopilot is answered at once and shown to nobody:
-no form and no "needs input" notification. The Copilot CLI's own autopilot handling of
+A question asked while the chat is in Autopilot is answered at once without a form in chat
+or on Home. The Copilot CLI's own autopilot handling of
 `ask_user` does not apply when the host shows the form, as Bridge does (measured on CLI
 1.0.89), so Bridge does it.
 

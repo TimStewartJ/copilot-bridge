@@ -52,12 +52,6 @@ export function shutdownAppContextServices(
     if ((await settleByDeadline(() => searchShutdown, deadline)).status === "timed-out") {
       console.error("[web] Search index shutdown timed-out");
     }
-    const notificationsOutcome = await settleByDeadline(async () => {
-      await ctx.stopPushEventNotifications?.();
-    }, deadline);
-    if (notificationsOutcome.status !== "fulfilled") {
-      console.error(`[web] Notification shutdown ${notificationsOutcome.status}`);
-    }
 
     try {
       await ctx.copilotUsageReader?.shutdown();

@@ -151,11 +151,6 @@ export interface UnlinkWorkItemResult {
   removed: boolean;
 }
 
-export function areSessionUnreadBubblesMuted(tasks: Task[]): boolean {
-  const visibleLinkedTasks = tasks.filter((task) => task.status !== "archived");
-  return visibleLinkedTasks.length > 0 && visibleLinkedTasks.every((task) => task.muted);
-}
-
 export const TASK_UPDATE_FIELDS = [
   "title",
   "kind",

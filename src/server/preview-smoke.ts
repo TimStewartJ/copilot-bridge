@@ -72,7 +72,6 @@ const REQUIRED_FIXTURE_TABLES = [
   "settings",
   "tasks",
   "triggers",
-  "push_subscriptions",
 ] as const;
 
 function createSmokeApp(stagingTools: StagingToolsModule) {
