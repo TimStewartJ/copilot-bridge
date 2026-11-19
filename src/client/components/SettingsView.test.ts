@@ -64,7 +64,7 @@ vi.mock("./settings", () => {
     CopilotUsageSection: EmptySection,
     ChatGradesSection: EmptySection,
     CopilotAccountsSection: EmptySection,
-    DeviceManagementSection: EmptySection,
+    HostPowerSection: EmptySection,
     ManagementJobsSection: EmptySection,
     BridgeRuntimeSection: EmptySection,
     ModelMoveDisclosure: EmptySection,
@@ -245,15 +245,20 @@ afterEach(() => {
 });
 
 describe("SettingsView categories", () => {
-  it("opens a remembered retired category on the page that replaced it", async () => {
-    localStorage.setItem(LAST_SETTINGS_CATEGORY_KEY, "general");
+  it.each([
+    ["general", "chat"],
+    ["device", "system"],
+  ])("opens remembered %s settings on the replacement %s page", async (retired, replacement) => {
+    localStorage.setItem(LAST_SETTINGS_CATEGORY_KEY, retired);
 
     await renderSettingsView("/settings");
 
-    expect(settingsMocks.settingsCategoryNav.mock.calls.at(-1)?.[0].activeCategory).toBe("chat");
+    expect(settingsMocks.settingsCategoryNav.mock.calls.at(-1)?.[0].activeCategory).toBe(replacement);
+    expect(localStorage.getItem(LAST_SETTINGS_CATEGORY_KEY)).toBe(replacement);
   });
 
   it.each([
+    ["device", "power"],
     ["diagnostics", "browser"],
     ["management", "jobs"],
     ["updates", "updates"],

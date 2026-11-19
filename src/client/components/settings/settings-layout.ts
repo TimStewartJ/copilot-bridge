@@ -3,7 +3,6 @@ export type CategoryId =
   | "responses"
   | "helm"
   | "appearance"
-  | "device"
   | "integrations"
   | "skills"
   | "tags"
@@ -23,7 +22,6 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
   { id: "responses", label: "Responses", group: "preferences" },
   { id: "helm", label: "Helm", group: "preferences" },
   { id: "appearance", label: "Appearance", group: "preferences" },
-  { id: "device", label: "Device", group: "preferences" },
   { id: "integrations", label: "Integrations", group: "connections" },
   { id: "skills", label: "Skills & playbooks", group: "connections" },
   { id: "tags", label: "Tags", group: "connections" },
@@ -35,11 +33,12 @@ export const SETTINGS_CATEGORIES: CategoryMeta[] = [
 export const DEFAULT_CATEGORY: CategoryId = "chat";
 
 /** Parts of the System page a link can open directly with `?section=`. */
-export type SystemSectionId = "updates" | "jobs" | "browser" | "version";
+export type SystemSectionId = "power" | "updates" | "jobs" | "browser" | "version";
 
 /** Retired category ids, kept so old `?group=` links and remembered categories still resolve. */
 const CATEGORY_ALIASES: Record<string, CategoryId> = {
   general: "chat",
+  device: "system",
   management: "system",
   updates: "system",
   diagnostics: "system",
@@ -47,6 +46,7 @@ const CATEGORY_ALIASES: Record<string, CategoryId> = {
 
 /** Where on the System page a retired category's content now lives. */
 const LEGACY_SECTIONS: Record<string, SystemSectionId> = {
+  device: "power",
   management: "jobs",
   updates: "updates",
   diagnostics: "browser",
@@ -58,7 +58,7 @@ export function legacySectionFor(value: string | null | undefined): SystemSectio
 }
 
 export function normalizeSystemSection(value: string | null | undefined): SystemSectionId | undefined {
-  return value === "updates" || value === "jobs" || value === "browser" || value === "version" ? value : undefined;
+  return value === "power" || value === "updates" || value === "jobs" || value === "browser" || value === "version" ? value : undefined;
 }
 
 const VALID_CATEGORY_IDS = new Set<string>(SETTINGS_CATEGORIES.map((c) => c.id));

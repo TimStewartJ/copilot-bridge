@@ -13,7 +13,7 @@ import {
   ImageBudgetSection,
   ExperimentalSection,
   AppearanceSection,
-  DeviceManagementSection,
+  HostPowerSection,
   ProvidersSection,
   TagsSection,
   SpeechEngineSection,
@@ -327,10 +327,6 @@ export default function SettingsView() {
               <AppearanceSection draft={draft} setDraft={setDraft} />
             </CategoryPanel>
 
-            <CategoryPanel category="device" activeCategory={activeCategory}>
-              <DeviceManagementSection />
-            </CategoryPanel>
-
             <CategoryPanel category="integrations" activeCategory={activeCategory}>
               <ProvidersSection draft={draft} setDraft={setDraft} />
               <McpServersSection />
@@ -366,6 +362,7 @@ export default function SettingsView() {
 
             <CategoryPanel category="system" activeCategory={activeCategory}>
               <BridgeRuntimeSection refreshSignal={systemRefresh} />
+              <HostPowerSection refreshSignal={systemRefresh} />
               <UpdatesSection refreshSignal={systemRefresh} />
               <DeployGuardsSection draft={draft} setDraft={setDraft} />
               <ManagementJobsSection refreshSignal={systemRefresh} open={sectionParam === "jobs"} />

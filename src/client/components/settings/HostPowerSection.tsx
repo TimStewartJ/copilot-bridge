@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Moon, Timer, X } from "lucide-react";
 import {
   cancelHibernate,
@@ -12,7 +12,7 @@ import {
 } from "../../api";
 import { SettingsSection } from "./SettingsSection";
 import { DS, cx } from "../../design/tokens";
-import { SettingList, SettingRow } from "../../design/primitives";
+import { Notice, SettingList, SettingRow } from "../../design/primitives";
 
 const DELAY_LABELS: Record<number, string> = {
   0: "Now",
@@ -41,7 +41,7 @@ function armedIdleStatus(status: DeviceHibernateStatus): DeviceHibernateOnIdleSt
   return status.onIdle?.armed ? status.onIdle : null;
 }
 
-export function DeviceManagementSection() {
+export function HostPowerSection({ refreshSignal = 0 }: { refreshSignal?: number }) {
   const [delayMinutes, setDelayMinutes] = useState(0);
   const [hibernating, setHibernating] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -49,21 +49,34 @@ export function DeviceManagementSection() {
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState<DeviceHibernateStatus | null>(null);
   const [onIdle, setOnIdle] = useState<DeviceHibernateOnIdleStatus | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const readRevision = useRef(0);
+
+  // An older poll or refresh must not restore a schedule after a confirmed cancellation.
+  const applyStatus = useCallback((status: DeviceHibernateStatus) => {
+    readRevision.current++;
+    setPending(status.pending ? status : null);
+    setOnIdle(armedIdleStatus(status));
+    setReadError(null);
+  }, []);
+
+  const refreshStatus = useCallback(async () => {
+    const revision = ++readRevision.current;
+    try {
+      const status = await fetchHibernateStatus();
+      if (revision === readRevision.current) applyStatus(status);
+    } catch (error) {
+      if (revision === readRevision.current) {
+        setReadError(error instanceof Error ? error.message : String(error));
+      }
+    }
+  }, [applyStatus]);
 
   useEffect(() => {
-    let active = true;
-    void fetchHibernateStatus()
-      .then((status) => {
-        if (!active) return;
-        if (status.pending) setPending(status);
-        setOnIdle(armedIdleStatus(status));
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, []);
+    void refreshStatus();
+    return () => { readRevision.current++; };
+  }, [refreshSignal, refreshStatus]);
 
   useEffect(() => {
     if (!pending?.pending || pending.scheduledAt == null) return;
@@ -75,13 +88,11 @@ export function DeviceManagementSection() {
       if (current >= scheduledAt) {
         clearInterval(id);
         // The server timer should have fired; confirm the real state, do not assume hibernation.
-        void fetchHibernateStatus()
-          .then((status) => setPending(status.pending ? status : null))
-          .catch(() => setPending(null));
+        void refreshStatus();
       }
     }, 1000);
     return () => clearInterval(id);
-  }, [pending]);
+  }, [pending, refreshStatus]);
 
   const onIdleArmed = Boolean(onIdle?.armed);
 
@@ -90,19 +101,12 @@ export function DeviceManagementSection() {
     if (!onIdleArmed) return;
     setNow(Date.now());
     const tick = setInterval(() => setNow(Date.now()), 1000);
-    const poll = setInterval(() => {
-      void fetchHibernateStatus()
-        .then((status) => {
-          setOnIdle(armedIdleStatus(status));
-          setPending(status.pending ? status : null);
-        })
-        .catch(() => {});
-    }, IDLE_STATUS_POLL_MS);
+    const poll = setInterval(() => void refreshStatus(), IDLE_STATUS_POLL_MS);
     return () => {
       clearInterval(tick);
       clearInterval(poll);
     };
-  }, [onIdleArmed]);
+  }, [onIdleArmed, refreshStatus]);
 
   const handleHibernate = async () => {
     const label = (DELAY_LABELS[delayMinutes] ?? `In ${delayMinutes} minutes`).toLowerCase();
@@ -118,8 +122,7 @@ export function DeviceManagementSection() {
     try {
       const result = await hibernateDevice(delayMinutes);
       setMessage(result.message);
-      setPending(result.pending ? result : null);
-      setOnIdle(armedIdleStatus(result));
+      applyStatus(result);
     } catch (error) {
       setMessage(`Hibernate failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -142,6 +145,8 @@ export function DeviceManagementSection() {
       const result = await setHibernateOnIdle(nextEnabled);
       setOnIdle(result.armed ? result : null);
       setMessage(result.message);
+      // The toggle reply omits a timed schedule that another client may have changed.
+      void refreshStatus();
     } catch (error) {
       setMessage(
         `Hibernate on idle failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -156,8 +161,7 @@ export function DeviceManagementSection() {
     setMessage(null);
     try {
       const result = await cancelHibernate();
-      setPending(null);
-      setOnIdle(armedIdleStatus(result));
+      applyStatus(result);
       setMessage(
         result.cancelled ? "Scheduled hibernation cancelled." : "No scheduled hibernation to cancel.",
       );
@@ -178,7 +182,7 @@ export function DeviceManagementSection() {
   const quietButton = cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "gap-1.5");
 
   return (
-    <SettingsSection title="This computer">
+    <SettingsSection id="settings-system-power" title="Host power">
       <SettingList>
         <SettingRow
           label="Hibernate"
@@ -278,6 +282,7 @@ export function DeviceManagementSection() {
           )}
         </SettingRow>
       </SettingList>
+      {readError && <Notice tone="danger" title="Could not refresh host power">{readError}</Notice>}
       {message && <p role="status" className={cx(DS.field.help, "mt-2")}>{message}</p>}
     </SettingsSection>
   );

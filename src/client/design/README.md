@@ -281,11 +281,11 @@ loaded/empty/error states, both themes and phone/container widths before publish
   Each setting is a `SettingRow`: its name, at most one short hint, and the control at the end of
   the line. A section has at most a one-line description. Longer explanations, raw configuration,
   logs and diagnostic figures sit behind a `Details` or open beneath their row. Collections (MCP
-  servers, skills, tags, jobs) are one line per item that opens for more. Categories are
-  Chat, Responses, Appearance, Device, Integrations, Tags, Voice, System and
-  Copilot usage; System holds status, controls, release updates, management jobs, the browser and
-  the source version, with one Refresh for the page. Retired `?group=` ids (`general`, `updates`,
-  `management`, `diagnostics`) still resolve, and `?section=` opens a part of System.
+  servers, skills, tags, jobs) are one line per item that opens for more. `SETTINGS_CATEGORIES` in
+  `components/settings/settings-layout.ts` lists the categories. System separates Bridge controls
+  from **Host power**, which hibernates the computer running the Bridge. The page's Refresh reads
+  host power status too. Retired `?group=` links still resolve: `?group=device` opens
+  `?group=system&section=power`, while a remembered Device category opens System.
 - Mobile category selection must expose every category without a sideways hunt. Live quota remains
   one tap away in the mobile header. Row actions stay in the shared overflow menu or the opened
   row instead of crowding phone layouts.

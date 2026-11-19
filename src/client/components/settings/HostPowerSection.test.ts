@@ -8,7 +8,7 @@ import {
   type ReactDomHarness,
 } from "../../test-react-harness";
 import { installDomShim } from "../../test-dom-shim";
-import { DeviceManagementSection } from "./DeviceManagementSection";
+import { HostPowerSection } from "./HostPowerSection";
 
 const apiMocks = vi.hoisted(() => ({
   hibernateDevice: vi.fn(),
@@ -97,7 +97,7 @@ function installSelectAwareDomShim() {
 async function renderSection() {
   const harness = await createReactDomHarness({ installDom: installSelectAwareDomShim });
   (globalThis.window as unknown as { confirm: () => boolean }).confirm = vi.fn(() => true);
-  await harness.render(createElement(DeviceManagementSection));
+  await harness.render(createElement(HostPowerSection));
   return harness;
 }
 
@@ -114,13 +114,14 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("DeviceManagementSection", () => {
+describe("HostPowerSection", () => {
   it("restores a pending scheduled hibernation on mount and cancels it", async () => {
-    apiMocks.fetchHibernateStatus.mockResolvedValue({
+    const scheduled = {
       pending: true,
       scheduledAt: NOW.getTime() + 5 * 60_000,
       delayMs: 5 * 60_000,
-    });
+    };
+    apiMocks.fetchHibernateStatus.mockResolvedValue(scheduled);
     apiMocks.cancelHibernate.mockResolvedValue({
       ok: true,
       cancelled: true,
@@ -136,13 +137,56 @@ describe("DeviceManagementSection", () => {
       );
       expect(harness.dom.container.textContent ?? "").toContain("5m 00s");
 
+      let finishRead!: (value: typeof scheduled) => void;
+      apiMocks.fetchHibernateStatus.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+      await harness.render(createElement(HostPowerSection, { refreshSignal: 1 }));
       await clickButton(harness, "Cancel");
+      await harness.act(async () => { finishRead(scheduled); });
 
       expect(apiMocks.cancelHibernate).toHaveBeenCalledOnce();
       await waitUntilAct(harness.act, () =>
         (harness.dom.container.textContent ?? "").includes("Scheduled hibernation cancelled"),
       );
       expect(harness.dom.container.textContent ?? "").not.toContain("Hibernating in");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("refreshes external power changes without resetting the chosen delay", async () => {
+    const harness = await renderSection();
+    try {
+      await setDelay(harness, 15);
+      const refresh = (refreshSignal: number) => harness.render(createElement(HostPowerSection, { refreshSignal }));
+      apiMocks.fetchHibernateStatus.mockResolvedValueOnce({
+        pending: true,
+        scheduledAt: NOW.getTime() + 5 * 60_000,
+        delayMs: 5 * 60_000,
+        onIdle: disarmedOnIdle(),
+      });
+      await refresh(1);
+      expect(harness.dom.container.textContent).toContain("5m 00s");
+
+      apiMocks.fetchHibernateStatus.mockRejectedValueOnce(new Error("Host unreachable"));
+      await refresh(2);
+      expect(harness.dom.container.textContent).toContain("Host unreachable");
+      expect(harness.dom.container.textContent).toContain("5m 00s");
+
+      apiMocks.fetchHibernateStatus.mockResolvedValueOnce({
+        ...idleStatus(),
+        onIdle: { ...disarmedOnIdle(), armed: true, activeSessions: 2 },
+      });
+      await refresh(3);
+      expect(harness.dom.container.textContent).not.toContain("Hibernating in");
+      expect(harness.dom.container.textContent).not.toContain("Host unreachable");
+      expect(harness.dom.container.textContent).toContain("2 active sessions");
+
+      await refresh(4);
+      expect(harness.dom.container.textContent).not.toContain("On idle: on");
+      expect(findButtonByText(harness.dom.container, "Schedule")).toBeTruthy();
+      expect(apiMocks.hibernateDevice).not.toHaveBeenCalled();
+      expect(apiMocks.cancelHibernate).not.toHaveBeenCalled();
+      expect(apiMocks.setHibernateOnIdle).not.toHaveBeenCalled();
     } finally {
       await harness.cleanup();
     }
@@ -198,8 +242,8 @@ describe("DeviceManagementSection", () => {
     }
   });
 
-  it("arms hibernate on idle and reports sessions still running", async () => {
-    apiMocks.setHibernateOnIdle.mockResolvedValue({
+  it("arms on idle without losing an externally scheduled hibernation", async () => {
+    const armed = {
       ok: true,
       disarmed: false,
       armed: true,
@@ -209,11 +253,18 @@ describe("DeviceManagementSection", () => {
       idleSince: null,
       hibernateAt: null,
       message: "Hibernate on idle armed.",
-    });
+    };
+    apiMocks.setHibernateOnIdle.mockResolvedValue(armed);
 
     const harness = await renderSection();
     try {
       await waitUntilAct(harness.act, () => findAllByTag(harness.dom.container, "BUTTON").length > 0);
+      apiMocks.fetchHibernateStatus.mockResolvedValue({
+        pending: true,
+        scheduledAt: NOW.getTime() + 5 * 60_000,
+        delayMs: 5 * 60_000,
+        onIdle: armed,
+      });
       await clickButton(harness, "On idle");
 
       expect(apiMocks.setHibernateOnIdle).toHaveBeenCalledWith(true);
@@ -221,6 +272,7 @@ describe("DeviceManagementSection", () => {
         (harness.dom.container.textContent ?? "").includes("2 active sessions"),
       );
       expect(harness.dom.container.textContent ?? "").toContain("On idle: on");
+      expect(harness.dom.container.textContent ?? "").toContain("5m 00s");
       expect(harness.dom.container.textContent ?? "").not.toContain("All sessions idle");
     } finally {
       await harness.cleanup();
@@ -257,7 +309,7 @@ describe("DeviceManagementSection", () => {
   });
 
   it("restores an armed idle watcher on mount, counts down, and turns it off", async () => {
-    apiMocks.fetchHibernateStatus.mockResolvedValue({
+    apiMocks.fetchHibernateStatus.mockResolvedValueOnce({
       ...idleStatus(),
       onIdle: {
         armed: true,
