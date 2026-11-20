@@ -9,6 +9,7 @@ import { attachTranscriptAgents, buildAgentPlaceholders } from "../../lib/transc
 import ActivityBlock, { type ActivityWaitingText } from "./ActivityBlock";
 import { ChatRunActiveProvider } from "./chat-run-context";
 import { TranscriptAgentsProvider } from "./transcript-agents-context";
+import { ModelHiddenContext } from "./model-hidden-context";
 
 const BASE_MS = Date.parse("2026-09-20T08:00:00.000Z");
 
@@ -64,6 +65,7 @@ function render(
     agents?: TranscriptAgent[];
     /** Which stretch to render; the first by default. */
     stretch?: number;
+    modelHidden?: boolean;
   } = {},
 ) {
   const directory = buildTranscriptAgentDirectory(props.agents);
@@ -74,7 +76,7 @@ function render(
   if (!block) throw new Error("No activity block");
   const toolCalls = entries.flatMap((entry) => entry.type === "tool" ? [entry.toolCall] : []);
   const toolForest = buildToolCallForest([...buildAgentPlaceholders(toolCalls, directory), ...toolCalls]);
-  const html = renderToStaticMarkup(createElement(
+  const html = renderToStaticMarkup(createElement(ModelHiddenContext.Provider, { value: props.modelHidden ?? false }, createElement(
     ChatRunActiveProvider,
     { value: props.runActive ?? true },
     createElement(
@@ -91,7 +93,7 @@ function render(
         waiting: props.waiting,
       }),
     ),
-  ));
+  )));
   // Text nodes that React renders side by side come out touching, as they do on screen.
   return { html, text: html.replace(/<!--.*?-->/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").replace(/ ,/g, ",").trim() };
 }
@@ -158,6 +160,14 @@ describe("ActivityBlock", () => {
     expect(text).toContain("The evidence does not support the claim.");
     expect(text).toContain("Earlier answer");
     expect(html).toContain("$0.05");
+
+    // In an undecided comparison, nothing says which model ran, how long it took or what it cost.
+    const hidden = render([
+      tool("read", { name: "view", startedAt: at(1), completedAt: at(2), success: true }),
+      message,
+    ], { expanded: true, runActive: false, modelHidden: true });
+    expect(hidden.text).toContain("Worked");
+    expect(hidden.text).not.toMatch(/model-a|model-b|14s|\$/);
   });
 
   it("opens into the thinking and tool calls in the order they happened", () => {

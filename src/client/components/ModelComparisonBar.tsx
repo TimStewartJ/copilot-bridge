@@ -1,13 +1,17 @@
 import { useEffect } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { combineModelComparison, fetchModelComparison, voteModelComparison } from "../api";
+import { combineModelComparison, dismissModelComparison, voteModelComparison } from "../api";
+import { useModelComparisonQuery } from "../hooks/queries/useModelComparison";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { queryKeys } from "../queryClient";
-import { Button, MetaLine, SegmentedControl } from "../design/primitives";
+import { X } from "lucide-react";
+import { Button, IconButton, MetaLine, SegmentedControl } from "../design/primitives";
 import type { ModelAbTestSetup, ModelComparisonSide, ModelComparisonView } from "../../shared/model-ab-test.js";
 
 const WORKING = new Set<ModelComparisonView["status"]>(["starting", "running", "judging"]);
+/** Y stays shut while a first reply is still coming, so its progress and speed hint nothing. */
+const ANSWERING = new Set<ModelComparisonView["status"]>(["starting", "running"]);
 const SIDES: ReadonlyArray<{ value: ModelComparisonSide; label: string }> = [
   { value: "x", label: "X" },
   { value: "y", label: "Y" },
@@ -45,11 +49,7 @@ export default function ModelComparisonBar({ sessionId, busy }: { sessionId: str
   const navigate = useNavigate();
   const { taskId: routeTaskId } = useParams<{ taskId?: string }>();
   const { data: models } = useModelsQuery();
-  const query = useQuery({
-    queryKey: queryKeys.modelComparison(sessionId),
-    queryFn: ({ signal }) => fetchModelComparison(sessionId, signal),
-    refetchInterval: (current) => (current.state.data && WORKING.has(current.state.data.status) ? 15_000 : false),
-  });
+  const query = useModelComparisonQuery(sessionId);
   const { refetch } = query;
   useEffect(() => { void refetch(); }, [busy, refetch]);
   const comparison = query.data;
@@ -60,22 +60,35 @@ export default function ModelComparisonBar({ sessionId, busy }: { sessionId: str
     mutationFn: ({ id, winner }: { id: string; winner: ModelComparisonSide | "tie" }) => voteModelComparison(id, sessionId, winner),
     onSuccess: (next) => queryClient.setQueryData(queryKeys.modelComparison(sessionId), next),
   });
+  const dismiss = useMutation({
+    mutationFn: (id: string) => dismissModelComparison(id, sessionId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["model-comparison"] });
+      if (mainSessionId) void queryClient.invalidateQueries({ queryKey: queryKeys.sessionModel(mainSessionId) });
+    },
+  });
   const combine = useMutation({
     mutationFn: ({ id, keep }: { id: string; keep: ModelComparisonSide }) => combineModelComparison(id, keep),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["model-comparison"] });
+      // Keeping Y switched X's model; the header shows it once revealed.
+      if (mainSessionId) void queryClient.invalidateQueries({ queryKey: queryKeys.sessionModel(mainSessionId) });
       if (mainSessionId && mainSessionId !== sessionId) navigate(chatPath(mainSessionId));
     },
   });
-  if (!comparison) return null;
+  // Combined or dismissed: the user is done with the pair, so the bar goes.
+  if (!comparison || comparison.status === "awaiting_prompt" || comparison.combinedKeep || comparison.dismissed) return null;
 
   const modelLabel = (id: string) => models?.find((model) => model.id === id)?.name ?? id;
   const name = (setup: ModelAbTestSetup) => modelLabel(setup.model);
   const { revealed } = comparison;
-  const error = vote.error ?? combine.error;
+  const error = vote.error ?? combine.error ?? dismiss.error;
+  const yShut = comparison.side === "x" && ANSWERING.has(comparison.status);
+  const barClass = "flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border px-3 py-1.5 text-xs text-text-muted sm:px-4";
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border px-3 py-1.5 text-xs text-text-muted sm:px-4" role="status">
-      <SegmentedControl<ModelComparisonSide> ariaLabel="Compared chats" size="sm" options={SIDES} value={comparison.side}
+    <div className={barClass} role="status">
+      <SegmentedControl<ModelComparisonSide> ariaLabel="Compared chats" size="sm" value={comparison.side}
+        options={yShut ? SIDES.map((side) => (side.value === "y" ? { ...side, disabled: true, title: "Y opens once both replies are done" } : side)) : SIDES}
         disabled={!comparison.otherSessionId}
         onChange={(side) => { if (side !== comparison.side && comparison.otherSessionId) navigate(chatPath(comparison.otherSessionId)); }} />
       {comparison.votable && (
@@ -103,12 +116,15 @@ export default function ModelComparisonBar({ sessionId, busy }: { sessionId: str
         WORKING.has(comparison.status) && "First replies running",
         comparison.status === "incomplete" && comparison.failure,
         comparison.status === "failed" && comparison.failure,
-        comparison.combinedKeep && `Combined into X, on ${comparison.combinedKeep.toUpperCase()}'s model`,
         comparison.vote && `You: ${verdictLabel(comparison.vote)}`,
         revealed?.judge && <span key="judge" title={judgeDetail(revealed.judge, modelLabel)}>{judgeSummary(revealed.judge)}</span>,
         revealed && `X ${name(revealed.x)}, Y ${name(revealed.y)}`,
       ]} />
       {error && <span role="alert" className="text-error">{error instanceof Error ? error.message : String(error)}</span>}
+      <IconButton label="Dismiss comparison" title="Keep this chat as it is and hide this bar" size="sm" variant="ghost"
+        className="ml-auto" disabled={dismiss.isPending} onClick={() => dismiss.mutate(comparison.id)}>
+        <X size={14} aria-hidden="true" />
+      </IconButton>
     </div>
   );
 }

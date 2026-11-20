@@ -234,6 +234,55 @@ describe("model comparison service", () => {
     expect(events.get(twinId)).toBeDefined();
   });
 
+  it("counts the model kept on combining as the vote, keeps an earlier vote, and takes no vote after", async () => {
+    const { store, events, models, service } = setup([0.25]);
+    service.register(MAIN, (await service.prepare())!, {});
+    // Waiting for the first message, the chat is already in a pair, so its model stays unnamed.
+    expect(service.view(MAIN)).toMatchObject({ status: "awaiting_prompt" });
+    expect(service.view(MAIN)?.revealed).toBeUndefined();
+    models.set(MAIN, "gpt-6");
+    events.set(MAIN, answeredTurn("Plan the week", "Main reply."));
+    service.onFirstMessage(MAIN, "Plan the week", undefined, undefined, "accepted");
+    await vi.waitFor(() => expect(store.getBySession(MAIN)?.status).toBe("running"));
+    await service.tick();
+    const record = store.getBySession(MAIN)!;
+
+    expect(await service.combine(record.id, "y")).toMatchObject({
+      vote: "y", votable: false, combinable: false, combinedKeep: "y", revealed: { y: { model: "claude-9" } },
+    });
+    expect(service.vote(record.id, MAIN, "x")).toBeUndefined();
+    expect((await service.report()).arms).toContainEqual(expect.objectContaining({ arm: "b", wins: 1, userWins: 1 }));
+    expect((await service.report()).agreement.length).toBeGreaterThan(0);
+  });
+
+  it("lets the user dismiss a pair: no vote, names revealed, nothing left to do, once", async () => {
+    const { store, events, models, service } = setup([0.25]);
+    service.register(MAIN, (await service.prepare())!, {});
+    models.set(MAIN, "gpt-6");
+    events.set(MAIN, answeredTurn("Plan the week", "Main reply."));
+    service.onFirstMessage(MAIN, "Plan the week", undefined, undefined, "accepted");
+    await vi.waitFor(() => expect(store.getBySession(MAIN)?.status).toBe("running"));
+    await service.tick();
+    const record = store.getBySession(MAIN)!;
+    expect(service.dismiss(record.id, MAIN)).toMatchObject({ dismissed: true, votable: false, combinable: false, revealed: { x: { model: "gpt-6" } } });
+    expect(service.view(MAIN)?.vote).toBeUndefined();
+    expect(service.dismiss(record.id, MAIN)).toBeUndefined();
+    expect(await service.combine(record.id, "y")).toBeUndefined();
+  });
+
+  it("keeps a tie cast before combining", async () => {
+    const { store, events, models, service } = setup([0.25]);
+    service.register(MAIN, (await service.prepare())!, {});
+    models.set(MAIN, "gpt-6");
+    events.set(MAIN, answeredTurn("Plan the week", "Main reply."));
+    service.onFirstMessage(MAIN, "Plan the week", undefined, undefined, "accepted");
+    await vi.waitFor(() => expect(store.getBySession(MAIN)?.status).toBe("running"));
+    await service.tick();
+    const record = store.getBySession(MAIN)!;
+    service.vote(record.id, MAIN, "tie");
+    expect(await service.combine(record.id, "y")).toMatchObject({ vote: "tie", combinedKeep: "y" });
+  });
+
   it("does not compare a pair whose first turn was steered, and fails a start a restart cut off", async () => {
     const { store, events, service } = setup([0.25]);
     service.register(MAIN, (await service.prepare())!, {});

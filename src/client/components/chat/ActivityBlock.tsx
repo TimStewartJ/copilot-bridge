@@ -30,6 +30,7 @@ import { Badge, Details } from "../../design/primitives";
 import type { ChatTurnDetails, ChatTurnPhase } from "../../../shared/chat-turn-details.js";
 import { COPILOT_AI_CREDIT_USD } from "../../../shared/copilot-pricing.js";
 import { formatUsageNumber, formatUsageUsd } from "../../lib/usage-presentation";
+import { useModelHidden } from "./model-hidden-context";
 
 /** What to say on the line of a run whose main agent has stopped to wait for agents. */
 export interface ActivityWaitingText {
@@ -131,6 +132,8 @@ function phaseOutcome(phase: ChatTurnPhase): string | undefined {
 }
 
 function ActivityTurnDetails({ details }: { details: ChatTurnDetails }) {
+  const modelHidden = useModelHidden();
+  const modelName = (name: string) => (modelHidden ? "Model hidden" : name);
   return (
     <div className="mt-2 space-y-2">
       <div className={DS.text.eyebrow}>Models</div>
@@ -141,10 +144,10 @@ function ActivityTurnDetails({ details }: { details: ChatTurnDetails }) {
             : "Cost not recorded";
           return (
             <div key={model.model} className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 py-1.5 text-[13px]">
-              <span className="min-w-0 break-all font-medium text-text-secondary">{model.displayName ?? model.model}</span>
+              <span className="min-w-0 break-all font-medium text-text-secondary">{modelName(model.displayName ?? model.model)}</span>
               <span className="text-xs text-text-faint">
                 {formatUsageNumber(model.requests)} request{model.requests === 1 ? "" : "s"}
-                {cost ? ` · ${cost}${model.meteredRequests > 0 && model.meteredRequests < model.requests ? " metered" : ""}` : ""}
+                {cost && !modelHidden ? ` · ${cost}${model.meteredRequests > 0 && model.meteredRequests < model.requests ? " metered" : ""}` : ""}
               </span>
             </div>
           );
@@ -158,10 +161,10 @@ function ActivityTurnDetails({ details }: { details: ChatTurnDetails }) {
             return (
               <div key={`${phase.model}:${phase.label}:${index}`} className="min-w-0 border-t border-border-subtle pt-2">
                 <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[13px]">
-                  <span className="min-w-0 break-all font-medium text-text-secondary">{phase.model}</span>
+                  <span className="min-w-0 break-all font-medium text-text-secondary">{modelName(phase.model)}</span>
                   <Badge>{phase.label}</Badge>
                   {outcome && <Badge tone={phase.final ? "success" : phase.outcome === "reject" ? "warning" : "neutral"}>{outcome}</Badge>}
-                  {formatPhaseDuration(phase.durationMs) && (
+                  {!modelHidden && formatPhaseDuration(phase.durationMs) && (
                     <span className={cx(DS.text.meta, "ml-auto")}>{formatPhaseDuration(phase.durationMs)}</span>
                   )}
                 </div>
@@ -237,8 +240,11 @@ function describeHeader(input: {
   toolForest: ToolCallForest;
   context: ToolPresentationContext;
   turnDetails?: ChatTurnDetails;
+  /** In an undecided model comparison: how long a turn took would hint at the model. */
+  hideTime?: boolean;
 }): HeaderText {
   const { steps, summary, active, inFlight, liveLabel, waiting, toolForest, context, turnDetails } = input;
+  const worked = (subject: string | undefined, durationMs: number | undefined) => workedLabel(subject, input.hideTime ? undefined : durationMs);
   const { main, inAgents } = collectActivityCalls(steps);
 
   if (active) {
@@ -256,7 +262,7 @@ function describeHeader(input: {
     return step ?? { label: liveLabel?.trim() || "Working" };
   }
 
-  if (turnDetails) return { label: workedLabel(undefined, turnDetails.durationMs) };
+  if (turnDetails) return { label: worked(undefined, turnDetails.durationMs) };
 
   if (main.length === 0 && inAgents.length === 0) {
     const first = steps.find((step) => step.kind === "reasoning");
@@ -273,7 +279,7 @@ function describeHeader(input: {
     // Nothing here is the main agent's.
     const only = continued.length === 1 ? toolForest.nodesById.get(continued[0]!)?.toolCall : undefined;
     const subject = only ? agentDisplayName(only) : continued.length > 1 ? plural(continued.length, "agent") : undefined;
-    return { label: workedLabel(subject, summary.durationMs), agentsOnly: subject !== undefined };
+    return { label: worked(subject, summary.durationMs), agentsOnly: subject !== undefined };
   }
 
   const handedOut = continued.length === 0
@@ -310,9 +316,9 @@ function describeHeader(input: {
   }
 
   // Every call here handed work to an agent, so the stretch is the agents' and reads as theirs.
-  if (handedOut) return { label: workedLabel(plural(main.length, "agent"), summary.durationMs), agentsOnly: true };
+  if (handedOut) return { label: worked(plural(main.length, "agent"), summary.durationMs), agentsOnly: true };
 
-  return { label: workedLabel(undefined, summary.durationMs) };
+  return { label: worked(undefined, summary.durationMs) };
 }
 
 export default memo(function ActivityBlock({
@@ -326,6 +332,7 @@ export default memo(function ActivityBlock({
   waiting,
 }: ActivityBlockProps) {
   const runActive = useChatRunActive();
+  const modelHidden = useModelHidden();
   const agentName = useAgentNameResolver();
   const context = useMemo<ToolPresentationContext>(() => ({ agentName }), [agentName]);
   // Steps with no recorded end are in flight only while the run that owns them is still going.
@@ -351,8 +358,9 @@ export default memo(function ActivityBlock({
       toolForest,
       context,
       turnDetails: block.turnDetails,
+      hideTime: modelHidden,
     }),
-    [active, block.steps, block.turnDetails, context, inFlight, liveLabel, summary, toolForest, waiting],
+    [active, block.steps, block.turnDetails, context, inFlight, liveLabel, modelHidden, summary, toolForest, waiting],
   );
   const streamingThought = active && inFlight ? getStreamingThought(block.steps) : undefined;
   const showThoughtWindow = !expanded && streamingThought !== undefined;
@@ -370,7 +378,7 @@ export default memo(function ActivityBlock({
     ? plural(summary.toolCount, "step")
     : undefined;
   const hasCounts = stepsAreTheNamedAgents ? Boolean(agentSteps) : Boolean(ownSteps || agentsAtWork);
-  const elapsed = active && summary.durationMs !== undefined && summary.durationMs >= 1000
+  const elapsed = !modelHidden && active && summary.durationMs !== undefined && summary.durationMs >= 1000
     ? formatDuration(summary.durationMs, { wholeSeconds: true })
     : undefined;
   const modelsWorked = block.turnDetails && block.turnDetails.models.length > 0
@@ -387,7 +395,7 @@ export default memo(function ActivityBlock({
     : meteredCost
       ? `${meteredCost}${meteredRequests < totalRequests ? " metered" : ""}`
       : "Cost not recorded";
-  const turnDetailsMeta = [modelsWorked, turnCost]
+  const turnDetailsMeta = [modelsWorked, modelHidden ? undefined : turnCost]
     .filter(Boolean)
     .join(" · ");
   const failedTotal = summary.failedCount + (header.agentsOnly ? summary.agentFailedCount : 0);

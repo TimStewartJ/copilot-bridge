@@ -1246,6 +1246,16 @@ export function createApiRouter(
     }
   });
 
+  // POST /model-comparisons/:id/dismiss — closes the pair for the user without combining.
+  router.post("/model-comparisons/:id/dismiss", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Dismissing a model comparison")) return;
+    const sessionId = isRecord(req.body) ? req.body.sessionId : undefined;
+    if (typeof sessionId !== "string" || !isCanonicalSessionId(sessionId)) return res.status(400).json({ error: "Valid sessionId is required" });
+    const comparison = ctx.modelComparisons?.dismiss(req.params.id, sessionId);
+    if (!comparison) return res.status(409).json({ error: "This pair can't be dismissed." });
+    res.json({ comparison });
+  });
+
   // GET /model-comparisons/by-session/:id — the pair a chat belongs to, as that chat sees it.
   router.get("/model-comparisons/by-session/:id", (req, res) => {
     if (!isCanonicalSessionId(req.params.id)) return res.status(400).json({ error: "Valid sessionId is required" });

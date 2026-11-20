@@ -14,6 +14,7 @@ export default function SessionModelSummary({
   onRetry,
   onEdit,
   editDisabledReason,
+  modelHidden = false,
 }: {
   /** The chat's name. Left out on a phone, where the bar above the chat already shows it. */
   title?: string;
@@ -26,6 +27,8 @@ export default function SessionModelSummary({
   onEdit?: () => void;
   /** Why editing is unavailable right now, such as a working session. Disables the label. */
   editDisabledReason?: string;
+  /** In a model comparison not yet decided: names stay hidden so they can't sway the vote. */
+  modelHidden?: boolean;
 }) {
   const name = title
     ? <span className="hidden min-w-0 truncate font-medium text-text-secondary md:block" title={title}>{title}</span>
@@ -58,8 +61,10 @@ export default function SessionModelSummary({
   }
 
   const label = state
-    ? formatSessionModelSummaryLabel(state, models)
+    ? modelHidden ? "Model hidden" : formatSessionModelSummaryLabel(state, models)
     : "Loading session configuration...";
+  // The editor would name the model.
+  const disabledReason = modelHidden ? "Vote or combine to see the model" : editDisabledReason;
 
   if (!state) {
     return line(
@@ -80,8 +85,8 @@ export default function SessionModelSummary({
         <button
           type="button"
           onClick={onEdit}
-          disabled={!!editDisabledReason}
-          title={editDisabledReason ?? "Change model, effort, and context for this chat"}
+          disabled={!!disabledReason}
+          title={disabledReason ?? "Change model, effort, and context for this chat"}
           aria-label={`Change model, effort, and context: ${label}`}
           className={cx(
             "-mx-1.5 inline-flex h-10 min-w-0 items-center gap-1 rounded-md px-1.5 text-left transition-colors md:h-6",

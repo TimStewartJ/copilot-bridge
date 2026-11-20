@@ -64,6 +64,7 @@ import { getSessionPath, getTaskChatPath, getTaskDraftSessionPath } from "./lib/
 import { getQuickChatSessions } from "./lib/quick-chat-sessions";
 import { addActiveSessionToTask, findTaskForSession, isSessionLinkedToTask } from "./lib/task-session-links";
 import { buildOptimisticSessionModelState } from "./lib/session-model";
+import { isModelHidden, useModelComparisonQuery } from "./hooks/queries/useModelComparison";
 import { createCoalescedInvalidator } from "./lib/coalesced-invalidation";
 import { createDeferredTaskChangeInvalidator } from "./lib/task-change-invalidation";
 
@@ -2691,6 +2692,7 @@ function SessionRoute({
   const chatHandsFree = useChatHandsFree(sessionId);
   const modelsQuery = useModelsQuery({ enabled: isDraft || Boolean(sessionId) });
   const sessionModelQuery = useSessionModelQuery(sessionId);
+  const modelHidden = isModelHidden(useModelComparisonQuery(sessionId).data);
   const sessionReloadToken = sessionId ? sessionReloadSignals[sessionId] ?? 0 : 0;
   const busySignal = sessionId ? sessionBusySignals[sessionId] ?? 0 : 0;
   const historySignal = sessionId ? sessionHistorySignals[sessionId] ?? 0 : 0;
@@ -3118,6 +3120,7 @@ function SessionRoute({
             editDisabledReason={activeSession && isSessionActive(activeSession)
               ? "This session is busy"
               : undefined}
+            modelHidden={modelHidden}
           />
           {sessionModelQuery.data && (
             <SessionPlaybookChip

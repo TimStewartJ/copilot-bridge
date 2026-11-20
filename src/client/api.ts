@@ -3129,6 +3129,13 @@ export async function combineModelComparison(comparisonId: string, keep: ModelCo
   return comparison;
 }
 
+/** Closes the pair without combining, so its bar goes away; the judges' verdict stands. */
+export async function dismissModelComparison(comparisonId: string, sessionId: string): Promise<ModelComparisonView> {
+  const { comparison } = await apiFetch<{ comparison: ModelComparisonView }>(
+    `/api/model-comparisons/${encodeURIComponent(comparisonId)}/dismiss`, { sessionId });
+  return comparison;
+}
+
 export async function voteModelComparison(
   comparisonId: string,
   sessionId: string,

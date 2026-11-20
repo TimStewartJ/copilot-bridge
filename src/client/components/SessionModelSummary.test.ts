@@ -57,6 +57,19 @@ describe("SessionModelSummary editing", () => {
     }
   });
 
+  it("names no model and offers no editor while a comparison is undecided", async () => {
+    const harness = await createReactDomHarness();
+    try {
+      await harness.render(createElement(SessionModelSummary, {
+        state: STATE, models: MODELS, loading: false, onRetry: vi.fn(), onEdit: vi.fn(), modelHidden: true,
+      }));
+      expect(harness.dom.container.textContent).not.toContain("GPT-5.6");
+      expect(getReactProps(findEditButton(harness.dom.container))?.disabled).toBe(true);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("disables the label with a reason while editing is unavailable", async () => {
     const harness = await createReactDomHarness();
     try {

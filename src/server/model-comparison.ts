@@ -164,6 +164,8 @@ export interface ModelComparisonRecord {
   combinedAt?: string;
   /** The arm whose model X carries on with after combining. */
   combinedArm?: ModelAbTestArm;
+  /** When the user closed the pair without combining; the bar no longer shows. */
+  dismissedAt?: string;
   metrics?: Partial<Record<ModelAbTestArm, ModelComparisonTurnMetrics>>;
   judgement?: ModelComparisonJudgement;
   userVote?: ModelComparisonVerdict;
@@ -189,6 +191,7 @@ interface ComparisonRow {
   twinWorktree: string | null;
   combinedAt: string | null;
   combinedArm: string | null;
+  dismissedAt: string | null;
   metricsJson: string | null;
   judgementJson: string | null;
   userVote: string | null;
@@ -316,6 +319,7 @@ function fromRow(row: ComparisonRow): ModelComparisonRecord | undefined {
     ...(row.twinStartedAt ? { twinStartedAt: row.twinStartedAt } : {}),
     ...(row.combinedAt ? { combinedAt: row.combinedAt } : {}),
     ...(isArm(row.combinedArm) ? { combinedArm: row.combinedArm } : {}),
+    ...(row.dismissedAt ? { dismissedAt: row.dismissedAt } : {}),
     ...(row.twinRepo && row.twinWorktree ? { twinWorkspace: { repo: row.twinRepo, worktree: row.twinWorktree } } : {}),
     ...(Object.keys(metrics).length > 0 ? { metrics } : {}),
     ...(judgement ? { judgement } : {}),
@@ -349,6 +353,9 @@ export function createModelComparisonStore(db: DatabaseSync) {
   const vote = db.prepare("UPDATE model_comparisons SET userVote = ?, votedAt = ?, updatedAt = ? WHERE id = ?");
   const combine = db.prepare(
     "UPDATE model_comparisons SET combinedAt = ?, combinedArm = ?, updatedAt = ? WHERE id = ? AND combinedAt IS NULL",
+  );
+  const dismiss = db.prepare(
+    "UPDATE model_comparisons SET dismissedAt = ?, updatedAt = ? WHERE id = ? AND dismissedAt IS NULL AND combinedAt IS NULL",
   );
   const byId = db.prepare("SELECT * FROM model_comparisons WHERE id = ?");
   const bySession = db.prepare("SELECT * FROM model_comparisons WHERE mainSessionId = ? OR twinSessionId = ?");
@@ -405,6 +412,10 @@ export function createModelComparisonStore(db: DatabaseSync) {
     /** False when the pair was already combined. */
     markCombined(id: string, arm: ModelAbTestArm, at: string): boolean {
       return Number(combine.run(at, arm, at, id).changes) === 1;
+    },
+    /** False when the pair was already combined or dismissed. */
+    markDismissed(id: string, at: string): boolean {
+      return Number(dismiss.run(at, at, id).changes) === 1;
     },
     get: (id: string) => one(byId.get(id)),
     getBySession: (sessionId: string) => one(bySession.get(sessionId, sessionId)),
@@ -637,10 +648,16 @@ export function isVotable(record: ModelComparisonRecord): boolean {
   return !!record.twinStartedAt && (record.status === "judged" || record.status === "judging" || record.status === "failed");
 }
 
-/** The verdict that counts: the user's vote, else the judges'. */
+/** The user's pick: their vote, else the arm whose model they kept when combining. */
+export function userChoice(record: Pick<ModelComparisonRecord, "userVote" | "combinedArm">): ModelComparisonVerdict | undefined {
+  return record.userVote ?? record.combinedArm;
+}
+
+/** The verdict that counts: the user's pick, else the judges'. */
 export function decidedVerdict(record: ModelComparisonRecord): { winner: ModelComparisonPanelVerdict; by: "user" | "judge" } | undefined {
   if (!isVotable(record)) return undefined;
-  if (record.userVote) return { winner: record.userVote, by: "user" };
+  const choice = userChoice(record);
+  if (choice) return { winner: choice, by: "user" };
   if (record.judgement) return { winner: record.judgement.verdict, by: "judge" };
   return undefined;
 }
@@ -655,12 +672,13 @@ export function panelVerdict(runs: readonly Pick<ModelComparisonJudgeRun, "winne
 export function judgeAgreement(records: readonly ModelComparisonRecord[]): ModelAbTestJudgeAgreement[] {
   const byModel = new Map<string, ModelAbTestJudgeAgreement>();
   for (const record of records) {
-    if (!record.userVote || !record.judgement || !isVotable(record)) continue;
+    const choice = userChoice(record);
+    if (!choice || !record.judgement || !isVotable(record)) continue;
     const models = [...new Set(record.judgement.runs.map((run) => run.model))];
     for (const model of models) {
       const entry = byModel.get(model) ?? { model, votes: 0, agreed: 0 };
       entry.votes += 1;
-      if (panelVerdict(record.judgement.runs.filter((run) => run.model === model)) === record.userVote) entry.agreed += 1;
+      if (panelVerdict(record.judgement.runs.filter((run) => run.model === model)) === choice) entry.agreed += 1;
       byModel.set(model, entry);
     }
   }
@@ -1139,13 +1157,14 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
 
   function view(sessionId: string): ModelComparisonView | undefined {
     const record = deps.store.getBySession(sessionId);
-    if (!record || record.status === "awaiting_prompt") return undefined;
+    if (!record) return undefined;
     const side: ModelComparisonSide = record.mainSessionId === sessionId ? "x" : "y";
     const otherSessionId = side === "x" ? record.twinSessionId : record.mainSessionId;
     const votable = isVotable(record);
     const over = record.status === "judged" || record.status === "incomplete" || record.status === "failed";
-    // Names stay hidden until the user voted or nothing is left to vote on.
-    const revealed = record.userVote || (over && !votable) ? {
+    const choice = userChoice(record);
+    // Names stay hidden until the user voted, combined or dismissed, or nothing is left to vote on.
+    const revealed = choice || record.dismissedAt || (over && !votable) ? {
       x: record.setups[record.mainArm],
       y: record.setups[otherArm(record.mainArm)],
       ...(record.judgement ? {
@@ -1167,13 +1186,14 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
       side,
       ...(otherSessionId ? { otherSessionId } : {}),
       status: record.status,
-      votable: votable && !record.userVote,
-      combinable: votable && !record.combinedAt,
+      votable: votable && !choice && !record.dismissedAt,
+      combinable: votable && !record.combinedAt && !record.dismissedAt,
+      ...(record.dismissedAt ? { dismissed: true } : {}),
       ...(record.combinedArm ? { combinedKeep: armSide(record, record.combinedArm) } : {}),
       // Only the user's own vote: a hint before it would lead the vote that judges are measured by.
       ...(!record.combinedAt && record.userVote ? { suggestedKeep: winnerSide(record, record.userVote) } : {}),
       ...(record.taskId ? { taskId: record.taskId } : {}),
-      ...(record.userVote ? { vote: record.userVote === "tie" ? "tie" as const : armSide(record, record.userVote) } : {}),
+      ...(choice ? { vote: choice === "tie" ? "tie" as const : armSide(record, choice) } : {}),
       ...(revealed ? { revealed } : {}),
       ...(record.failure ? { failure: record.failure } : {}),
     };
@@ -1183,15 +1203,24 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
   function vote(id: string, sessionId: string, verdict: ModelComparisonSide | "tie"): ModelComparisonView | undefined {
     const record = deps.store.get(id);
     if (!record || (record.mainSessionId !== sessionId && record.twinSessionId !== sessionId)) return undefined;
-    if (!isVotable(record)) return undefined;
+    // Combining already settled the pick.
+    if (!isVotable(record) || record.combinedAt || record.dismissedAt) return undefined;
     deps.store.vote(id, verdict === "tie" ? "tie" : sideArm(record, verdict), iso());
+    return view(sessionId);
+  }
+
+  /** Closes the pair for the user without combining; the judges' verdict stands. */
+  function dismiss(id: string, sessionId: string): ModelComparisonView | undefined {
+    const record = deps.store.get(id);
+    if (!record || (record.mainSessionId !== sessionId && record.twinSessionId !== sessionId)) return undefined;
+    if (record.status === "awaiting_prompt" || !deps.store.markDismissed(id, iso())) return undefined;
     return view(sessionId);
   }
 
   /** Hands Y's answer to X, on `keep`'s model, so the conversation carries on in X alone. */
   async function combine(id: string, keep: ModelComparisonSide): Promise<ModelComparisonView | undefined> {
     const record = deps.store.get(id);
-    if (!record?.twinSessionId || !isVotable(record) || record.combinedAt) return undefined;
+    if (!record?.twinSessionId || !isVotable(record) || record.combinedAt || record.dismissedAt) return undefined;
     const twin = await firstTurnOf(record.twinSessionId);
     if ("unreadable" in twin || !twin.reply) throw new Error("The second chat has no reply to combine.");
     const keepArm = sideArm(record, keep);
@@ -1245,7 +1274,7 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     timer = undefined;
   }
 
-  return { prepare, register, onFirstMessage, tick: runTick, view, vote, combine, report, rejudge, sourceSessionId, start, stop };
+  return { prepare, register, onFirstMessage, tick: runTick, view, vote, combine, dismiss, report, rejudge, sourceSessionId, start, stop };
 }
 
 export type ModelComparisonService = ReturnType<typeof createModelComparisonService>;

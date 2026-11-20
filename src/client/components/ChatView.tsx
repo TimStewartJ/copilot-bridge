@@ -128,6 +128,8 @@ import ChatInput, { type ComposerTool } from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import ModelComparisonBar from "./ModelComparisonBar";
+import { ModelHiddenContext } from "./chat/model-hidden-context";
+import { isModelHidden, useModelComparisonQuery } from "../hooks/queries/useModelComparison";
 import { recentToolFailures, statusLineHasProblem } from "./mcp-status-display";
 import SessionAgentsBar from "./SessionAgentsBar";
 import { ArrowDown, ArrowLeft, Check, CircleAlert, CircleSlash, ClipboardList, Copy, Terminal } from "lucide-react";
@@ -608,6 +610,7 @@ export default function ChatView({
   const planOverlay = useOverlayParam("sheet");
   const docOverlay = useOverlayParam("doc");
   const referenceContext = useContext(BridgeReferenceContext);
+  const modelHidden = isModelHidden(useModelComparisonQuery(sessionId).data);
   const docReferenceContext = useMemo(() => ({
     ...referenceContext,
     onOpenDoc: (path: string) => docOverlay.open(path, { replace: docOverlay.isOpen }),
@@ -2906,6 +2909,7 @@ export default function ChatView({
   );
 
   return (
+    <ModelHiddenContext.Provider value={modelHidden}>
     <BridgeReferenceContext.Provider value={docReferenceContext}>
     <div
       ref={setChatRoot}
@@ -2952,12 +2956,13 @@ export default function ChatView({
         contextError={sessionContextError}
         contextLoading={sessionContextLoading}
         liveContextSummary={streamContextSummary}
-        sessionCostLoading={sessionCostLoading}
-        sessionCostUsd={sessionUsageMetricsQuery.data?.costUsd}
+        // Cost would hint at the model while a comparison is undecided.
+        sessionCostLoading={modelHidden ? false : sessionCostLoading}
+        sessionCostUsd={modelHidden ? undefined : sessionUsageMetricsQuery.data?.costUsd}
         sessionUsage={sessionUsageMetricsQuery.data}
         sessionUsageUpdatedAt={sessionUsageMetricsQuery.dataUpdatedAt}
         routedModel={routedModel}
-        sessionCostError={sessionUsageMetricsQuery.error instanceof Error
+        sessionCostError={modelHidden ? undefined : sessionUsageMetricsQuery.error instanceof Error
           ? sessionUsageMetricsQuery.error.message
           : sessionUsageMetricsQuery.error ? String(sessionUsageMetricsQuery.error) : undefined}
         servers={mcpStatusQuery.data?.servers ?? []}
@@ -3171,5 +3176,6 @@ export default function ChatView({
       )}
     </div>
     </BridgeReferenceContext.Provider>
+    </ModelHiddenContext.Provider>
   );
 }

@@ -105,6 +105,8 @@ export interface ModelComparisonView {
   combinable: boolean;
   /** Whose model X carried on with, once combined. */
   combinedKeep?: ModelComparisonSide;
+  /** The user closed the pair without combining. */
+  dismissed?: boolean;
   /** Whose model to carry on with by default: the user's vote. */
   suggestedKeep?: ModelComparisonSide;
   /** The task the pair's chats belong to, so either opens inside it. */
