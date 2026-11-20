@@ -12,9 +12,20 @@ export const BRIDGE_TOOLS_REPO_ROOT = resolveBridgeControlRoot(
   join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."),
 );
 
+const SHORT_TASK_ID = /^([0-9a-f]{8})(?:-|$)/;
+
+/** Finds a task by its ID or, when one task alone starts with them, the ID's first 8 characters. */
 export function ensureTask(ctx: AppContext, taskId: string): Result<Task> {
   const task = ctx.taskStore.getTask(taskId);
-  return task ? ok(task) : err(`Task ${taskId} not found`);
+  if (task) return ok(task);
+  const shortId = SHORT_TASK_ID.exec(String(taskId).trim().toLowerCase())?.[1];
+  const matches = shortId ? ctx.taskStore.findTaskIdsByShortId(shortId) : [];
+  if (matches.length > 1) {
+    const choices = matches.map((id) => `${id} (${ctx.taskStore.getTask(id)?.title ?? "untitled"})`).join(", ");
+    return err(`Task ${taskId} is ambiguous: ${choices}. Pass the full task ID.`);
+  }
+  const match = matches.length === 1 ? ctx.taskStore.getTask(matches[0]) : undefined;
+  return match ? ok(match) : err(`Task ${taskId} not found`);
 }
 
 export function ensureTaskGroup(

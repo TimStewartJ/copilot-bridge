@@ -32,15 +32,17 @@ export function createActionHandlers(ctx: AppContext) {
   const store = ctx.checklistStore;
   return {
     add(args: ChecklistAddArgs & { key?: string; sourceUrl?: string }) {
+      let taskId: string | null = null;
       if (args.taskId != null) {
         const task = ensureTask(ctx, args.taskId);
         if (!task.ok) return toolFailure(task.error);
+        taskId = task.value.id;
       }
       const unknown = Object.keys(args).filter((key) => !Object.hasOwn(addProperties, key));
       if (unknown.length) return toolFailure(`Unknown field(s): ${unknown.join(", ")}`);
       return actionMutation(() => ({
         success: true,
-        action: store.createChecklistItem(args.taskId ?? null, args.text, args.deadline, {
+        action: store.createChecklistItem(taskId, args.text, args.deadline, {
           key: args.key, sourceUrl: args.sourceUrl, actor: "agent",
         }),
       }));

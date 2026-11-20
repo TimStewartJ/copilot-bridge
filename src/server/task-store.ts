@@ -613,6 +613,12 @@ export function createTaskStore(
     return row ? hydrate(row) : undefined;
   }
 
+  /** IDs of tasks whose ID starts with these 8 characters, the short form agents copy around. */
+  function findTaskIdsByShortId(shortId: string): string[] {
+    const rows = db.prepare("SELECT id FROM tasks WHERE substr(id, 1, 8) = ? ORDER BY id").all(shortId) as Array<{ id: string }>;
+    return rows.map((row) => row.id);
+  }
+
   function createTask(
     title: string,
     groupId?: string | null,
@@ -1159,7 +1165,7 @@ export function createTaskStore(
   }
 
   return {
-    listTasks, listTasksWithoutSessions, listTaskLinksBySession, listArchivedSessionIdsForTask, getTask, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
+    listTasks, listTasksWithoutSessions, listTaskLinksBySession, listArchivedSessionIdsForTask, getTask, findTaskIdsByShortId, createTask, updateTask, deleteTask, deleteTaskCascade, reorderTasks,
     archiveSessionsAndDeleteTask, listSessionIdsForTask, listExclusiveSessionIdsForTask, listOpenSessionIdsWithoutActiveTask,
     getTaskSessionCounts, listTaskSessionSummaries,
     linkSession, unlinkSession, unlinkSessionFromAllTasks, listSessionLinks, removeSessionLinks, linkWorkItem, unlinkWorkItem,

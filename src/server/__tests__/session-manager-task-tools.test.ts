@@ -106,6 +106,28 @@ describe("session manager task tools", () => {
     expect(info).toMatchObject({ id: created.taskId, kind: "ongoing", tags: [] });
   });
 
+  it("task tools find a task by the first 8 characters of its ID, and refuse a shared prefix", async () => {
+    const { ctx } = createTestApp();
+    const ids = ["5678ef90-1111-4111-8111-111111111111", "1234abcd-2222-4222-8222-222222222222", "1234abcd-3333-4333-8333-333333333333"];
+    const uuid = vi.spyOn(globalThis.crypto, "randomUUID");
+    for (const id of ids) uuid.mockReturnValueOnce(id as ReturnType<typeof crypto.randomUUID>);
+    const [task, first, second] = ["Release review", "Docs", "Docs follow-up"].map((title) => ctx.taskStore.createTask(title));
+    uuid.mockRestore();
+    const info = (taskId: string) => getTool(ctx, "task_get_info").handler({ taskId }, createInvocation("task_get_info"));
+
+    for (const taskId of ["5678ef90", "5678EF90", "5678ef90-0000-0000-0000-000000000000", "5678ef90-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]) {
+      await expect(info(taskId), taskId).resolves.toMatchObject({ id: task.id, title: "Release review" });
+    }
+    await getTool(ctx, "task_history_add").handler({ taskId: "5678ef90", text: "Checked the build" }, createInvocation("task_history_add"));
+    expect(ctx.taskHistoryStore!.listEntries(task.id, { limit: 5 }).map((entry) => entry.text)).toEqual(["Checked the build"]);
+
+    const shared = await info("1234abcd");
+    expect(shared.resultType).toBe("failure");
+    expect(shared.textResultForLlm).toContain(first.id);
+    expect(shared.textResultForLlm).toContain(second.id);
+    await expect(info("9999ffff")).resolves.toEqual(toolFailure("Task 9999ffff not found"));
+  });
+
   it.each(["task", "group"] as const)("only replaces long %s notes for an agent that read them to the end", async (source) => {
     const { ctx } = createTestApp();
     const group = ctx.taskGroupStore.createGroup("Review");

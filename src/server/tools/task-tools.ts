@@ -122,7 +122,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if (!task.ok) return toolFailure(task.error);
       const link = resolveWorkItemLink({ ...args, providers: providersConfig(ctx) });
       if (!link.ok) return toolFailure(link.error);
-      ctx.taskStore.linkWorkItem(args.taskId, link.value.workItemId, link.value.provider);
+      ctx.taskStore.linkWorkItem(task.value.id, link.value.workItemId, link.value.provider);
       return { success: true, message: `Work item ${link.value.workItemId} (${link.value.provider}) linked to task` };
     },
   }),
@@ -134,7 +134,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if (!task.ok) return toolFailure(task.error);
       const unlink = resolveWorkItemUnlink(args);
       if (!unlink.ok) return toolFailure(unlink.error);
-      const result = ctx.taskStore.unlinkWorkItem(args.taskId, unlink.value.workItemId, unlink.value.provider);
+      const result = ctx.taskStore.unlinkWorkItem(task.value.id, unlink.value.workItemId, unlink.value.provider);
       if (!result.removed) {
         return toolFailure(`Work item ${unlink.value.workItemId} is not linked to this task`);
       }
@@ -149,7 +149,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if (!task.ok) return toolFailure(task.error);
       const link = resolvePullRequestLink({ ...args, providers: providersConfig(ctx) });
       if (!link.ok) return toolFailure(link.error);
-      ctx.taskStore.linkPR(args.taskId, link.value);
+      ctx.taskStore.linkPR(task.value.id, link.value);
       return { success: true, message: `PR #${link.value.prId} from ${link.value.repoName ?? link.value.repoId} linked to task` };
     },
   }),
@@ -161,7 +161,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if (!task.ok) return toolFailure(task.error);
       const unlink = resolvePullRequestUnlink({ ...args, providers: providersConfig(ctx) });
       if (!unlink.ok) return toolFailure(unlink.error);
-      ctx.taskStore.unlinkPR(args.taskId, unlink.value.repoIds, unlink.value.prId, unlink.value.provider);
+      ctx.taskStore.unlinkPR(task.value.id, unlink.value.repoIds, unlink.value.prId, unlink.value.provider);
       return { success: true, message: `PR #${unlink.value.prId} from ${args.repoName ?? args.repoId} unlinked from task` };
     },
   }),
@@ -243,7 +243,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       let updatedTask = task.value;
       if (Object.keys(updates).length > 0) {
         try {
-          updatedTask = ctx.taskStore.updateTask(args.taskId, updates, agentTaskChangeActor(ctx, invocation?.sessionId));
+          updatedTask = ctx.taskStore.updateTask(task.value.id, updates, agentTaskChangeActor(ctx, invocation?.sessionId));
         } catch (error) {
           if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
           throw error;
@@ -251,7 +251,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       }
       // Instructions are part of the system prompt, which cached chats only rebuild on resume.
       if ((updatedTask.instructions ?? "") !== (task.value.instructions ?? "")) {
-        ctx.sessionManager.invalidateTaskSessionConfig(args.taskId, "task instructions changed");
+        ctx.sessionManager.invalidateTaskSessionConfig(task.value.id, "task instructions changed");
       }
       if (Array.isArray(args.tags) && tagStore) {
         const tagIds = args.tags.map((name: string) => {
@@ -259,7 +259,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
           if (existing) return existing.id;
           return tagStore.createTag(name).id;
         });
-        tagStore.setEntityTags("task", args.taskId, tagIds);
+        tagStore.setEntityTags("task", task.value.id, tagIds);
       }
       const fields = [...Object.keys(updates), ...(hasTags ? ["tags"] : [])].join(", ");
       const notesSize = updates.notes === undefined ? "" : `. Notes are now ${notesLengthLabel(updatedTask.notes)}${updatedTask.notes.length > TASK_NOTES_MAX_LENGTH ? "; edits may only shorten them until they fit" : ""}.`;
@@ -393,7 +393,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
 
       let updatedTask = task.value;
       try {
-        updatedTask = ctx.taskStore.updateTask(args.taskId, updates, agentTaskChangeActor(ctx, invocation?.sessionId));
+        updatedTask = ctx.taskStore.updateTask(task.value.id, updates, agentTaskChangeActor(ctx, invocation?.sessionId));
       } catch (error) {
         if (error instanceof InvalidTaskUpdateError) return toolFailure(error.message);
         throw error;
@@ -445,9 +445,9 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
           ...readTaskNotesPage(notes, args.offset ?? 0),
         };
       }
-      const tags = (ctx.tagStore?.getEntityTags("task", args.taskId) ?? [])
+      const tags = (ctx.tagStore?.getEntityTags("task", task.value.id) ?? [])
         .map(({ id, name, color }) => ({ id, name, color }));
-      const checklistItems = ctx.checklistStore.listChecklistItems(args.taskId);
+      const checklistItems = ctx.checklistStore.listChecklistItems(task.value.id);
       const stamps = ctx.taskStore.getMomentumFieldStamps(task.value.id);
       const now = Date.now();
       const stampView = (stamp: MomentumFieldStamp | null) => stamp ? {
@@ -462,7 +462,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
         ...compactTaskInfoSessionIds(task.value.sessionIds),
         tags,
         checklistItems: checklistItems.map((t) => ({ id: t.id, text: t.text, done: t.done, deadline: t.deadline ?? null })),
-        historyCount: ctx.taskHistoryStore?.countEntries(args.taskId) ?? 0,
+        historyCount: ctx.taskHistoryStore?.countEntries(task.value.id) ?? 0,
       };
     },
   }),
@@ -481,8 +481,8 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if (!task.ok) return toolFailure(task.error);
       if (!ctx.taskHistoryStore) return toolFailure("Task history is not available");
       try {
-        const entry = ctx.taskHistoryStore.addEntry(args.taskId, args.text, agentTaskChangeActor(ctx, invocation?.sessionId));
-        ctx.globalBus.emit({ type: "task:changed", taskId: args.taskId });
+        const entry = ctx.taskHistoryStore.addEntry(task.value.id, args.text, agentTaskChangeActor(ctx, invocation?.sessionId));
+        ctx.globalBus.emit({ type: "task:changed", taskId: task.value.id });
         return { success: true, id: entry.id, at: entry.at };
       } catch (error) {
         if (error instanceof InvalidTaskHistoryEntryError) return toolFailure(error.message);
@@ -512,7 +512,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
       if (before !== undefined && (!Number.isInteger(before) || before < 1)) return toolFailure("before must be a positive integer");
       const query = typeof args.query === "string" ? args.query : undefined;
       return {
-        entries: ctx.taskHistoryStore.listEntries(args.taskId, { limit, ...(before ? { before } : {}), ...(query ? { query } : {}) })
+        entries: ctx.taskHistoryStore.listEntries(task.value.id, { limit, ...(before ? { before } : {}), ...(query ? { query } : {}) })
           .map(({ id, at, source, sessionId, scheduleId, scheduleName, text }) => ({
             id, at, source,
             ...(sessionId ? { sessionId } : {}),
@@ -520,7 +520,7 @@ export function createTaskToolDefinitions(ctx: AppContext): BridgeToolDefinition
             ...(scheduleName ? { scheduleName } : {}),
             text,
           })),
-        total: ctx.taskHistoryStore.countEntries(args.taskId),
+        total: ctx.taskHistoryStore.countEntries(task.value.id),
       };
     },
   }),
