@@ -26,7 +26,7 @@ import {
   type SessionWorkspaceWarningPayload,
 } from "./session-view.js";
 import { resolveSessionCreationOptions as resolveSessionCreationOptionsForContext, type SessionCreationOptions } from "./session-creation-options.js";
-import { EMPTY_MODEL_AB_TEST_REPORT, type ModelComparisonPreparation } from "./model-comparison.js";
+import { comparisonLaunchOptions, EMPTY_MODEL_AB_TEST_REPORT, type ModelComparisonPreparation } from "./model-comparison.js";
 import { startTaskTidyChat } from "./task-tidy.js";
 import { buildTaskPagePrompt, startTaskChat } from "./task-chat-start.js";
 import { TaskStartersError, TaskStartersService } from "./task-starters.js";
@@ -921,11 +921,7 @@ export function createApiRouter(
       const mode = rawMode && isSendMode(rawMode) ? rawMode : undefined;
 
       try {
-        let sessionOptions: {
-          model?: string;
-          reasoningEffort?: string;
-          contextTier?: CopilotContextTier;
-        } | undefined;
+        let sessionOptions: SessionCreationOptions | undefined;
         if (rawSessionOptions) {
           if (sessionId) {
             return res.status(400).json({ error: "sessionOptions only apply when creating a draft session" });
@@ -961,6 +957,7 @@ export function createApiRouter(
           originalFilename: req.file.originalname,
           ...(mode ? { mode } : {}),
           ...(sessionOptions && Object.keys(sessionOptions).length > 0 ? { sessionOptions } : {}),
+          compare: isWebClientRequest(req.headers),
         });
         return res.status(202).json(job);
       } catch (error) {
@@ -2067,21 +2064,7 @@ export function createApiRouter(
 
   /** A chat the user starts with no model of its own joins the running comparison, if any. */
   async function prepareComparison(options: SessionCreationOptions | undefined): Promise<ModelComparisonPreparation | undefined> {
-    if (options?.model || options?.reasoningEffort || options?.contextTier) return undefined;
-    try {
-      return await ctx.modelComparisons?.prepare();
-    } catch (error) {
-      console.warn("[model-comparison] Could not prepare a comparison:", error instanceof Error ? error.message : error);
-      return undefined;
-    }
-  }
-
-  function comparisonLaunchOptions(comparison: ModelComparisonPreparation): SessionCreationOptions {
-    return {
-      model: comparison.main.model,
-      ...(comparison.main.reasoningEffort ? { reasoningEffort: comparison.main.reasoningEffort } : {}),
-      ...(comparison.main.contextTier ? { contextTier: comparison.main.contextTier } : {}),
-    };
+    return ctx.modelComparisons?.prepareLaunch(options);
   }
 
   function launchPlaybook(options: SessionCreationOptions | undefined): { playbook?: string } {

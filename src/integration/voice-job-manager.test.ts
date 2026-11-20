@@ -28,7 +28,11 @@ function createRestartRuntimePaths() {
 
 const CLEAN_COVERAGE = { largestGapSeconds: 0.4, gapStartSeconds: 0 };
 
-function createManagerHarness(transcribe = vi.fn(), chatMic?: ChatMicSettings) {
+function createManagerHarness(
+  transcribe = vi.fn(),
+  chatMic?: ChatMicSettings,
+  modelComparisons?: Parameters<typeof createVoiceJobManager>[0]["modelComparisons"],
+) {
   const runtimePaths = createRestartRuntimePaths();
   const db = openMemoryDatabase();
   const store = createVoiceJobStore(db);
@@ -39,6 +43,7 @@ function createManagerHarness(transcribe = vi.fn(), chatMic?: ChatMicSettings) {
     startWork: vi.fn(),
     steerSession: vi.fn(async () => {}),
     readMessagesFromDisk: vi.fn(async () => ({ messages: [], total: 0, hasMore: false })),
+    createSession: vi.fn(async () => ({ sessionId: "draft-session" })),
   } as any;
   const settingsStore = { getSettings: () => ({ chatMic }) } as any;
   const manager = createVoiceJobManager({
@@ -57,6 +62,7 @@ function createManagerHarness(transcribe = vi.fn(), chatMic?: ChatMicSettings) {
     taskStore: createTaskStore(db, globalBus, { runtimePaths }),
     chatDelivery: { sessionManager, sessionMetaStore: createSessionMetaStore(db), globalBus } as any,
     settingsStore,
+    modelComparisons,
   });
   return { runtimePaths, store, sessionManager, manager, settingsStore };
 }
@@ -117,6 +123,37 @@ describe("voice job restart gating", () => {
       undefined,
       { model: "gpt-5.6-sol" },
     );
+  });
+
+  it.each([
+    { name: "pairs a web app draft like a typed first send", compare: true, paired: true },
+    { name: "leaves a script's draft unpaired", compare: false, paired: false },
+  ])("$name", async ({ compare, paired }) => {
+    const preparation = {
+      testStartedAt: "2026-03-02T08:00:00.000Z",
+      mainArm: "b" as const,
+      setups: { a: { model: "model-a" }, b: { model: "model-b", reasoningEffort: "high" } },
+      main: { model: "model-b", reasoningEffort: "high" },
+    };
+    const comparisons = {
+      prepareLaunch: vi.fn(async () => preparation),
+      register: vi.fn(),
+      onFirstMessage: vi.fn(),
+    };
+    const transcribe = vi.fn().mockResolvedValue({ text: "plan the trip", provider: "speech-engine", coverage: CLEAN_COVERAGE });
+    const { runtimePaths, store, sessionManager, manager } = createManagerHarness(transcribe, undefined, comparisons);
+    const sourceFilePath = join(runtimePaths.dataDir, "draft.wav");
+    writeFileSync(sourceFilePath, "test-audio");
+
+    const accepted = await manager.acceptVoiceJob({ composerKey: "draft:quick", sourceFilePath, compare });
+    await vi.waitFor(() => expect(store.getVoiceJob(accepted.id)?.status).toBe("done"));
+
+    expect(sessionManager.createSession).toHaveBeenCalledExactlyOnceWith(
+      paired ? { model: "model-b", reasoningEffort: "high" } : {},
+    );
+    expect(comparisons.register).toHaveBeenCalledTimes(paired ? 1 : 0);
+    if (paired) expect(comparisons.register).toHaveBeenCalledWith("draft-session", preparation, {});
+    expect(comparisons.onFirstMessage).toHaveBeenCalledExactlyOnceWith("draft-session", "plan the trip", undefined, undefined, "started");
   });
 
   describe("voice job artifact retention", () => {

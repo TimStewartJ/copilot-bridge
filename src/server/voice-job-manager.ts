@@ -3,12 +3,13 @@ import { mkdirSync } from "node:fs";
 import { copyFile, readdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isBridgeRestartingError } from "./backend-availability.js";
-import { sendChatMessage, type ChatMessageDeliveryContext } from "./chat-message-delivery.js";
+import { sendChatMessage, type ChatMessageDelivery, type ChatMessageDeliveryContext } from "./chat-message-delivery.js";
 import type { SessionManager } from "./session-manager.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { TranscriptionService } from "./transcription-service.js";
-import type { CopilotContextTier } from "../shared/copilot-context.js";
+import { comparisonLaunchOptions, type ModelComparisonService } from "./model-comparison.js";
+import type { SessionCreationOptions } from "./session-creation-options.js";
 import { decideVoiceReview, type VoiceReviewReason } from "../shared/chat-mic.js";
 import type { SendMode } from "../shared/send-mode.js";
 import {
@@ -28,11 +29,9 @@ interface AcceptVoiceJobInput {
   sourceFilePath: string;
   originalFilename?: string;
   mode?: SendMode;
-  sessionOptions?: {
-    model?: string;
-    reasoningEffort?: string;
-    contextTier?: CopilotContextTier;
-  };
+  sessionOptions?: SessionCreationOptions;
+  /** A chat this job starts joins a running model comparison, as a typed first send would. */
+  compare?: boolean;
 }
 
 interface CreateVoiceJobManagerOptions {
@@ -44,6 +43,7 @@ interface CreateVoiceJobManagerOptions {
   chatDelivery: ChatMessageDeliveryContext;
   /** Where the choice to keep held recordings lives. */
   settingsStore?: Pick<SettingsStore, "getSettings">;
+  modelComparisons?: Pick<ModelComparisonService, "prepareLaunch" | "register" | "onFirstMessage">;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -70,6 +70,7 @@ export function createVoiceJobManager({
   taskStore,
   chatDelivery,
   settingsStore,
+  modelComparisons,
 }: CreateVoiceJobManagerOptions) {
   const voiceJobsDir = join(dataDir, "voice-jobs");
   mkdirSync(voiceJobsDir, { recursive: true });
@@ -118,6 +119,7 @@ export function createVoiceJobManager({
     originalFilename,
     mode,
     sessionOptions,
+    compare,
   }: AcceptVoiceJobInput): Promise<VoiceJobSnapshot> {
     const id = randomUUID();
     const jobDir = join(voiceJobsDir, id);
@@ -129,7 +131,7 @@ export function createVoiceJobManager({
       const audioPath = join(jobDir, safeFilename);
       await copyFile(sourceFilePath, audioPath);
 
-      const resolvedTargetSessionId = targetSessionId ?? await createTargetSession(taskId, sessionOptions);
+      const resolvedTargetSessionId = targetSessionId ?? await createTargetSession(taskId, sessionOptions, compare === true);
       const job = store.createVoiceJob({
         id,
         composerKey,
@@ -313,6 +315,7 @@ export function createVoiceJobManager({
 
     const isResumingSend = job.status === "sending";
     if (isResumingSend && await sessionHasAcceptedTranscript(targetSessionId, transcript, job.updatedAt)) {
+      modelComparisons?.onFirstMessage(targetSessionId, transcript, undefined, job.mode, "accepted");
       await markJobDone(job.id, transcript);
       return;
     }
@@ -331,7 +334,8 @@ export function createVoiceJobManager({
     }
 
     try {
-      await sendTranscript(targetSessionId, transcript, job);
+      const delivery = await sendTranscript(targetSessionId, transcript, job);
+      modelComparisons?.onFirstMessage(targetSessionId, transcript, undefined, job.mode, delivery);
       // A dictated message is the user's own words, like a typed one: it counts toward task states.
       try { taskStore.recordUserMessage?.(targetSessionId); } catch (error) { console.warn("[voice] Could not record a sent message:", error); }
       await markJobDone(job.id, transcript);
@@ -379,18 +383,18 @@ export function createVoiceJobManager({
   }
 
   /** Never queue: a queued voice message shows nowhere; a closed chat fails the job instead. */
-  async function sendTranscript(sessionId: string, transcript: string, job: StoredVoiceJob): Promise<void> {
+  async function sendTranscript(sessionId: string, transcript: string, job: StoredVoiceJob): Promise<ChatMessageDelivery["delivery"]> {
     const deadline = Date.now() + SEND_REFUSED_RETRY_MS;
     for (;;) {
       try {
-        await sendChatMessage(chatDelivery, sessionId, transcript, {
+        const { delivery } = await sendChatMessage(chatDelivery, sessionId, transcript, {
           clientMessageId: `voice-job-${job.id}`,
           keepUndelivered: true,
           skipOpenQuestions: true,
           queue: "none",
           ...(job.mode ? { mode: job.mode } : {}),
         });
-        return;
+        return delivery;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (!SEND_REFUSED_FOR_NOW.test(message) || Date.now() >= deadline || shuttingDown) throw error;
@@ -400,34 +404,39 @@ export function createVoiceJobManager({
   }
 
   async function createTargetSession(
-    taskId?: string,
-    sessionOptions?: {
-      model?: string;
-      reasoningEffort?: string;
-      contextTier?: CopilotContextTier;
-    },
+    taskId: string | undefined,
+    sessionOptions: SessionCreationOptions | undefined,
+    compare: boolean,
   ): Promise<string> {
-    if (!taskId) {
-      const result = await sessionManager.createSession(sessionOptions ?? {});
-      return result.sessionId;
-    }
-
-    const task = taskStore.getTask(taskId);
-    if (!task) {
+    const task = taskId ? taskStore.getTask(taskId) : undefined;
+    if (taskId && !task) {
       throw new Error("Task not found");
     }
+    const comparison = compare ? await modelComparisons?.prepareLaunch(sessionOptions) : undefined;
+    const options = comparison ? { ...sessionOptions, ...comparisonLaunchOptions(comparison) } : sessionOptions;
 
-    const result = await sessionManager.createTaskSession(
-      task.id,
-      task.title,
-      task.workItems,
-      task.notes,
-      task.cwd,
-      undefined,
-      sessionOptions,
-    );
-    taskStore.linkSession(task.id, result.sessionId);
-    return result.sessionId;
+    let sessionId: string;
+    if (!task) {
+      sessionId = (await sessionManager.createSession(options ?? {})).sessionId;
+    } else {
+      sessionId = (await sessionManager.createTaskSession(
+        task.id,
+        task.title,
+        task.workItems,
+        task.notes,
+        task.cwd,
+        undefined,
+        options,
+      )).sessionId;
+      taskStore.linkSession(task.id, sessionId);
+    }
+    if (comparison) {
+      modelComparisons?.register(sessionId, comparison, {
+        ...(task ? { taskId: task.id } : {}),
+        ...(sessionOptions?.playbook ? { playbook: sessionOptions.playbook } : {}),
+      });
+    }
+    return sessionId;
   }
 
   async function markJobDone(id: string, transcript: string): Promise<StoredVoiceJob | undefined> {

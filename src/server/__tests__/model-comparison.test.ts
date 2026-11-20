@@ -178,6 +178,14 @@ function setup(randoms: number[]) {
 }
 
 describe("model comparison service", () => {
+  it("pairs a new chat only when the user picked no model, effort or context", async () => {
+    const { service } = setup([0.75]);
+    expect(await service.prepareLaunch({ playbook: "research" })).toMatchObject({ mainArm: "b", main: { model: "claude-9" } });
+    for (const picked of [{ model: "gpt-6" }, { reasoningEffort: "low" }, { contextTier: "long_context" as const }]) {
+      expect(await service.prepareLaunch(picked)).toBeUndefined();
+    }
+  });
+
   it("runs the first message once on the other arm, then has two third-family judges decide by arm", async () => {
     // The user's chat runs on A.
     const { store, events, models, deps, clock, service } = setup([0.25]);

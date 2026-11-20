@@ -2876,6 +2876,7 @@ function uploadRecording<T>(path: string, form: FormData, { signal, onUploadProg
       reject(new Error(message));
     };
     xhr.open("POST", `${API_BASE}${path}`);
+    xhr.setRequestHeader(WEB_CLIENT_HEADER, WEB_CLIENT_HEADER_VALUE);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) onUploadProgress?.(event.loaded / event.total);
     };

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createVoiceJob, transcribeAudio } from "./api";
+import { WEB_CLIENT_HEADER, WEB_CLIENT_HEADER_VALUE } from "../shared/web-client.js";
 
 class FakeXhr {
   static last: FakeXhr;
@@ -16,6 +17,7 @@ class FakeXhr {
   method = "";
   url = "";
   body: FormData | null = null;
+  headers: Record<string, string> = {};
 
   constructor() {
     FakeXhr.last = this;
@@ -24,6 +26,10 @@ class FakeXhr {
   open(method: string, url: string) {
     this.method = method;
     this.url = url;
+  }
+
+  setRequestHeader(name: string, value: string) {
+    this.headers[name] = value;
   }
 
   send(body: FormData) {
@@ -61,6 +67,8 @@ describe("recording upload client API", () => {
 
     expect(xhr.method).toBe("POST");
     expect(xhr.url).toContain("/api/voice-jobs");
+    // A chat the server starts for this upload must count as the user's, not a script's.
+    expect(xhr.headers).toEqual({ [WEB_CLIENT_HEADER]: WEB_CLIENT_HEADER_VALUE });
     expect(xhr.body?.get("composerKey")).toBe("session-1");
     expect(xhr.body?.get("sessionId")).toBe("session-1");
     expect((xhr.body?.get("audio") as File).name).toBe("voice-input.wav");

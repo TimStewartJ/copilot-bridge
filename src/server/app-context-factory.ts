@@ -414,6 +414,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     taskStore,
     chatDelivery: ctx,
     settingsStore,
+    modelComparisons: ctx.modelComparisons,
   });
   const emitTriggerSummary = (sessionId: string) => ctx.triggerService?.emitChatSummary(sessionId);
   ctx.deferredPromptRunner = createDeferredPromptRunner(

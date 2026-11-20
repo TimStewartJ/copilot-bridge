@@ -6,6 +6,7 @@ import type { DatabaseSync } from "./db.js";
 import type { AppSettings } from "./settings-store.js";
 import type { ChatEventsRead } from "./chat-grading.js";
 import type { StartWorkAttachment } from "./session-attachment-routing.js";
+import type { SessionCreationOptions } from "./session-creation-options.js";
 import { isModelUsable, resolveModelTier, type RoleModelInfo } from "./model-roles.js";
 import { createComparisonTwinSessionId, isComparisonTwinSessionId } from "./comparison-twin.js";
 import { transcriptTurnDetails } from "./transcript-turn-details.js";
@@ -761,6 +762,15 @@ export interface ModelComparisonPreparation {
   main: ModelAbTestSetup;
 }
 
+/** The model, effort and context a paired chat is created with. */
+export function comparisonLaunchOptions(preparation: ModelComparisonPreparation): Pick<SessionCreationOptions, "model" | "reasoningEffort" | "contextTier"> {
+  return {
+    model: preparation.main.model,
+    ...(preparation.main.reasoningEffort ? { reasoningEffort: preparation.main.reasoningEffort } : {}),
+    ...(preparation.main.contextTier ? { contextTier: preparation.main.contextTier } : {}),
+  };
+}
+
 export interface ModelComparisonDeps {
   store: ModelComparisonStore;
   getSettings(): AppSettings | undefined;
@@ -909,6 +919,17 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     const mainArm: ModelAbTestArm = random() < 0.5 ? "a" : "b";
     const setups = { a, b };
     return { testStartedAt: test.startedAt, mainArm, setups, main: setups[mainArm] };
+  }
+
+  /** For a chat the user starts: a pair to set up, unless they chose model, effort or context. */
+  async function prepareLaunch(options: SessionCreationOptions | undefined): Promise<ModelComparisonPreparation | undefined> {
+    if (options?.model || options?.reasoningEffort || options?.contextTier) return undefined;
+    try {
+      return await prepare();
+    } catch (error) {
+      logger.warn(`[model-comparison] Could not prepare a comparison: ${message(error)}`);
+      return undefined;
+    }
   }
 
   function register(mainSessionId: string, preparation: ModelComparisonPreparation, launch: { taskId?: string; playbook?: string }): void {
@@ -1274,7 +1295,7 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     timer = undefined;
   }
 
-  return { prepare, register, onFirstMessage, tick: runTick, view, vote, combine, dismiss, report, rejudge, sourceSessionId, start, stop };
+  return { prepare, prepareLaunch, register, onFirstMessage, tick: runTick, view, vote, combine, dismiss, report, rejudge, sourceSessionId, start, stop };
 }
 
 export type ModelComparisonService = ReturnType<typeof createModelComparisonService>;
