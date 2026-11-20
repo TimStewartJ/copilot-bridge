@@ -8,6 +8,7 @@ import { queryKeys } from "../queryClient";
 import { X } from "lucide-react";
 import { Button, IconButton, MetaLine, SegmentedControl } from "../design/primitives";
 import type { ModelAbTestSetup, ModelComparisonSide, ModelComparisonView } from "../../shared/model-ab-test.js";
+import { judgeDetail, judgeSummary, verdictLabel } from "../lib/model-comparison-display";
 
 const WORKING = new Set<ModelComparisonView["status"]>(["starting", "running", "judging"]);
 /** Y stays shut while a first reply is still coming, so its progress and speed hint nothing. */
@@ -21,27 +22,6 @@ const VOTES: ReadonlyArray<{ value: ModelComparisonSide | "tie"; label: string }
   { value: "tie", label: "Tie" },
   { value: "y", label: "Y better" },
 ];
-
-type JudgeView = NonNullable<NonNullable<ModelComparisonView["revealed"]>["judge"]>;
-
-function verdictLabel(verdict: ModelComparisonSide | "tie"): string {
-  return verdict === "tie" ? "tie" : verdict.toUpperCase();
-}
-
-/** "Judges: Y", "Judges split", or "Judge: X" for a verdict from before panels. */
-function judgeSummary(judge: JudgeView): string {
-  const counted = judge.judgesCounted < judge.judgesAsked ? ` (${judge.judgesCounted} of ${judge.judgesAsked})` : "";
-  if (judge.verdict === "split") return `Judges split${counted}`;
-  return `${judge.judgesAsked > 1 ? "Judges" : "Judge"}: ${verdictLabel(judge.verdict)}${counted}`;
-}
-
-/** Each judge's pick and reason; "Response 1" in a reason is the side shown first. */
-function judgeDetail(judge: JudgeView, name: (model: string) => string): string {
-  return judge.runs.map((run) => {
-    const order = run.firstSide ? ` (${run.firstSide.toUpperCase()} first)` : "";
-    return `${name(run.model)}${order}: ${verdictLabel(run.winner)}. ${run.reason}`;
-  }).join("\n");
-}
 
 /** A line under the status line of a chat in a comparison; `busy` refetches once a turn starts. */
 export default function ModelComparisonBar({ sessionId, busy }: { sessionId: string; busy: boolean }) {

@@ -128,6 +128,7 @@ import ChatInput, { type ComposerTool } from "./ChatInput";
 import PlanSheet from "./PlanSheet";
 import McpStatusBar from "./McpStatusBar";
 import ModelComparisonBar from "./ModelComparisonBar";
+import ModelComparisonRecord from "./ModelComparisonRecord";
 import { ModelHiddenContext } from "./chat/model-hidden-context";
 import { isModelHidden, useModelComparisonQuery } from "../hooks/queries/useModelComparison";
 import { recentToolFailures, statusLineHasProblem } from "./mcp-status-display";
@@ -2951,6 +2952,7 @@ export default function ChatView({
       {!historicalMode && statusLineTarget !== null && placeStatusLine(<McpStatusBar
         leading={sessionModelSummary}
         actions={hasPlan ? planButton : undefined}
+        records={sessionId ? <ModelComparisonRecord sessionId={sessionId} /> : undefined}
         chatEntries={displayEntries}
         context={sessionContext}
         contextError={sessionContextError}

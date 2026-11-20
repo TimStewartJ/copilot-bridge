@@ -515,11 +515,17 @@ function ModelAbTestResults({ report, running, models, onRejudge, rejudgePending
         <Details label="Recent pairs" className="mt-2">
           <ul className={DS.surface.divided}>
             {report.recent.map((pair) => (
-              <li key={pair.id}>
-                <Link to={`/sessions/${pair.mainSessionId}`} className={cx(DS.row.base, DS.row.interactive)}>
+              <li key={pair.id} className="flex min-w-0 items-center gap-2">
+                <Link to={`/sessions/${pair.mainSessionId}`} className={cx(DS.row.base, DS.row.interactive, "flex-1")}>
                   <span className={cx(DS.row.detail, "text-text-primary")}>{pair.reason || pair.failure || timeAgo(pair.createdAt)}</span>
                   <span className={DS.row.trailing}>{pairOutcome(pair)}</span>
                 </Link>
+                {pair.twinSessionId && (
+                  <Link to={`/sessions/${pair.twinSessionId}`} title="Open the second chat"
+                    className={cx(DS.button.base, DS.button.size.sm, DS.button.variant.ghost, "shrink-0")}>
+                    Y
+                  </Link>
+                )}
               </li>
             ))}
           </ul>

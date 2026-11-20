@@ -33,6 +33,8 @@ interface McpStatusBarProps {
   leading?: ReactNode;
   /** Actions that belong to the session, such as opening its plan. */
   actions?: ReactNode;
+  /** Extra records shown in the details panel, such as a finished model comparison. */
+  records?: ReactNode;
 }
 
 const MCP_STATUS_DISPLAY = {
@@ -65,6 +67,7 @@ export default function McpStatusBar({
   statusState,
   leading,
   actions,
+  records,
 }: McpStatusBarProps) {
   const [authenticatingServer, setAuthenticatingServer] = useState<string | null>(null);
   const [authLinks, setAuthLinks] = useState<Record<string, string>>({});
@@ -232,6 +235,7 @@ export default function McpStatusBar({
                 : undefined}
             />
           )}
+          {records}
           {toolFailures.length > 0 && (
             <Details open label="Recent tool failures" tone="warning">
               <div className="space-y-2 text-xs leading-relaxed text-text-muted">
