@@ -24,6 +24,12 @@ export function isolateStagingRuntimeState(db: DatabaseSync): Record<string, num
     changed[table] = Number(db.prepare(`UPDATE ${table} SET status='cancelled',claimToken=NULL,leaseExpiresAt=NULL,lastError=?,updatedAt=?
       WHERE status IN (?,'running')`).run(reason, now, pending).changes);
   }
+  if (hasTable("model_comparisons")) {
+    // Copied pairs name production chats and worktrees; a preview must not stop or delete them.
+    changed.modelComparisons = Number(db.prepare(`UPDATE model_comparisons SET status='incomplete',failure=?,updatedAt=?
+      WHERE status IN ('awaiting_prompt','starting','running','judging')`).run(reason, now).changes);
+    db.prepare("UPDATE model_comparisons SET twinRepo=NULL,twinWorktree=NULL WHERE twinWorktree IS NOT NULL").run();
+  }
   if (hasTable("interrupted_run_markers")) changed.interruptedRuns = Number(db.prepare("DELETE FROM interrupted_run_markers").run().changes);
   if (hasTable("background_command_markers")) changed.backgroundCommands = Number(db.prepare("DELETE FROM background_command_markers").run().changes);
   if (hasTable("voice_jobs")) changed.voiceJobs = Number(db.prepare(`UPDATE voice_jobs SET status='error',error=?,updatedAt=?

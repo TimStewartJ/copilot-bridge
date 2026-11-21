@@ -32,6 +32,20 @@ const toolDone = (second: number, started: number) => ({
 });
 const turnEnd = (second: number) => ({ type: "assistant.turn_end", timestamp: at(second), data: {} });
 
+const keepGoing = (second: number) => ({
+  type: "user.message",
+  timestamp: at(second),
+  data: { content: "", source: "autopilot", agentMode: "autopilot", isAutopilotContinuation: true },
+});
+const turnStart = (second: number) => ({ type: "assistant.turn_start", timestamp: at(second), data: {} });
+const taskComplete = (second: number, data: Record<string, unknown>) => [
+  { type: "assistant.message", timestamp: at(second), data: { content: "", toolRequests: [{ toolCallId: `t${second + 1}`, name: "task_complete" }] } },
+  { type: "tool.execution_start", timestamp: at(second + 1), data: { toolCallId: `t${second + 1}`, toolName: "task_complete", arguments: {} } },
+  toolDone(second + 2, second + 1),
+  { type: "session.task_complete", timestamp: at(second + 2), data },
+  turnEnd(second + 3),
+];
+
 const answeredTurn = (prompt: string, reply: string) => [
   user(prompt, 0), say("", 1, true), toolStart(2), toolDone(3, 2), turnEnd(4), say(reply, 5), turnEnd(6),
 ];
@@ -43,6 +57,8 @@ describe("readFirstTurn", () => {
     ["answered, then a follow-up", [...answeredTurn("Tidy the list", "Done."), user("Thanks", 9)], "ended"],
     ["steered before it answered", [user("Tidy the list", 0), say("", 1, true), toolStart(2), user("Also sort it", 3)], "steered"],
     ["stopped", [user("Tidy the list", 0), say("", 1, true), { type: "abort", timestamp: at(2), data: {} }], "stopped"],
+    ["steered while Autopilot kept going", [...answeredTurn("Build it", "Built."), keepGoing(7), user("Use X", 8)], "steered"],
+    ["refused task_complete", [...answeredTurn("Build it", "Built."), keepGoing(7), ...taskComplete(8, { success: false, outcome: "continue" })], "open"],
   ])("reads a first turn that was %s", (_name, events, state) => {
     expect(readFirstTurn(events).state).toBe(state);
   });
@@ -58,6 +74,17 @@ describe("readFirstTurn", () => {
     expect(turn.transcript).toContain("Done.");
     expect(turn.transcript).not.toContain("inner");
     expect(turn.transcript).not.toContain("Later reply");
+  });
+
+  it("reads an Autopilot first turn through its keep-going prompts to task_complete", () => {
+    const turn = readFirstTurn([
+      ...answeredTurn("Build it", "Built."),
+      keepGoing(7),
+      turnStart(8),
+      ...taskComplete(9, { summary: "Built and checked.", success: true }),
+    ]);
+    expect(turn).toMatchObject({ state: "ended", reply: "Built and checked." });
+    expect(turn.transcript).toContain("Built.");
   });
 });
 
@@ -167,6 +194,7 @@ function setup(randoms: number[]) {
     readEvents: async (sessionId) => (events.has(sessionId) ? { kind: "ok", events: events.get(sessionId)!, malformedLines: 0 } : { kind: "missing" }),
     isBusy: () => false,
     hasPendingInput: () => false,
+    hasQueuedWork: () => false,
     abort: vi.fn(async () => {}),
     askJudge: vi.fn(async ({ model, prompt }: { model: string; prompt: string }) => judgeFor[model]?.(prompt)),
     copilotHome: "/unused",
@@ -289,6 +317,32 @@ describe("model comparison service", () => {
     const record = store.getBySession(MAIN)!;
     service.vote(record.id, MAIN, "tie");
     expect(await service.combine(record.id, "y")).toMatchObject({ vote: "tie", combinedKeep: "y" });
+  });
+
+  it("waits on a working first turn with no time limit, and drops one whose run ended unanswered", async () => {
+    const { store, events, deps, clock, service } = setup([0.25]);
+    service.register(MAIN, (await service.prepare())!, {});
+    service.onFirstMessage(MAIN, "Do it", undefined, undefined, "accepted");
+    await vi.waitFor(() => expect(store.getBySession(MAIN)?.status).toBe("running"));
+    events.set(MAIN, [user("Do it", 0), say("", 1, true), toolStart(2)]);
+    let mainBusy = true;
+    let queued = false;
+    deps.isBusy = (sessionId) => sessionId === MAIN && mainBusy;
+    deps.hasQueuedWork = () => queued;
+
+    clock.now += 5 * 60 * 60_000;
+    await service.tick();
+    expect(store.getBySession(MAIN)).toMatchObject({ status: "running" });
+
+    // A restart cut the run off and its resume is still due.
+    mainBusy = false;
+    queued = true;
+    await service.tick();
+    expect(store.getBySession(MAIN)).toMatchObject({ status: "running" });
+
+    queued = false;
+    await service.tick();
+    expect(store.getBySession(MAIN)).toMatchObject({ status: "incomplete", failure: "A first turn stopped without an answer." });
   });
 
   it("does not compare a pair whose first turn was steered, and fails a start a restart cut off", async () => {

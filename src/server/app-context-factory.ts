@@ -306,6 +306,10 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
     readEvents: (sessionId) => readChatEventsForGrading(resolveSessionEventsPath(copilotHome, sessionId)),
     isBusy: (sessionId) => sessionManager.getSessionRunState(sessionId) !== "idle",
     hasPendingInput: (sessionId) => sessionManager.getPendingUserInputCount(sessionId) > 0,
+    hasQueuedWork: (sessionId) => deferredPromptStore.hasActiveForSession(sessionId)
+      || deferredPromptStore.listDeliveriesForSession(sessionId)
+        .some((prompt) => prompt.status === "pending" || prompt.status === "running")
+      || interruptedRunStore.list().some((marker) => marker.sessionId === sessionId),
     abort: async (sessionId) => { await sessionManager.abortSession(sessionId); },
     askJudge: async ({ model, reasoningEffort, contextTier, system, prompt, timeoutMs }) => {
       const helper = await sessionManager.createHelperSession({

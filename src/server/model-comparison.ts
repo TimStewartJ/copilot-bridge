@@ -11,6 +11,7 @@ import { isModelUsable, resolveModelTier, type RoleModelInfo } from "./model-rol
 import { createComparisonTwinSessionId, isComparisonTwinSessionId } from "./comparison-twin.js";
 import { transcriptTurnDetails } from "./transcript-turn-details.js";
 import { getSdkAgentId, isSdkUserAuthoredMessage } from "./sdk-event-identity.js";
+import { isAutopilotContinuationEvent } from "./event-transform.js";
 import { parseSlashCommandPrompt } from "./slash-command.js";
 import { isRecord } from "../shared/is-record.js";
 import { isTierChoice } from "../shared/model-roles.js";
@@ -43,8 +44,6 @@ import {
   type ModelComparisonView,
 } from "../shared/model-ab-test.js";
 
-/** A first turn still going after this is not compared; its twin is stopped. */
-export const COMPARISON_TURN_DEADLINE_MS = 60 * 60_000;
 /** A turn is over only once its log has been quiet this long, past gaps between calls. */
 export const COMPARISON_QUIET_MS = 15_000;
 export const COMPARISON_TICK_MS = 30_000;
@@ -481,7 +480,8 @@ export function readFirstTurn(events: readonly unknown[]): FirstTurn {
   if (start < 0) return { state: "none", transcript: "" };
   const first = events[start] as Record<string, unknown>;
   const prompt = isRecord(first.data) && typeof first.data.content === "string" ? first.data.content : "";
-  const next = events.findIndex((event, index) => index > start && isSdkUserAuthoredMessage(event));
+  const next = events.findIndex((event, index) => index > start && isSdkUserAuthoredMessage(event)
+    && !isAutopilotContinuationEvent(event));
   const turnEvents = events.slice(start, next < 0 ? undefined : next);
 
   const lines: string[] = [];
@@ -523,10 +523,24 @@ export function readFirstTurn(events: readonly unknown[]): FirstTurn {
         lines.push(`  ${data.success === false ? "failed" : "result"}: ${clip(stringify(result), TOOL_TEXT_CHARS)}`);
         break;
       }
+      case "user.message":
+      case "assistant.turn_start":
+        lastWasEnd = false;
+        break;
       case "assistant.turn_end":
       case "session.idle":
         lastWasEnd = true;
         break;
+      case "session.task_complete": {
+        const accepted = data.outcome === "completed" || (data.outcome === undefined && data.success === true);
+        if (!accepted) break;
+        const summary = typeof data.summary === "string" ? data.summary.trim() : "";
+        if (summary && summary !== reply) lines.push(`Assistant: ${summary}`);
+        if (summary) reply = summary;
+        lastMessageAskedForTools = false;
+        lastWasEnd = true;
+        break;
+      }
       case "abort":
         stopped = true;
         lastWasEnd = true;
@@ -790,6 +804,8 @@ export interface ModelComparisonDeps {
   readEvents(sessionId: string): Promise<ChatEventsRead>;
   isBusy(sessionId: string): boolean;
   hasPendingInput(sessionId: string): boolean;
+  /** Work still due for the chat: a queued message, or a run a restart cut off that may resume. */
+  hasQueuedWork(sessionId: string): boolean;
   abort(sessionId: string): Promise<void>;
   askJudge(input: { model: string; reasoningEffort?: string; contextTier?: CopilotContextTier; system: string; prompt: string; timeoutMs: number }): Promise<string | undefined>;
   copilotHome: string;
@@ -1029,6 +1045,13 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     return turn.state === "open" && deps.hasPendingInput(sessionId);
   }
 
+  /** Its run ended unanswered; the Bridge's watchdog and restart recovery decide when. */
+  function stoppedWithoutAnswer(sessionId: string, turn: FirstTurn, at: number): boolean {
+    if (turn.state !== "open" && turn.state !== "none") return false;
+    if (turn.lastEventAt !== undefined && at - turn.lastEventAt < COMPARISON_QUIET_MS) return false;
+    return !deps.isBusy(sessionId) && !deps.hasPendingInput(sessionId) && !deps.hasQueuedWork(sessionId);
+  }
+
   async function check(record: ModelComparisonRecord): Promise<void> {
     if (!record.twinSessionId) return;
     const at = now();
@@ -1051,11 +1074,11 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
       await judge(record, main, twin);
       return;
     }
-    const startedAt = record.promptAt ? Date.parse(record.promptAt) : Number.NaN;
-    if (Number.isFinite(startedAt) && at - startedAt > COMPARISON_TURN_DEADLINE_MS) {
-      if (deps.store.fail(record.id, "running", "incomplete", "A first turn ran for over an hour.", iso()) && deps.isBusy(record.twinSessionId)) {
-        await deps.abort(record.twinSessionId).catch((error: unknown) => logger.warn(`[model-comparison] Could not stop the twin: ${message(error)}`));
-      }
+    const stopped = stoppedWithoutAnswer(record.mainSessionId, main, at)
+      || stoppedWithoutAnswer(record.twinSessionId, twin, at);
+    if (!stopped) return;
+    if (deps.store.fail(record.id, "running", "incomplete", "A first turn stopped without an answer.", iso()) && deps.isBusy(record.twinSessionId)) {
+      await deps.abort(record.twinSessionId).catch((error: unknown) => logger.warn(`[model-comparison] Could not stop the twin: ${message(error)}`));
     }
   }
 

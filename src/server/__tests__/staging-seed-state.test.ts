@@ -25,10 +25,19 @@ describe("fresh preview copy automation isolation", () => {
     db.prepare("INSERT INTO interrupted_run_markers(sessionId,attentionMode,acceptedAt) VALUES(?,?,?)").run("production", "interactive", at);
     const voice = createVoiceJobStore(db);
     voice.createVoiceJob({ id: "voice", composerKey: "production", audioPath: testPath("voice", "audio.wav") });
+    const comparison = db.prepare(`INSERT INTO model_comparisons(id,testStartedAt,mainSessionId,mainArm,setupsJson,status,createdAt,updatedAt,twinRepo,twinWorktree)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`);
+    comparison.run("running-pair", at, "production", "a", "{}", "running", at, at, testPath("repo"), testPath("repo", "twin"));
+    comparison.run("judged-pair", at, "production-2", "a", "{}", "judged", at, at, testPath("repo"), testPath("repo", "twin-2"));
     db.exec("BEGIN");
     const counts = isolateStagingRuntimeState(db);
     db.exec("COMMIT");
-    expect(counts).toMatchObject({ deferred_prompts: 1, chatTriggers: 1, taskTriggers: 1, interruptedRuns: 1, voiceJobs: 1 });
+    expect(counts).toMatchObject({ deferred_prompts: 1, chatTriggers: 1, taskTriggers: 1, interruptedRuns: 1, voiceJobs: 1, modelComparisons: 1 });
+    // The preview must never stop a production twin or remove its worktree.
+    expect(db.prepare("SELECT id,status,twinWorktree FROM model_comparisons ORDER BY id").all()).toEqual([
+      { id: "judged-pair", status: "judged", twinWorktree: null },
+      { id: "running-pair", status: "incomplete", twinWorktree: null },
+    ]);
     expect(createDeferredPromptStore(db).get("pending")).toMatchObject({ status: "cancelled", lastError: expect.stringContaining("staging copy") });
     expect(createDeferredPromptStore(db).get("done")).toMatchObject({ status: "completed", updatedAt: at });
     expect(triggers.get(chatTrigger.id)).toMatchObject({ status: "cancelled" });
