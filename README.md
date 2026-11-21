@@ -627,6 +627,36 @@ exclusions. Other tool filters are preserved. This also refreshes the tool's sys
 instructions, avoiding a rejected completion attempt and a second answer after leaving
 Autopilot. The workaround dates from CLI 1.0.95; remove it once a native mode-switch test passes without the explicit filter refresh.
 
+### Custom Autopilot
+
+**Custom Autopilot** is Autopilot with a minimum for one prompt (`CustomAutopilot` in
+`src/shared/send-mode.ts`). Choose it on the new-chat screen, or turn on Autopilot in an open chat
+and select **Set minimums**. Enter minutes, AI credits or both (presets or exact values, up to
+`MAX_MINUTES` and `MAX_AI_CREDITS`). The minimums travel with the send mode, so they also apply to
+dictated messages and to a not-sent message sent again.
+
+The agent is never told about the minimum, its time or its spend, because telling it changes how
+it works. Where the run would end with a minimum unmet, the runner keeps the same run open and
+sends a generic keep-going prompt instead (`finishOrContinue` in
+`src/server/session-runner.ts`). The prompts are passes over the work (go back over it, investigate
+further, check assumptions, and so on), sent in turn (`CUSTOM_CONTINUATION_PROMPTS` in
+`src/server/custom-autopilot.ts`). Each goes with an `automation-` source, so the CLI treats it as
+an Autopilot request, and with a Bridge `clientTurnId`; the transcript shows it as a continuation
+marker.
+
+Time counts from the first send. Spend counts the reported AI credits of this prompt's model calls,
+metered tools and sub-agents. A minimum is **not a spending cap**: a pass can exceed it.
+
+Like Autopilot's own limit on automatic continuations, the run also ends, as done, once the agent
+has finished `MAX_IDLE_PASSES` passes in a row without running a tool: it has run out of work.
+
+Otherwise only meeting every minimum, Stop, an error or an abort ends the run. Two passes in a row that
+report no AI credit use while a spend minimum is unmet also end it, with a visible reason, since
+spend cannot be measured then. A message sent with minimums while the chat is busy is refused
+rather than turned into plain steering. Model comparisons do not run for Custom Autopilot. The
+minimums end with the run: a recovery turn after a Bridge restart or an image-compaction pause does
+not re-arm them. The run counts as busy throughout, so a pending restart waits for it.
+
 ### Messages the agent never got
 
 A chat message is recorded (`unsent_chat_messages`, `src/server/unsent-message-store.ts`) when its

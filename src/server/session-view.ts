@@ -1,4 +1,5 @@
 import type { AppContext } from "./app-context.js";
+import { isAutopilot } from "../shared/send-mode.js";
 import type { Task } from "./task-store.js";
 import type { SessionWorkspace } from "./session-workspace-store.js";
 import {
@@ -47,7 +48,7 @@ export function getSessionStatus(ctx: AppContext, sessionId: string) {
     needsUserInput: pendingUserInputCount > 0,
     backgroundAgents: ctx.sessionManager.getBackgroundAgentsSummary(sessionId),
     ...(runNotice ? { runNotice } : {}),
-    ...(ctx.sessionManager.getSessionAgentMode(sessionId) === "autopilot" ? { agentMode: "autopilot" as const } : {}),
+    ...(isAutopilot(ctx.sessionManager.getSessionAgentMode(sessionId)) ? { agentMode: "autopilot" as const } : {}),
   };
 }
 

@@ -99,7 +99,7 @@ import { useSessionUsageMetricsQuery } from "../hooks/queries/useSessionUsageMet
 import useLongPressMenu from "../hooks/useLongPressMenu";
 import { queryKeys } from "../queryClient";
 import type { Draft } from "../useDrafts";
-import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
+import { DEFAULT_SEND_MODE, isAutopilot, type SendMode } from "../../shared/send-mode.js";
 import type { SessionContextResponse } from "../../shared/session-context.js";
 import type { RunNotice } from "../../shared/session-stream.js";
 import type { BridgeSearchResponse } from "../../shared/search.js";
@@ -136,6 +136,7 @@ import SessionAgentsBar from "./SessionAgentsBar";
 import { ArrowDown, ArrowLeft, Check, CircleAlert, CircleSlash, ClipboardList, Copy, Terminal } from "lucide-react";
 import { LoadingSkeletonRegion, Skeleton, SkeletonText } from "./shared/Skeleton";
 import { prefersReducedMotion } from "../lib/motion";
+import { isRecord } from "../../shared/is-record.js";
 
 const INITIAL_PAGE_SIZE = 50;
 /** Older pages make the server read the whole event log, so fewer, larger pages cost less. */
@@ -813,6 +814,7 @@ export default function ChatView({
     hadVisibleOutput,
     pendingOrigin,
     runMode,
+    customAutopilot,
     pendingUserInputs = [],
     pendingElicitations = [],
     pendingShellAuths = [],
@@ -1604,7 +1606,9 @@ export default function ChatView({
         historyRef.current.refresh({ reach: "window" });
       }
     } catch (error) {
-      if (resendOf && error instanceof ApiError && error.status === 409) {
+      // A busy chat refuses minimums with 409 too; that one must show, not count as resent.
+      if (resendOf && error instanceof ApiError && error.status === 409
+        && (typeof mode !== "object" || (isRecord(error.details) && error.details.reason === "already_resent"))) {
         // Resent or discarded from somewhere else first: that outcome stands.
         removeOptimisticMessage(messageId, ownerSessionId);
         historyRef.current.refresh({ reach: "window" });
@@ -1650,9 +1654,9 @@ export default function ChatView({
     const originalId = message.clientMessageId;
     if (!sessionId || !originalId || !message.unsent) return;
     if (pendingSendsRef.current.some((send) => send.resendOf === originalId)) return;
-    const mode: SendMode | undefined = isStreaming
-      ? undefined
-      : message.agentMode === "autopilot" ? "autopilot" : DEFAULT_SEND_MODE;
+    const storedMode = unsentMessages.find((unsent) => unsent.id === originalId)?.mode;
+    const mode = isStreaming && typeof storedMode !== "object"
+      ? undefined : storedMode ?? message.agentMode ?? DEFAULT_SEND_MODE;
     const messageId = createClientMessageId();
     historyRef.current.abandonVisibleRefresh();
     stickToBottomRef.current = true;
@@ -1667,7 +1671,7 @@ export default function ChatView({
       },
     ]);
     void deliverOptimisticMessage(messageId, sessionId, message.content, message.attachments, mode, originalId);
-  }, [deliverOptimisticMessage, isStreaming, sessionId, updatePendingSends]);
+  }, [deliverOptimisticMessage, isStreaming, sessionId, unsentMessages, updatePendingSends]);
 
   const handleDiscardUnsent = useCallback(async (message: ChatMessage) => {
     const id = message.clientMessageId;
@@ -1731,7 +1735,7 @@ export default function ChatView({
     historyRef.current.abandonVisibleRefresh();
     // Force stick-to-bottom so auto-scroll kicks in after the next render
     stickToBottomRef.current = true;
-    const messageMode = isStreaming ? undefined : (mode ?? DEFAULT_SEND_MODE);
+    const messageMode = isStreaming && typeof mode !== "object" ? undefined : (mode ?? DEFAULT_SEND_MODE);
     const messageId = createClientMessageId();
     updatePendingSends((current) => [
       ...current,
@@ -2316,7 +2320,7 @@ export default function ChatView({
             label={providerRetryLabel}
             detail="Provider error, retrying once"
             description="Stop cancels the retry. Completed actions are not automatically replayed."
-            autopilot={runMode === "autopilot"}
+            autopilot={isAutopilot(runMode)}
           />
         </div>,
       );
@@ -2329,14 +2333,14 @@ export default function ChatView({
               label={waitingOnAgents.label}
               detail={waitingOnAgents.detail}
               description="The main agent is waiting for these agents to report back."
-              autopilot={runMode === "autopilot"}
+              autopilot={isAutopilot(runMode)}
             />
           ) : (
             <LiveStatusLine
               label={attaching ? "Thinking" : runHeaderState.label}
               detail={intentText || undefined}
               description={attaching ? undefined : `${runHeaderState.title}. ${runHeaderState.detail}`}
-              autopilot={!attaching && runMode === "autopilot"}
+              autopilot={!attaching && isAutopilot(runMode)}
             />
           )}
         </div>,
@@ -3137,8 +3141,10 @@ export default function ChatView({
         </div>
       )}
       {!historicalMode && composerAccessory}
-      {!historicalMode && isStreaming && runMode === "autopilot" && (
+      {!historicalMode && isStreaming && isAutopilot(runMode) && (
         <AutopilotRunLine
+          minimums={typeof runMode === "object" ? runMode : undefined}
+          progress={customAutopilot}
           waitingForAnswer={hasPendingInteractions}
         />
       )}

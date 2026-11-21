@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "./db.js";
-import { toSendMode, type SendMode } from "../shared/send-mode.js";
+import { decodeSendMode, encodeSendMode, type SendMode } from "../shared/send-mode.js";
 import type { VoiceReviewReason } from "../shared/chat-mic.js";
 
 export type VoiceJobStatus =
@@ -76,7 +76,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
       audioPath: row.audioPath,
       transcript: row.transcript ?? undefined,
       error: row.error ?? undefined,
-      mode: toSendMode(row.mode),
+      mode: decodeSendMode(row.mode),
       speechGapSeconds: row.speechGapSeconds ?? undefined,
       speechGapStart: row.speechGapStart ?? undefined,
       reviewReason: row.reviewReason ?? undefined,
@@ -97,7 +97,7 @@ export function createVoiceJobStore(db: DatabaseSync) {
       input.taskId ?? null,
       input.targetSessionId ?? null,
       input.audioPath,
-      input.mode ?? null,
+      input.mode ? encodeSendMode(input.mode) : null,
       now,
       now,
     );

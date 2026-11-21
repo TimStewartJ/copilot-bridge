@@ -1189,6 +1189,11 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
         deps.store.fail(record.id, "awaiting_prompt", "incomplete", "The first message was a command.", iso());
         return;
       }
+      // Its runs last as long as the minimum, past the comparison's own time limit.
+      if (typeof mode === "object") {
+        deps.store.fail(record.id, "awaiting_prompt", "incomplete", "Custom Autopilot runs are not compared.", iso());
+        return;
+      }
       const twinSessionId = createComparisonTwinSessionId();
       if (!deps.store.claimPrompt(sessionId, twinSessionId, iso())) return;
       working.add(record.id);

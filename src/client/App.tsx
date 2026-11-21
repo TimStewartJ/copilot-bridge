@@ -2986,7 +2986,7 @@ function SessionRoute({
     clientMessageId?: string,
     onSessionCreated?: (sessionId: string) => void,
   ) => {
-    const createOptions = launchCreateOptions;
+    const createOptions = typeof mode === "object" ? { ...launchCreateOptions, compare: false as const } : launchCreateOptions;
     const sentDraft = readDraft(composerKey);
     const sentLaunchMode = launchMode;
     const newSessionId = await materializeSession(taskId, createOptions);

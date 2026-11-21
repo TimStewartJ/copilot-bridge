@@ -37,7 +37,7 @@ import {
   type TerminalCompletion,
 } from "../shared/terminal-completion.js";
 import type { StartWorkAttachment } from "./session-attachment-routing.js";
-import type { SendMode } from "../shared/send-mode.js";
+import type { CustomAutopilotProgress, SendMode } from "../shared/send-mode.js";
 import type { UnsentMessageState } from "../shared/unsent-message.js";
 import { normalizeProviderRetryState, type ProviderRetryState, type RunNotice } from "../shared/session-stream.js";
 export type { RunNotice, RunNoticeKind } from "../shared/session-stream.js";
@@ -180,6 +180,8 @@ export interface BusSnapshot {
   providerRetry?: ProviderRetryState;
   /** The CLI mode this run is in, when Bridge knows it. */
   runMode?: SendMode;
+  /** When a Custom Autopilot run started and how often Bridge has kept it going. */
+  customAutopilot?: CustomAutopilotProgress;
   terminalType?: "done" | "error" | "aborted" | "shutdown";
   terminalTimestamp?: string;
   [key: string]: unknown;
@@ -439,6 +441,7 @@ export class SessionEventBus {
   private providerRetry?: ProviderRetryState;
   private runNotice?: RunNotice;
   private runMode?: SendMode;
+  private customAutopilot?: CustomAutopilotProgress;
   /** Not reset per turn: ask_user blocks inside its tool call while the run keeps streaming. */
   private pendingUserInputIndex = new Map<UserInputRequestId, PendingUserInputRequestView>();
   private pendingElicitationIndex = new Map<ElicitationRequestId, PendingElicitationRequestView>();
@@ -482,6 +485,13 @@ export class SessionEventBus {
     if (this.runMode === mode) return;
     this.runMode = mode;
     if (mode) this.broadcast({ type: "run_mode", runMode: mode });
+  }
+
+  /** Records a Custom Autopilot run's progress for connected clients. */
+  setCustomAutopilotProgress(progress: CustomAutopilotProgress | undefined): void {
+    if (!progress && !this.customAutopilot) return;
+    this.customAutopilot = progress;
+    this.broadcast({ type: "custom_autopilot", ...(progress ? { customAutopilot: progress } : {}) });
   }
 
   /** Notes an event put this run's completion in the transcript (see getTranscriptCompletion). */
@@ -1163,6 +1173,7 @@ export class SessionEventBus {
       ...(this.runNotice ? { runNotice: { ...this.runNotice } } : {}),
       ...(this.providerRetry ? { providerRetry: { ...this.providerRetry } } : {}),
       ...(this.runMode ? { runMode: this.runMode } : {}),
+      ...(this.customAutopilot ? { customAutopilot: { ...this.customAutopilot } } : {}),
       ...(this.terminalType ? { terminalType: this.terminalType } : {}),
       ...(this.terminalTimestamp ? { terminalTimestamp: this.terminalTimestamp } : {}),
       ...(turnId ? { turnId } : {}),
@@ -1215,6 +1226,7 @@ export class SessionEventBus {
   reset(): void {
     this.runId = randomUUID();
     this.runMode = undefined;
+    this.customAutopilot = undefined;
     this.resetLiveTurnState();
     this.agentTurnInstanceIds.clear();
     this.cancelAgentChangeRecheck();

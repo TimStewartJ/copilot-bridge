@@ -1,4 +1,5 @@
 import { isRecord } from "../shared/is-record.js";
+import { isCustomContinuationMessage } from "./custom-autopilot.js";
 import type { ChatTurnDetails, ChatTurnModelUsage } from "../shared/chat-turn-details.js";
 import { fusionPhasesFromEvents } from "./fusion-turn-details.js";
 import { getSdkEventId, isSdkAgentUserMessage } from "./sdk-event-identity.js";
@@ -155,7 +156,7 @@ function isVisibleUserMessage(event: Record<string, unknown>): boolean {
   const data = isRecord(event.data) ? event.data : {};
   const source = typeof data.source === "string" ? data.source.trim().toLowerCase() : "";
   if (source === "system" || /^skill(?:[-:]|$)/i.test(source) || isSdkAgentUserMessage(event)) return false;
-  if (data.isAutopilotContinuation === true) return false;
+  if (data.isAutopilotContinuation === true || isCustomContinuationMessage(event)) return false;
   const content = data.content ?? data.prompt;
   const hasContent = typeof content === "string" && content.trim().length > 0;
   const hasAttachments = Array.isArray(data.attachments) && data.attachments.length > 0;

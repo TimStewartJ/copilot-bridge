@@ -261,7 +261,8 @@ describe("Voice job routes", () => {
     expect(jobRes.body.status).toBe("done");
   });
 
-  it("POST /api/voice-jobs sends the transcript with the requested mode and rejects unknown modes", async () => {
+  it.each(["autopilot", { kind: "custom-autopilot", minMinutes: 2, minAiCredits: 1.5 }])(
+    "POST /api/voice-jobs carries %j through transcription and rejects unknown modes", async (mode) => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn();
     sessionManager.readMessagesFromDisk = vi.fn().mockImplementation(async () => ({
@@ -296,15 +297,15 @@ describe("Voice job routes", () => {
       .post("/api/voice-jobs")
       .field("composerKey", "existing-session")
       .field("sessionId", "existing-session")
-      .field("mode", "autopilot")
+      .field("mode", typeof mode === "string" ? mode : JSON.stringify(mode))
       .attach("audio", createWavBuffer(1), { filename: "recording.wav", contentType: "audio/wav" });
     expect(res.status).toBe(202);
-    expect(res.body).toMatchObject({ status: "accepted", mode: "autopilot" });
+    expect(res.body).toMatchObject({ status: "accepted", mode });
 
     await ctx.voiceJobManager.shutdown();
 
     expect(transcribe).toHaveBeenCalledOnce();
-    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Keep going", undefined, expect.objectContaining({ mode: "autopilot" }));
+    expect(sessionManager.startWork).toHaveBeenCalledWith("existing-session", "Keep going", undefined, expect.objectContaining({ mode }));
   });
 
   it("POST /api/voice-jobs accepts draft-session autosend while restart is active in persisted state", async () => {

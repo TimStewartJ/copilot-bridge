@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { ModelInfo, ModelPresets } from "../api";
 import type {
   LaunchOption,
@@ -7,7 +7,8 @@ import { LaunchOptionRow } from "./shared/LaunchOptionControls";
 import ModelPresetPicker from "./shared/ModelPresetPicker";
 import type { ModelPresetSlot } from "../../shared/model-presets.js";
 import type { CopilotContextTier } from "../../shared/copilot-context.js";
-import type { SendMode } from "../../shared/send-mode.js";
+import type { AgentMode, SendMode } from "../../shared/send-mode.js";
+import CustomAutopilotDialog, { formatMinimums } from "./chat/CustomAutopilotDialog";
 import type { PlaybookInfo } from "../../shared/workflow-vocabulary.js";
 import PlaybookSelect from "./shared/PlaybookSelect";
 import { DS, cx } from "../design/tokens";
@@ -46,9 +47,10 @@ interface NewSessionLaunchPanelProps {
   suggestions?: ReactNode;
 }
 
-const MODE_OPTIONS: LaunchOption<SendMode>[] = [
+const MODE_OPTIONS: LaunchOption<AgentMode | "custom-autopilot">[] = [
   { value: "interactive", label: "Interactive" },
   { value: "autopilot", label: "Autopilot" },
+  { value: "custom-autopilot", label: "Custom Autopilot" },
 ];
 
 export default function NewSessionLaunchPanel({
@@ -79,6 +81,7 @@ export default function NewSessionLaunchPanel({
   suggestions,
 }: NewSessionLaunchPanelProps) {
   const availableModels = models.filter((model) => model.policy?.state !== "disabled");
+  const [editingMinimums, setEditingMinimums] = useState(false);
 
   return (
     <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto px-4 py-4 md:items-center md:py-8">
@@ -172,13 +175,22 @@ export default function NewSessionLaunchPanel({
             <LaunchOptionRow
               ariaLabel="Run mode for new session"
               options={MODE_OPTIONS}
-              selectedValue={mode}
+              selectedValue={typeof mode === "string" ? mode : mode.kind}
               onChange={(value) => {
-                if (value) onModeChange(value);
+                if (value === "custom-autopilot") setEditingMinimums(true);
+                else if (value) onModeChange(value);
               }}
             />
+            {typeof mode === "object" && (
+              <button type="button" className={cx(DS.focus, DS.text.meta)} onClick={() => setEditingMinimums(true)}>
+                Minimum: {formatMinimums(mode)}
+              </button>
+            )}
           </FormRow>
         </div>
+        {editingMinimums && <CustomAutopilotDialog value={typeof mode === "object" ? mode : undefined}
+          comparing={Boolean(abTestArms)} onClose={() => setEditingMinimums(false)}
+          onApply={(choice) => { onModeChange(choice); setEditingMinimums(false); }} />}
       </div>
     </div>
   );

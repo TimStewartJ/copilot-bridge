@@ -1,4 +1,4 @@
-import type { SendMode } from "../../shared/send-mode.js";
+import { isAutopilot, type SendMode } from "../../shared/send-mode.js";
 
 export type LiveRunPhase =
   | "idle"
@@ -30,6 +30,7 @@ export interface LiveRunHeaderState {
 }
 
 export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeaderState | null {
+  const autopilot = isAutopilot(input.runMode);
   if (input.creating && !input.isStreaming) {
     return {
       phase: "creating",
@@ -52,7 +53,7 @@ export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeade
         tone: "sending",
       };
     }
-    if (input.runMode === "autopilot") {
+    if (autopilot) {
       return {
         phase: "submitting",
         label: "Autopilot",
@@ -73,11 +74,11 @@ export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeade
   if (input.streamingContent) {
     return {
       phase: "responding",
-      label: input.runMode === "autopilot" ? "Autopilot" : "Responding",
-      title: input.intentText || (input.runMode === "autopilot" ? "Autopilot responding" : "Streaming response"),
+      label: autopilot ? "Autopilot" : "Responding",
+      title: input.intentText || (autopilot ? "Autopilot responding" : "Streaming response"),
       detail: input.activeTrackCount > 0
         ? `${input.activeTrackCount} track${input.activeTrackCount === 1 ? "" : "s"} still running in parallel.`
-        : input.runMode === "autopilot"
+        : autopilot
           ? "Copilot is streaming visible text and may continue into the next step."
           : "The assistant is streaming visible text.",
       tone: "thinking",
@@ -87,13 +88,13 @@ export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeade
   if (input.activeTrackCount > 0) {
     return {
       phase: "working",
-      label: input.runMode === "autopilot" ? "Autopilot" : "Working",
+      label: autopilot ? "Autopilot" : "Working",
       title: input.activeTrackCount > 1
         ? `${input.activeTrackCount} parallel tracks running`
         : "1 track running",
       detail: input.intentText
         ? `${input.intentText}. Tools and subagents are actively working.`
-        : input.runMode === "autopilot"
+        : autopilot
           ? "Copilot is continuing through tool work on its own."
           : "Tools and subagents are actively working.",
       tone: "thinking",
@@ -102,17 +103,17 @@ export function deriveLiveRunHeaderState(input: LiveRunPhaseInput): LiveRunHeade
 
   return {
     phase: "thinking",
-    label: input.runMode === "autopilot" ? "Autopilot" : "Thinking",
+    label: autopilot ? "Autopilot" : "Thinking",
     title: input.intentText || (
       input.hadVisibleOutput
         ? "Waiting for the next update"
-        : input.runMode === "autopilot"
+        : autopilot
           ? "Autopilot running"
           : "Waiting for the first response"
     ),
     detail: input.hadVisibleOutput
       ? "Still running, with nothing visible right now."
-      : input.runMode === "autopilot"
+      : autopilot
         ? "Copilot is working before any text or tool activity is visible."
         : "The assistant is working before any text or tool activity is visible.",
     tone: "thinking",

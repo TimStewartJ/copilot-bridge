@@ -62,7 +62,7 @@ export type {
   PublicBrowserResetResponse,
 } from "../shared/browser-diagnostics.js";
 export type { BrowserHandoffView, BrowserLiveTicket, BrowserSavedLogin } from "../shared/browser-live.js";
-import type { SendMode } from "../shared/send-mode.js";
+import { encodeSendMode, type SendMode } from "../shared/send-mode.js";
 import type { BridgeSearchRequest, BridgeSearchResponse } from "../shared/search.js";
 import type { AgentInstruction } from "../shared/subagent.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
@@ -1103,6 +1103,8 @@ export async function deleteTaskHistoryEntry(taskId: string, entryId: number): P
 }
 
 export interface CreateSessionOptions {
+  /** false: no model comparison for this chat (Custom Autopilot runs past its time limit). */
+  compare?: false;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   contextTier?: CopilotContextTier;
@@ -1112,6 +1114,7 @@ export interface CreateSessionOptions {
 
 export async function createSession(options: CreateSessionOptions = {}): Promise<string> {
   const data = await apiFetch<{ sessionId: string }>("/api/sessions", {
+    ...(options.compare === false ? { compare: false } : {}),
     ...(options.model ? { model: options.model } : {}),
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(options.contextTier ? { contextTier: options.contextTier } : {}),
@@ -1794,6 +1797,7 @@ export async function createTaskSession(
   const data = await apiFetch<{ sessionId: string }>(
     `/api/tasks/${taskId}/session`,
     {
+      ...(options.compare === false ? { compare: false } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
       ...(options.contextTier ? { contextTier: options.contextTier } : {}),
@@ -2928,7 +2932,7 @@ export async function createVoiceJob(
   if (request.sessionId) form.append("sessionId", request.sessionId);
   if (request.taskId) form.append("taskId", request.taskId);
   if (request.sessionOptions) form.append("sessionOptions", JSON.stringify(request.sessionOptions));
-  if (request.mode) form.append("mode", request.mode);
+  if (request.mode) form.append("mode", encodeSendMode(request.mode));
   return uploadRecording<VoiceJobStatusResponse>("/api/voice-jobs", form, options);
 }
 

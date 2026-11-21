@@ -13,7 +13,7 @@ import type {
 } from "./api";
 import { API_BASE, reportTiming, resendUnsentMessage, retrySessionRun, sendChatMessage } from "./api";
 import type { SessionContextSummary } from "../shared/session-context.js";
-import { isSendMode, type SendMode } from "../shared/send-mode.js";
+import { isSendMode, type CustomAutopilotProgress, type SendMode } from "../shared/send-mode.js";
 import { normalizeProviderRetryState, type ProviderRetryState, type RunNotice } from "../shared/session-stream.js";
 import type { TerminalCompletion } from "../shared/terminal-completion.js";
 import { isHiddenTool } from "../shared/tool-visibility.js";
@@ -157,6 +157,8 @@ export interface StreamState {
   contextSummary: SessionContextSummary | null;
   pendingOrigin: PendingOrigin;
   runMode?: SendMode;
+  /** When a Custom Autopilot run started, for the time its minimum runs to. */
+  customAutopilot?: CustomAutopilotProgress;
   activeTurnId?: string;
   activeTurnInstanceId?: string;
   /** Bumps when disk history may change; local because the server counter restarts per run bus. */
@@ -164,6 +166,13 @@ export interface StreamState {
 }
 
 const NO_AGENT_TURNS: Readonly<Record<string, string>> = Object.freeze({});
+
+function readCustomAutopilotProgress(value: unknown): CustomAutopilotProgress | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.startedAt !== "string" || !Number.isFinite(Date.parse(record.startedAt))) return undefined;
+  return { startedAt: record.startedAt, continuations: typeof record.continuations === "number" ? record.continuations : 0 };
+}
 
 function createState(status: StreamStatus, partial: Partial<StreamState> = {}): StreamState {
   return {
@@ -668,6 +677,7 @@ export function useSessionStream(
       streamingContent: pendingOrigin === "reconnect" ? current.streamingContent : "",
       pendingOrigin,
       runMode: runMode ?? current.runMode,
+      customAutopilot: current.customAutopilot,
     }));
 
     const source = new EventSource(`${API_BASE}/api/sessions/${encodeURIComponent(sid)}/stream`);
@@ -774,6 +784,7 @@ export function useSessionStream(
             runMode: isSendMode(event.runMode)
               ? event.runMode
               : snapshotRunId === previousRunId ? current.runMode : undefined,
+            customAutopilot: complete ? undefined : readCustomAutopilotProgress(event.customAutopilot),
             // A finished or different run means history moved while disconnected.
             historyEpoch: complete || snapshotRunId !== previousRunId
               ? current.historyEpoch + 1
@@ -792,6 +803,12 @@ export function useSessionStream(
 
       if (eventType === "history_advanced") {
         setStreamState((current) => ({ ...current, historyEpoch: current.historyEpoch + 1 }));
+        return;
+      }
+
+      if (eventType === "custom_autopilot") {
+        const customAutopilot = readCustomAutopilotProgress(event.customAutopilot);
+        setStreamState((current) => ({ ...current, customAutopilot }));
         return;
       }
 

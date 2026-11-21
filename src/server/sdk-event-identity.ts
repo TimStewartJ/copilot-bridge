@@ -1,3 +1,5 @@
+import { isCustomContinuationMessage } from "./custom-autopilot.js";
+
 export function getSdkEventId(event: unknown): string | undefined {
   if (!event || typeof event !== "object") return undefined;
   const record = event as Record<string, unknown>;
@@ -46,6 +48,7 @@ export function isSdkUserAuthoredMessage(event: unknown): boolean {
   if (isSdkAgentUserMessage(event)) return false;
   const source = getSdkUserMessageSource(event);
   return source?.toLowerCase() !== "system"
+    && !isCustomContinuationMessage(event)
     && !SDK_SKILL_USER_MESSAGE_SOURCE_PATTERN.test(source ?? "");
 }
 

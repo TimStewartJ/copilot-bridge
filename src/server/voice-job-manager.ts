@@ -131,7 +131,9 @@ export function createVoiceJobManager({
       const audioPath = join(jobDir, safeFilename);
       await copyFile(sourceFilePath, audioPath);
 
-      const resolvedTargetSessionId = targetSessionId ?? await createTargetSession(taskId, sessionOptions, compare === true);
+      // A Custom Autopilot chat runs past a comparison's time limit, so it gets none.
+      const resolvedTargetSessionId = targetSessionId
+        ?? await createTargetSession(taskId, sessionOptions, compare === true && typeof mode !== "object");
       const job = store.createVoiceJob({
         id,
         composerKey,

@@ -1,5 +1,6 @@
 import type { Attachment, ChatEntry, ChatMessage, ChatMessageDelivery } from "../../api";
 import type { UnsentMessageView } from "../../../shared/unsent-message.js";
+import { isAutopilot } from "../../../shared/send-mode.js";
 import { getLatestEntryActivityTimestamp } from "../../chat-cache";
 import type { LivePendingUserMessage } from "../../useSessionStream";
 
@@ -189,7 +190,7 @@ export function unsentMessageEntry(message: UnsentMessageView): UserMessageEntry
     timestamp: message.createdAt,
     unsent: { state: message.state, ...(message.error ? { error: message.error } : {}) },
     ...(message.attachments?.length ? { attachments: message.attachments.map((attachment) => ({ ...attachment, size: attachment.size ?? 0 })) } : {}),
-    ...(message.mode === "autopilot" ? { agentMode: "autopilot" as const } : {}),
+    ...(isAutopilot(message.mode) ? { agentMode: "autopilot" as const } : {}),
   };
 }
 

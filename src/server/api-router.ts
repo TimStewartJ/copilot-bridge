@@ -107,7 +107,7 @@ import { isPlaybookName, NO_PLAYBOOK } from "../shared/workflow-vocabulary.js";
 import { InvalidTaskHistoryEntryError } from "./task-history-store.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { demuxOggOpus, isOggOpus, OggOpusError, oggOpusDurationSeconds } from "../shared/ogg-opus.js";
-import { isSendMode } from "../shared/send-mode.js";
+import { decodeSendMode, INVALID_SEND_MODE, isSendMode } from "../shared/send-mode.js";
 import {
   type AgentDismissRefusal,
   type SessionAgentTask,
@@ -914,11 +914,11 @@ export function createApiRouter(
         await cleanupTranscriptionUpload(req);
         return res.status(400).json({ error: "composerKey is required" });
       }
-      if (rawMode && !isSendMode(rawMode)) {
+      const mode = decodeSendMode(rawMode);
+      if (rawMode && !mode) {
         await cleanupTranscriptionUpload(req);
-        return res.status(400).json({ error: "mode must be one of: interactive, autopilot" });
+        return res.status(400).json({ error: INVALID_SEND_MODE });
       }
-      const mode = rawMode && isSendMode(rawMode) ? rawMode : undefined;
 
       try {
         let sessionOptions: SessionCreationOptions | undefined;
@@ -2062,6 +2062,11 @@ export function createApiRouter(
     return resolveSessionCreationOptionsForContext(ctx, body);
   }
 
+  /** `compare: false` on a new chat: a run comparisons can't follow, such as Custom Autopilot. */
+  function declinesComparison(body: unknown): boolean {
+    return isRecord(body) && body.compare === false;
+  }
+
   /** A chat the user starts with no model of its own joins the running comparison, if any. */
   async function prepareComparison(options: SessionCreationOptions | undefined): Promise<ModelComparisonPreparation | undefined> {
     return ctx.modelComparisons?.prepareLaunch(options);
@@ -2314,7 +2319,7 @@ export function createApiRouter(
     }
     try {
       const webClient = isWebClientRequest(req.headers);
-      const comparison = webClient ? await prepareComparison(creationResult.options) : undefined;
+      const comparison = webClient && !declinesComparison(req.body) ? await prepareComparison(creationResult.options) : undefined;
       const result = await ctx.sessionManager.createSession({
         background: true,
         ...creationResult.options,
@@ -2514,7 +2519,10 @@ export function createApiRouter(
       return res.status(400).json({ error: "sessionId and prompt are required" });
     }
     if (mode !== undefined && !isSendMode(mode)) {
-      return res.status(400).json({ error: "mode must be one of: interactive, autopilot" });
+      return res.status(400).json({ error: INVALID_SEND_MODE });
+    }
+    if (typeof mode === "object" && (typeof prompt !== "string" || parseSlashCommandPrompt(prompt))) {
+      return res.status(400).json({ error: "Custom Autopilot needs a prompt, not a slash command." });
     }
     if (waitForDelivery !== undefined && typeof waitForDelivery !== "boolean") {
       return res.status(400).json({ error: "waitForDelivery must be a boolean" });
@@ -2592,7 +2600,7 @@ export function createApiRouter(
     // Only one resend wins, from any device; the copy is a new message at the end of the chat.
     const claimed = store.claimResend(sessionId, messageId);
     if (!claimed) {
-      return res.status(409).json({ error: "This message was already resent or discarded." });
+      return res.status(409).json({ error: "This message was already resent or discarded.", details: { reason: "already_resent" } });
     }
     let accepted = false;
     try {
@@ -3630,7 +3638,7 @@ export function createApiRouter(
         return res.status(creationResult.status ?? 400).json({ error: creationResult.error });
       }
       const scratch = !isWebClientRequest(req.headers);
-      const comparison = scratch ? undefined : await prepareComparison(creationResult.options);
+      const comparison = scratch || declinesComparison(req.body) ? undefined : await prepareComparison(creationResult.options);
       const result = await ctx.sessionManager.createTaskSession(
         task.id,
         task.title,

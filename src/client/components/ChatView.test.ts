@@ -5,6 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Attachment, ChatEntry, ChatMessage, PendingUserInputRequestView, SessionRunState, TranscriptAgent } from "../api";
 import { ApiError } from "../api";
 import type { SessionContextResponse } from "../../shared/session-context.js";
+import type { SendMode } from "../../shared/send-mode.js";
 import type { RunNotice, SessionHistoryCoverage } from "../../shared/session-stream.js";
 import type { BridgeSearchResponse } from "../../shared/search.js";
 import {
@@ -188,7 +189,7 @@ type RenderChatViewOptions = {
   onCreateAndSend?: (
     prompt: string,
     attachments?: Attachment[],
-    mode?: "interactive" | "autopilot",
+    mode?: SendMode,
     clientMessageId?: string,
   ) => Promise<void>;
   onRenderedReadThrough?: (sessionId: string, readThroughActivityAt: string) => void;

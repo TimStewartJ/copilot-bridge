@@ -26,7 +26,8 @@ import {
 } from "../lib/voice-accepted-flash";
 import { deriveVoiceUiState } from "../lib/voice-ui-state";
 import type { Draft } from "../useDrafts";
-import { DEFAULT_SEND_MODE, type SendMode } from "../../shared/send-mode.js";
+import { DEFAULT_SEND_MODE, isAutopilot, type SendMode } from "../../shared/send-mode.js";
+import CustomAutopilotDialog, { formatMinimums } from "./chat/CustomAutopilotDialog";
 import ContextMenu, { CtxDivider, CtxItem, type ContextMenuPosition } from "./ContextMenu";
 import { ComposerAttachmentTray } from "./ChatAttachments";
 import { VoiceRecordingWave } from "./VoiceRecordingWave";
@@ -404,10 +405,11 @@ export default function ChatInput({
           uploadingCount: uploadingRef.current,
         })
       : null;
-    // Like a typed send, a message into a running turn has no mode of its own.
-    pendingCaptureSendModeRef.current = !autoSend || agentBusyRef.current
+    // Into a running turn a message has no mode of its own, unless it has minimums.
+    const captureMode = sendMode ?? nextSendModeRef.current;
+    pendingCaptureSendModeRef.current = !autoSend || (agentBusyRef.current && typeof captureMode !== "object")
       ? null
-      : { mode: sendMode ?? nextSendModeRef.current, choice: sendModeChoiceRef.current };
+      : { mode: captureMode, choice: sendModeChoiceRef.current };
     void voice.stopRecording();
   };
 
@@ -705,15 +707,18 @@ export default function ChatInput({
 
   /** New chats take it from the launch panel; in an open chat it applies to one message only. */
   const [chosenSendMode, setChosenSendMode] = useState<SendMode>(defaultSendMode);
+  const [editingMinimums, setEditingMinimums] = useState(false);
   const chooseSendMode = useCallback((mode: SendMode) => {
     sendModeChoiceRef.current += 1;
     setChosenSendMode(mode);
   }, []);
   useEffect(() => {
     chooseSendMode(defaultSendMode);
+    setEditingMinimums(false);
   }, [chooseSendMode, composerKey, defaultSendMode]);
   const nextSendMode: SendMode = isDraft ? defaultSendMode : chosenSendMode;
-  const autopilotNext = nextSendMode === "autopilot";
+  const autopilotNext = isAutopilot(nextSendMode);
+  const customMode = typeof nextSendMode === "object" ? nextSendMode : undefined;
   nextSendModeRef.current = nextSendMode;
   // A held dictation goes out by hand, in the mode it was recorded for.
   const heldSendMode = voiceJob?.status === "review" ? voiceJob.sendMode : undefined;
@@ -741,7 +746,8 @@ export default function ChatInput({
     );
 
     const cleanAttachmentsOrUndefined = cleanAttachments.length > 0 ? cleanAttachments : undefined;
-    const selectedMode = onAbort ? undefined : mode;
+    // A chosen minimum never turns into plain steering: the server refuses it while a run is going.
+    const selectedMode = onAbort && typeof mode !== "object" ? undefined : mode;
 
     onClearVoiceJobError?.(composerKey);
     setRecordingCancelled(null);
@@ -870,7 +876,7 @@ export default function ChatInput({
     : onAbort
       ? "Send steering note"
       : autopilotNext
-        ? "Start Autopilot"
+        ? customMode ? "Start Custom Autopilot" : "Start Autopilot"
         : "Send message";
   const submitControlTitle = showAbortControl ? "Stop generating" : sendTitle;
   const modeMenuBindings = bindSendModeMenu(
@@ -915,7 +921,7 @@ export default function ChatInput({
       )}
     >
       <AutopilotIcon size={17} />
-      {autopilotNext && <span className="hidden text-xs font-medium sm:inline">Autopilot</span>}
+      {autopilotNext && <span className="hidden text-xs font-medium sm:inline">{customMode ? "Custom Autopilot" : "Autopilot"}</span>}
     </button>
   );
 
@@ -1043,9 +1049,11 @@ export default function ChatInput({
           <div className="mb-2 flex min-w-0 items-center gap-1.5 px-1 text-xs text-text-secondary" data-autopilot-hint>
             <AutopilotIcon size={12} className="text-agent" />
             <span className="min-w-0">
-              <span className="font-medium text-agent">Autopilot</span>
-              {" keeps going until done. Questions still wait for you."}
+              {customMode ? `Minimum: ${formatMinimums(customMode)}` : "Autopilot keeps going until done. Questions still wait for you."}
             </span>
+            <button type="button" className={cx(DS.focus, DS.button.size.md, "underline")} onClick={() => setEditingMinimums(true)}>
+              {customMode ? "Edit minimums" : "Set minimums"}
+            </button>
           </div>
         )}
         <div
@@ -1316,6 +1324,10 @@ export default function ChatInput({
               disabled={!canSend}
               title="Let Copilot continue until task complete, error, stop, or limit."
             />
+            {showAutopilotToggle && <CtxItem
+              label="Custom Autopilot…"
+              onClick={() => { closeSendModeMenu(); setEditingMinimums(true); }}
+            />}
           </ContextMenu>
         )}
         {sendModeMenu?.id === "voice-finish" && finishMenuEnabled && (
@@ -1333,6 +1345,9 @@ export default function ChatInput({
           </ContextMenu>
         )}
       </div>
+      {editingMinimums && showAutopilotToggle && <CustomAutopilotDialog value={customMode}
+        onClose={() => setEditingMinimums(false)}
+        onApply={(choice) => { chooseSendMode(choice); setEditingMinimums(false); }} />}
     </div>
   );
 }

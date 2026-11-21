@@ -52,7 +52,13 @@ import type {
 } from "./session-attachment-routing.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
 import type { McpServerConfig } from "./mcp-config.js";
-import { DEFAULT_SEND_MODE, toSendMode, type SendMode } from "../shared/send-mode.js";
+import { DEFAULT_SEND_MODE, toSendMode, type AgentMode, type SendMode } from "../shared/send-mode.js";
+import {
+  CustomAutopilotRun,
+  CUSTOM_CONTINUATION_SOURCE,
+  isCustomContinuationMessage,
+  newContinuationTurnId,
+} from "./custom-autopilot.js";
 import type { AutomaticAnswerReason } from "../shared/automatic-answer.js";
 import { isRecord } from "../shared/is-record.js";
 import {
@@ -335,6 +341,12 @@ export interface StartWorkOptions {
   keepUndelivered?: boolean;
 }
 
+/** The CLI mode a send runs in: Custom Autopilot is Autopilot with Bridge's minimums on top. */
+function agentModeOf(mode: SendMode | undefined): AgentMode {
+  if (mode === undefined) return DEFAULT_SEND_MODE;
+  return typeof mode === "object" ? "autopilot" : mode;
+}
+
 async function setSessionModeForSend(session: AgentSession, mode: string): Promise<void> {
   await session.setSendMode({ mode });
 }
@@ -508,7 +520,8 @@ export class SessionRunner {
   private readonly providerRetryWaits = new Map<string, () => void>();
   private lastRuntimeEvent: { receivedAtMs: number; sessionId: string; type: string } | undefined;
   /** Each loaded session's CLI mode; the CLI keeps it, so turns it starts use the last send's. */
-  private readonly agentModes = new Map<string, SendMode>();
+  private readonly agentModes = new Map<string, AgentMode>();
+  private readonly customRuns = new Map<string, CustomAutopilotRun>();
   private readonly mcpSessionRecoveryAttempts = new Map<string, {
     count: number;
     windowStartedAt: number;
@@ -557,19 +570,25 @@ export class SessionRunner {
     return feed;
   }
 
-  getSessionAgentMode(sessionId: string): SendMode | undefined {
+  getSessionAgentMode(sessionId: string): AgentMode | undefined {
     return this.agentModes.get(sessionId);
   }
 
+  cancelCustomAutopilot(sessionId: string): void {
+    const run = this.customRuns.get(sessionId);
+    if (run) run.cancelled = true;
+  }
+
   /** `announce` re-publishes an unchanged mode because lists forget it between runs. */
-  private noteAgentMode(sessionId: string, mode: SendMode | undefined, announce = false): void {
+  private noteAgentMode(sessionId: string, mode: AgentMode | undefined, announce = false): void {
     const previous = this.agentModes.get(sessionId);
     if (mode) this.agentModes.set(sessionId, mode);
     else this.agentModes.delete(sessionId);
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
-    if (bus && !bus.complete) bus.setRunMode(mode);
+    const runMode = this.customRuns.get(sessionId)?.mode ?? mode;
+    if (bus && !bus.complete) bus.setRunMode(runMode);
     if (mode && (announce || previous !== mode)) {
-      this.deps.globalBus.emit({ type: "session:mode", sessionId, agentMode: mode });
+      this.deps.globalBus.emit({ type: "session:mode", sessionId, agentMode: runMode });
     }
   }
 
@@ -798,13 +817,18 @@ export class SessionRunner {
     if (this.deps.isSessionBusy(sessionId)) {
       throw new Error("Session is busy processing another message");
     }
+    if (typeof options.mode === "object" && parseSlashCommandPrompt(prompt)) {
+      throw new Error("Custom Autopilot needs a prompt, not a slash command.");
+    }
 
     // Saved before anything else: the files are what a message the agent never got is kept with.
     const persistedAttachments = this.deps.persistSessionAttachments(sessionId, attachments);
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
-    this.noteAgentMode(sessionId, options.mode ?? DEFAULT_SEND_MODE, true);
+    const minimums = typeof options.mode === "object" ? new CustomAutopilotRun(options.mode) : undefined;
+    if (minimums) this.customRuns.set(sessionId, minimums);
+    this.noteAgentMode(sessionId, agentModeOf(options.mode), true);
     const hiddenPrompt = options.promptSource === "system";
     const visiblePrompt = options.displayPrompt ?? prompt;
     const projectedUserMessageId = hiddenPrompt
@@ -825,7 +849,9 @@ export class SessionRunner {
         options,
         projectedUserMessageId,
         persistedAttachments.routed,
-      ),
+      ).finally(() => {
+        if (minimums && this.customRuns.get(sessionId) === minimums) this.customRuns.delete(sessionId);
+      }),
       {
         ...(hiddenPrompt ? {} : { pendingPrompt: visiblePrompt }),
         promptAccepted: false,
@@ -1082,18 +1108,20 @@ export class SessionRunner {
     const parsedCommand = parseSlashCommandPrompt(prompt);
     let sendPrompt = prompt;
     let displayPrompt: string | undefined = options.displayPrompt;
-    let mode: string = options.mode ?? DEFAULT_SEND_MODE;
+    let mode: string = agentModeOf(options.mode);
+    const minimums = this.customRuns.get(sessionId);
     let commandResult: AgentSlashCommandResult | undefined;
 
     await this.runSessionOperation(sessionId, bus, activeRunController, {
       resumeContext: "message",
+      minimums,
       attentionMode: options.attentionMode ?? "normal",
       completionAttention: options.completionAttention,
       idleSpanName: "session.sendToIdle",
       startLog: `[sdk] [${sid}] Sending ${mode} prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
       execute: async (session) => {
         // A Stop can land during any await below; nothing may reach the session after it.
-        const stopped = () => activeRunController.isCompleted();
+        const stopped = () => activeRunController.isCompleted() || minimums?.cancelled === true;
         if (stopped()) return;
         if (parsedCommand) {
           commandResult = await invokeSlashCommand(session, parsedCommand);
@@ -1128,6 +1156,10 @@ export class SessionRunner {
         const turnDisplayPrompt = turnContext?.block ? displayPrompt ?? sendPrompt : displayPrompt;
         let messageId: unknown;
         try {
+          if (minimums) {
+            minimums.begin();
+            bus.setCustomAutopilotProgress(minimums.progress());
+          }
           messageId = await session.send({
             prompt: turnPrompt,
             ...(turnDisplayPrompt ? { displayPrompt: turnDisplayPrompt } : {}),
@@ -1172,6 +1204,7 @@ export class SessionRunner {
       retryExecute?: (session: AgentSession, claimSend: () => boolean) => Promise<void>;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
+      minimums?: CustomAutopilotRun;
       /** The run follows a turn the runtime started: no prompt to prepare or send. */
       followsRuntimeTurn?: boolean;
     },
@@ -1403,6 +1436,8 @@ export class SessionRunner {
     let pendingProviderRetry: { event: SessionErrorEvent; context: SessionEventHandlingContext } | undefined;
     let providerRetryPromise: Promise<void> | undefined;
     let cancelProviderRetryWait: (() => void) | undefined;
+    /** Counts sends, so a watchdog check begun before the latest one can't end its pass. */
+    let sendGeneration = 0;
     const resetRunTelemetryState = () => {
       promptDelivered = false;
       lastLogStat = undefined;
@@ -1434,6 +1469,7 @@ export class SessionRunner {
       }
     };
     const beginSend = () => {
+      sendGeneration++;
       sendStart = Date.now();
       lastEventTime = sendStart;
       lastAssistantContent = undefined;
@@ -1452,6 +1488,14 @@ export class SessionRunner {
     const publishContextSummary = (summary: ReturnType<SessionContextStore["getSummary"]>): void => {
       if (summary) bus.emit({ type: "context_update", summary });
     };
+    /** Any agent's event but the main one's, by any mark the runtime puts on it. */
+    const isChildAgentEvent = (event: SessionEvent): boolean => {
+      const data = getEventRecordData(event);
+      return Boolean(getSdkAgentId(event) || data?.parentToolCallId
+        || data?.isSubAgent === true || data?.subagent === true || data?.initiator === "sub-agent"
+        || data?.interactionType === "conversation-subagent"
+        || (eventTypeOf(event) === "prompt_cache_break" && typeof data?.agentName === "string"));
+    };
     const getSubagentContextTurnId = (event: SessionEvent): string | undefined => {
       const data = getEventRecordData(event);
       const agentId = getSdkAgentId(event);
@@ -1465,10 +1509,7 @@ export class SessionRunner {
       const store = this.deps.sessionContextStore;
       const data = getEventRecordData(event);
       const subagentTurnId = getSubagentContextTurnId(event);
-      const isSubagent = Boolean(subagentTurnId || getSdkAgentId(event) || data?.parentToolCallId
-        || data?.isSubAgent === true || data?.subagent === true || data?.initiator === "sub-agent"
-        || data?.interactionType === "conversation-subagent"
-        || (eventTypeOf(event) === "prompt_cache_break" && typeof data?.agentName === "string"));
+      const isSubagent = Boolean(subagentTurnId) || isChildAgentEvent(event);
       const bridgeTurnId = isSubagent ? subagentTurnId : currentBridgeTurnId;
       const attribution = isSubagent
         ? "subagent_turn"
@@ -1642,6 +1683,69 @@ export class SessionRunner {
       }
     };
 
+    const finishNormally = (event: SessionEvent | undefined, context: SessionEventHandlingContext) => {
+      const completion = pendingTerminalCompletion ?? recordedTerminalCompletion;
+      const content = completion?.content ?? lastAssistantContent ?? "";
+      endCurrentContextTurn(event);
+      recordRunCompletion(event, context, "done", {
+        finalContentLength: content.length,
+        assistantContentKnown: lastAssistantContent !== undefined,
+      });
+      recordCompletionAttention("done", event);
+      runController.completeDone(content, {
+        ...(pendingTerminalCompletion ? { terminalCompletion: pendingTerminalCompletion } : {}),
+        ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
+        ...(lastAssistantSourceEventId ? { assistantSourceEventId: lastAssistantSourceEventId } : {}),
+      });
+      pendingTerminalCompletion = undefined;
+    };
+
+    /** Where a run would end; with a minimum unmet, Bridge sends a keep-going prompt instead. */
+    const finishOrContinue = (event: SessionEvent | undefined, context: SessionEventHandlingContext): void => {
+      const minimums = opts.minimums;
+      if (!minimums) return finishNormally(event, context);
+      const endAborted = () => {
+        endCurrentContextTurn(event);
+        recordRunCompletion(event, context, "aborted", { customContinuations: minimums.continuations });
+        runController.completeAborted(lastAssistantContent ?? "", { assistantSourceEventId: lastAssistantSourceEventId });
+      };
+      if (runController.isCompleted()) return;
+      if (minimums.cancelled || (event?.type === "session.idle" && event.data.aborted === true)) return endAborted();
+      // As for plain Autopilot, a completion ends the run, but only once every minimum is met.
+      if (context.origin === "live" && event?.type === "session.task_complete") {
+        if (minimums.decide().kind === "done") finishNormally(event, context);
+        return;
+      }
+      // An idle counts only after this pass's own turn ended; an earlier pass's late one doesn't.
+      if (context.origin === "live" && (!liveTurnEndCount || liveAssistantTurnOpen)) return;
+      const decision = minimums.decide();
+      recordRunSpan("session.custom_autopilot", 0, { outcome: decision.kind, ...minimums.describe() });
+      if (decision.kind === "done") return finishNormally(event, context);
+      if (decision.kind === "error") {
+        endCurrentContextTurn(event);
+        recordRunCompletion(event, context, "error", { customContinuations: minimums.continuations });
+        recordCompletionAttention("error", event);
+        return runController.completeError(decision.error);
+      }
+      endCurrentContextTurn(event);
+      const turnContext = this.deps.prepareTurnContext?.(sessionId);
+      // Each pass gets its own provider retry; beginSend makes a late idle of this pass not count.
+      providerRetryCount = 0;
+      beginSend();
+      minimums.noteContinued(decision.promptIndex);
+      bus.setCustomAutopilotProgress(minimums.progress());
+      void runSendStep("send custom Autopilot continuation", () => session!.send({
+        prompt: turnContext?.block ? `${turnContext.block}\n\n${decision.prompt}` : decision.prompt,
+        displayPrompt: decision.prompt,
+        source: CUSTOM_CONTINUATION_SOURCE,
+        clientTurnId: newContinuationTurnId(),
+      })).then((sent) => {
+        if (!sent.completed) turnContext?.commit();
+      }).catch((error) => {
+        if (!runController.isCompleted()) runController.completeError(`Custom Autopilot stopped: ${getErrorMessage(error)}`);
+      });
+    };
+
     /** Ends a run from the log's ending; the caller has already established that it ended. */
     const finishRunFromLog = (ending: PersistedRunEnding, runtimeAnswer: RuntimeAnswer) => {
       if (runController.isCompleted() || pendingProviderRetry) return;
@@ -1665,20 +1769,7 @@ export class SessionRunner {
         handleEvent(ending.event!, context);
         return;
       }
-      const completion = pendingTerminalCompletion ?? recordedTerminalCompletion;
-      const content = completion?.content ?? lastAssistantContent ?? "";
-      endCurrentContextTurn(ending.event);
-      recordRunCompletion(ending.event, context, "done", {
-        finalContentLength: content.length,
-        assistantContentKnown: lastAssistantContent !== undefined,
-      });
-      recordCompletionAttention("done", ending.event);
-      runController.completeDone(content, {
-        ...(pendingTerminalCompletion ? { terminalCompletion: pendingTerminalCompletion } : {}),
-        ...(getSdkEventId(ending.event) ? { sourceEventId: getSdkEventId(ending.event) } : {}),
-        ...(lastAssistantSourceEventId ? { assistantSourceEventId: lastAssistantSourceEventId } : {}),
-      });
-      pendingTerminalCompletion = undefined;
+      finishOrContinue(ending.event, context);
     };
 
     /** Questions Bridge answers unshown; their completion from the runtime isn't shown either. */
@@ -1735,6 +1826,9 @@ export class SessionRunner {
       const eventAt = Date.now();
       if (context.origin === "live") {
         noteLiveEvent(event, eventAt, context.origin);
+        // A background agent left by an earlier prompt can still publish usage in this session.
+        const child = opts.minimums ? isChildAgentEvent(event) : false;
+        if (opts.minimums && (!child || getSubagentContextTurnId(event))) opts.minimums.observe(event, child);
       }
       const isTerminalEvent = isLiveRunTerminalEvent(event);
       if (!isTerminalEvent) {
@@ -1841,6 +1935,10 @@ export class SessionRunner {
           break;
         }
         case "user.message": {
+          if (isCustomContinuationMessage(event)) {
+            bus.announceHistoryChange();
+            break;
+          }
           if (isSdkAgentUserMessage(event)) {
             const agentId = getSdkAgentId(event);
             const content = typeof data?.content === "string"
@@ -2380,6 +2478,7 @@ export class SessionRunner {
           if (
             context.origin === "live"
             && opts.retryExecute
+            && !opts.minimums?.cancelled
             && originalPromptRecorded
             && providerRetryCount === 0
             && isRetryableProviderError(data)
@@ -2391,6 +2490,7 @@ export class SessionRunner {
           if (
             usedCache
             && !opts.followsRuntimeTurn
+            && !opts.minimums?.continuations
             && isStaleAgentSessionError(data?.message)
             && !turnHadSideEffects
             && !runController.isCompleted()
@@ -2491,23 +2591,9 @@ export class SessionRunner {
             });
             break;
           }
-          console.log(`[sdk] [${sid}] 💤 ${event.type} — done: ${content.length} chars (${elapsed}s)`);
-          endCurrentContextTurn(event);
+          console.log(`[sdk] [${sid}] 💤 ${event.type}: ${content.length} chars (${elapsed}s)`);
           this.recordSpan(opts.idleSpanName, Date.now() - sendStart, sessionId, { chars: content.length });
-          recordRunCompletion(event, context, "done", {
-            finalContentLength: content.length,
-            assistantContentKnown: lastAssistantContent !== undefined,
-          });
-          recordCompletionAttention("done", event);
-          runController.completeDone(
-            content,
-            {
-              ...(pendingTerminalCompletion ? { terminalCompletion: pendingTerminalCompletion } : {}),
-              ...(getSdkEventId(event) ? { sourceEventId: getSdkEventId(event) } : {}),
-              ...(lastAssistantSourceEventId ? { assistantSourceEventId: lastAssistantSourceEventId } : {}),
-            },
-          );
-          pendingTerminalCompletion = undefined;
+          finishOrContinue(event, context);
           break;
         }
         case "session.mcp_servers_loaded": {
@@ -2741,7 +2827,7 @@ export class SessionRunner {
           return;
         }
         const claimSend = () => {
-          if (runController.isCompleted() || pendingProviderRetry !== pending) return false;
+          if (runController.isCompleted() || pendingProviderRetry !== pending || opts.minimums?.cancelled) return false;
           pendingProviderRetry = undefined;
           this.providerRetryWaits.delete(sessionId);
           beginSend();
@@ -2773,14 +2859,16 @@ export class SessionRunner {
 
     const runWatchdogTick = async () => {
       if (runController.isCompleted() || pendingProviderRetry) return;
+      const generation = sendGeneration;
       try {
         const logChanged = await noteLogProgress();
         // A prompt that is still being delivered has not started the main agent yet.
         if (promptDelivered && !runController.isCompleted()) {
           lastRuntimeAnswer = await askRuntimeTwice();
-          if (runController.isCompleted() || pendingProviderRetry) return;
+          if (runController.isCompleted() || pendingProviderRetry || generation !== sendGeneration) return;
           if (lastRuntimeAnswer === "idle" || (lastRuntimeAnswer === "unknown" && logChanged)) {
             const ending = await readPersistedRunEnding(eventsJsonlPath, sendStart);
+            if (generation !== sendGeneration || runController.isCompleted()) return;
             // Without the runtime's word, only an ending that leaves no doubt may end the run.
             if (lastRuntimeAnswer === "idle" || ending.conclusive) {
               finishRunFromLog(ending, lastRuntimeAnswer);

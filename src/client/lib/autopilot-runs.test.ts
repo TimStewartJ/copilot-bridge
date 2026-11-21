@@ -81,5 +81,31 @@ describe("summarizeAutopilotRuns", () => {
     expect(summaries.has(orphan)).toBe(false);
     expect(summaries.has(interrupted)).toBe(false);
   });
-});
 
+  it("puts a Custom Autopilot run's figures on its last pass, not on each pass's card", () => {
+    const first = completion("first", "2026-09-27T10:05:00.000Z");
+    const second = completion("second", "2026-09-27T10:20:00.000Z");
+    const last = completion("last", "2026-09-27T10:40:00.000Z");
+    const summaries = summarize([
+      { type: "message", role: "user", content: "build it", agentMode: "autopilot", timestamp: "2026-09-27T10:00:00.000Z" },
+      first,
+      { type: "continuation", id: "c1" },
+      second,
+      { type: "continuation", id: "c2" },
+      last,
+    ]);
+    expect(summaries.has(first)).toBe(false);
+    expect(summaries.has(second)).toBe(false);
+    expect(summaries.get(last)).toEqual({ turns: 3, durationMs: 40 * 60_000 });
+
+    // A turn the runtime starts later on its own is not part of the run and takes nothing from it.
+    const later = completion("later", "2026-09-27T12:00:00.000Z");
+    const withLater = summarize([
+      { type: "message", role: "user", content: "build it", agentMode: "autopilot", timestamp: "2026-09-27T10:00:00.000Z" },
+      first,
+      later,
+    ]);
+    expect(withLater.get(first)).toEqual({ turns: 1, durationMs: 5 * 60_000 });
+    expect(withLater.has(later)).toBe(false);
+  });
+});

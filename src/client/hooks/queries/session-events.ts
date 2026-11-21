@@ -1,4 +1,5 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { isAutopilot } from "../../../shared/send-mode.js";
 import { isSessionActive, type Session, type SessionModelState, type SessionPlaybookView } from "../../api";
 import type { VoiceSessionActivity } from "../useBackgroundVoiceJobs";
 import type { StatusEvent } from "../../useStatusStream";
@@ -83,7 +84,7 @@ export function projectSessionEvent(
       refetch(queryKeys.dashboard);
       break;
     case "session:mode":
-      patch({ agentMode: event.agentMode === "autopilot" ? "autopilot" : null });
+      patch({ agentMode: isAutopilot(event.agentMode) ? "autopilot" : null });
       break;
     case "session:idle":
       patch({ runState: "idle", intentText: null, voiceIntent: false });

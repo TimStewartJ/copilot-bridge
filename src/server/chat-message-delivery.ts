@@ -1,4 +1,4 @@
-import { DEFAULT_SEND_MODE, type SendMode } from "../shared/send-mode.js";
+import { DEFAULT_SEND_MODE, encodeSendMode, type SendMode } from "../shared/send-mode.js";
 import type { AppContext } from "./app-context.js";
 import { isBackendUnavailableError } from "./backend-availability.js";
 import { queueChatMessageDelivery } from "./chat-message-outbox.js";
@@ -19,7 +19,15 @@ export class ChatMessageIdConflictError extends Error {
 }
 
 /** Browser messages being admitted, by session and id, so a repeat gets the first's outcome. */
-const admittingMessages = new Map<string, Map<string, { prompt: string; outcome: Promise<ChatMessageDelivery> }>>();
+type Admission = { prompt: string; mode?: SendMode; outcome: Promise<ChatMessageDelivery> };
+const admittingMessages = new Map<string, Map<string, Admission>>();
+
+function assertSameMinimums(first: SendMode | undefined, next: SendMode | undefined): void {
+  if ((typeof first === "object" || typeof next === "object")
+    && encodeSendMode(first ?? DEFAULT_SEND_MODE) !== encodeSendMode(next ?? DEFAULT_SEND_MODE)) {
+    throw new ChatMessageIdConflictError();
+  }
+}
 
 export interface ChatMessageDeliveryOptions {
   attachments?: StartWorkAttachment[];
@@ -50,22 +58,25 @@ function findPreviousDelivery(
   sessionId: string,
   clientMessageId: string,
   prompt: string,
+  mode: SendMode | undefined,
 ): ChatMessageDelivery | undefined {
   const sameMessage = (content: string) => {
     if (content !== prompt) throw new ChatMessageIdConflictError();
   };
+  const kept = ctx.unsentMessageStore?.get(sessionId, clientMessageId);
+  if (kept) assertSameMinimums(kept.mode, mode);
   const live = ctx.eventBusRegistry?.getBus(sessionId)?.findUserMessage(clientMessageId);
   if (live) {
     sameMessage(live.content);
     return { delivery: live.undelivered?.state === "stopped" ? "stopped" : "accepted" };
   }
-  const kept = ctx.unsentMessageStore?.get(sessionId, clientMessageId);
   if (kept) {
     sameMessage(kept.content);
     return { delivery: kept.storedState === "stopped" ? "stopped" : "accepted" };
   }
   const queued = ctx.deferredPromptStore?.get(`${CHAT_MESSAGE_DELIVERY_ID_PREFIX}${clientMessageId}`);
   if (queued && queued.sessionId === sessionId) {
+    assertSameMinimums(undefined, mode);
     sameMessage(queued.prompt);
     return { delivery: queued.status === "completed" ? "accepted" : "queued", deliveryId: queued.id };
   }
@@ -84,17 +95,18 @@ export async function sendChatMessage(
   const { attachments, mode, clientMessageId, waitForDelivery, signal } = options;
   const keepUndelivered = options.keepUndelivered === true && Boolean(clientMessageId);
   if (keepUndelivered && clientMessageId) {
-    const admitting = admittingMessages.get(sessionId) ?? new Map<string, { prompt: string; outcome: Promise<ChatMessageDelivery> }>();
+    const admitting = admittingMessages.get(sessionId) ?? new Map<string, Admission>();
     const inFlight = admitting.get(clientMessageId);
     if (inFlight) {
       if (inFlight.prompt !== prompt) throw new ChatMessageIdConflictError();
+      assertSameMinimums(inFlight.mode, mode);
       return inFlight.outcome;
     }
-    const previous = findPreviousDelivery(ctx, sessionId, clientMessageId, prompt);
+    const previous = findPreviousDelivery(ctx, sessionId, clientMessageId, prompt, mode);
     if (previous) return previous;
     // Held until its run starts: a repeat arriving meanwhile shares its outcome.
     const outcome = deliver();
-    admitting.set(clientMessageId, { prompt, outcome });
+    admitting.set(clientMessageId, { prompt, mode, outcome });
     admittingMessages.set(sessionId, admitting);
     try {
       return await outcome;
@@ -173,6 +185,7 @@ export async function sendChatMessage(
     const busyAtSend = manager.isSessionBusy(sessionId);
     try {
       if (busyAtSend) {
+        if (typeof mode === "object") throw new Error("Not accepting steering with minimums. Wait for this run to finish.");
         const isCommand = Boolean(parseSlashCommandPrompt(prompt));
         // A person writing instead of answering sets the open questions aside; a command does not.
         const steerOptions = options.skipOpenQuestions && !isCommand ? { skipOpenQuestions: true } : undefined;

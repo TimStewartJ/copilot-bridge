@@ -7,6 +7,9 @@ import type {
   AgentTrajectoryClassifyResult,
 } from "./agent-backend/types.js";
 import { scanJsonlRecords, withoutCarriageReturn } from "./jsonl-lines.js";
+import { isAutopilotContinuationEvent } from "./event-transform.js";
+import { isCustomContinuationMessage } from "./custom-autopilot.js";
+import { isRecord } from "../shared/is-record.js";
 import { isUnlistedSessionId } from "./unlisted-sessions.js";
 import { isCanonicalSessionId } from "./outbound-attachments.js";
 import type {
@@ -450,6 +453,12 @@ export function buildChatGradeUnits(grades: readonly ChatGrade[]): ChatGradesUni
 
 interface MessageEvent { id: string; type: "user" | "agent"; content: string }
 
+/** Bridge's keep-going prompt is graded as an Autopilot continuation, not a person's prompt. */
+function asGradedEvent(event: unknown): unknown {
+  if (!isCustomContinuationMessage(event) || !isRecord(event) || !isRecord(event.data)) return event;
+  return { ...event, data: { ...event.data, isAutopilotContinuation: true } };
+}
+
 function messageEvent(event: unknown): MessageEvent | undefined {
   if (!event || typeof event !== "object") return undefined;
   const record = event as { type?: unknown; id?: unknown; agentId?: unknown; data?: unknown };
@@ -457,6 +466,8 @@ function messageEvent(event: unknown): MessageEvent | undefined {
   const data = (record.data ?? {}) as { content?: unknown; parentToolCallId?: unknown };
   if (typeof data.parentToolCallId === "string" && data.parentToolCallId) return undefined;
   const content = typeof data.content === "string" ? data.content.trim() : "";
+  // A keep-going prompt is not the person's turn: the reply runs on to the run's real end.
+  if (record.type === "user.message" && isAutopilotContinuationEvent(event)) return undefined;
   if (record.type === "user.message") return { id: record.id, type: "user", content };
   if (record.type === "assistant.message" && content) return { id: record.id, type: "agent", content };
   return undefined;
@@ -544,16 +555,17 @@ export function createChatGrader(deps: ChatGraderDeps) {
     const eventCount = read.events.length;
     try {
       let previousResult: AgentTrajectoryClassifyResult | undefined;
+      const events = read.events.map(asGradedEvent);
       if (keptGrade?.trajectoryFingerprint) {
         // Validation is free: an unchanged log keeps its grade and retries only failed classifiers.
-        const check = await deps.classify({ events: read.events, validateOnly: true });
+        const check = await deps.classify({ events, validateOnly: true });
         if (check.validation && !check.validation.valid) return skip("invalid", eventCount, check.validation.errors.join("; "));
         if (check.trajectoryFingerprint === keptGrade.trajectoryFingerprint) {
           if (!hasRetryableRows(keptGrade.result!)) return;
           previousResult = keptGrade.result;
         }
       }
-      const result = await deps.classify({ events: read.events, ...(previousResult ? { previousResult } : {}) });
+      const result = await deps.classify({ events, ...(previousResult ? { previousResult } : {}) });
       if (result.validation && !result.validation.valid) return skip("invalid", eventCount, result.validation.errors.join("; "));
       const { validation: _validation, ...kept } = result;
       deps.store.save({

@@ -5096,6 +5096,7 @@ export class SessionManager {
   ): Promise<boolean> {
     // Anyone else's stop means an image-budget pause must not continue the turn.
     const cancelledPause = !options.forImageBudget && this.imageBudget.cancelPause(sessionId);
+    this.sessionRunner.cancelCustomAutopilot(sessionId);
     if (this.sessionRunner.cancelProviderRetry(sessionId)) return true;
     if (!this.runStateController.hasSessionRun(sessionId)) return cancelledPause;
 
@@ -5928,8 +5929,10 @@ export class SessionManager {
     return this.runStateController.isSessionStalled(sessionId);
   }
 
-  /** A loaded session's CLI mode; undefined when not loaded or unknown. */
+  /** While working, a Bridge-owned mode takes precedence over the underlying CLI mode. */
   getSessionAgentMode(sessionId: string): SendMode | undefined {
+    const bus = this.deps.eventBusRegistry.getBus(sessionId);
+    if (bus && !bus.complete) return bus.getRunMode() ?? this.sessionRunner.getSessionAgentMode(sessionId);
     return this.sessionRunner.getSessionAgentMode(sessionId);
   }
 

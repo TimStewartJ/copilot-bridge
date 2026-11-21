@@ -6,6 +6,8 @@ import { writeRestartState } from "../restart-state.js";
 import { SessionManager } from "../session-manager.js";
 import { AUTOMATIC_ANSWERS, unshowableQuestionAnswer } from "../../shared/automatic-answer.js";
 import { PROVIDER_RETRY_DELAY_MS, PROVIDER_RETRY_PROMPT } from "../session-provider-retry.js";
+import { CUSTOM_CONTINUATION_SOURCE, customContinuationPrompt, isCustomContinuationMessage } from "../custom-autopilot.js";
+import { MAX_IDLE_PASSES, type SendMode } from "../../shared/send-mode.js";
 
 import { BrowserBroker } from "../browser-broker.js";
 import { BrowserSessionStore } from "../browser-session-store.js";
@@ -165,13 +167,13 @@ describe("SessionManager run state", () => {
   }
 
   /** Starts a run whose prompt the runtime accepted, logging under a temp Copilot home. */
-  async function startDeliveredRun(name: string) {
+  async function startDeliveredRun(name: string, mode?: SendMode) {
     const created = createManager({ copilotHome: makeTestDir(name), telemetry: true });
     const made = makeSession();
     created.manager.backend = { resumeSession: vi.fn().mockResolvedValue(made.session) };
     const sessionId = `session-${name}`;
     const bus = created.eventBusRegistry.getOrCreateBus(sessionId);
-    created.manager.startWork(sessionId, "hello");
+    created.manager.startWork(sessionId, "hello", undefined, { mode });
     await flushMicrotasks();
     made.getReleaseSend()?.();
     await flushMicrotasks();
@@ -221,6 +223,163 @@ describe("SessionManager run state", () => {
       data: { statusCode: 400, message: "Execution failed: 400 internal server error", providerCallId: "request-1" },
     };
   }
+
+  /** One Custom Autopilot pass in the order the runtime reports it, running `tools` tools. */
+  async function customPass(
+    run: Awaited<ReturnType<typeof startDeliveredRun>>,
+    id: string,
+    { charge = 0, tools = 1 }: { charge?: number; tools?: number } = {},
+  ) {
+    const emit = run.getHandler()!;
+    emit({ id: `user-${id}`, type: "user.message", data: { content: "" } });
+    emit({ type: "assistant.turn_start", data: { turnId: id } });
+    const usage = { type: "assistant.usage", id: `usage-${id}`, data: { copilotUsage: { totalNanoAiu: charge } } };
+    emit(usage);
+    emit(usage);
+    for (let i = 0; i < tools; i++) {
+      emit({ type: "tool.execution_start", data: { toolCallId: `${id}-tool-${i}`, toolName: "bash" } });
+      emit({ type: "tool.execution_complete", data: { toolCallId: `${id}-tool-${i}`, success: true } });
+    }
+    emit({ type: "tool.execution_start", data: { toolCallId: `${id}-done`, toolName: "task_complete" } });
+    emit({ type: "session.task_complete", data: {} });
+    emit({ type: "assistant.turn_end", data: {} });
+    emit({ type: "session.autopilot_stopped", data: { reason: "task_complete" } });
+    emit({ type: "assistant.idle", data: {} });
+    emit({ type: "session.idle", data: {} });
+    emit({ type: "session.idle", data: {} });
+    await flushMicrotasks();
+    run.getReleaseSend()?.();
+    await flushMicrotasks();
+  }
+
+  /** The prompt of the latest keep-going pass Bridge sent. */
+  function lastNudge(run: Awaited<ReturnType<typeof startDeliveredRun>>): string | undefined {
+    const args = run.session.send.mock.lastCall as Array<{ displayPrompt?: string }> | undefined;
+    return args?.[0]?.displayPrompt;
+  }
+
+  it.each([undefined, 2])("continues to the time minimum with a spend floor of %s", async (minAiCredits) => {
+    const run = await startDeliveredRun("minimums", { kind: "custom-autopilot", minMinutes: 0.1, minAiCredits });
+    await customPass(run, "one", { charge: 1_000_000_000 });
+    expect(run.session.send).toHaveBeenCalledTimes(2);
+    const nudge: unknown = (run.session.send.mock.lastCall as unknown[] | undefined)?.[0];
+    expect(nudge).toMatchObject({ source: CUSTOM_CONTINUATION_SOURCE });
+    expect(isCustomContinuationMessage({ type: "user.message", data: nudge })).toBe(true);
+    expect(run.bus.getSnapshot().customAutopilot).toMatchObject({ continuations: 1 });
+    await customPass(run, "two", { charge: 1_000_000_000 });
+    expect(run.session.send).toHaveBeenCalledTimes(3);
+    expect(lastNudge(run)).toBe(customContinuationPrompt(1));
+    await vi.advanceTimersByTimeAsync(6_000);
+    await customPass(run, "three");
+    expect(run.session.send).toHaveBeenCalledTimes(3);
+    expect(run.bus.getTerminalState().terminalType).toBe("done");
+    expect(run.manager.getSessionRunState(run.sessionId)).toBe("idle");
+    run.manager.startWork(run.sessionId, "A new prompt");
+    await flushMicrotasks();
+    run.getReleaseSend()?.();
+    await flushMicrotasks();
+    await customPass(run, "next");
+    expect(run.session.send).toHaveBeenCalledTimes(4);
+    expect(run.eventBusRegistry.getBus(run.sessionId)?.getSnapshot().runMode).toBe("interactive");
+  });
+
+  it("ends a run the runtime aborted", async () => {
+    const run = await startDeliveredRun("minimum-runtime-abort", { kind: "custom-autopilot", minMinutes: 30 });
+    const emit = run.getHandler()!;
+    emit({ type: "assistant.turn_start", data: { turnId: "a" } });
+    emit({ type: "assistant.turn_end", data: {} });
+    emit({ type: "session.idle", data: { aborted: true } });
+    await flushMicrotasks();
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.bus.getTerminalState().terminalType).toBe("aborted");
+  });
+
+  it("ends as done once the agent stops without a tool five times in a row, counting again after real work", async () => {
+    const run = await startDeliveredRun("minimum-idle-passes", { kind: "custom-autopilot", minMinutes: 30 });
+    for (let i = 1; i < MAX_IDLE_PASSES; i++) await customPass(run, `idle-${i}`, { tools: 0 });
+    await customPass(run, "work");
+    for (let i = 1; i < MAX_IDLE_PASSES; i++) await customPass(run, `again-${i}`, { tools: 0 });
+    expect(run.session.send).toHaveBeenCalledTimes(2 * MAX_IDLE_PASSES);
+    expect(run.bus.getTerminalState().complete).toBe(false);
+    await customPass(run, "last", { tools: 0 });
+    expect(run.session.send).toHaveBeenCalledTimes(2 * MAX_IDLE_PASSES);
+    expect(run.bus.getTerminalState().terminalType).toBe("done");
+  });
+
+  it("counts a sub-agent's spend toward the minimum only when this run started that sub-agent", async () => {
+    const run = await startDeliveredRun("minimum-foreign-child", { kind: "custom-autopilot", minAiCredits: 3 });
+    run.getHandler()!({
+      type: "assistant.usage", id: "foreign",
+      data: { interactionType: "conversation-subagent", copilotUsage: { totalNanoAiu: 3_000_000_000 } },
+    });
+    await customPass(run, "one", { charge: 1_000_000_000 });
+    expect(run.session.send).toHaveBeenCalledTimes(2);
+    expect(run.bus.getTerminalState().complete).toBe(false);
+  });
+
+  it("retries a provider error on a later pass once, then keeps going to the minimum", async () => {
+    const run = await startDeliveredRun("minimum-later-retry", { kind: "custom-autopilot", minMinutes: 30 });
+    run.session.getActivity.mockResolvedValue({ processing: false });
+    recordRetryPrompt(run);
+    await customPass(run, "one");
+    expect(run.session.send).toHaveBeenCalledTimes(2);
+    run.getHandler()!(internalError(run));
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS);
+    await flushMicrotasks();
+    expect(run.session.send).toHaveBeenCalledTimes(3);
+    expect(run.session.send).toHaveBeenLastCalledWith({ prompt: PROVIDER_RETRY_PROMPT, source: "system" });
+    await customPass(run, "retried");
+    // After a retry the watchdog's idle answer ends the pass; its file reads need real turns too.
+    for (let second = 0; second < 300 && run.session.send.mock.calls.length < 4; second++) {
+      await new Promise<void>((resolve) => realSetImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(run.session.send).toHaveBeenCalledTimes(4);
+    expect(lastNudge(run)).toBe(customContinuationPrompt(1));
+    expect(run.bus.getTerminalState().complete).toBe(false);
+  });
+
+  it("keeps going after one pass with no reported spend and stops with a reason after two", async () => {
+    const run = await startDeliveredRun("minimum-unbilled", { kind: "custom-autopilot", minAiCredits: 2 });
+    await customPass(run, "one");
+    expect(run.session.send).toHaveBeenCalledTimes(2);
+    await customPass(run, "two");
+    expect(run.session.send).toHaveBeenCalledTimes(2);
+    expect(run.bus.getTerminalState().terminalType).toBe("error");
+  });
+
+  it.each(["stop", "error"])("does not start a minimum-spend continuation after %s", async (ending) => {
+    const run = await startDeliveredRun("minimum-stop", { kind: "custom-autopilot", minAiCredits: 2 });
+    const emit = run.getHandler()!;
+    emit({ type: "assistant.turn_start", data: { turnId: "a" } });
+    emit({ type: "assistant.usage", id: "paid", data: { copilotUsage: { totalNanoAiu: 1_000_000 } } });
+    if (ending === "stop") {
+      const stopped = run.manager.abortSession(run.sessionId);
+      await flushMicrotasks();
+      emit({ type: "abort", data: { reason: "user initiated" } });
+      await stopped;
+    } else {
+      emit(internalError(run));
+    }
+    emit({ type: "assistant.turn_end", data: {} });
+    emit({ type: "session.idle", data: {} });
+    await flushMicrotasks();
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    expect(run.bus.getTerminalState().terminalType).toBe(ending === "stop" ? "aborted" : "error");
+  });
+
+  it("does not retry a provider error that lands while Stop is on its way", async () => {
+    const run = await startDeliveredRun("minimum-stop-retry", { kind: "custom-autopilot", minMinutes: 30 });
+    run.session.getActivity.mockResolvedValue({ processing: false });
+    recordRetryPrompt(run);
+    run.session.abort.mockImplementation(() => new Promise(() => {}));
+    const stopped = run.manager.abortSession(run.sessionId);
+    run.getHandler()?.(internalError(run));
+    await vi.advanceTimersByTimeAsync(PROVIDER_RETRY_DELAY_MS + 3_000);
+    await flushMicrotasks();
+    expect(run.session.send).toHaveBeenCalledTimes(1);
+    void stopped;
+  });
 
   it("waits exactly five seconds, continues once without attachments, and preserves mode", async () => {
     const run = await startDeliveredRun("provider-retry");

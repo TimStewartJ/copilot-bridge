@@ -489,7 +489,7 @@ describe("Session routes (mocked)", () => {
     expect((await request(app).delete("/api/sessions/test-session/unsent-messages/client-old")).status).toBe(404);
   });
 
-  it("POST /api/chat waits for first-prompt delivery when requested", async () => {
+  it.each(["autopilot", { kind: "custom-autopilot", minAiCredits: 0.25 }])("POST /api/chat waits for delivery in mode %j", async (mode) => {
     const { app, ctx } = createTestApp();
     ctx.sessionManager.startWork = vi.fn();
     ctx.sessionManager.startWorkAndWaitForDelivery = vi.fn().mockResolvedValue(undefined);
@@ -499,7 +499,7 @@ describe("Session routes (mocked)", () => {
       .send({
         sessionId: "test-session",
         prompt: "hello",
-        mode: "autopilot",
+        mode,
         waitForDelivery: true,
       });
 
@@ -508,18 +508,19 @@ describe("Session routes (mocked)", () => {
       "test-session",
       "hello",
       undefined,
-      { mode: "autopilot" },
+      { mode },
     );
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it("POST /api/chat rejects unsupported send modes", async () => {
+  it.each(["plan", { kind: "custom-autopilot" }, { kind: "custom-autopilot", minMinutes: -1 },
+    { kind: "custom-autopilot", minAiCredits: "10" }])("POST /api/chat rejects invalid mode %j", async (mode) => {
     const { app, ctx } = createTestApp();
     ctx.sessionManager.startWork = vi.fn();
 
     const res = await request(app)
       .post("/api/chat")
-      .send({ sessionId: "test-session", prompt: "hello", mode: "plan" });
+      .send({ sessionId: "test-session", prompt: "hello", mode });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("mode must be one of");
@@ -603,6 +604,7 @@ describe("Session routes (mocked)", () => {
 
     for (const body of [
       { prompt: "adjust course", mode: "autopilot" },
+      { prompt: "adjust course", mode: { kind: "custom-autopilot", minMinutes: 1 } },
       { prompt: "adjust course", attachments: [{ type: "file", path: "D:/a.txt" }] },
       { prompt: "/goal finish" },
       { prompt: "adjust course", waitForDelivery: true },

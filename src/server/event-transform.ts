@@ -1,4 +1,5 @@
 import { win32 as winPath } from "node:path";
+import { isCustomContinuationMessage } from "./custom-autopilot.js";
 import {
   buildSubagentInstructions,
   SubagentCorrelator,
@@ -269,8 +270,9 @@ function isAgentInjectedSystemMessage(event: unknown): boolean {
   return typeof source === "string" && source.trim().toLowerCase() === "system";
 }
 
-/** An autopilot turn the CLI started: an empty `user.message`, the CLI's own rewind-list test. */
+/** Native continuation markers and the Bridge's own automatic follow-ups aren't user speech. */
 export function isAutopilotContinuationEvent(event: unknown): boolean {
+  if (isCustomContinuationMessage(event)) return true;
   if (eventType(event) !== "user.message" || isSdkAgentUserMessage(event) || isAgentInjectedSystemMessage(event)) {
     return false;
   }
@@ -328,7 +330,7 @@ export function isVisibleMessageEvent(event: unknown, sessionId?: string): boole
   const type = eventType(event);
 
   if (type === "user.message") {
-    if (isAgentInjectedSystemMessage(event) || isSdkAgentUserMessage(event)) return false;
+    if (isAgentInjectedSystemMessage(event) || isSdkAgentUserMessage(event) || isAutopilotContinuationEvent(event)) return false;
     return Boolean(messageText(data).trim() || hasAttachments(data));
   }
 
@@ -870,7 +872,7 @@ export function transformEventsToMessages(
         });
       }
     } else if (type === "user.message") {
-      if (isAgentInjectedSystemMessage(event)) continue;
+      if (isAgentInjectedSystemMessage(event) && !isCustomContinuationMessage(event)) continue;
       if (isSdkAgentUserMessage(event)) continue;
       if (isAutopilotContinuationEvent(event)) {
         entries.push({

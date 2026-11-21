@@ -29,10 +29,13 @@ export function summarizeAutopilotRuns(blocks: ChatRenderBlock[]): Map<ChatCompl
     uncertain: boolean;
     playbook?: string;
     report?: RecordedVerification;
+    /** The completion that ended the run, until a continuation shows it was one pass of several. */
+    ended?: ChatCompletionEntry;
   } | null = null;
   for (const block of blocks) {
     if (block.type === "message") {
       if (block.entry.role !== "user") continue;
+      if (run?.ended) run = null;
       if (block.entry.agentMode !== "autopilot") {
         run = null;
       } else if (run) {
@@ -63,11 +66,16 @@ export function summarizeAutopilotRuns(blocks: ChatRenderBlock[]): Map<ChatCompl
       }
     }
     if (block.type === "continuation-segment") {
+      if (run?.ended) {
+        summaries.delete(run.ended);
+        run.ended = undefined;
+      }
       if (run) run.continuations += block.count;
       continue;
     }
     if (block.type === "completion-segment") {
-      if (!run) continue;
+      // A later completion without a continuation between belongs to another run, not this one.
+      if (!run || run.ended) continue;
       const endedAt = time(block.entry.timestamp);
       summaries.set(block.entry, run.uncertain ? {} : {
         turns: run.continuations + 1,
@@ -76,7 +84,7 @@ export function summarizeAutopilotRuns(blocks: ChatRenderBlock[]): Map<ChatCompl
           ? { durationMs: endedAt - run.startedAt }
           : {}),
       });
-      run = null;
+      run.ended = block.entry;
     }
   }
   return summaries;

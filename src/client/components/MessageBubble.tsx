@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { CircleAlert, Clock, RotateCcw, TextSelect } from "lucide-react";
 import type { ChatMessage } from "../api";
+import { isAutopilot } from "../../shared/send-mode.js";
 import { buildToolCallForest } from "../lib/tool-call-tree";
 import remarkWikilink from "../lib/remark-wikilink";
 import ToolCallTree from "./ToolCallTree";
@@ -130,7 +131,7 @@ export default memo(function MessageBubble({
     const unsent = message.unsent;
     const unsentReason = unsent ? UNSENT_REASON[unsent.state] : undefined;
     const deliveryState = unsent ? "unsent" : isFailed ? "failed" : isQueued ? "queued" : isPending ? "sending" : "sent";
-    const sentWithAutopilot = message.agentMode === "autopilot" || message.delivery?.mode === "autopilot";
+    const sentWithAutopilot = message.agentMode === "autopilot" || isAutopilot(message.delivery?.mode);
     return (
       <div className="flex justify-end">
         <div

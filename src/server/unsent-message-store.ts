@@ -1,7 +1,7 @@
 // Accepted messages not yet saved by the runtime, so Stop, failed start or restart can't lose them.
 
 import type { DatabaseSync } from "./db.js";
-import { isSendMode, type SendMode } from "../shared/send-mode.js";
+import { decodeSendMode, encodeSendMode, type SendMode } from "../shared/send-mode.js";
 import {
   isUnsentMessageState,
   type UnsentMessageAttachment,
@@ -76,11 +76,12 @@ function parseAttachments(json: string | null): UnsentMessageAttachment[] | unde
 function toView(row: Row): UnsentMessageView | undefined {
   if (!isUnsentMessageState(row.state)) return undefined;
   const attachments = parseAttachments(row.attachmentsJson);
+  const mode = decodeSendMode(row.mode);
   return {
     id: row.id,
     content: row.content,
     ...(attachments ? { attachments } : {}),
-    ...(row.mode && isSendMode(row.mode) ? { mode: row.mode } : {}),
+    ...(mode ? { mode } : {}),
     state: row.state,
     ...(row.error ? { error: row.error } : {}),
     createdAt: row.createdAt,
@@ -135,7 +136,7 @@ export function createUnsentMessageStore(db: DatabaseSync) {
         message.id,
         message.content,
         message.attachments?.length ? JSON.stringify(message.attachments) : null,
-        message.mode ?? null,
+        message.mode ? encodeSendMode(message.mode) : null,
         at,
         at,
       );
