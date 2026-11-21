@@ -1,11 +1,13 @@
 import { useId, useState } from "react";
-import { isCustomAutopilot, MAX_AI_CREDITS, MAX_MINUTES, type CustomAutopilot } from "../../../shared/send-mode.js";
+import {
+  isCustomAutopilot, MAX_AI_CREDITS, MAX_MINUTES, MIN_AI_CREDITS, MIN_MINUTES, type CustomAutopilot,
+} from "../../../shared/send-mode.js";
 import Dialog from "../../design/Dialog";
 import { Button, FormRow, TextInput } from "../../design/primitives";
 import { DS } from "../../design/tokens";
 
-const MINUTE_PRESETS = [15, 30, 60, 120, 240, 480, 1440];
-const CREDIT_PRESETS = [50, 250, 1_000, 2_500, 10_000];
+const MINUTE_PRESETS = [60, 120, 240, 480, 720, 1440];
+const CREDIT_PRESETS = [2_500, 5_000, 10_000, 25_000, 50_000];
 
 export function formatMinutes(minutes: number): string {
   if (minutes < 60) return `${Math.round(minutes * 10) / 10} min`;
@@ -47,7 +49,7 @@ export default function CustomAutopilotDialog({ value, comparing, onApply, onClo
         if (isCustomAutopilot(mode)) onApply(mode);
       }}>
         <FormRow label="Minimum minutes" htmlFor={`${id}-minutes`}>
-          <TextInput id={`${id}-minutes`} type="number" step="any" min="0" max={MAX_MINUTES}
+          <TextInput id={`${id}-minutes`} type="number" step="1" min={MIN_MINUTES} max={MAX_MINUTES}
             placeholder="Optional" value={minutes} onChange={(event) => setMinutes(event.target.value)} />
           <div className="mt-2 flex flex-wrap gap-1.5" data-minimum-presets="minutes">
             {MINUTE_PRESETS.map((preset) => (
@@ -59,7 +61,7 @@ export default function CustomAutopilotDialog({ value, comparing, onApply, onClo
           </div>
         </FormRow>
         <FormRow label="Minimum AI credits" htmlFor={`${id}-credits`}>
-          <TextInput id={`${id}-credits`} type="number" step="any" min="0" max={MAX_AI_CREDITS}
+          <TextInput id={`${id}-credits`} type="number" step="1" min={MIN_AI_CREDITS} max={MAX_AI_CREDITS}
             placeholder="Optional" value={credits} onChange={(event) => setCredits(event.target.value)} />
           <div className="mt-2 flex flex-wrap gap-1.5" data-minimum-presets="credits">
             {CREDIT_PRESETS.map((preset) => (
@@ -74,7 +76,7 @@ export default function CustomAutopilotDialog({ value, comparing, onApply, onClo
         <p className={DS.text.meta}>Stops when every minimum is met or the agent runs out of work. Spend can go over.</p>
         {comparing && <p className={DS.text.meta}>No model comparison runs for this chat.</p>}
         {!valid && (minutes || credits) && <p role="alert" className={DS.tone.warning}>
-          Enter positive values up to {formatMinutes(MAX_MINUTES)} or {formatCredits(MAX_AI_CREDITS)}.
+          Use whole numbers: {formatMinutes(MIN_MINUTES)} to {formatMinutes(MAX_MINUTES)}, {MIN_AI_CREDITS} to {formatCredits(MAX_AI_CREDITS)}.
         </p>}
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>

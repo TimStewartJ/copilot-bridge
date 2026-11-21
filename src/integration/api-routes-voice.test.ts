@@ -261,7 +261,7 @@ describe("Voice job routes", () => {
     expect(jobRes.body.status).toBe("done");
   });
 
-  it.each(["autopilot", { kind: "custom-autopilot", minMinutes: 2, minAiCredits: 1.5 }])(
+  it.each(["autopilot", { kind: "custom-autopilot", minMinutes: 20, minAiCredits: 150 }])(
     "POST /api/voice-jobs carries %j through transcription and rejects unknown modes", async (mode) => {
     const sessionManager = createMockSessionManager();
     sessionManager.startWork = vi.fn();

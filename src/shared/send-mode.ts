@@ -17,22 +17,24 @@ export interface CustomAutopilotProgress {
 }
 
 export const DEFAULT_SEND_MODE = "interactive" as const;
+export const MIN_MINUTES = 10;
 export const MAX_MINUTES = 24 * 60;
-export const MAX_AI_CREDITS = 10_000;
+export const MIN_AI_CREDITS = 100;
+export const MAX_AI_CREDITS = 100_000;
 /** Custom Autopilot ends once the agent stops this many times in a row without using a tool. */
 export const MAX_IDLE_PASSES = 5;
 export const INVALID_SEND_MODE = "mode must be one of: interactive, autopilot, or custom-autopilot with valid minimums";
 
-function validFloor(value: unknown, max: number): boolean {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= max;
+function validFloor(value: unknown, min: number, max: number): boolean {
+  return Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
 }
 
 export function isCustomAutopilot(value: unknown): value is CustomAutopilot {
   return isRecord(value) && value.kind === "custom-autopilot"
     && Object.keys(value).every((key) => key === "kind" || key === "minMinutes" || key === "minAiCredits")
     && (value.minMinutes !== undefined || value.minAiCredits !== undefined)
-    && (value.minMinutes === undefined || validFloor(value.minMinutes, MAX_MINUTES))
-    && (value.minAiCredits === undefined || validFloor(value.minAiCredits, MAX_AI_CREDITS));
+    && (value.minMinutes === undefined || validFloor(value.minMinutes, MIN_MINUTES, MAX_MINUTES))
+    && (value.minAiCredits === undefined || validFloor(value.minAiCredits, MIN_AI_CREDITS, MAX_AI_CREDITS));
 }
 
 export function isSendMode(value: unknown): value is SendMode {

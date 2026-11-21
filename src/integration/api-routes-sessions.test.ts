@@ -489,7 +489,7 @@ describe("Session routes (mocked)", () => {
     expect((await request(app).delete("/api/sessions/test-session/unsent-messages/client-old")).status).toBe(404);
   });
 
-  it.each(["autopilot", { kind: "custom-autopilot", minAiCredits: 0.25 }])("POST /api/chat waits for delivery in mode %j", async (mode) => {
+  it.each(["autopilot", { kind: "custom-autopilot", minAiCredits: 250 }])("POST /api/chat waits for delivery in mode %j", async (mode) => {
     const { app, ctx } = createTestApp();
     ctx.sessionManager.startWork = vi.fn();
     ctx.sessionManager.startWorkAndWaitForDelivery = vi.fn().mockResolvedValue(undefined);
@@ -513,8 +513,9 @@ describe("Session routes (mocked)", () => {
     expect(ctx.sessionManager.startWork).not.toHaveBeenCalled();
   });
 
-  it.each(["plan", { kind: "custom-autopilot" }, { kind: "custom-autopilot", minMinutes: -1 },
-    { kind: "custom-autopilot", minAiCredits: "10" }])("POST /api/chat rejects invalid mode %j", async (mode) => {
+  it.each(["plan", { kind: "custom-autopilot" }, { kind: "custom-autopilot", minMinutes: 9 },
+    { kind: "custom-autopilot", minMinutes: 30.5 }, { kind: "custom-autopilot", minAiCredits: 99 },
+    { kind: "custom-autopilot", minAiCredits: 100_001 }, { kind: "custom-autopilot", minAiCredits: "1000" }])("POST /api/chat rejects invalid mode %j", async (mode) => {
     const { app, ctx } = createTestApp();
     ctx.sessionManager.startWork = vi.fn();
 
@@ -604,7 +605,7 @@ describe("Session routes (mocked)", () => {
 
     for (const body of [
       { prompt: "adjust course", mode: "autopilot" },
-      { prompt: "adjust course", mode: { kind: "custom-autopilot", minMinutes: 1 } },
+      { prompt: "adjust course", mode: { kind: "custom-autopilot", minMinutes: 10 } },
       { prompt: "adjust course", attachments: [{ type: "file", path: "D:/a.txt" }] },
       { prompt: "/goal finish" },
       { prompt: "adjust course", waitForDelivery: true },

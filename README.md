@@ -631,8 +631,8 @@ Autopilot. The workaround dates from CLI 1.0.95; remove it once a native mode-sw
 
 **Custom Autopilot** is Autopilot with a minimum for one prompt (`CustomAutopilot` in
 `src/shared/send-mode.ts`). Choose it on the new-chat screen, or turn on Autopilot in an open chat
-and select **Set minimums**. Enter minutes, AI credits or both (presets or exact values, up to
-`MAX_MINUTES` and `MAX_AI_CREDITS`). The minimums travel with the send mode, so they also apply to
+and select **Set minimums**. Enter minutes, AI credits or both (presets or exact whole numbers,
+from `MIN_MINUTES` to `MAX_MINUTES` and `MIN_AI_CREDITS` to `MAX_AI_CREDITS`). The minimums travel with the send mode, so they also apply to
 dictated messages and to a not-sent message sent again.
 
 The agent is never told about the minimum, its time or its spend, because telling it changes how

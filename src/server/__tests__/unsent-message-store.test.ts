@@ -30,7 +30,7 @@ describe("unsent message store", () => {
 
   it("lets one resend win, puts a failed resend back, and keeps dismissed ids", () => {
     const store = createUnsentMessageStore(setupTestDb());
-    const mode = { kind: "custom-autopilot" as const, minMinutes: 5, minAiCredits: 1.5 };
+    const mode = { kind: "custom-autopilot" as const, minMinutes: 20, minAiCredits: 150 };
     store.recordPending({ sessionId: "s1", id: "m1", content: "hello", mode });
     store.markUndelivered("s1", "m1", "stopped");
 
