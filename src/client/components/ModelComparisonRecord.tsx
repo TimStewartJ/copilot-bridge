@@ -3,7 +3,8 @@ import { useModelComparisonQuery } from "../hooks/queries/useModelComparison";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { Details, Field, FieldList, Section } from "../design/primitives";
 import { DS, cx } from "../design/tokens";
-import { describeComparisonSetup, judgeRunLabel, judgeVerdict, verdictLabel } from "../lib/model-comparison-display";
+import { describeComparisonSetup, judgeVerdict, verdictLabel } from "../lib/model-comparison-display";
+import ComparisonJudgeRuns from "./ComparisonJudgeRuns";
 
 /** A pair the user combined or dismissed, kept in Session details once the chat bar is gone. */
 export default function ModelComparisonRecord({ sessionId }: { sessionId: string }) {
@@ -47,15 +48,8 @@ export default function ModelComparisonRecord({ sessionId }: { sessionId: string
         {judge && <Field label={judge.judgesAsked > 1 ? "Judges" : "Judge"}>{judgeVerdict(judge)}</Field>}
       </FieldList>
       {judge && judge.runs.length > 0 && (
-        <Details label="Judges' reasons" className="mt-2">
-          <ul className="space-y-2">
-            {judge.runs.map((run, index) => (
-              <li key={`${run.model}-${index}`} className={DS.text.prose}>
-                <span className="text-text-primary">{judgeRunLabel(run, name)}: {verdictLabel(run.winner)}.</span>{" "}
-                {run.reason}
-              </li>
-            ))}
-          </ul>
+        <Details label="Judges' findings" className="mt-2">
+          <ComparisonJudgeRuns judge={judge} name={name} />
         </Details>
       )}
     </Section>

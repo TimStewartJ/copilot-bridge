@@ -61,9 +61,23 @@ export interface ModelComparisonTurnMetrics {
   aiCredits?: number;
 }
 
-export type ModelComparisonCriterion = "outcome" | "correctness" | "efficiency" | "clarity";
+/** Judges score the result only; time, cost and steps are left out on purpose. */
+export type ModelComparisonCriterion = "outcome" | "correctness" | "clarity";
 
-export const MODEL_COMPARISON_CRITERIA: readonly ModelComparisonCriterion[] = ["outcome", "correctness", "efficiency", "clarity"];
+export const MODEL_COMPARISON_CRITERIA: readonly ModelComparisonCriterion[] = ["outcome", "correctness", "clarity"];
+
+/** only: this side found something the other missed; wrong: a claim checked and false. */
+export type ModelComparisonFindingKind = "only" | "wrong";
+
+export const MODEL_COMPARISON_FINDING_KINDS: readonly ModelComparisonFindingKind[] = ["only", "wrong"];
+
+/** One thing a judge says the user could miss about one side. */
+export interface ModelComparisonFinding {
+  arm: ModelAbTestArm;
+  kind: ModelComparisonFindingKind;
+  /** The judge's own words, shown as written. */
+  text: string;
+}
 
 export type ModelComparisonScores = Record<ModelComparisonCriterion, number>;
 
@@ -78,6 +92,8 @@ export interface ModelComparisonJudgeRun {
   scores: Record<ModelAbTestArm, ModelComparisonScores>;
   /** The judge's own words, shown as written. */
   reason: string;
+  /** Missing on verdicts from before judges reported findings. */
+  findings?: ModelComparisonFinding[];
 }
 
 /** An arm wins only when every judge picked it in both orders; any disagreement is a split. */
@@ -119,7 +135,13 @@ export interface ModelComparisonView {
       verdict: ModelComparisonSide | "tie" | "split";
       judgesAsked: number;
       judgesCounted: number;
-      runs: Array<{ model: string; winner: ModelComparisonSide | "tie"; reason: string; firstSide?: ModelComparisonSide }>;
+      runs: Array<{
+        model: string;
+        winner: ModelComparisonSide | "tie";
+        reason: string;
+        firstSide?: ModelComparisonSide;
+        findings?: Array<{ side: ModelComparisonSide; kind: ModelComparisonFindingKind; text: string }>;
+      }>;
     };
   };
   failure?: string;

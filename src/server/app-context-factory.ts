@@ -311,13 +311,23 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
         .some((prompt) => prompt.status === "pending" || prompt.status === "running")
       || interruptedRunStore.list().some((marker) => marker.sessionId === sessionId),
     abort: async (sessionId) => { await sessionManager.abortSession(sessionId); },
-    askJudge: async ({ model, reasoningEffort, contextTier, system, prompt, timeoutMs }) => {
+    askJudge: async ({ model, reasoningEffort, contextTier, system, prompt, tools, builtInTools, timeoutMs }) => {
       const helper = await sessionManager.createHelperSession({
         clientName: "Copilot Bridge Comparison",
         model,
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(contextTier ? { contextTier } : {}),
         systemMessage: { mode: "replace", content: system },
+        // Only these: no shell, no file tools, no MCP or Bridge tools.
+        availableTools: [...tools.map((tool) => tool.name), ...builtInTools],
+        tools: tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+          defer: "never",
+          skipPermission: true,
+          handler: (args: unknown) => tool.handler(args),
+        })),
       });
       try {
         const response = await helper.session.sendAndWait({ prompt, attachments: [] }, timeoutMs) as { data?: { content?: unknown } } | undefined;

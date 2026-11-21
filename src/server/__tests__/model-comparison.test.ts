@@ -3,6 +3,7 @@ import { setupTestDb } from "./helpers.js";
 import {
   createModelComparisonService,
   createModelComparisonStore,
+  judgeEvidenceTools,
   parseJudgeReply,
   pickJudges,
   readFirstTurn,
@@ -89,12 +90,34 @@ describe("readFirstTurn", () => {
 });
 
 describe("parseJudgeReply", () => {
-  const scores = { outcome: 4, correctness: 5, efficiency: 3, clarity: 4 };
+  const scores = { outcome: 4, correctness: 5, clarity: 4 };
   it("accepts the asked-for JSON, even wrapped in other text, and rejects any other shape", () => {
     expect(parseJudgeReply(`Here: {"scores":{"1":${JSON.stringify(scores)},"2":${JSON.stringify(scores)}},"winner":"2","reason":"Checked its work."}`))
-      .toEqual({ winner: "2", scores: { "1": scores, "2": scores }, reason: "Checked its work." });
+      .toEqual({ winner: "2", scores: { "1": scores, "2": scores }, reason: "Checked its work.", findings: [] });
     expect(parseJudgeReply(`{"scores":{"1":${JSON.stringify(scores)},"2":${JSON.stringify({ ...scores, clarity: 9 })}},"winner":"1"}`)).toBeUndefined();
     expect(parseJudgeReply(`{"scores":{"1":${JSON.stringify(scores)},"2":${JSON.stringify(scores)}},"winner":"A"}`)).toBeUndefined();
+  });
+
+  it("keeps well-formed findings and drops malformed ones without losing the verdict", () => {
+    const findings = [
+      { response: "2", kind: "wrong", text: "The deadline is Saturday, not Sunday." },
+      { response: "3", kind: "only", text: "No such response." },
+      { response: "1", kind: "missed", text: "Unknown kind." },
+      { response: "1", kind: "only" },
+    ];
+    expect(parseJudgeReply(JSON.stringify({ findings, scores: { "1": scores, "2": scores }, winner: "1", reason: "" }))?.findings)
+      .toEqual([{ response: "2", kind: "wrong", text: "The deadline is Saturday, not Sunday." }]);
+  });
+});
+
+describe("judgeEvidenceTools", () => {
+  const tools = judgeEvidenceTools({ "1": "Assistant: first\nTool call bash: (a+)+$ ran", "2": "" });
+  const call = (name: string, args: unknown) => tools.find((tool) => tool.name === name)!.handler(args);
+  it("reads and searches only the transcript it was built with, taking search text literally", () => {
+    expect(call("read_transcript", { response: "1" })).toBe("1: Assistant: first\n2: Tool call bash: (a+)+$ ran\n(lines 1-2 of 2.)");
+    expect(call("search_transcript", { response: "1", text: "(A+)+$" })).toBe("2: Tool call bash: (a+)+$ ran\n(1 matching lines.)");
+    expect(call("search_transcript", { response: "2", text: "first" })).toBe('No line contains "first".');
+    expect(call("read_transcript", { response: "/etc/passwd" })).toBe('Give response "1" or "2".');
   });
 });
 
@@ -158,7 +181,7 @@ const SETTINGS: AppSettings = {
   modelPresets: { preset1: { model: "gemini-5" }, preset2: { model: "gpt-6" }, preset3: { model: "claude-9", reasoningEffort: "high" } },
   modelAbTest: { enabled: true, a: { tier: "preset2" }, b: { tier: "preset3" }, startedAt: "2026-03-02T08:00:00.000Z" },
 } as AppSettings;
-const SCORES = { outcome: 3, correctness: 3, efficiency: 3, clarity: 3 };
+const SCORES = { outcome: 3, correctness: 3, clarity: 3 };
 const MAIN = "11111111-2222-4333-8444-555555555555";
 
 /** Picks the response that contains `pick`, whichever order it is shown in. */
@@ -166,7 +189,8 @@ function judgeFavouring(pick: string) {
   return (prompt: string) => {
     const second = prompt.indexOf("=== Response 2 ===");
     const winner = prompt.indexOf(pick) > second ? "2" : "1";
-    return JSON.stringify({ scores: { "1": SCORES, "2": SCORES }, winner, reason: `Response ${winner} finished the job.` });
+    const findings = [{ response: winner, kind: "only", text: "Found the key fact." }];
+    return JSON.stringify({ findings, scores: { "1": SCORES, "2": SCORES }, winner, reason: `Response ${winner} finished the job.` });
   };
 }
 
@@ -238,6 +262,11 @@ describe("model comparison service", () => {
     await service.tick();
     // Each judge scores both orders.
     expect(vi.mocked(deps.askJudge).mock.calls.map(([call]) => call.model).sort()).toEqual(["gemini-5", "gemini-5", "grok-3", "grok-3"]);
+    // Judges read transcripts through their own tools; no built-in tool touches files.
+    for (const [call] of vi.mocked(deps.askJudge).mock.calls) {
+      expect(call.builtInTools).toEqual(["web_fetch"]);
+      expect(call.tools.map((tool) => tool.name)).toEqual(["read_transcript", "search_transcript"]);
+    }
     const record = store.getBySession(MAIN)!;
     expect(record.status).toBe("judged");
     expect(record.judgement).toMatchObject({ verdict: "b", judgesAsked: 2, judgesCounted: 2 });
@@ -250,6 +279,13 @@ describe("model comparison service", () => {
       vote: "y",
       revealed: { x: { model: "gpt-6" }, y: { model: "claude-9" }, judge: { verdict: "y" } },
     });
+    // Each run's finding is about the twin, whichever order it was shown in.
+    expect(service.view(MAIN)?.revealed?.judge?.runs.map((run) => [run.firstSide, run.findings])).toEqual(
+      expect.arrayContaining([
+        ["x", [{ side: "y", kind: "only", text: "Found the key fact." }]],
+        ["y", [{ side: "y", kind: "only", text: "Found the key fact." }]],
+      ]),
+    );
     // Combining once on Y's model switches X first, so the winner writes the merge and carries on.
     expect(service.view(MAIN)).toMatchObject({ suggestedKeep: "y" });
     expect(await service.combine(record.id, "y")).toMatchObject({ side: "x", combinedKeep: "y", combinable: false, taskId: "task-1" });
@@ -419,10 +455,12 @@ describe("model comparison service", () => {
 
   it("reads a single judge's verdict from before panels as one run", async () => {
     const { db, store, service } = await judgedPair([0.25]);
-    const legacy = { model: "gpt-5", otherFamily: false, winner: "a", scores: { a: SCORES, b: SCORES }, reason: "Old." };
+    // Verdicts from before the result-only rubric still carry an efficiency score.
+    const oldScores = { ...SCORES, efficiency: 2 };
+    const legacy = { model: "gpt-5", otherFamily: false, winner: "a", scores: { a: oldScores, b: oldScores }, reason: "Old." };
     db.prepare("UPDATE model_comparisons SET judgementJson = ?").run(JSON.stringify(legacy));
     const record = store.getBySession(MAIN)!;
-    expect(record.judgement).toEqual({ verdict: "a", judgesAsked: 1, judgesCounted: 1, runs: [legacy] });
+    expect(record.judgement).toEqual({ verdict: "a", judgesAsked: 1, judgesCounted: 1, runs: [{ ...legacy, scores: { a: SCORES, b: SCORES } }] });
     service.vote(record.id, MAIN, "tie");
     expect(service.view(MAIN)?.revealed?.judge).toEqual({
       verdict: "x", judgesAsked: 1, judgesCounted: 1, runs: [{ model: "gpt-5", winner: "x", reason: "Old." }],

@@ -6,9 +6,10 @@ import { useModelComparisonQuery } from "../hooks/queries/useModelComparison";
 import { useModelsQuery } from "../hooks/queries/useModels";
 import { queryKeys } from "../queryClient";
 import { X } from "lucide-react";
-import { Button, IconButton, MetaLine, SegmentedControl } from "../design/primitives";
+import { Button, Details, IconButton, MetaLine, SegmentedControl } from "../design/primitives";
 import type { ModelAbTestSetup, ModelComparisonSide, ModelComparisonView } from "../../shared/model-ab-test.js";
-import { judgeDetail, judgeSummary, verdictLabel } from "../lib/model-comparison-display";
+import { judgeSummary, verdictLabel } from "../lib/model-comparison-display";
+import ComparisonJudgeRuns from "./ComparisonJudgeRuns";
 
 const WORKING = new Set<ModelComparisonView["status"]>(["starting", "running", "judging"]);
 /** Y stays shut while a first reply is still coming, so its progress and speed hint nothing. */
@@ -97,9 +98,17 @@ export default function ModelComparisonBar({ sessionId, busy }: { sessionId: str
         comparison.status === "incomplete" && comparison.failure,
         comparison.status === "failed" && comparison.failure,
         comparison.vote && `You: ${verdictLabel(comparison.vote)}`,
-        revealed?.judge && <span key="judge" title={judgeDetail(revealed.judge, modelLabel)}>{judgeSummary(revealed.judge)}</span>,
+        revealed?.judge && judgeSummary(revealed.judge),
         revealed && `X ${name(revealed.x)}, Y ${name(revealed.y)}`,
       ]} />
+      {revealed?.judge && revealed.judge.runs.length > 0 && (
+        <Details label="Judges' findings" className="order-last basis-full">
+          {/* Scrolls inside the bar so an open list never pushes the chat off screen. */}
+          <div className="max-h-[min(20rem,40dvh)] overflow-y-auto pr-1">
+            <ComparisonJudgeRuns judge={revealed.judge} name={modelLabel} />
+          </div>
+        </Details>
+      )}
       {error && <span role="alert" className="text-error">{error instanceof Error ? error.message : String(error)}</span>}
       <IconButton label="Dismiss comparison" title="Keep this chat as it is and hide this bar" size="sm" variant="ghost"
         className="ml-auto" disabled={dismiss.isPending} onClick={() => dismiss.mutate(comparison.id)}>

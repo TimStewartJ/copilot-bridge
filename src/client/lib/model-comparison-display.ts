@@ -28,9 +28,12 @@ export function judgeRunLabel(run: ComparisonJudgeView["runs"][number], name: (m
   return `${name(run.model)}${run.firstSide ? ` (${run.firstSide.toUpperCase()} first)` : ""}`;
 }
 
-/** Each judge's pick and reason; "Response 1" in a reason is the side shown first. */
-export function judgeDetail(judge: ComparisonJudgeView, name: (model: string) => string): string {
-  return judge.runs.map((run) => `${judgeRunLabel(run, name)}: ${verdictLabel(run.winner)}. ${run.reason}`).join("\n");
+type ComparisonFindingView = NonNullable<ComparisonJudgeView["runs"][number]["findings"]>[number];
+
+/** "Only X" for what only X found, "X wrong" for an X claim a judge checked and found false. */
+export function findingLabel(finding: ComparisonFindingView): string {
+  const side = finding.side.toUpperCase();
+  return finding.kind === "only" ? `Only ${side}` : `${side} wrong`;
 }
 
 /** "Claude Opus 5.5 · High · long context" */
