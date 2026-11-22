@@ -341,6 +341,7 @@ describe("Chat grades routes", () => {
       chatTitles: async (sessionIds) => new Map(sessionIds.map((sessionId) => [sessionId, `Title ${sessionId}`])),
       modelNames: async () => new Map([["model-a", "Model A"]]),
       chatContext: (sessionIds) => new Map(sessionIds.map((sessionId) => [sessionId, { playbook: "feature" }])),
+      twinSourceOf: () => undefined,
       readEvents: async () => ({ kind: "missing" }),
     });
 

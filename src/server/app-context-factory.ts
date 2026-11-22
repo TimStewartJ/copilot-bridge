@@ -373,6 +373,7 @@ export function createAppContext(options: CreateAppContextOptions): CreatedAppCo
         }];
       }));
     },
+    twinSourceOf: (sessionId) => modelComparisonStore.sourceOfTwin(sessionId),
     readEvents: (sessionId, maxBytes) => readChatEventsForGrading(resolveSessionEventsPath(copilotHome, sessionId), maxBytes),
   });
   ctx.searchIndex = createSearchIndex(db, {

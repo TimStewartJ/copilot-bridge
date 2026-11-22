@@ -11,6 +11,7 @@ import { isAutopilotContinuationEvent } from "./event-transform.js";
 import { isCustomContinuationMessage } from "./custom-autopilot.js";
 import { isRecord } from "../shared/is-record.js";
 import { isUnlistedSessionId } from "./unlisted-sessions.js";
+import { isComparisonTwinSessionId } from "./comparison-twin.js";
 import { isCanonicalSessionId } from "./outbound-attachments.js";
 import type {
   ChatGradeSkipReason,
@@ -244,7 +245,8 @@ export async function selectChatsForGrading(input: {
   const bounded = Boolean(from || to);
   const inRange: ChatGradeCandidate[] = [];
   for (const session of input.sessions) {
-    if (isUnlistedSessionId(session.sessionId)) continue;
+    // A/B twins are graded so both arms of a pair can be compared.
+    if (isUnlistedSessionId(session.sessionId) && !isComparisonTwinSessionId(session.sessionId)) continue;
     if (!includeScheduled && input.scheduled.has(session.sessionId)) continue;
     const model = mainModelOf(session.models);
     if (!model) continue;
@@ -299,6 +301,7 @@ export function chartLabelKey(classifier: string, keys: Iterable<string>): strin
 
 export interface ChatGradeReportChat extends ChatGradeCandidate {
   title: string;
+  twinOf?: string;
 }
 
 interface CountedUnit {
@@ -380,7 +383,10 @@ export function buildChatGradesReport(chats: readonly ChatGradeReportChat[], gra
       labels[unit.classifier] = values;
     }
     for (const classifier of Object.keys(labels)) accumulator(classifier, chat.model).chats += 1;
-    reportChats.push({ sessionId: chat.sessionId, title: chat.title, model: chat.model, date: chat.date, labels });
+    reportChats.push({
+      sessionId: chat.sessionId, title: chat.title, model: chat.model, date: chat.date, labels,
+      ...(chat.twinOf ? { twinOf: chat.twinOf } : {}),
+    });
   }
 
   const classifiers: ChatGradesClassifier[] = [...series.entries()]
@@ -690,6 +696,8 @@ export interface ChatGradesServiceDeps {
   modelNames: () => Promise<ReadonlyMap<string, string>>;
   /** Each chat's playbook and linked task, when it has them. */
   chatContext: (sessionIds: readonly string[]) => ReadonlyMap<string, Pick<ChatGradesUnitChat, "playbook" | "taskId" | "taskTitle">>;
+  /** For an A/B test's second chat, the user's chat it was paired with. */
+  twinSourceOf: (sessionId: string) => string | undefined;
   readEvents: (sessionId: string, maxBytes: number) => Promise<ChatEventsRead>;
 }
 
@@ -704,12 +712,27 @@ export function createChatGradesService(deps: ChatGradesServiceDeps) {
     });
   }
 
+  /** A twin takes its user chat's title and context, so the two arms read as one request. */
+  async function describe(sessionIds: readonly string[]) {
+    const twinOf = new Map(sessionIds.flatMap((sessionId) => {
+      const source = isComparisonTwinSessionId(sessionId) ? deps.twinSourceOf(sessionId) : undefined;
+      return source ? [[sessionId, source] as const] : [];
+    }));
+    const lookup = [...new Set([...sessionIds, ...twinOf.values()])];
+    const [titles, context] = [await deps.chatTitles(lookup), deps.chatContext(lookup)];
+    return new Map(sessionIds.map((sessionId) => {
+      const source = twinOf.get(sessionId);
+      const owner = source ?? sessionId;
+      return [sessionId, { title: titles.get(owner) ?? "", context: context.get(owner), ...(source ? { twinOf: source } : {}) }];
+    }));
+  }
+
   async function view(filters: ChatGradesFilters): Promise<ChatGradesView> {
     const [{ modelCounts, matching }, names] = await Promise.all([select(filters), deps.modelNames().catch(() => new Map<string, string>())]);
     const ids = matching.map((chat) => chat.sessionId);
     const grades = deps.store.listFor(ids);
     const gradedIds = grades.filter((grade) => grade.status === "graded" && grade.result).map((grade) => grade.sessionId);
-    const titles = await deps.chatTitles(gradedIds);
+    const described = await describe(gradedIds);
     const gradedSet = new Set(gradedIds);
     const models: ChatGradesModelOption[] = [...modelCounts.entries()]
       .map(([id, chats]) => ({ id, name: names.get(id) ?? id, chats }))
@@ -722,7 +745,10 @@ export function createChatGradesService(deps: ChatGradesServiceDeps) {
       models,
       run: deps.grader.status(),
       report: buildChatGradesReport(
-        matching.filter((chat) => gradedSet.has(chat.sessionId)).map((chat) => ({ ...chat, title: titles.get(chat.sessionId) ?? "" })),
+        matching.filter((chat) => gradedSet.has(chat.sessionId)).map((chat) => {
+          const about = described.get(chat.sessionId);
+          return { ...chat, title: about?.title ?? "", ...(about?.twinOf ? { twinOf: about.twinOf } : {}) };
+        }),
         grades,
       ),
     };
@@ -736,15 +762,19 @@ export function createChatGradesService(deps: ChatGradesServiceDeps) {
     const gradedIds = new Set(grades.map((grade) => grade.sessionId));
     const graded = matching.filter((chat) => gradedIds.has(chat.sessionId));
     const ids = graded.map((chat) => chat.sessionId);
-    const [titles, context, scheduled] = [await deps.chatTitles(ids), deps.chatContext(ids), deps.scheduledSessionIds(ids)];
-    const chats: ChatGradesUnitChat[] = graded.map((chat) => ({
-      sessionId: chat.sessionId,
-      title: titles.get(chat.sessionId) ?? "",
-      model: chat.model,
-      date: chat.date,
-      scheduled: scheduled.has(chat.sessionId),
-      ...context.get(chat.sessionId),
-    }));
+    const [described, scheduled] = [await describe(ids), deps.scheduledSessionIds(ids)];
+    const chats: ChatGradesUnitChat[] = graded.map((chat) => {
+      const about = described.get(chat.sessionId);
+      return {
+        sessionId: chat.sessionId,
+        title: about?.title ?? "",
+        model: chat.model,
+        date: chat.date,
+        scheduled: scheduled.has(chat.sessionId),
+        ...about?.context,
+        ...(about?.twinOf ? { twinOf: about.twinOf } : {}),
+      };
+    });
     const all = buildChatGradeUnits(grades);
     if (options.excerpts) {
       for (const sessionId of ids.slice(0, CHAT_GRADES_MAX_EXCERPT_CHATS)) {

@@ -7,6 +7,7 @@ import {
   buildChatGradesReport,
   createChatGradeStore,
   createChatGrader,
+  createChatGradesService,
   excerptsFor,
   readChatEventsForGrading,
   selectChatsForGrading,
@@ -14,6 +15,8 @@ import {
   type ChatGradeUsageSession,
 } from "../chat-grading.js";
 import type { AgentTrajectoryClassification, AgentTrajectoryClassifyRequest, AgentTrajectoryClassifyResult } from "../agent-backend/types.js";
+import { createComparisonTwinSessionId } from "../comparison-twin.js";
+import { createScratchSessionId } from "../scratch-sessions.js";
 
 const GRADED_AT = "2026-03-02T09:00:00.000Z";
 
@@ -90,6 +93,49 @@ describe("choosing chats to grade", () => {
     expect((await select({})).matching.map((chat) => chat.sessionId)).toEqual(["chat-mixed", "chat-a", "chat-old"]);
     expect((await select({ sessionIds: ["chat-old", "chat-no-log", "chat-scheduled"] })).matching.map((chat) => chat.sessionId))
       .toEqual(["chat-old"]);
+  });
+});
+
+describe("grading A/B twins", () => {
+  const twin = createComparisonTwinSessionId();
+  const scratch = createScratchSessionId();
+  const usage = (sessionId: string, model: string): ChatGradeUsageSession => ({
+    sessionId,
+    days: [{ date: "2026-03-02" }],
+    models: [{ model, outputTokens: 50, totalTokens: 500 }],
+  });
+  const sessions = [usage("chat-main", "model-a"), usage(twin, "model-b"), usage(scratch, "model-a")];
+
+  it("grades a twin on its own model but leaves other unlisted chats out", async () => {
+    const { matching } = await selectChatsForGrading({ sessions, scheduled: new Set(), hasEventsLog: async () => true, filters: {} });
+    expect(matching).toEqual([
+      { sessionId: "chat-main", model: "model-a", date: "2026-03-02" },
+      { sessionId: twin, model: "model-b", date: "2026-03-02" },
+    ]);
+  });
+
+  it("shows a graded twin under its user chat's title and task, marked as that chat's twin", async () => {
+    const grades = [graded("chat-main", [row({ labels: { outcome: "succeeded" } })]), graded(twin, [row({ labels: { outcome: "failed" } })])];
+    const service = createChatGradesService({
+      store: { listFor: (ids) => grades.filter((grade) => ids.includes(grade.sessionId)) },
+      grader: { start: () => "nothing", status: () => ({ running: false, total: 0, done: 0 }), pending: () => [] },
+      readUsageSessions: async () => sessions,
+      scheduledSessionIds: () => new Set(),
+      hasEventsLog: async () => true,
+      chatTitles: async (ids) => new Map(ids.map((id) => [id, id === "chat-main" ? "Fix the build" : ""])),
+      modelNames: async () => new Map(),
+      chatContext: (ids) => new Map(ids.flatMap((id) => (id === "chat-main" ? [[id, { taskId: "task-1", taskTitle: "Build" }]] : []))),
+      twinSourceOf: (id) => (id === twin ? "chat-main" : undefined),
+      readEvents: async () => ({ kind: "missing" }),
+    });
+
+    const { chats } = await service.units({});
+    expect(chats.find((chat) => chat.sessionId === twin)).toMatchObject({
+      title: "Fix the build", model: "model-b", taskId: "task-1", taskTitle: "Build", twinOf: "chat-main",
+    });
+    expect(chats.find((chat) => chat.sessionId === "chat-main")?.twinOf).toBeUndefined();
+    const { report } = await service.view({});
+    expect(report.chats.find((chat) => chat.sessionId === twin)).toMatchObject({ title: "Fix the build", twinOf: "chat-main" });
   });
 });
 

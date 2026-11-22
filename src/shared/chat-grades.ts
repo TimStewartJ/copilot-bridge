@@ -66,6 +66,8 @@ export interface ChatGradesChat {
   date: string;
   /** Per classifier, the charted label's values in the chat's counted units. */
   labels: Record<string, string[]>;
+  /** For an A/B test's second chat, the user's chat it was paired with. */
+  twinOf?: string;
 }
 
 export interface ChatGradesReport {
@@ -97,6 +99,8 @@ export interface ChatGradesUnitChat {
   playbook?: string;
   taskId?: string;
   taskTitle?: string;
+  /** For an A/B test's second chat, the user's chat it was paired with. */
+  twinOf?: string;
   /** Set when excerpts were asked for but this chat's log could not give them. */
   excerpts?: "too-large" | "unreadable";
 }

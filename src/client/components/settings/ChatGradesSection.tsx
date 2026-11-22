@@ -212,7 +212,9 @@ export function ChatGradesSection() {
                             <li key={chat.sessionId}>
                               <Link to={`/sessions/${chat.sessionId}`} className={cx(DS.row.base, DS.row.interactive)}>
                                 <span className={cx(DS.row.detail, "text-text-primary")}>{chat.title || "Untitled chat"}</span>
-                                <span className={DS.row.trailing}>{modelName(chat.model)}{chat.date ? ` · ${chat.date}` : ""}</span>
+                                <span className={DS.row.trailing}>
+                                  {modelName(chat.model)}{chat.twinOf ? " · A/B twin" : ""}{chat.date ? ` · ${chat.date}` : ""}
+                                </span>
                               </Link>
                             </li>
                           ))}
