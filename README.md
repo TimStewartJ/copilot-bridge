@@ -647,6 +647,16 @@ marker.
 Time counts from the first send. Spend counts the reported AI credits of this prompt's model calls,
 metered tools and sub-agents. A minimum is **not a spending cap**: a pass can exceed it.
 
+While an Autopilot run works, **Set minimums** (or **Change minimums**) on its run line applies
+minimums to that run: a plain Autopilot run becomes Custom, and a Custom run gets the new values.
+Minimums applied mid-run count from that moment, for time and for spend, so applying the same values
+again restarts them (`CustomAutopilotRun.apply`). The client sends the run's id
+(`POST /api/sessions/:id/custom-autopilot`), and the server refuses a run that has not sent its
+prompt yet, has ended, is being stopped, is interactive or is not the one named. Every run keeps
+its own meter, owned by its run controller, so charges are counted once from the first send whether
+or not minimums exist yet; a charge counts toward the window it was first seen in. Minimums applied
+to a compared first turn end that model comparison.
+
 Like Autopilot's own limit on automatic continuations, the run also ends, as done, once the agent
 has finished `MAX_IDLE_PASSES` passes in a row without running a tool: it has run out of work.
 

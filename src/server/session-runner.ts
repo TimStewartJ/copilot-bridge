@@ -52,8 +52,11 @@ import type {
 } from "./session-attachment-routing.js";
 import type { SessionConfigOptions } from "./session-config-builder.js";
 import type { McpServerConfig } from "./mcp-config.js";
-import { DEFAULT_SEND_MODE, toSendMode, type AgentMode, type SendMode } from "../shared/send-mode.js";
 import {
+  DEFAULT_SEND_MODE, isAutopilot, toSendMode, type AgentMode, type CustomAutopilot, type SendMode,
+} from "../shared/send-mode.js";
+import {
+  CustomAutopilotApplyError,
   CustomAutopilotRun,
   CUSTOM_CONTINUATION_SOURCE,
   isCustomContinuationMessage,
@@ -521,7 +524,8 @@ export class SessionRunner {
   private lastRuntimeEvent: { receivedAtMs: number; sessionId: string; type: string } | undefined;
   /** Each loaded session's CLI mode; the CLI keeps it, so turns it starts use the last send's. */
   private readonly agentModes = new Map<string, AgentMode>();
-  private readonly customRuns = new Map<string, CustomAutopilotRun>();
+  /** Each run's meter and minimums, owned by its controller so none outlives its run. */
+  private readonly customRuns = new WeakMap<SessionRunController, CustomAutopilotRun>();
   private readonly mcpSessionRecoveryAttempts = new Map<string, {
     count: number;
     windowStartedAt: number;
@@ -574,18 +578,58 @@ export class SessionRunner {
     return this.agentModes.get(sessionId);
   }
 
+  /** Latches a Stop on the run, so minimums applied while it stops can't keep it going. */
   cancelCustomAutopilot(sessionId: string): void {
-    const run = this.customRuns.get(sessionId);
+    const controller = this.deps.activeRunControllers.get(sessionId);
+    const run = controller ? this.customRuns.get(controller) : undefined;
     if (run) run.cancelled = true;
   }
 
+  private meterFor(controller: SessionRunController, minimums?: CustomAutopilot): CustomAutopilotRun {
+    const existing = this.customRuns.get(controller);
+    if (existing) return existing;
+    const meter = new CustomAutopilotRun(minimums);
+    this.customRuns.set(controller, meter);
+    return meter;
+  }
+
+  private currentCustomRun(sessionId: string): CustomAutopilotRun | undefined {
+    const controller = this.deps.activeRunControllers.get(sessionId);
+    return controller && !controller.isCompleted() ? this.customRuns.get(controller) : undefined;
+  }
+
+  /** Sets minimums on the working run named by `runId`, counted from now; returns its start. */
+  applyCustomAutopilot(sessionId: string, runId: string, mode: CustomAutopilot): number {
+    const run = this.currentCustomRun(sessionId);
+    const bus = this.deps.eventBusRegistry.getBus(sessionId);
+    if (!run || run.cancelled || !bus || bus.complete || bus.getTerminalState().runId !== runId) {
+      throw new CustomAutopilotApplyError("This run has ended.");
+    }
+    if (!isAutopilot(bus.getRunMode() ?? this.agentModes.get(sessionId))) {
+      throw new CustomAutopilotApplyError("Minimums need an Autopilot run.");
+    }
+    run.apply(mode);
+    bus.setRunMode(mode);
+    this.deps.globalBus.emit({ type: "session:mode", sessionId, agentMode: mode });
+    const progress = run.progress();
+    if (progress) bus.setCustomAutopilotProgress(progress);
+    this.recordSpan("session.custom_autopilot.apply", 0, sessionId, run.describe());
+    return run.startedAtMs ?? Date.now();
+  }
+
   /** `announce` re-publishes an unchanged mode because lists forget it between runs. */
-  private noteAgentMode(sessionId: string, mode: AgentMode | undefined, announce = false): void {
+  private noteAgentMode(
+    sessionId: string,
+    mode: AgentMode | undefined,
+    announce = false,
+    /** The new run's minimums, before its controller exists. */
+    startingMinimums?: CustomAutopilot,
+  ): void {
     const previous = this.agentModes.get(sessionId);
     if (mode) this.agentModes.set(sessionId, mode);
     else this.agentModes.delete(sessionId);
     const bus = this.deps.eventBusRegistry.getBus(sessionId);
-    const runMode = this.customRuns.get(sessionId)?.mode ?? mode;
+    const runMode = startingMinimums ?? this.currentCustomRun(sessionId)?.mode ?? mode;
     if (bus && !bus.complete) bus.setRunMode(runMode);
     if (mode && (announce || previous !== mode)) {
       this.deps.globalBus.emit({ type: "session:mode", sessionId, agentMode: runMode });
@@ -826,9 +870,8 @@ export class SessionRunner {
     const bus = this.deps.eventBusRegistry.getOrCreateBus(sessionId);
     this.deps.sessionMetaStore?.clearTerminalOverlay(sessionId);
     bus.reset();
-    const minimums = typeof options.mode === "object" ? new CustomAutopilotRun(options.mode) : undefined;
-    if (minimums) this.customRuns.set(sessionId, minimums);
-    this.noteAgentMode(sessionId, agentModeOf(options.mode), true);
+    const minimums = typeof options.mode === "object" ? options.mode : undefined;
+    this.noteAgentMode(sessionId, agentModeOf(options.mode), true, minimums);
     const hiddenPrompt = options.promptSource === "system";
     const visiblePrompt = options.displayPrompt ?? prompt;
     const projectedUserMessageId = hiddenPrompt
@@ -849,14 +892,13 @@ export class SessionRunner {
         options,
         projectedUserMessageId,
         persistedAttachments.routed,
-      ).finally(() => {
-        if (minimums && this.customRuns.get(sessionId) === minimums) this.customRuns.delete(sessionId);
-      }),
+      ),
       {
         ...(hiddenPrompt ? {} : { pendingPrompt: visiblePrompt }),
         promptAccepted: false,
         attentionMode: options.attentionMode === "quiet" ? "quiet" : "normal",
       },
+      new CustomAutopilotRun(minimums),
     );
     if (keptMessageId) this.keepMessageUntilDelivered(sessionId, bus, runController, keptMessageId, projectedUserMessageId);
     return runController;
@@ -1058,9 +1100,11 @@ export class SessionRunner {
       promptAccepted?: boolean;
       attentionMode?: "normal" | "quiet";
     },
+    meter = new CustomAutopilotRun(),
   ): SessionRunController {
     const now = Date.now();
     const runController = this.createRunController(sessionId, bus);
+    this.customRuns.set(runController, meter);
     this.deps.activeRunControllers.set(sessionId, runController);
     this.setSessionRunState(sessionId, "busy", { now, lastEventAt: now });
     if (metadata) {
@@ -1109,19 +1153,20 @@ export class SessionRunner {
     let sendPrompt = prompt;
     let displayPrompt: string | undefined = options.displayPrompt;
     let mode: string = agentModeOf(options.mode);
-    const minimums = this.customRuns.get(sessionId);
+    const meter = this.meterFor(activeRunController, typeof options.mode === "object" ? options.mode : undefined);
+    // A run given minimums later stops as a plain run would, so a Stop can't skip a pending resend.
+    const startedCustom = meter.mode !== undefined;
     let commandResult: AgentSlashCommandResult | undefined;
 
     await this.runSessionOperation(sessionId, bus, activeRunController, {
       resumeContext: "message",
-      minimums,
       attentionMode: options.attentionMode ?? "normal",
       completionAttention: options.completionAttention,
       idleSpanName: "session.sendToIdle",
       startLog: `[sdk] [${sid}] Sending ${mode} prompt (${prompt.length} chars${attachCount ? `, ${attachCount} attachment${attachCount > 1 ? "s" : ""}` : ""})...`,
       execute: async (session) => {
         // A Stop can land during any await below; nothing may reach the session after it.
-        const stopped = () => activeRunController.isCompleted() || minimums?.cancelled === true;
+        const stopped = () => activeRunController.isCompleted() || (startedCustom && meter.cancelled);
         if (stopped()) return;
         if (parsedCommand) {
           commandResult = await invokeSlashCommand(session, parsedCommand);
@@ -1156,10 +1201,8 @@ export class SessionRunner {
         const turnDisplayPrompt = turnContext?.block ? displayPrompt ?? sendPrompt : displayPrompt;
         let messageId: unknown;
         try {
-          if (minimums) {
-            minimums.begin();
-            bus.setCustomAutopilotProgress(minimums.progress());
-          }
+          meter.begin();
+          if (meter.mode) bus.setCustomAutopilotProgress(meter.progress());
           messageId = await session.send({
             prompt: turnPrompt,
             ...(turnDisplayPrompt ? { displayPrompt: turnDisplayPrompt } : {}),
@@ -1204,12 +1247,14 @@ export class SessionRunner {
       retryExecute?: (session: AgentSession, claimSend: () => boolean) => Promise<void>;
       attentionMode?: SessionAttentionMode;
       completionAttention?: boolean | CompletionAttentionOptions;
-      minimums?: CustomAutopilotRun;
       /** The run follows a turn the runtime started: no prompt to prepare or send. */
       followsRuntimeTurn?: boolean;
     },
   ): Promise<void> {
     const sid = sessionId.slice(0, 8);
+    const meter = this.meterFor(runController);
+    /** A Stop latched on a run with minimums; plain runs end on the runtime's own abort. */
+    const customStopped = () => meter.cancelled && meter.mode !== undefined;
 
     const linkedTask = this.deps.findLinkedTask(sessionId);
     const resumeConfig = this.deps.buildSessionConfig({
@@ -1702,7 +1747,7 @@ export class SessionRunner {
 
     /** Where a run would end; with a minimum unmet, Bridge sends a keep-going prompt instead. */
     const finishOrContinue = (event: SessionEvent | undefined, context: SessionEventHandlingContext): void => {
-      const minimums = opts.minimums;
+      const minimums = meter.mode ? meter : undefined;
       if (!minimums) return finishNormally(event, context);
       const endAborted = () => {
         endCurrentContextTurn(event);
@@ -1827,8 +1872,8 @@ export class SessionRunner {
       if (context.origin === "live") {
         noteLiveEvent(event, eventAt, context.origin);
         // A background agent left by an earlier prompt can still publish usage in this session.
-        const child = opts.minimums ? isChildAgentEvent(event) : false;
-        if (opts.minimums && (!child || getSubagentContextTurnId(event))) opts.minimums.observe(event, child);
+        const child = isChildAgentEvent(event);
+        if (!child || getSubagentContextTurnId(event)) meter.observe(event, child);
       }
       const isTerminalEvent = isLiveRunTerminalEvent(event);
       if (!isTerminalEvent) {
@@ -2478,7 +2523,7 @@ export class SessionRunner {
           if (
             context.origin === "live"
             && opts.retryExecute
-            && !opts.minimums?.cancelled
+            && !customStopped()
             && originalPromptRecorded
             && providerRetryCount === 0
             && isRetryableProviderError(data)
@@ -2490,7 +2535,7 @@ export class SessionRunner {
           if (
             usedCache
             && !opts.followsRuntimeTurn
-            && !opts.minimums?.continuations
+            && !meter.continuations
             && isStaleAgentSessionError(data?.message)
             && !turnHadSideEffects
             && !runController.isCompleted()
@@ -2658,14 +2703,20 @@ export class SessionRunner {
         if (feed.run === registration) feed.run = undefined;
       };
       beginSend();
+      if (opts.followsRuntimeTurn) {
+        meter.begin();
+        if (meter.mode) bus.setCustomAutopilotProgress(meter.progress());
+      }
       const heldTurn = feed.heldTurn;
       if (!heldTurn) return;
       feed.heldTurn = undefined;
       sendStart = heldTurn.startedAt;
       let next = 0;
-      while (next < heldTurn.events.length && !runController.isCompleted()) {
-        registration.handleEvent(heldTurn.events[next++]);
-      }
+      meter.replayHeld(() => {
+        while (next < heldTurn.events.length && !runController.isCompleted()) {
+          registration.handleEvent(heldTurn.events[next++]);
+        }
+      });
       // A later turn held behind this one's end is followed next, when this run lets go.
       const rest = heldTurn.events.slice(next);
       const nextTurn = rest.findIndex((event) => event?.type === "assistant.turn_start" && !getSdkAgentId(event));
@@ -2827,7 +2878,7 @@ export class SessionRunner {
           return;
         }
         const claimSend = () => {
-          if (runController.isCompleted() || pendingProviderRetry !== pending || opts.minimums?.cancelled) return false;
+          if (runController.isCompleted() || pendingProviderRetry !== pending || customStopped()) return false;
           pendingProviderRetry = undefined;
           this.providerRetryWaits.delete(sessionId);
           beginSend();

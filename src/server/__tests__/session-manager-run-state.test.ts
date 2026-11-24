@@ -6,7 +6,9 @@ import { writeRestartState } from "../restart-state.js";
 import { SessionManager } from "../session-manager.js";
 import { AUTOMATIC_ANSWERS, unshowableQuestionAnswer } from "../../shared/automatic-answer.js";
 import { PROVIDER_RETRY_DELAY_MS, PROVIDER_RETRY_PROMPT } from "../session-provider-retry.js";
-import { CUSTOM_CONTINUATION_SOURCE, customContinuationPrompt, isCustomContinuationMessage } from "../custom-autopilot.js";
+import {
+  CUSTOM_CONTINUATION_SOURCE, CustomAutopilotApplyError, customContinuationPrompt, isCustomContinuationMessage,
+} from "../custom-autopilot.js";
 import { MAX_IDLE_PASSES, type SendMode } from "../../shared/send-mode.js";
 
 import { BrowserBroker } from "../browser-broker.js";
@@ -281,6 +283,33 @@ describe("SessionManager run state", () => {
     await customPass(run, "next");
     expect(run.session.send).toHaveBeenCalledTimes(4);
     expect(run.eventBusRegistry.getBus(run.sessionId)?.getSnapshot().runMode).toBe("interactive");
+  });
+
+  it("keeps a plain Autopilot run going once minimums are applied mid-run", async () => {
+    const run = await startDeliveredRun("minimum-applied", "autopilot");
+    const minimums = { kind: "custom-autopilot", minMinutes: 30 } as const;
+    run.manager.applyCustomAutopilot(run.sessionId, run.bus.getSnapshot().runId, minimums);
+    expect(run.bus.getSnapshot()).toMatchObject({ runMode: minimums, customAutopilot: { continuations: 0 } });
+    await customPass(run, "one");
+    expect(run.session.send).toHaveBeenCalledTimes(2);
+    expect(lastNudge(run)).toBe(customContinuationPrompt(0));
+    expect(run.bus.getTerminalState().complete).toBe(false);
+  });
+
+  it("refuses minimums for another run, an interactive run, or a run being stopped", async () => {
+    const minimums = { kind: "custom-autopilot", minMinutes: 30 } as const;
+    const interactive = await startDeliveredRun("minimum-interactive", "interactive");
+    expect(() => interactive.manager.applyCustomAutopilot(
+      interactive.sessionId, interactive.bus.getSnapshot().runId, minimums,
+    )).toThrow(CustomAutopilotApplyError);
+
+    const run = await startDeliveredRun("minimum-stale-run", "autopilot");
+    expect(() => run.manager.applyCustomAutopilot(run.sessionId, "an-earlier-run", minimums))
+      .toThrow(CustomAutopilotApplyError);
+    run.session.abort.mockImplementation(() => new Promise(() => {}));
+    void run.manager.abortSession(run.sessionId);
+    expect(() => run.manager.applyCustomAutopilot(run.sessionId, run.bus.getSnapshot().runId, minimums))
+      .toThrow(CustomAutopilotApplyError);
   });
 
   it("ends a run the runtime aborted", async () => {

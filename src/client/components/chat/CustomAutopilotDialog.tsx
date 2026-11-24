@@ -27,9 +27,13 @@ export function formatMinimums(mode: CustomAutopilot): string {
   ].filter(Boolean).join(" + ");
 }
 
-export default function CustomAutopilotDialog({ value, comparing, onApply, onClose }: {
+export default function CustomAutopilotDialog({ value, comparing, running, pending = false, error, onApply, onClose }: {
   value?: CustomAutopilot;
   comparing?: boolean;
+  /** Applies to the working run, counted from now, instead of the next prompt. */
+  running?: boolean;
+  pending?: boolean;
+  error?: string;
   onApply: (value: CustomAutopilot) => void;
   onClose: () => void;
 }) {
@@ -43,7 +47,7 @@ export default function CustomAutopilotDialog({ value, comparing, onApply, onClo
   };
   const valid = isCustomAutopilot(mode);
   return (
-    <Dialog title="Custom Autopilot" pending={false} onClose={onClose}>
+    <Dialog title="Custom Autopilot" pending={pending} onClose={onClose}>
       <form className="space-y-3" onSubmit={(event) => {
         event.preventDefault();
         if (isCustomAutopilot(mode)) onApply(mode);
@@ -72,15 +76,17 @@ export default function CustomAutopilotDialog({ value, comparing, onApply, onClo
             ))}
           </div>
         </FormRow>
+        {running && <p className={DS.text.meta}>Counts from now.</p>}
         {/* copy-ok: the reader can't guess the early end or the spend going over */}
         <p className={DS.text.meta}>Stops when every minimum is met or the agent runs out of work. Spend can go over.</p>
         {comparing && <p className={DS.text.meta}>No model comparison runs for this chat.</p>}
         {!valid && (minutes || credits) && <p role="alert" className={DS.tone.warning}>
           Use whole numbers: {formatMinutes(MIN_MINUTES)} to {formatMinutes(MAX_MINUTES)}, {MIN_AI_CREDITS} to {formatCredits(MAX_AI_CREDITS)}.
         </p>}
+        {error && <p role="alert" className={DS.tone.danger}>{error}</p>}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit" disabled={!valid}>Use for this prompt</Button>
+          <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={!valid || pending}>{running ? "Apply now" : "Use for this prompt"}</Button>
         </div>
       </form>
     </Dialog>

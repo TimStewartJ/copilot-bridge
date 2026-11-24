@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "@github/copilot-sdk";
 import {
   CUSTOM_CONTINUATION_PROMPTS,
+  CustomAutopilotApplyError,
   CustomAutopilotRun,
   customContinuationPrompt,
 } from "../custom-autopilot.js";
@@ -109,6 +110,62 @@ describe("CustomAutopilotRun", () => {
     for (const prompt of CUSTOM_CONTINUATION_PROMPTS.map((_, i) => customContinuationPrompt(i))) {
       expect(prompt).not.toMatch(/minimum|minute|hour|credit|budget|spend|time left|deadline|\d/i);
     }
+  });
+
+  it("counts minimums applied mid-run from then, without counting a charge seen before again", () => {
+    const run = new CustomAutopilotRun();
+    run.begin(0);
+    run.observe(usage("before", credits(3)));
+    expect(run.decide(MINUTE).kind).toBe("done");
+    run.apply({ kind: "custom-autopilot", minMinutes: 30, minAiCredits: 2 }, 10 * MINUTE);
+    expect(run.progress()?.startedAt).toBe(new Date(10 * MINUTE).toISOString());
+    run.observe(event({ ...usage("before", credits(3)), id: "event-repeat" }));
+    run.observe(usage("after", credits(2)));
+    expect(run.decide(39 * MINUTE).kind).toBe("continue");
+    expect(run.decide(40 * MINUTE).kind).toBe("done");
+  });
+
+  it("counts a charge first seen unpriced before minimums were applied to the window it was seen in", () => {
+    const run = new CustomAutopilotRun();
+    run.begin(0);
+    run.observe(usage("call", Number.NaN));
+    run.apply({ kind: "custom-autopilot", minAiCredits: 2 }, MINUTE);
+    run.observe(usage("call", credits(5)));
+    expect(run.decide(2 * MINUTE).kind).toBe("continue");
+  });
+
+  it("counts held events replayed into a run as an earlier prompt's, even repeated later", () => {
+    const run = new CustomAutopilotRun({ kind: "custom-autopilot", minAiCredits: 2 });
+    run.begin(0);
+    run.replayHeld(() => run.observe(usage("held", credits(5))));
+    run.observe(event({ ...usage("held", credits(5)), id: "event-repeat" }));
+    expect(run.decide(MINUTE).kind).toBe("continue");
+  });
+
+  it("restarts the window when the same minimums are applied again", () => {
+    const run = new CustomAutopilotRun({ kind: "custom-autopilot", minMinutes: 30 });
+    run.begin(0);
+    run.apply({ kind: "custom-autopilot", minMinutes: 30 }, 25 * MINUTE);
+    expect(run.decide(30 * MINUTE).kind).toBe("continue");
+    expect(run.decide(55 * MINUTE).kind).toBe("done");
+  });
+
+  it("refuses minimums until the prompt has gone out", () => {
+    const run = new CustomAutopilotRun();
+    expect(() => run.apply({ kind: "custom-autopilot", minMinutes: 30 }, 0)).toThrow(CustomAutopilotApplyError);
+    expect(run.mode).toBeUndefined();
+  });
+
+  it("does not let a late price from before minimums were applied count as metered spend", () => {
+    const run = new CustomAutopilotRun();
+    run.begin(0);
+    run.observe(usage("old", Number.NaN));
+    run.apply({ kind: "custom-autopilot", minAiCredits: 2 }, 0);
+    const first = run.decide(MINUTE);
+    if (first.kind !== "continue") throw new Error("the first pass ended the run");
+    run.noteContinued(first.promptIndex, MINUTE);
+    run.observe(usage("old", credits(1)));
+    expect(run.decide(2 * MINUTE).kind).toBe("error");
   });
 
   it("keeps the first send's time when the prompt is sent again after a stale session", () => {

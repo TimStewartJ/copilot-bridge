@@ -381,6 +381,23 @@ describe("model comparison service", () => {
     expect(store.getBySession(MAIN)).toMatchObject({ status: "incomplete", failure: "A first turn stopped without an answer." });
   });
 
+  it("does not compare a pair whose first turn, not a later one, got minimums mid-run, and stops its twin", async () => {
+    const { store, deps, service } = setup([0.25]);
+    service.register(MAIN, (await service.prepare())!, {});
+    service.onFirstMessage(MAIN, "Do it", undefined, undefined, "accepted");
+    await vi.waitFor(() => expect(store.getBySession(MAIN)?.status).toBe("running"));
+    const twin = store.getBySession(MAIN)!.twinSessionId;
+    deps.isBusy = (sessionId) => sessionId === twin;
+    const abort = vi.fn().mockResolvedValue(undefined);
+    deps.abort = abort;
+    const promptAt = Date.parse(store.getBySession(MAIN)!.promptAt!);
+    service.onMinimumsApplied(MAIN, promptAt + 1);
+    expect(store.getBySession(MAIN)).toMatchObject({ status: "running" });
+    service.onMinimumsApplied(MAIN, promptAt);
+    expect(store.getBySession(MAIN)).toMatchObject({ status: "incomplete", failure: "Custom Autopilot runs are not compared." });
+    expect(abort).toHaveBeenCalledWith(twin);
+  });
+
   it("does not compare a pair whose first turn was steered, and fails a start a restart cut off", async () => {
     const { store, events, service } = setup([0.25]);
     service.register(MAIN, (await service.prepare())!, {});

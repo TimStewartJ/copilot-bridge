@@ -1070,7 +1070,9 @@ describe("event-bus run mode", () => {
 
     bus.setRunMode("autopilot");
     bus.setRunMode("autopilot");
-    expect(events.filter((event) => event.type === "run_mode")).toEqual([{ type: "run_mode", runMode: "autopilot" }]);
+    expect(events.filter((event) => event.type === "run_mode")).toEqual([
+      { type: "run_mode", runMode: "autopilot", runId: bus.getSnapshot().runId },
+    ]);
     expect(bus.getSnapshot().runMode).toBe("autopilot");
 
     bus.reset();

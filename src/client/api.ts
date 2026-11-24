@@ -62,7 +62,7 @@ export type {
   PublicBrowserResetResponse,
 } from "../shared/browser-diagnostics.js";
 export type { BrowserHandoffView, BrowserLiveTicket, BrowserSavedLogin } from "../shared/browser-live.js";
-import { encodeSendMode, type SendMode } from "../shared/send-mode.js";
+import { encodeSendMode, type CustomAutopilot, type SendMode } from "../shared/send-mode.js";
 import type { BridgeSearchRequest, BridgeSearchResponse } from "../shared/search.js";
 import type { AgentInstruction } from "../shared/subagent.js";
 import type { SessionContextResponse } from "../shared/session-context.js";
@@ -1354,6 +1354,13 @@ export interface ChatMessageAcceptedResponse {
   status: "accepted";
   /** queued: sent when it can; hands-free: also answered aloud; stopped: kept as not sent. */
   mode?: "steered" | "queued" | "command" | "hands-free" | "stopped";
+}
+
+export function applyCustomAutopilot(sessionId: string, runId: string, mode: CustomAutopilot): Promise<{ runMode: CustomAutopilot }> {
+  return apiFetch<{ runMode: CustomAutopilot }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/custom-autopilot`,
+    { runId, mode },
+  );
 }
 
 export function retrySessionRun(sessionId: string, runId: string): Promise<ChatMessageAcceptedResponse> {

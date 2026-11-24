@@ -159,6 +159,8 @@ export interface StreamState {
   runMode?: SendMode;
   /** When a Custom Autopilot run started, for the time its minimum runs to. */
   customAutopilot?: CustomAutopilotProgress;
+  /** The server's id for the run this stream shows, so a change applies to that run only. */
+  runId?: string;
   activeTurnId?: string;
   activeTurnInstanceId?: string;
   /** Bumps when disk history may change; local because the server counter restarts per run bus. */
@@ -758,6 +760,7 @@ export function useSessionStream(
         setStreamState((current) => createState(
           complete ? "idle" : (hasLiveOutput ? "streaming" : "thinking"),
           {
+            ...(snapshotRunId ? { runId: snapshotRunId } : {}),
             liveAssistantSegments,
             liveReasoning: complete ? keepCommittedReasoning(liveReasoning) : liveReasoning,
             pendingUserMessages: withKeptUndeliveredMessages(pendingUserMessages, current.pendingUserMessages),
@@ -814,7 +817,8 @@ export function useSessionStream(
 
       if (eventType === "run_mode") {
         const runMode = event.runMode;
-        if (isSendMode(runMode)) setStreamState((current) => ({ ...current, runMode }));
+        const runId = optionalString(event.runId);
+        if (isSendMode(runMode)) setStreamState((current) => ({ ...current, runMode, ...(runId ? { runId } : {}) }));
         return;
       }
 

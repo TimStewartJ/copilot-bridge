@@ -107,7 +107,8 @@ import { isPlaybookName, NO_PLAYBOOK } from "../shared/workflow-vocabulary.js";
 import { InvalidTaskHistoryEntryError } from "./task-history-store.js";
 import { MODEL_PRESET_SLOTS } from "../shared/model-presets.js";
 import { demuxOggOpus, isOggOpus, OggOpusError, oggOpusDurationSeconds } from "../shared/ogg-opus.js";
-import { decodeSendMode, INVALID_SEND_MODE, isSendMode } from "../shared/send-mode.js";
+import { decodeSendMode, INVALID_SEND_MODE, isCustomAutopilot, isSendMode } from "../shared/send-mode.js";
+import { CustomAutopilotApplyError } from "./custom-autopilot.js";
 import {
   type AgentDismissRefusal,
   type SessionAgentTask,
@@ -2729,6 +2730,25 @@ export function createApiRouter(
         res.status(409).json({ error: "Session is not busy" });
       }
     } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Minimums for the working Autopilot run named by runId, counted from now.
+  router.post("/sessions/:id/custom-autopilot", (req, res) => {
+    if (rejectCrossSiteUiMutation(req, res, "Autopilot minimums")) return;
+    const runId: unknown = req.body?.runId;
+    const mode: unknown = req.body?.mode;
+    if (typeof runId !== "string" || !runId || runId.length > 200) {
+      return res.status(400).json({ error: "runId must be a non-empty string of at most 200 characters" });
+    }
+    if (!isCustomAutopilot(mode)) return res.status(400).json({ error: INVALID_SEND_MODE });
+    try {
+      const runStartedAt = ctx.sessionManager.applyCustomAutopilot(req.params.id, runId, mode);
+      ctx.modelComparisons?.onMinimumsApplied(req.params.id, runStartedAt);
+      res.json({ runMode: mode });
+    } catch (err) {
+      if (err instanceof CustomAutopilotApplyError) return res.status(409).json({ error: err.message });
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

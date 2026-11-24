@@ -815,6 +815,7 @@ export default function ChatView({
     pendingOrigin,
     runMode,
     customAutopilot,
+    runId,
     pendingUserInputs = [],
     pendingElicitations = [],
     pendingShellAuths = [],
@@ -3146,6 +3147,8 @@ export default function ChatView({
           minimums={typeof runMode === "object" ? runMode : undefined}
           progress={customAutopilot}
           waitingForAnswer={hasPendingInteractions}
+          sessionId={sessionId}
+          runId={runId}
         />
       )}
       {!historicalMode && <ChatInput

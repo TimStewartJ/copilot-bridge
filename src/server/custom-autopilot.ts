@@ -38,16 +38,28 @@ export function customContinuationPrompt(index: number): string {
 }
 
 const NANO_AIU_PER_CREDIT = 1_000_000_000;
+/** The window of a charge first seen before the run's prompt went out: an earlier prompt's. */
+const BEFORE_START = -1;
 const COMPLETION_TOOL = "task_complete";
 export type CustomAutopilotDecision =
   | { kind: "done" }
   | { kind: "continue"; prompt: string; promptIndex: number }
   | { kind: "error"; error: string };
 
-/** One run's minimums; earlier prompts in the chat never count toward them. */
+/** A run can't take minimums: it has ended, was stopped, or isn't an Autopilot run. */
+export class CustomAutopilotApplyError extends Error {}
+
+/** One run's time and spend, and any minimums; earlier prompts in the chat never count. */
 export class CustomAutopilotRun {
   private readonly receipts = new Set<string>();
+  /** Unpriced charges by the window they were first seen in, which their price later counts to. */
+  private readonly firstSeen = new Map<string, number>();
   private startedAt?: number;
+  /** Minimums count from here: the first prompt, or the last time they were applied. */
+  private windowStartedAt?: number;
+  private window = 0;
+  private windowNanoAiu = 0;
+  private replaying = false;
   private passStartedAt?: number;
   private nanoAiu = 0;
   private passNanoAiu = 0;
@@ -60,12 +72,35 @@ export class CustomAutopilotRun {
   continuations = 0;
   cancelled = false;
 
-  constructor(readonly mode: CustomAutopilot) {}
+  constructor(private minimums?: CustomAutopilot) {}
 
-  /** Marks the person's prompt going out; a resend after a stale session keeps the first time. */
+  /** The minimums in force; none means the run ends as plain Autopilot or interactive would. */
+  get mode(): CustomAutopilot | undefined {
+    return this.minimums;
+  }
+
+  /** Marks the run's prompt going out; a resend after a stale session keeps the first time. */
   begin(now = Date.now()): void {
     this.startedAt ??= now;
+    this.windowStartedAt ??= now;
     this.startPass(now);
+  }
+
+  /** When the run's prompt went out, if it has. */
+  get startedAtMs(): number | undefined {
+    return this.startedAt;
+  }
+
+  /** New minimums counted from now; refused until the prompt has gone out. */
+  apply(mode: CustomAutopilot, now = Date.now()): void {
+    if (this.startedAt === undefined) {
+      throw new CustomAutopilotApplyError("The run is still starting. Try again in a moment.");
+    }
+    this.minimums = mode;
+    this.window++;
+    this.windowStartedAt = now;
+    this.windowNanoAiu = 0;
+    this.unbilledPasses = 0;
   }
 
   private startPass(now: number): void {
@@ -76,26 +111,48 @@ export class CustomAutopilotRun {
 
   /** Counts each charge once, and each tool the main agent (not a `child`) runs. */
   observe(event: SessionEvent, child = false): void {
-    if (this.startedAt === undefined) return;
-    if (!child && event.type === "tool.execution_start" && event.data.toolName !== COMPLETION_TOOL) this.passTools++;
+    const begun = this.startedAt !== undefined && !this.replaying;
+    if (begun && !child && event.type === "tool.execution_start" && event.data?.toolName !== COMPLETION_TOOL) {
+      this.passTools++;
+    }
     const data = event.type === "assistant.usage" ? event.data
-      : event.type === "tool.execution_complete" ? event.data.toolUsage : undefined;
+      : event.type === "tool.execution_complete" ? event.data?.toolUsage : undefined;
     if (!data) return;
     const id = data.accounting?.usageId ?? ("requestId" in data ? data.requestId : data.apiCallId) ?? event.id;
+    if (this.receipts.has(id)) return;
+    const seenIn = this.firstSeen.get(id) ?? (begun ? this.window : BEFORE_START);
     const charge = data.copilotUsage?.totalNanoAiu;
     // An unpriced copy must not hide a priced one that comes later under the same id.
-    if (charge === undefined || !Number.isFinite(charge) || charge < 0 || this.receipts.has(id)) return;
+    if (charge === undefined || !Number.isFinite(charge) || charge < 0) {
+      this.firstSeen.set(id, seenIn);
+      return;
+    }
     this.receipts.add(id);
+    this.firstSeen.delete(id);
+    if (seenIn === BEFORE_START) return;
     this.nanoAiu += charge;
+    if (seenIn !== this.window) return;
+    this.windowNanoAiu += charge;
     this.passNanoAiu += charge;
+  }
+
+  /** Events held from before the run had its feed count as an earlier prompt's. */
+  replayHeld(replay: () => void): void {
+    this.replaying = true;
+    try {
+      replay();
+    } finally {
+      this.replaying = false;
+    }
   }
 
   /** Judged where the run would end. */
   decide(now = Date.now()): CustomAutopilotDecision {
-    if (this.startedAt === undefined) return { kind: "error", error: "Custom Autopilot did not start." };
-    const { minMinutes, minAiCredits } = this.mode;
-    const timeLeft = minMinutes === undefined ? 0 : this.startedAt + minMinutes * 60_000 - now;
-    const needsSpend = minAiCredits !== undefined && this.nanoAiu < minAiCredits * NANO_AIU_PER_CREDIT;
+    if (this.windowStartedAt === undefined) return { kind: "error", error: "Custom Autopilot did not start." };
+    if (!this.minimums) return { kind: "done" };
+    const { minMinutes, minAiCredits } = this.minimums;
+    const timeLeft = minMinutes === undefined ? 0 : this.windowStartedAt + minMinutes * 60_000 - now;
+    const needsSpend = minAiCredits !== undefined && this.windowNanoAiu < minAiCredits * NANO_AIU_PER_CREDIT;
     if (timeLeft <= 0 && !needsSpend) return { kind: "done" };
     // Partly reported spend is a safe lower bound; none at all can never reach the minimum.
     if (needsSpend && this.passNanoAiu === 0 && this.unbilledPasses > 0) {
@@ -120,17 +177,18 @@ export class CustomAutopilotRun {
   }
 
   progress(): CustomAutopilotProgress | undefined {
-    if (this.startedAt === undefined) return undefined;
-    return { startedAt: new Date(this.startedAt).toISOString(), continuations: this.continuations };
+    if (this.windowStartedAt === undefined) return undefined;
+    return { startedAt: new Date(this.windowStartedAt).toISOString(), continuations: this.continuations };
   }
 
   /** The finished pass and the run so far, for spans and logs. */
   describe(now = Date.now()): Record<string, unknown> {
     return {
-      minMinutes: this.mode.minMinutes,
-      minAiCredits: this.mode.minAiCredits,
-      elapsedMs: this.startedAt === undefined ? 0 : now - this.startedAt,
-      spentCredits: this.nanoAiu / NANO_AIU_PER_CREDIT,
+      minMinutes: this.minimums?.minMinutes,
+      minAiCredits: this.minimums?.minAiCredits,
+      elapsedMs: this.windowStartedAt === undefined ? 0 : now - this.windowStartedAt,
+      spentCredits: this.windowNanoAiu / NANO_AIU_PER_CREDIT,
+      runSpentCredits: this.nanoAiu / NANO_AIU_PER_CREDIT,
       continuations: this.continuations,
       passMs: this.passStartedAt === undefined ? 0 : now - this.passStartedAt,
       passTools: this.passTools,

@@ -1173,6 +1173,21 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     }
   }
 
+  /** Minimums applied mid-run make a first turn Custom Autopilot, which is not compared. */
+  function onMinimumsApplied(sessionId: string, runStartedAt: number): void {
+    const record = deps.store.getBySession(sessionId);
+    if (!record) return;
+    // A run that began after its first prompt was handed over is a later turn, not a compared one.
+    const firstPromptAt = sessionId === record.twinSessionId ? record.twinStartedAt : record.promptAt;
+    if (firstPromptAt && runStartedAt > Date.parse(firstPromptAt)) return;
+    const failed = (["awaiting_prompt", "starting", "running"] as const).some((from) =>
+      deps.store.fail(record.id, from, "incomplete", "Custom Autopilot runs are not compared.", iso()));
+    const twin = record.twinSessionId;
+    if (failed && twin && record.mainSessionId === sessionId && deps.isBusy(twin)) {
+      void deps.abort(twin).catch((error: unknown) => logger.warn(`[model-comparison] Could not stop the twin: ${message(error)}`));
+    }
+  }
+
   /** After the user's first message reached their chat: start the twin with the same message. */
   function onFirstMessage(
     sessionId: string,
@@ -1235,6 +1250,7 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
         setup: record.setups[twinArm],
       });
       await copyUploads(record.mainSessionId, record.twinSessionId, attachments);
+      if (deps.store.getBySession(record.mainSessionId)?.status !== "starting") return;
       await deps.sendFirstMessage(record.twinSessionId, prompt, attachments, mode);
       deps.store.markTwinStarted(record.id, iso());
       logger.log(`[model-comparison] [${record.mainSessionId.slice(0, 8)}] Twin ${record.twinSessionId.slice(0, 8)} started on ${record.setups[twinArm].model}`);
@@ -1535,7 +1551,7 @@ export function createModelComparisonService(deps: ModelComparisonDeps) {
     timer = undefined;
   }
 
-  return { prepare, prepareLaunch, register, onFirstMessage, tick: runTick, view, vote, combine, dismiss, report, rejudge, sourceSessionId, start, stop };
+  return { prepare, prepareLaunch, register, onFirstMessage, onMinimumsApplied, tick: runTick, view, vote, combine, dismiss, report, rejudge, sourceSessionId, start, stop };
 }
 
 export type ModelComparisonService = ReturnType<typeof createModelComparisonService>;

@@ -484,7 +484,7 @@ export class SessionEventBus {
   setRunMode(mode: SendMode | undefined): void {
     if (this.runMode === mode) return;
     this.runMode = mode;
-    if (mode) this.broadcast({ type: "run_mode", runMode: mode });
+    if (mode) this.broadcast({ type: "run_mode", runMode: mode, runId: this.runId });
   }
 
   /** Records a Custom Autopilot run's progress for connected clients. */

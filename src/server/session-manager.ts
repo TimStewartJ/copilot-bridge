@@ -56,7 +56,7 @@ import type { TaskHistoryStore } from "./task-history-store.js";
 import { buildBridgeContextSections, emptyBridgeContextHashes, renderBridgeContextBlock, type BridgeContextSectionName, type PlaybookContext } from "./session-context-block.js";
 import { HELM_PLAYBOOK, NO_PLAYBOOK, type PlaybookSource, type SessionPlaybookView } from "../shared/workflow-vocabulary.js";
 import { isRecord } from "../shared/is-record.js";
-import type { SendMode } from "../shared/send-mode.js";
+import type { CustomAutopilot, SendMode } from "../shared/send-mode.js";
 import { AUTOMATIC_ANSWERS, unshowableQuestionAnswer, type AutomaticAnswerReason } from "../shared/automatic-answer.js";
 import type { PreviousRunReport } from "./scheduled-run-report.js";
 import type { SessionMetaStore } from "./session-meta-store.js";
@@ -5927,6 +5927,11 @@ export class SessionManager {
 
   isSessionStalled(sessionId: string): boolean {
     return this.runStateController.isSessionStalled(sessionId);
+  }
+
+  /** Sets minimums on a working Autopilot run, counted from now; returns when the run began. */
+  applyCustomAutopilot(sessionId: string, runId: string, mode: CustomAutopilot): number {
+    return this.sessionRunner.applyCustomAutopilot(sessionId, runId, mode);
   }
 
   /** While working, a Bridge-owned mode takes precedence over the underlying CLI mode. */
