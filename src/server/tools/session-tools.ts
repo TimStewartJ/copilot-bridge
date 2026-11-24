@@ -19,6 +19,7 @@ import {
   type SessionBridgeToolInvocation,
 } from "../agent-tools-mcp/adapter.js";
 import type { BridgeToolDefinition, BridgeToolsMcpServer } from "../agent-tools-mcp/server.js";
+import { createReadSessionTool } from "../helm/helm-tools.js";
 
 export interface RegisterSessionToolsOptions {
   hiddenTools?: ReadonlySet<string>;
@@ -37,7 +38,6 @@ interface SessionStartArgs {
 type SessionRenameArgs = { sessionId?: string; title: string };
 type SessionSetWorkspaceArgs = { sessionId?: string; cwd?: string; taskId?: string; reset?: boolean };
 type SessionArchiveArgs = { sessionIds: string[]; archived?: boolean };
-
 // Only trim: the title normalizer would corrupt an opaque id.
 function targetSessionId(args: { sessionId?: string }, invocation: SessionBridgeToolInvocation): string {
   const explicit = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
@@ -349,6 +349,7 @@ export function createSessionToolDefinitions(ctx: AppContext): BridgeToolDefinit
       };
     },
   }),
+  createReadSessionTool(ctx, { getFacade: () => ctx.sessionFacade, defaultToCaller: true }),
   ];
 }
 

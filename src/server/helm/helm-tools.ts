@@ -6,6 +6,7 @@ import type { AgentModelInfo } from "../agent-backend/types.js";
 import { formatBridgeLink } from "../../shared/bridge-links.js";
 import { liveLocalAttention, threadOutOfDate, type LiveTaskAttention } from "./attention-live.js";
 import { describeMomentumStamp, momentumAgeFields, NEXT_STEP_UNVERIFIED_NOTE } from "../../shared/momentum-age.js";
+import { readSessionHistory, SESSION_HISTORY_DEFAULT_LIMIT, SESSION_HISTORY_MAX_LIMIT } from "../session-history-read.js";
 
 export interface HelmSessionSummary {
   sessionId: string;
@@ -278,7 +279,15 @@ type ListSessionsArgs = {
   taskId?: string;
   limit?: number;
 };
-type ReadSessionArgs = { session?: string; task?: string; markRead?: boolean; history?: number };
+type ReadSessionArgs = {
+  session?: string;
+  task?: string;
+  markRead?: boolean;
+  history?: number;
+  query?: string;
+  before?: number;
+  limit?: number;
+};
 type SendToSessionArgs = { session: string; message: string };
 type StartSessionArgs = {
   prompt: string;
@@ -297,11 +306,8 @@ type ReadBridgeArgs = { bridge: string };
 type ReadConversationArgs = { bridge: string; sessionId: string; messages?: number };
 type RefreshBriefArgs = { rebuild?: boolean };
 
-export function createHelmToolDefinitions(
-  ctx: AppContext,
-  facade: HelmBridgeFacade,
-  runtime: HelmToolRuntime,
-): BridgeToolDefinition[] {
+/** Session and task lookups shared by Helm's tools and read_session. */
+function sessionLookups(ctx: AppContext, facade: HelmBridgeFacade) {
   // An archived chat can share a short ref with an active one; check identity before filtering.
   const destination = (sessions: HelmSessionSummary[], reference: unknown, allowArchived = false): SessionResolution => {
     const result = resolveSession(sessions, reference, "destination");
@@ -326,6 +332,123 @@ export function createHelmToolDefinitions(
       ? { detail: `Candidates: ${resolution.candidates.map((session) => `"${session.title}" (${formatBridgeLink({ kind: "session", sessionId: session.sessionId })})`).join(", ")}` }
       : {}),
   });
+  return { destination, shortRef, findDestination, searchTasks, resolutionFailure };
+}
+
+export interface ReadSessionToolOptions {
+  getFacade: () => HelmBridgeFacade | undefined;
+  /** Worker chats: with neither session nor task given, read the calling chat. */
+  defaultToCaller?: boolean;
+}
+
+const READ_SESSION_DESCRIPTION = "Read a session's latest reply (and what it is doing if still running, plus any question it's asking the user). Give a task instead of a session to read that task's most recently active session in one step (\"anything from the car task?\"). Set markRead when you are telling the user this reply; looking things up leaves it unread. Set history to also get the last few exchanges. Summarize; don't repeat it verbatim unless asked. "
+  + "Set query, before or limit to get items: the user's messages, replies and sub-agent results, oldest first; query keeps items containing every word, and before pages back from a result's nextBefore.";
+
+const READ_SESSION_CALLER_NOTE = " With neither session nor task, reads this chat, so a sub-agent can read the conversation that started it. "
+  + "Use this instead of opening events.jsonl or other files in a session-state folder: the runtime writes them while the chat runs, and a direct read can stop it from saving the chat.";
+
+/** The one tool that reads a chat: Helm's, and every chat's own through `defaultToCaller`. */
+export function createReadSessionTool(ctx: AppContext, options: ReadSessionToolOptions): BridgeToolDefinition {
+  // The calling chat may be archived or a scratch chat, which the session list leaves out.
+  const callerSession = async (facade: HelmBridgeFacade, sessionId: string): Promise<HelmSessionSummary> =>
+    (await facade.listSessions({ includeArchived: true })).find((session) => session.sessionId === sessionId)
+      ?? {
+        sessionId,
+        title: "This chat",
+        runState: ctx.sessionManager.getSessionRunState(sessionId),
+        needsUserInput: false,
+        unread: false,
+        archived: false,
+        linkedTaskIds: [],
+      };
+
+  return defineBridgeTool("read_session", {
+    description: READ_SESSION_DESCRIPTION + (options.defaultToCaller ? READ_SESSION_CALLER_NOTE : ""),
+    parameters: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session ref, id, link, or title words." },
+        task: { type: "string", description: "Instead of session: a task id, link, or topic words." },
+        markRead: { type: "boolean", description: "Mark this reply read when relaying it. Requires an exact session ID, link or unique short ref; defaults to false." },
+        history: { type: "number", description: `Also return up to this many recent messages (max ${MAX_HISTORY_MESSAGES}).` },
+        query: { type: "string", description: "Items containing every word of this text, case-insensitive." },
+        before: { type: "integer", minimum: 0, description: "Items before this offset: nextBefore from an earlier result." },
+        limit: { type: "integer", minimum: 1, maximum: SESSION_HISTORY_MAX_LIMIT, description: `Items to return, newest last (default ${SESSION_HISTORY_DEFAULT_LIMIT}).` },
+      },
+    },
+    handler: async (args: ReadSessionArgs, invocation) => {
+      const facade = options.getFacade();
+      if (!facade) return toolFailure("Chats can't be read until the Bridge has finished starting.");
+      const { findDestination, searchTasks, resolutionFailure } = sessionLookups(ctx, facade);
+      let taskInfo: Record<string, unknown> | undefined;
+      let resolution: SessionResolution;
+      if (args.markRead === true && !args.session) return toolFailure("To mark a reply read, pass its session link or ref. Look it up with read_session first.");
+      if (!args.session && typeof args.task === "string" && args.task.trim()) {
+        const [task, ...others] = await searchTasks(args.task.trim(), 3);
+        if (!task) return toolFailure(`No task matches "${args.task}".`, { detail: "Try find or task_list." });
+        const latest = (await facade.listSessions())
+          .filter((candidate) => candidate.linkedTaskIds.includes(task.id))
+          .sort((a, b) => (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? ""))[0];
+        taskInfo = {
+          taskLink: formatBridgeLink({ kind: "task", taskId: task.id }),
+          ...(task.nextAction ? { taskNextAction: task.nextAction } : {}),
+          ...(task.nextAction ? { taskNextActionSet: describeMomentumStamp(ctx.taskStore.getMomentumFieldStamps(task.id).nextAction, Date.now()) } : {}),
+          ...(others.length ? { otherMatchingTasks: others.map((other) => other.title) } : {}),
+        };
+        if (!latest) return { task: task.title, ...taskInfo, latestReply: null, note: "This task has no sessions." };
+        resolution = { ok: true, session: latest };
+      } else if (!args.session && options.defaultToCaller && invocation.sessionId) {
+        resolution = { ok: true, session: await callerSession(facade, invocation.sessionId) };
+      } else {
+        resolution = args.markRead === true ? await findDestination(args.session) : resolveSession(await facade.listSessions(), args.session);
+      }
+      if (!resolution.ok) return resolutionFailure(resolution);
+      const { session } = resolution;
+      // Thinking entries roughly double the non-message entries of an agentic run.
+      const { messages } = await ctx.sessionManager.readMessagesFromDisk(session.sessionId, { limit: 80 });
+      const textMessages = messages.filter((entry) => entry?.type === "message" && typeof entry.content === "string" && entry.content.trim()) as Array<{ role: string; content: string; timestamp?: string }>;
+      const latestReply = [...textMessages].reverse().find((entry) => entry.role === "assistant");
+      const latestPrompt = [...textMessages].reverse().find((entry) => entry.role === "user");
+      const bus = ctx.eventBusRegistry.getBus(session.sessionId);
+      const live = session.runState !== "idle" ? bus?.getLastAssistantSegment() : undefined;
+      const questions = pendingQuestions(ctx, session.sessionId);
+      const historyCount = Math.min(MAX_HISTORY_MESSAGES, Math.max(0, Math.floor(Number(args.history) || 0)));
+      const page = args.query !== undefined || args.before !== undefined || args.limit !== undefined
+        ? await readSessionHistory(
+          (sessionId, opts) => ctx.sessionManager.readMessagesFromDisk(sessionId, opts),
+          session.sessionId,
+          { query: args.query, before: args.before, limit: args.limit },
+        )
+        : undefined;
+      if (args.markRead === true && session.unread) facade.markRead([session.sessionId]);
+      return {
+        ...describeSession(ctx, session),
+        ...taskInfo,
+        ...(latestPrompt ? { lastPrompt: truncate(latestPrompt.content, 500) } : {}),
+        ...(latestReply ? { latestReply: truncate(latestReply.content, MAX_REPLY_CHARS), repliedAt: latestReply.timestamp } : { latestReply: null }),
+        ...(live?.content ? { liveProgress: truncate(live.content, 800) } : {}),
+        ...(session.runState !== "idle" ? { progress: describeProgress(messages as TranscriptEntry[]) } : {}),
+        ...(historyCount > 0
+          ? { recentMessages: textMessages.slice(-historyCount).map((entry) => ({ role: entry.role, content: truncate(entry.content, 1_200) })) }
+          : {}),
+        ...(page ? page : {}),
+        ...(questions.userInputs.length
+          ? { waitingForAnswer: questions.userInputs.map((request) => ({ question: request.question, choices: request.choices ?? [], allowFreeform: request.allowFreeform })) }
+          : {}),
+        ...(questions.elicitations.length
+          ? { waitingForForm: questions.elicitations.map((request) => request.message) }
+          : {}),
+      };
+    },
+  });
+}
+
+export function createHelmToolDefinitions(
+  ctx: AppContext,
+  facade: HelmBridgeFacade,
+  runtime: HelmToolRuntime,
+): BridgeToolDefinition[] {
+  const { destination, shortRef, findDestination, searchTasks, resolutionFailure } = sessionLookups(ctx, facade);
 
   const tools: BridgeToolDefinition[] = [
     defineBridgeTool("bridge_overview", {
@@ -489,69 +612,7 @@ export function createHelmToolDefinitions(
         return { total: sessions.length, sessions: sessions.slice(0, limit).map((session) => describeSession(ctx, session, now)) };
       },
     }),
-    defineBridgeTool("read_session", {
-      description: "Read a session's latest reply (and what it is doing if still running, plus any question it's asking the user). Give a task instead of a session to read that task's most recently active session in one step (\"anything from the car task?\"). Set markRead when you are telling the user this reply; looking things up leaves it unread. Set history to also get the last few exchanges. Summarize; don't repeat it verbatim unless asked.",
-      parameters: {
-        type: "object",
-        properties: {
-          session: { type: "string", description: "Session ref, id, link, or title words." },
-          task: { type: "string", description: "Instead of session: a task id, link, or topic words." },
-          markRead: { type: "boolean", description: "Mark this reply read when relaying it. Requires an exact session ID, link or unique short ref; defaults to false." },
-          history: { type: "number", description: `Also return up to this many recent messages (max ${MAX_HISTORY_MESSAGES}).` },
-        },
-      },
-      handler: async (args: ReadSessionArgs) => {
-        let taskInfo: Record<string, unknown> | undefined;
-        let resolution: SessionResolution;
-        if (args.markRead === true && !args.session) return toolFailure("To mark a reply read, pass its session link or ref. Look it up with read_session first.");
-        if (!args.session && typeof args.task === "string" && args.task.trim()) {
-          const [task, ...others] = await searchTasks(args.task.trim(), 3);
-          if (!task) return toolFailure(`No task matches "${args.task}".`, { detail: "Try find or task_list." });
-          const latest = (await facade.listSessions())
-            .filter((candidate) => candidate.linkedTaskIds.includes(task.id))
-            .sort((a, b) => (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? ""))[0];
-          taskInfo = {
-            taskLink: formatBridgeLink({ kind: "task", taskId: task.id }),
-            ...(task.nextAction ? { taskNextAction: task.nextAction } : {}),
-            ...(task.nextAction ? { taskNextActionSet: describeMomentumStamp(ctx.taskStore.getMomentumFieldStamps(task.id).nextAction, Date.now()) } : {}),
-            ...(others.length ? { otherMatchingTasks: others.map((other) => other.title) } : {}),
-          };
-          if (!latest) return { task: task.title, ...taskInfo, latestReply: null, note: "This task has no sessions." };
-          resolution = { ok: true, session: latest };
-        } else {
-          resolution = args.markRead === true ? await findDestination(args.session) : resolveSession(await facade.listSessions(), args.session);
-        }
-        if (!resolution.ok) return resolutionFailure(resolution);
-        const { session } = resolution;
-        // Thinking entries roughly double the non-message entries of an agentic run.
-        const { messages } = await ctx.sessionManager.readMessagesFromDisk(session.sessionId, { limit: 80 });
-        const textMessages = messages.filter((entry) => entry?.type === "message" && typeof entry.content === "string" && entry.content.trim()) as Array<{ role: string; content: string; timestamp?: string }>;
-        const latestReply = [...textMessages].reverse().find((entry) => entry.role === "assistant");
-        const latestPrompt = [...textMessages].reverse().find((entry) => entry.role === "user");
-        const bus = ctx.eventBusRegistry.getBus(session.sessionId);
-        const live = session.runState !== "idle" ? bus?.getLastAssistantSegment() : undefined;
-        const questions = pendingQuestions(ctx, session.sessionId);
-        const historyCount = Math.min(MAX_HISTORY_MESSAGES, Math.max(0, Math.floor(Number(args.history) || 0)));
-        if (args.markRead === true && session.unread) facade.markRead([session.sessionId]);
-        return {
-          ...describeSession(ctx, session),
-          ...taskInfo,
-          ...(latestPrompt ? { lastPrompt: truncate(latestPrompt.content, 500) } : {}),
-          ...(latestReply ? { latestReply: truncate(latestReply.content, MAX_REPLY_CHARS), repliedAt: latestReply.timestamp } : { latestReply: null }),
-          ...(live?.content ? { liveProgress: truncate(live.content, 800) } : {}),
-          ...(session.runState !== "idle" ? { progress: describeProgress(messages as TranscriptEntry[]) } : {}),
-          ...(historyCount > 0
-            ? { recentMessages: textMessages.slice(-historyCount).map((entry) => ({ role: entry.role, content: truncate(entry.content, 1_200) })) }
-            : {}),
-          ...(questions.userInputs.length
-            ? { waitingForAnswer: questions.userInputs.map((request) => ({ question: request.question, choices: request.choices ?? [], allowFreeform: request.allowFreeform })) }
-            : {}),
-          ...(questions.elicitations.length
-            ? { waitingForForm: questions.elicitations.map((request) => request.message) }
-            : {}),
-        };
-      },
-    }),
+    createReadSessionTool(ctx, { getFacade: () => facade }),
     defineBridgeTool("send_to_session", {
       description: "Send the user's message or instructions to an existing session. If it's running, the message steers it immediately. Write a complete, self-contained message.",
       parameters: {

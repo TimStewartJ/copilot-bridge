@@ -18,6 +18,7 @@ import {
   type FusionTierNames,
 } from "./copilot-fusion.js";
 import { BACKEND_DISCONNECTED_MESSAGE } from "../backend-availability.js";
+import { isSdkPersistenceSessionError } from "../sdk-event-identity.js";
 import { writeAgentShellInitScripts, type AgentShellInitScript } from "../agent-shell-env.js";
 import { signedInAccountIds, toCopilotAccounts } from "../copilot-accounts.js";
 import type { CopilotAccount } from "../../shared/copilot-accounts.js";
@@ -412,7 +413,7 @@ class CopilotAgentSession implements AgentSession {
         } else if (event?.type === "session.idle") {
           idleObserved = true;
           resolveIfComplete();
-        } else if (event?.type === "session.error") {
+        } else if (event?.type === "session.error" && !isSdkPersistenceSessionError(event)) {
           const error = new Error(event?.data?.message ?? "Agent session failed.");
           if (typeof event?.data?.stack === "string") error.stack = event.data.stack;
           settle(() => reject(error));

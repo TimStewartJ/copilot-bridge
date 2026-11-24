@@ -1,7 +1,7 @@
 import { open, stat } from "node:fs/promises";
 import type { SessionEvent } from "@github/copilot-sdk";
 import { isRecord } from "../shared/is-record.js";
-import { getSdkAgentId, getSdkEventId } from "./sdk-event-identity.js";
+import { getSdkAgentId, getSdkEventId, isSdkPersistenceSessionError } from "./sdk-event-identity.js";
 
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 
@@ -81,7 +81,7 @@ export async function readPersistedRunEnding(
       ending.assistantSourceEventId = getSdkEventId(event);
     } else if (ending.conclusive) {
       continue;
-    } else if (CONCLUSIVE_ENDING_TYPES.has(event.type)) {
+    } else if (CONCLUSIVE_ENDING_TYPES.has(event.type) && !isSdkPersistenceSessionError(event)) {
       ending.event = event;
       ending.conclusive = true;
     } else if (event.type === "assistant.turn_end") {

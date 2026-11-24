@@ -79,7 +79,8 @@ import {
   getSdkEventId,
   getSdkTurnId,
   isSdkAgentUserMessage,
-  isSdkSubagentSessionError,
+  isNonTerminalSessionError,
+  isSdkPersistenceSessionError,
 } from "./sdk-event-identity.js";
 import { readPersistedRunEnding, type PersistedRunEnding } from "./session-run-ending-reader.js";
 import type { SessionAutoNameOptions } from "./session-name-autogen.js";
@@ -1709,7 +1710,7 @@ export class SessionRunner {
       });
     };
     const isLiveRunTerminalEvent = (event: SessionEvent): boolean =>
-      LIVE_RUN_TERMINAL_EVENT_TYPES.has(event?.type) && !isSdkSubagentSessionError(event);
+      LIVE_RUN_TERMINAL_EVENT_TYPES.has(event?.type) && !isNonTerminalSessionError(event);
     const noteLiveEvent = (event: SessionEvent, eventAt: number, origin: SessionEventOrigin) => {
       const eventType = typeof event?.type === "string" ? event.type : undefined;
       if (!eventType) return;
@@ -2500,6 +2501,14 @@ export class SessionRunner {
           }
           break;
         case "session.error": {
+          if (isSdkPersistenceSessionError(event)) {
+            console.warn(`[sdk] [${sid}] Runtime could not save session events; it retries and the run goes on: ${data?.message ?? "unknown"}`);
+            recordRunSpan("session.persistence.error", 0, {
+              subagent: getSdkAgentId(event) !== undefined,
+              errorMessageLength: typeof data?.message === "string" ? data.message.length : undefined,
+            }, eventAt);
+            break;
+          }
           const agentId = getSdkAgentId(event);
           if (agentId) {
             correlator.recordAgentError(agentId, data?.message);

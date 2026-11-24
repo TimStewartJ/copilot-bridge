@@ -55,6 +55,7 @@ import type { StagingPreviewDiscoveryController } from "./staging-preview-discov
 import type { SessionOverlayMaintenance } from "./session-overlay-maintenance.js";
 import type { CalendarStore } from "./calendar-store.js";
 import type { HelmService } from "./helm/helm-service.js";
+import type { HelmBridgeFacade } from "./helm/helm-tools.js";
 import type { HelmStore } from "./helm/helm-store.js";
 import type { HelmThinkerStore } from "./helm/thinker/store.js";
 import type { HelmThinker } from "./helm/thinker/thinker.js";
@@ -149,6 +150,8 @@ export interface AppContext {
   helmStore?: HelmStore;
   /** Helm, the orchestration manager; the API router creates it and owns its facade. */
   helm?: HelmService;
+  /** Session list, read state and sending, shared with the REST API; the API services create it. */
+  sessionFacade?: HelmBridgeFacade;
   /** Helm thinker runs, their briefs and Helm's memory; made before the API router. */
   helmThinkerStore?: HelmThinkerStore;
   /** Helm's passes over every Bridge that write Home's brief and Helm's memory; made with Helm. */

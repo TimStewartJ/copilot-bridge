@@ -36,7 +36,7 @@ import {
   getSdkEventId,
   getSdkTurnId,
   isSdkAgentUserMessage,
-  isSdkSubagentSessionError,
+  isNonTerminalSessionError,
 } from "./sdk-event-identity.js";
 import { AgentEventOwners } from "./agent-event-ownership.js";
 import { projectSearchableMessage, type SearchableMessage } from "./search-message-projection.js";
@@ -69,7 +69,7 @@ const MESSAGE_RELEVANT_EVENT_MARKERS = [...TRANSCRIPT_EVENT_TYPES];
 const TURN_TERMINAL_EVENT_TYPES = TERMINAL_TURN_EVENT_TYPES;
 const isTurnTerminalEvent = (event: unknown): boolean => {
   const type = eventType(event);
-  return typeof type === "string" && TURN_TERMINAL_EVENT_TYPES.has(type) && !isSdkSubagentSessionError(event);
+  return typeof type === "string" && TURN_TERMINAL_EVENT_TYPES.has(type) && !isNonTerminalSessionError(event);
 };
 
 function eventType(event: unknown): unknown {

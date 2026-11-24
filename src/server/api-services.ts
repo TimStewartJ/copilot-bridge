@@ -180,6 +180,7 @@ export function createApiServices(ctx: AppContext, options: ApiServiceOptions = 
       return result;
     },
   };
+  ctx.sessionFacade = facade;
   if (ctx.helmStore && !ctx.helm) {
     ctx.helm = new HelmService({
       ctx, store: ctx.helmStore, facade,

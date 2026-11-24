@@ -1229,6 +1229,51 @@ describe("SessionManager run state", () => {
     });
   });
 
+  it("keeps the run going when the runtime reports a failed event-log write", async () => {
+    const sessionId = "session-persistence-error";
+    const { manager, eventBusRegistry } = createManager();
+    const { session, getHandler, getReleaseSend } = makeSession();
+    manager.backend = {
+      resumeSession: vi.fn().mockResolvedValue(session),
+    };
+
+    const bus = eventBusRegistry.getOrCreateBus(sessionId);
+    manager.startWork(sessionId, "coordinate the review");
+    await flushMicrotasks();
+    const handler = getHandler();
+    const baseTime = Date.now();
+
+    handler?.({ type: "assistant.turn_start", timestamp: new Date(baseTime + 1_000).toISOString(), data: { turnId: "1" } });
+    handler?.({
+      id: "persistence-error-1",
+      type: "session.error",
+      timestamp: new Date(baseTime + 2_000).toISOString(),
+      data: { errorType: "persistence", message: "Failed to persist session events: os error 32" },
+    });
+    await flushMicrotasks();
+
+    expect(manager.getSessionRunState(sessionId)).toBe("busy");
+    expect(bus.getSnapshot().complete).toBe(false);
+
+    handler?.({
+      id: "after-persistence-error",
+      type: "assistant.message",
+      timestamp: new Date(baseTime + 3_000).toISOString(),
+      data: { content: "Review finished." },
+    });
+    handler?.({ type: "assistant.turn_end", timestamp: new Date(baseTime + 4_000).toISOString(), data: { turnId: "1" } });
+    getReleaseSend()?.();
+    await flushMicrotasks();
+    handler?.({ type: "session.idle", timestamp: new Date(baseTime + 5_000).toISOString(), data: {} });
+    await flushMicrotasks();
+
+    expect(bus.getTerminalState()).toMatchObject({
+      complete: true,
+      terminalType: "done",
+      finalContent: "Review finished.",
+    });
+  });
+
   it("records usage after turn end as session overhead", async () => {
     const { manager, sessionContextStore } = createManager();
     const { session, getHandler, getReleaseSend } = makeSession();

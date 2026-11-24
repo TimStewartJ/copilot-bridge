@@ -13,6 +13,7 @@ import {
   boundToolResult,
   countBridgeSessions,
   createHelmToolDefinitions,
+  createReadSessionTool,
   describeProgress,
   isHelmBridgeToolName,
   resolveSession,
@@ -68,6 +69,7 @@ function createContext() {
           { type: "message", role: "user", content: "Fix the transition bands" },
           { type: "message", role: "assistant", content: "Fixed the quantization bug and added tests." },
         ],
+        total: 2,
       })),
       abortSession: vi.fn(async () => true),
       listModels: vi.fn(async () => []),
@@ -197,6 +199,18 @@ describe("Helm tools", () => {
       { role: "assistant", content: "Fixed the quantization bug and added tests." },
     ]);
     expect(facade.marked).toEqual([["aaaaaaaa-1111-4000-8000-000000000001"]]);
+  });
+
+  it("reads the calling chat's history only in the worker chats' read_session", async () => {
+    const { ctx } = createContext();
+    const workerChat = "aaaaaaaa-1111-4000-8000-000000000001";
+    const worker = createReadSessionTool(ctx, { getFacade: () => createFacade(), defaultToCaller: true });
+    const result = await worker.handler({ limit: 1 }, { sessionId: workerChat }) as any;
+    expect(result).toMatchObject({ title: "Tellus worldgen transition fix", latestReply: "Fixed the quantization bug and added tests." });
+    expect(result.items).toEqual([expect.objectContaining({ role: "assistant", content: "Fixed the quantization bug and added tests." })]);
+    expect(await tool(ctx, createFacade(), "read_session").run({ limit: 1 })).toMatchObject({ resultType: "failure" });
+    expect(await createReadSessionTool(ctx, { getFacade: () => undefined, defaultToCaller: true })
+      .handler({}, { sessionId: workerChat })).toMatchObject({ resultType: "failure" });
   });
 
   it("finds a task by what it is about, and retries with any word when every word misses", async () => {

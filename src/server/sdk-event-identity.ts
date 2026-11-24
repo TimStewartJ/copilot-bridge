@@ -58,6 +58,21 @@ export function isSdkSubagentSessionError(event: unknown): boolean {
     && getSdkAgentId(event) !== undefined;
 }
 
+/** A failed append to events.jsonl: the runtime keeps the events, retries, and the run goes on. */
+export function isSdkPersistenceSessionError(event: unknown): boolean {
+  if (!event || typeof event !== "object") return false;
+  const record = event as Record<string, unknown>;
+  const data = record.data;
+  return record.type === "session.error"
+    && !!data && typeof data === "object"
+    && (data as Record<string, unknown>).errorType === "persistence";
+}
+
+/** A session.error that ends no run of the main agent. */
+export function isNonTerminalSessionError(event: unknown): boolean {
+  return isSdkSubagentSessionError(event) || isSdkPersistenceSessionError(event);
+}
+
 export function getSdkTurnId(event: unknown): string | undefined {
   if (!event || typeof event !== "object") return undefined;
   const record = event as Record<string, unknown>;

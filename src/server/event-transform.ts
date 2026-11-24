@@ -18,8 +18,9 @@ import {
   getSdkAgentId,
   getSdkEventId,
   getSdkTurnId,
+  isNonTerminalSessionError,
   isSdkAgentUserMessage,
-  isSdkSubagentSessionError,
+  isSdkPersistenceSessionError,
   isSdkUserAuthoredMessage,
 } from "./sdk-event-identity.js";
 import { AgentEventOwners, showsAgentTurnsAreStamped } from "./agent-event-ownership.js";
@@ -141,7 +142,7 @@ function hasAttachments(data: Record<string, unknown> | undefined): boolean {
 
 function isTurnTerminalEvent(event: unknown): boolean {
   return isTerminalTurnEventType(eventType(event))
-    && !isSdkSubagentSessionError(event);
+    && !isNonTerminalSessionError(event);
 }
 
 /** A completion card as the transcript records it: its keyed event and that event's time. */
@@ -820,7 +821,7 @@ export function transformEventsToMessages(
       correlatingSubAgentToolCallIds.delete(toolCallId);
     } else if (type === "assistant.message" && parentToolCallId && data?.content) {
       correlator.recordResponse(parentToolCallId, data.content);
-    } else if (type === "session.error" && getSdkAgentId(event)) {
+    } else if (type === "session.error" && getSdkAgentId(event) && !isSdkPersistenceSessionError(event)) {
       correlator.recordAgentError(getSdkAgentId(event)!, data?.message);
     } else if (type === "user.message" && isSdkAgentUserMessage(event)) {
       const agentId = getSdkAgentId(event);

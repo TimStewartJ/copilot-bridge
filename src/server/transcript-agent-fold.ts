@@ -1,4 +1,4 @@
-import { getSdkAgentId, isSdkAgentUserMessage } from "./sdk-event-identity.js";
+import { getSdkAgentId, isSdkAgentUserMessage, isSdkPersistenceSessionError } from "./sdk-event-identity.js";
 import { isHiddenTool } from "../shared/tool-visibility.js";
 import type { TranscriptAgent, TranscriptAgentStatus } from "../shared/transcript-agents.js";
 
@@ -134,6 +134,7 @@ export class TranscriptAgentFold {
         return agent && agent.status !== "failed" ? this.end(agent, at, "failed") : undefined;
       }
       case "session.error": {
+        if (isSdkPersistenceSessionError(event)) return undefined;
         const agent = this.agentOfEvent(event, data);
         return agent && agent.status === "running" ? this.end(agent, at, "failed") : undefined;
       }
